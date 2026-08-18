@@ -325,7 +325,14 @@ def fair_grade(pred, gt, schema):
     results look better than they were, and applied to every A/B run through this metric.
     """
     pred = N.prep_prediction(pred or {}); gt = N.prep_ground_truth(gt or {})
-    gt = _drop_empty_gt_rows(gt)  # fairness: rows asserting nothing (see above)
+    # Rows asserting nothing are ignored on BOTH sides. Filtering only ground truth broke
+    # identity: a prediction that mirrors ground truth EXACTLY still carried the rows ground
+    # truth had just discarded, so they counted as spurious and `grade(gt, gt)` came out at
+    # 95.09 on a real 10-Q (11 of 164 rows dropped from one side only). That penalised the
+    # most faithful possible extraction, and P1 missed it because generated documents never
+    # contain an all-null row.
+    gt = _drop_empty_gt_rows(gt)
+    pred = _drop_empty_gt_rows(pred)
     schema = schema or {}
     props = (schema.get("properties") or {}) if isinstance(schema, dict) else {}
     arr_keys = N.arrays_of(schema) if isinstance(schema, dict) else []

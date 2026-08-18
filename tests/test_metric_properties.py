@@ -361,6 +361,29 @@ report("P15 greedy fallback is reported, not silent",
              f"small={r_small['matching_exact']} huge={r_huge['matching_exact']}"))
 
 
+# ── P17 identity holds for documents containing rows that assert nothing ────────
+# (REGRESSION) Rows whose payload is entirely null are ignored for fairness -- a provider
+# should not be scored on a row that states nothing. That filter was applied to GROUND TRUTH
+# ONLY, so a prediction mirroring ground truth exactly still carried the rows ground truth had
+# just discarded; they counted as spurious and grade(gt, gt) came out at 95.09 on a real 10-Q.
+# The most faithful possible extraction was penalised. P1 could not catch it because the
+# generator never produces an all-null row -- so this builds one explicitly.
+SCH_P17 = {"properties": {"rows": {"type": "array"}}}
+doc_with_empty = {"rows": [
+    {"id": 1, "value": 10},
+    {"id": None, "value": None},          # asserts nothing
+    {"id": 2, "value": 20},
+    {"id": None, "value": None},          # asserts nothing
+]}
+r_id = FG.fair_grade(copy.deepcopy(doc_with_empty), copy.deepcopy(doc_with_empty), SCH_P17)
+# and a partial answer must still be charged, i.e. the filter must not make omission free
+partial = {"rows": [{"id": 1, "value": 10}]}
+r_part = FG.fair_grade(partial, copy.deepcopy(doc_with_empty), SCH_P17)
+report("P17 identity holds when a document contains all-null rows",
+       check("P17", abs(r_id["leaf_accuracy"] - 100.0) < 1e-6 and r_part["leaf_accuracy"] < 99.0,
+             f"identity={r_id['leaf_accuracy']:.2f} (want 100) partial={r_part['leaf_accuracy']:.2f} (want <100)"))
+
+
 print(f"\n{'ALL METRIC PROPERTIES HOLD' if not FAILS else 'FAILURES:'}")
 for f in FAILS:
     print(f"   {f}")
