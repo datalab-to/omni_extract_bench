@@ -10,6 +10,14 @@ tested rather than asserted.
 It grades a predicted JSON object against a ground-truth object and a JSON Schema. It does not
 run extractors, and it ships no benchmark data.
 
+## Data
+
+The frozen 169-document evaluation set, with verified ground-truth corrections already applied,
+is published separately:
+[`datalab-to/omni_extract_bench`](https://huggingface.co/datasets/datalab-to/omni_extract_bench).
+
+This repository holds the scorer only; it ships no benchmark data and no benchmark results.
+
 ## Install
 
 ```bash
