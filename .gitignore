@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.DS_Store
+
+# Benchmark data and results are not part of this repository.
+baselines/
+runs/
+*.partial.json
+.score_cache.json
