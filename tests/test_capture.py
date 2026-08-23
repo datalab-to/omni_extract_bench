@@ -151,7 +151,29 @@ else:
     check("the call was captured", any(r["url"] == "https://example.com"
                                        for r in capture.records()))
 
-print("\n[10] THE SUBPROCESS PATH — a child interpreter captures its own HTTP")
+
+print("\n[10] usage survives truncation, wherever the vendor nests it")
+# Billing sits at the END of a JSON response as often as the start, so a head-only truncation
+# discards the one field the capture exists to keep -- and the absence then reads as "this
+# vendor does not report cost", which is a claim about the harness.
+capture.reset()
+big = json.dumps({"data": [{"row": "x" * 30000}], "usage": {"num_pages": 7, "credits": 3.5}})
+capture.record("GET", "https://vendor.example/job/1", 200, big, 0.1)
+rec = capture.records()[0]
+check("body was truncated", rec["truncated"] is True)
+check("usage parsed BEFORE truncation", rec.get("usage") == {"num_pages": 7, "credits": 3.5},
+      str(rec.get("usage")))
+check("a tail is kept for diagnosis", '"usage"' in (rec.get("body_tail") or ""))
+check("usage_from_records finds it", capture.usage_from_records().get("credits") == 3.5)
+
+capture.reset()
+capture.record("GET", "https://vendor.example/job/2", 200,
+               json.dumps({"result": {"usage": {"credits": 9.1, "extract_mode": "max"}}}), 0.1)
+check("usage found when nested under result",
+      capture.usage_from_records().get("extract_mode") == "max",
+      str(capture.usage_from_records()))
+
+print("\n[11] THE SUBPROCESS PATH — a child interpreter captures its own HTTP")
 # The in-process tap cannot reach a child, and this is the case that silently failed: the
 # harness recorded an empty `http` list for every provider whose adapter it shelled out to.
 capture.reset()

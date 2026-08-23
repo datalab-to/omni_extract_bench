@@ -53,6 +53,25 @@ def _as_text(body):
     return body if isinstance(body, str) else str(body)
 
 
+def _find_usage(parsed, depth=0):
+    """Find a usage block anywhere in a response, not just at a fixed path.
+
+    Vendors nest it differently -- top level, under `result`, under `data` -- and hard-coding
+    one path is how a provider gets recorded as "does not report cost" when it does.
+    """
+    if depth > 4 or not isinstance(parsed, dict):
+        return None
+    usage = parsed.get("usage")
+    if isinstance(usage, dict):
+        return {k: v for k, v in usage.items() if k in USAGE_FIELDS}
+    for value in parsed.values():
+        if isinstance(value, dict):
+            found = _find_usage(value, depth + 1)
+            if found:
+                return found
+    return None
+
+
 class Capture:
     """Collects transport records and the job ids seen in them.
 
@@ -101,9 +120,12 @@ class Capture:
         """Append one record. Never raises: capture must not break the call it observes."""
         try:
             text = _as_text(body)
+            usage = None
             try:
-                self.note_job_id(json.loads(text),
+                parsed = json.loads(text)
+                self.note_job_id(parsed,
                                  f"{method} {str(url).split('?')[0].rsplit('/', 1)[-1]}")
+                usage = _find_usage(parsed)
             except Exception:  # noqa: BLE001 -- most bodies are not JSON
                 pass
             entry = {
@@ -115,6 +137,14 @@ class Capture:
                 "truncated": len(text) > MAX_BODY,
                 "request": request,
             }
+            # Billing lives at the END of a JSON response as often as the start, so a
+            # head-only truncation quietly discards the one field the capture exists to keep.
+            # Usage is parsed from the FULL text before truncating, and a tail slice is kept so
+            # a truncated body is still diagnosable rather than merely present.
+            if usage:
+                entry["usage"] = usage
+            if len(text) > MAX_BODY:
+                entry["body_tail"] = text[-4000:]
             log = self.records()
             # Collapse a poll storm. One provider polled 582 times on a single document with
             # byte-identical responses; keeping each buys no evidence and buries the records
@@ -139,6 +169,13 @@ class Capture:
         """
         found = {}
         for rec in self.records():
+            parsed_usage = rec.get("usage")
+            if parsed_usage:
+                for key in USAGE_FIELDS:
+                    if parsed_usage.get(key) is not None:
+                        found.setdefault(key, parsed_usage[key])
+                found.setdefault("_endpoint", rec.get("url"))
+                continue
             body = rec.get("body") or ""
             if '"usage"' not in body:
                 continue
