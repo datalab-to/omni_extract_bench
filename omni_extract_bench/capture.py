@@ -124,7 +124,7 @@ def record(method, url, status, body, elapsed=None, request=None):
             note_job_id(json.loads(text), f"{method} {str(url).split('?')[0].rsplit('/', 1)[-1]}")
         except Exception:  # noqa: BLE001 -- most bodies are not JSON, and that is fine
             pass
-        records().append({
+        entry = {
             "method": method,
             "url": str(url).split("?")[0],       # query strings carry keys
             "status": status,
@@ -132,7 +132,20 @@ def record(method, url, status, body, elapsed=None, request=None):
             "body": text[:MAX_BODY],
             "truncated": len(text) > MAX_BODY,
             "request": request,
-        })
+        }
+        log = records()
+        # Collapse a poll storm into one record with a count. An async provider here polled 582
+        # times on a single document, every response byte-identical: keeping each buys no
+        # evidence and buries the records that differ. The count is retained, so "polled 582
+        # times and never left Running" stays recoverable -- collapsing must not hide duration.
+        if log:
+            prev = log[-1]
+            if (prev["method"], prev["url"], prev["status"], prev["body"]) == (
+                    entry["method"], entry["url"], entry["status"], entry["body"]):
+                prev["repeats"] = prev.get("repeats", 1) + 1
+                prev["elapsed_s"] = entry["elapsed_s"]
+                return
+        log.append(entry)
     except Exception:  # noqa: BLE001
         pass
 
@@ -167,6 +180,44 @@ def install_taps():
 
         send._oeb_tapped = True
         cls.send = send
+
+    _install_async_tap()
+
+
+def _install_async_tap():
+    """Tap ``httpx.AsyncClient.send``.
+
+    Not an afterthought: several vendor SDKs are async underneath, and a sync-only tap records
+    nothing for them while still writing a capture file that looks populated -- the same silent
+    gap as tapping only the parent process. One provider here captured zero HTTP for exactly
+    this reason, after the subprocess gap had already been fixed.
+    """
+    try:
+        import httpx
+    except ImportError:
+        return
+    original = httpx.AsyncClient.send
+    if getattr(original, "_oeb_tapped", False):
+        return
+
+    async def send(self, request, **kwargs):
+        started = time.time()
+        response = await original(self, request, **kwargs)
+        try:
+            try:
+                text = response.text
+            except Exception:  # noqa: BLE001 -- streaming response not read yet
+                await response.aread()
+                text = response.text
+            record(request.method, request.url, response.status_code, text,
+                   time.time() - started,
+                   scrub_payload(getattr(request, "content", None)))
+        except Exception:  # noqa: BLE001
+            pass
+        return response
+
+    send._oeb_tapped = True
+    httpx.AsyncClient.send = send
 
 
 def tap_dir():

@@ -92,7 +92,43 @@ check("elision is marked, not silent", "elided" in req, (req or "")[:160])
 check("request is far smaller than the payload", len(req) < len(payload) / 4,
       f"{len(req)} vs {len(payload)}")
 
-print("\n[7] THE SUBPROCESS PATH — a child interpreter captures its own HTTP")
+
+print("\n[7] ASYNC clients are tapped too")
+# A sync-only tap captures nothing for an async SDK while still writing a capture file that
+# looks populated. One provider in this benchmark did exactly that, after the subprocess gap
+# had already been found and fixed.
+capture.reset()
+capture.install_taps()
+try:
+    import asyncio
+    import httpx
+
+    async def _go():
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.get("https://example.com")
+
+    asyncio.run(_go())
+except Exception as exc:  # noqa: BLE001
+    print(f"  SKIP  async client unavailable or offline ({type(exc).__name__})")
+else:
+    got = capture.records()
+    check("async request captured", len(got) >= 1, f"{len(got)} records")
+    if got:
+        check("async record carries a status", got[0]["status"] is not None)
+        check("async record carries a body", bool(got[0]["body"]))
+
+
+print("\n[8] a poll storm collapses, but its duration survives")
+capture.reset()
+for _ in range(50):
+    capture.record("GET", "https://api.example.com/job/1", 200, '{"status":"Running"}', 0.2)
+capture.record("GET", "https://api.example.com/job/1", 200, '{"status":"Succeeded"}', 0.2)
+recs = capture.records()
+check("identical polls collapsed", len(recs) == 2, f"{len(recs)} records")
+check("repeat count retained", recs[0].get("repeats") == 50, str(recs[0].get("repeats")))
+check("the DIFFERING response is kept", "Succeeded" in recs[1]["body"])
+
+print("\n[9] THE SUBPROCESS PATH — a child interpreter captures its own HTTP")
 # The in-process tap cannot reach a child, and this is the case that silently failed: the
 # harness recorded an empty `http` list for every provider whose adapter it shelled out to.
 capture.reset()

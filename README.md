@@ -143,6 +143,11 @@ three bugs and are one placement error.
 named `raw` on every one, and reported full coverage — while the field held parsed output. The
 same audit passed while *subprocess* providers captured no HTTP whatsoever.
 
+**Tap every transport your SDKs actually use.** Sync `httpx`, `requests`, *and* `httpx.AsyncClient`,
+plus a `sitecustomize` for subprocesses. Each gap looks identical from the outside — a capture
+file that exists, with an empty record list — and here each was found separately, after the
+previous one had supposedly fixed capture.
+
 **Keep job ids.** Async APIs hand back an id and keep the job, so usage can usually be recovered
 from job history later for free. Re-running a document to recover a number the vendor will still
 hand you is the worst available trade, and for a nondeterministic provider it does not even
