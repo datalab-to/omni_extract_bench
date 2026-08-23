@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Extend extraction via the CURRENT processor API — one generic processor, any schema.
 
-Background: the vendored provider targeted `POST /extract_runs`, which Extend retired (404).
+Background: `POST /extract_runs` 404s on the OLD api version (2025-04-21) -- it was read
+as retired, but it is the current endpoint under 2026-02-09. Version, not deprecation.
 Extraction now runs through processors. The obvious port — create a processor per schema —
 would litter the customer's workspace with hundreds of objects (ExtractBench alone has a
 distinct schema per document).
@@ -21,6 +22,16 @@ Flow: POST /files/upload -> POST /processor_runs (config.schema = this doc's sch
 Auth note: organisation-level API keys REQUIRE `x-extend-workspace-id`; without it every
 upload 400s. That was a real bug in the vendored provider.
 
+Schemas must be reshaped before sending -- Extend validates strictly and rejects the JSON
+Schema dialect most benchmarks emit. Use `omni_extract_bench.dialects`:
+
+    from omni_extract_bench.dialects import (
+        strip_benchmark_keys, resolve_refs, to_strict_dialect)
+    payload_schema = to_strict_dialect(resolve_refs(strip_benchmark_keys(schema)))
+
+Skipping that step produces a stream of 400s -- $ref, then `evaluation_config`, then `title`,
+then non-nullable primitives -- one per request, which reads like a broken vendor and is not.
+
 Usage: python3 extend_provider.py --pdf X.pdf --schema S.json --out O.json
 """
 from __future__ import annotations
@@ -29,7 +40,16 @@ from pathlib import Path
 import httpx
 
 BASE = os.environ.get("EXTEND_BASE_URL", "https://api.extend.ai")
-API_VERSION = os.environ.get("EXTEND_API_VERSION", "2025-04-21")
+# 2026-02-09 is the current version: a resource-based API with a dedicated /extract_runs
+# endpoint that takes the schema inline, so no processor shell is needed. We were on
+# 2025-04-21 -- stable, but two versions behind and missing the array options below.
+API_VERSION = os.environ.get("EXTEND_API_VERSION", "2026-02-09")
+
+# Extend's MAX array-extraction mode. The benchmark is array-heavy (3,000-row 13Fs,
+# 2,200-row clinical tables), and this is the setting built for exactly that; the vendor
+# flagged that we were benchmarking without it. Trades latency and credits for accuracy,
+# which is the right side of that trade under a max-tier parity rule.
+ARRAY_STRATEGY = os.environ.get("EXTEND_ARRAY_STRATEGY", "large_array_max_context")
 POLL_S = 5
 TIMEOUT_S = int(os.environ.get("EXTEND_TIMEOUT", "1800"))
 TERMINAL = {"PROCESSED", "COMPLETED", "FAILED", "CANCELLED", "ERROR"}
@@ -78,28 +98,35 @@ def upload(c: httpx.Client, pdf: Path) -> str:
 
 
 def submit(c: httpx.Client, processor_id: str, file_id: str, schema: dict) -> str:
-    body = {"processorId": processor_id, "file": {"fileId": file_id},
-            "config": {"type": "EXTRACT", "baseProcessor": "extraction_performance",
-                       "schema": schema}}
-    r = c.post(f"{BASE}/processor_runs", json=body, timeout=120)
+    """Submit an extraction run against the current API.
+
+    The schema goes inline in `config`, so the processor-shell workaround the old version
+    needed is gone -- `processor_id` is accepted for signature compatibility and unused.
+    `advancedOptions.arrayStrategy` selects MAX array extraction.
+    """
+    # 2026-02-09 renamed the file reference: {"fileId": X} -> {"id": X}
+    body = {"file": {"id": file_id},
+            "config": {"schema": schema,
+                       "advancedOptions": {"arrayStrategy": {"type": ARRAY_STRATEGY}}}}
+    r = c.post(f"{BASE}/extract_runs", json=body, timeout=120)
     if r.status_code >= 400:
-        raise RuntimeError(f"processor_runs HTTP {r.status_code}: {r.text[:400]}")
+        raise RuntimeError(f"extract_runs HTTP {r.status_code}: {r.text[:400]}")
     b = r.json()
-    run = b.get("processorRun") or b.get("run") or b
+    run = b.get("extractRun") or b.get("processorRun") or b.get("run") or b
     rid = run.get("id")
     if not rid:
-        raise RuntimeError(f"processor_runs: no run id in {r.text[:250]}")
+        raise RuntimeError(f"extract_runs: no run id in {r.text[:250]}")
     return rid
 
 
 def poll(c: httpx.Client, run_id: str) -> dict:
     deadline = time.time() + TIMEOUT_S
     while time.time() < deadline:
-        r = c.get(f"{BASE}/processor_runs/{run_id}", timeout=60)
+        r = c.get(f"{BASE}/extract_runs/{run_id}", timeout=60)
         if r.status_code >= 400:
             raise RuntimeError(f"poll HTTP {r.status_code}: {r.text[:250]}")
         b = r.json()
-        run = b.get("processorRun") or b.get("run") or b
+        run = b.get("extractRun") or b.get("processorRun") or b.get("run") or b
         st = str(run.get("status", "")).upper()
         if st in TERMINAL:
             return run
