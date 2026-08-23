@@ -159,6 +159,13 @@ from job history later for free. Re-running a document to recover a number the v
 hand you is the worst available trade, and for a nondeterministic provider it does not even
 reproduce the answer you scored.
 
+**A parsing mistake should cost a re-parse, not another invoice.** Because the bodies are on
+disk, a bug in how usage is *read* is fixed by re-reading them. That happened here: the usage
+parser filtered keys against a list of known names and so discarded a vendor's
+`num_pages_billed` for not being on the list — page counts recovered afterwards from stored
+responses, with nothing re-run. Keep whatever the vendor puts in its usage block; a known-names
+filter is the hard-coded-path mistake one level down.
+
 Units deserve the same care as values: several vendors report `credits`, which is not dollars —
 the rate is contract-specific. `usage_from_records` keeps the vendor's own field names so no
 conversion happens by accident, and `dialects.cost_from_response` converts only where the unit

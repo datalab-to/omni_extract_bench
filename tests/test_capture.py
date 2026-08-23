@@ -173,6 +173,21 @@ check("usage found when nested under result",
       capture.usage_from_records().get("extract_mode") == "max",
       str(capture.usage_from_records()))
 
+# Regression: usage keys are NOT filtered against a list of known names. Doing that discarded
+# a vendor's page counts simply because it called them `num_pages_billed` -- the hard-coded
+# path mistake one level down, and the same one that made a provider look like it reported no
+# cost at all. Whatever the vendor puts in its usage block is kept.
+capture.reset()
+capture.record("GET", "https://vendor.example/extract/1", 200,
+               json.dumps({"usage": None,
+                           "metadata": {"usage": {"num_pages_extracted": 2,
+                                                  "num_pages_billed": 2}}}), 0.1)
+unfamiliar = capture.usage_from_records()
+check("unfamiliar usage field names are kept",
+      unfamiliar.get("num_pages_billed") == 2, str(unfamiliar))
+check("usage found when nested under a non-standard parent",
+      unfamiliar.get("num_pages_extracted") == 2, str(unfamiliar))
+
 print("\n[11] THE SUBPROCESS PATH — a child interpreter captures its own HTTP")
 # The in-process tap cannot reach a child, and this is the case that silently failed: the
 # harness recorded an empty `http` list for every provider whose adapter it shelled out to.

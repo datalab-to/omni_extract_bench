@@ -29,7 +29,16 @@ MAX_BODY = 20000
 ID_KEYS = ("request_id", "job_id", "jobId", "run_id", "runId", "id",
            "operation_id", "operationId", "task_id")
 
-USAGE_FIELDS = ("credits", "num_pages", "pages", "num_fields", "cost", "extract_mode", "tier")
+# Usage field names seen so far, kept as DOCUMENTATION rather than as a filter. Several vendors
+# report `credits`, which is NOT dollars: the rate is contract-specific, so units stay attached
+# to the value and conversion is the caller's explicit decision.
+#
+# Nothing is filtered against this list. An earlier version used it to SELECT keys, and so
+# discarded a vendor's `num_pages_billed` purely because the name was not on it -- repeating,
+# one level down, the hard-coded-path mistake that had already made a provider look like it
+# reported no cost at all. Whatever the vendor puts in its usage block is what gets kept.
+USAGE_FIELDS = ("credits", "num_pages", "num_pages_billed", "num_pages_extracted", "pages",
+                "num_fields", "cost", "extract_mode", "tier")
 
 # The bulk of an extraction request is an encoded document; the part that causes argument
 # errors is everything else. Eliding the former makes keeping the latter affordable.
@@ -62,8 +71,8 @@ def _find_usage(parsed, depth=0):
     if depth > 4 or not isinstance(parsed, dict):
         return None
     usage = parsed.get("usage")
-    if isinstance(usage, dict):
-        return {k: v for k, v in usage.items() if k in USAGE_FIELDS}
+    if isinstance(usage, dict) and usage:
+        return {k: v for k, v in usage.items() if not isinstance(v, (dict, list))}
     for value in parsed.values():
         if isinstance(value, dict):
             found = _find_usage(value, depth + 1)
@@ -162,38 +171,27 @@ class Capture:
             pass
 
     def usage(self):
-        """Vendor usage from captured bodies, in the VENDOR'S units.
+        """Vendor usage from the captured records, in the VENDOR'S units.
 
-        Several vendors report `credits`, which is not dollars -- the rate is contract-specific.
-        Units stay attached to the value so no conversion happens by accident.
+        Keys are whatever the vendor used. Nothing is filtered against a known-names list,
+        because doing that silently discarded a vendor's page counts once already.
         """
         found = {}
         for rec in self.records():
-            parsed_usage = rec.get("usage")
-            if parsed_usage:
-                for key in USAGE_FIELDS:
-                    if parsed_usage.get(key) is not None:
-                        found.setdefault(key, parsed_usage[key])
-                found.setdefault("_endpoint", rec.get("url"))
-                continue
-            body = rec.get("body") or ""
-            if '"usage"' not in body:
-                continue
-            try:
-                parsed = json.loads(body)
-            except Exception:  # noqa: BLE001
-                continue
-            usage = None
-            for candidate in ((parsed.get("result") or {}) if isinstance(parsed, dict) else {},
-                              parsed):
-                if isinstance(candidate, dict) and isinstance(candidate.get("usage"), dict):
-                    usage = candidate["usage"]
-                    break
+            usage = rec.get("usage")          # parsed at record time, before truncation
+            if not usage:
+                body = rec.get("body") or ""
+                if '"usage"' not in body:
+                    continue
+                try:
+                    usage = _find_usage(json.loads(body))
+                except Exception:  # noqa: BLE001
+                    continue
             if not usage:
                 continue
-            for key in USAGE_FIELDS:
-                if usage.get(key) is not None:
-                    found.setdefault(key, usage[key])
+            for key, value in usage.items():
+                if value is not None:
+                    found.setdefault(key, value)
             found.setdefault("_endpoint", rec.get("url"))
         return found
 
