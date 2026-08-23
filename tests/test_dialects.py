@@ -77,6 +77,23 @@ check("property primitive is nullable", props["name"]["type"] == ["string", "nul
       str(props["name"]))
 check("ARRAY ITEM stays a bare type", props["tags"]["items"]["type"] == "string",
       str(props["tags"]["items"]))
+# Regression: a `description` surviving on a scalar array item rejects the ENTIRE request, so
+# one annotated leaf anywhere in a schema costs the provider the whole document.
+described = to_strict_dialect(resolve_refs(strip_benchmark_keys({
+    "type": "object",
+    "properties": {
+        "rows": {"type": "array", "items": {"type": "object", "properties": {
+            "cases": {"type": "array", "description": "list",
+                      "items": {"type": "string", "description": "one case"}}}}},
+        "name": {"type": "string", "description": "kept on a property"},
+    },
+})))
+leaf = described["properties"]["rows"]["items"]["properties"]["cases"]["items"]
+check("scalar array item carries ONLY type", set(leaf) == {"type"}, str(leaf))
+check("object array item keeps properties",
+      "properties" in described["properties"]["rows"]["items"])
+check("a property keeps its description",
+      described["properties"]["name"].get("description") == "kept on a property")
 check("enum gains null", None in props["level"]["enum"], str(props["level"]))
 check("nullable union collapsed then re-nulled",
       props["note"]["type"] == ["string", "null"], str(props["note"]))

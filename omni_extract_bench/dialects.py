@@ -144,7 +144,16 @@ def to_strict_dialect(node, in_items=False, allowed=STRICT_ALLOWED_KEYS):
         out["type"] = "object"
 
     if in_items:
-        return out                      # bare type required in this position
+        # A SCALAR array item accepts `type` and NOTHING else -- not even `description`, which
+        # the allowlist legitimately keeps everywhere else. Leaving it rejected the whole
+        # request ("Array items only support \"type\" property. Found: description"), scoring
+        # the provider zero on documents it could handle. Object items keep `properties`,
+        # which is how they declare their shape.
+        if isinstance(out.get("type"), str) and out["type"] in (
+                "string", "number", "integer", "boolean"):
+            return {"type": out["type"]}
+        return {k: v for k, v in out.items()
+                if k in ("type", "properties", "items", "required")}
 
     if isinstance(out.get("type"), str) and out["type"] in (
             "string", "number", "integer", "boolean"):
