@@ -2,6 +2,9 @@
 """Airtightness audit for fair_grading — asserts the invariants a consistent/fair grader must
 hold, INDEPENDENT of subset. Run: python audit_grader_invariants.py"""
 import sys, json
+# run from anywhere: `python tests/x.py` puts tests/ on the path, not the repo root
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench import grading as FG
 
 fails = []

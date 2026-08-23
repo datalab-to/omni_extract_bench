@@ -10,8 +10,10 @@ Run: python3 tests/test_dialects.py
 import json
 import sys
 
-sys.path.insert(0, ".")
 
+# run from anywhere: `python tests/x.py` puts tests/ on the path, not the repo root
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench.dialects import (  # noqa: E402
     cost_from_response,
     parse_model_json,

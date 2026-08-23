@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Tests for transport capture — including the subprocess path, which is where it broke.
+
+The bug these guard against was not "capture is missing". A capture file existed for every
+document, with a populated key named `raw`. What it held was the adapter's parsed return
+value, so an audit that counted files and checked for the key reported full coverage while
+the response bodies, error bodies and billing fields were all being discarded.
+
+So these tests assert CONTENTS. The last one runs a real subprocess, because the in-process
+tap passing tells you nothing about the child interpreter a shelled-out adapter runs in --
+that gap is the whole reason capture silently covered only some providers.
+
+Run: python3 tests/test_capture.py
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+
+# run from anywhere: `python tests/x.py` puts tests/ on the path, not the repo root
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+from omni_extract_bench import capture  # noqa: E402
+
+FAILS = []
+
+
+def check(name, cond, detail=""):
+    print(f"  {'PASS' if cond else 'FAIL'}  {name}" + (f"   {detail}" if not cond else ""))
+    if not cond:
+        FAILS.append(name)
+
+
+print("\n[1] a record keeps the evidence, not a summary of it")
+capture.reset()
+capture.record("POST", "https://api.example.com/extract?api_key=SECRET", 200,
+               '{"job_id": "abc123def", "usage": {"credits": 14.5, "num_pages": 2}}', 0.42)
+rec = capture.records()[0]
+check("status kept", rec["status"] == 200)
+check("body kept", '"credits": 14.5' in rec["body"])
+check("query string stripped from url", "SECRET" not in rec["url"], rec["url"])
+check("timing kept", rec["elapsed_s"] == 0.42)
+
+print("\n[2] job ids are harvested — they are what makes cost recoverable without re-running")
+check("id found", capture.job_ids()[0]["id"] == "abc123def", str(capture.job_ids()))
+capture.reset()
+capture.record("POST", "https://api.example.com/run", 200,
+               '{"extractRun": {"id": "nested-run-42"}}')
+check("nested id found", capture.job_ids()[0]["id"] == "nested-run-42", str(capture.job_ids()))
+
+print("\n[3] usage is harvested in the VENDOR'S units")
+capture.reset()
+capture.record("GET", "https://api.example.com/job/1", 200,
+               '{"result": {"usage": {"credits": 17.47, "num_pages": 2, '
+               '"extract_mode": "super_agent"}}}')
+usage = capture.usage_from_records()
+check("credits found", usage["credits"] == 17.47, str(usage))
+check("pages found", usage["num_pages"] == 2)
+check("vendor's own tier statement kept", usage["extract_mode"] == "super_agent")
+check("no invented dollar figure", "usd" not in usage and "cost_usd" not in usage, str(usage))
+
+print("\n[4] capture never breaks the call it observes")
+capture.reset()
+capture.record("GET", None, None, object())          # nonsense arguments
+check("bad input does not raise", True)
+capture.record("GET", "https://x/y", 500, "not json at all")
+check("non-json body still recorded", capture.records()[-1]["body"] == "not json at all")
+
+print("\n[5] a large body is truncated but FLAGGED, never silently cut")
+capture.reset()
+capture.record("GET", "https://x/y", 200, "z" * (capture.MAX_BODY + 500))
+check("truncation flagged", capture.records()[0]["truncated"] is True)
+
+
+print("\n[6] the request is kept too, minus the payload")
+# Without the request, a 400 that says "Request contains an invalid argument" is not
+# diagnosable, and the only way to learn which argument is to pay for the call again.
+capture.reset()
+payload = json.dumps({"model": "some-model", "max_tokens": 64000,
+                      "image": "A" * 5000, "schema": {"type": "object"}})
+capture.record("POST", "https://api.example.com/v1/chat", 400,
+               '{"error": {"message": "Request contains an invalid argument."}}',
+               0.3, request=capture.scrub_payload(payload))
+req = capture.records()[0]["request"]
+check("request kept", req is not None)
+check("the argument-bearing fields survive", '"max_tokens": 64000' in req and
+      '"model": "some-model"' in req, (req or "")[:120])
+check("base64 payload elided", "AAAA" not in req, (req or "")[:160])
+check("elision is marked, not silent", "elided" in req, (req or "")[:160])
+check("request is far smaller than the payload", len(req) < len(payload) / 4,
+      f"{len(req)} vs {len(payload)}")
+
+print("\n[7] THE SUBPROCESS PATH — a child interpreter captures its own HTTP")
+# The in-process tap cannot reach a child, and this is the case that silently failed: the
+# harness recorded an empty `http` list for every provider whose adapter it shelled out to.
+capture.reset()
+with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as handle:
+    log_path = handle.name
+env = capture.subprocess_env(os.environ, log_path)
+check("sitecustomize is on the child PYTHONPATH", capture.tap_dir() in env["PYTHONPATH"])
+
+child = subprocess.run(
+    [sys.executable, "-c",
+     "import httpx\n"
+     "try:\n"
+     "    httpx.Client(timeout=5).get('https://example.com')\n"
+     "except Exception:\n"
+     "    pass\n"],
+    env=env, capture_output=True, text=True, timeout=90)
+
+capture.merge_subprocess_log(log_path)
+got = capture.records()
+if child.returncode != 0 and not got:
+    print("  SKIP  child could not run httpx — no network or httpx missing")
+else:
+    check("child's request reached the parent's capture", len(got) >= 1,
+          f"{len(got)} records, child rc={child.returncode}")
+    if got:
+        check("child record carries a status", got[0]["status"] is not None, str(got[0])[:120])
+        check("child record carries a body", got[0]["body"] is not None)
+check("child log file cleaned up", not os.path.exists(log_path))
+
+print(f"\n{'ALL CAPTURE TESTS PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}")
+sys.exit(1 if FAILS else 0)
