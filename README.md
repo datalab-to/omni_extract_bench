@@ -143,10 +143,16 @@ three bugs and are one placement error.
 named `raw` on every one, and reported full coverage — while the field held parsed output. The
 same audit passed while *subprocess* providers captured no HTTP whatsoever.
 
-**Tap every transport your SDKs actually use.** Sync `httpx`, `requests`, *and* `httpx.AsyncClient`,
-plus a `sitecustomize` for subprocesses. Each gap looks identical from the outside — a capture
-file that exists, with an empty record list — and here each was found separately, after the
-previous one had supposedly fixed capture.
+**Tap every transport the code *could* use, not the one you believe it uses.** Four are covered
+— `httpx.Client`, `httpx.AsyncClient`, `requests.Session`, `urllib.request` — plus a
+`sitecustomize` for subprocesses. Each gap was found separately, *after* the previous one had
+supposedly fixed capture, because they all look identical from the outside: the file exists, the
+key is present, the list is empty. The last one was a provider adapter that used no SDK at all
+and called the REST API with the standard library.
+
+They live in one module (`_tap/oeb_capture.py`) for the same reason: maintained as near-copies,
+each gap has to be found and fixed once per copy, which is how the fourth one survived the
+first three fixes.
 
 **Keep job ids.** Async APIs hand back an id and keep the job, so usage can usually be recovered
 from job history later for free. Re-running a document to recover a number the vendor will still

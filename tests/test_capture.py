@@ -128,7 +128,30 @@ check("identical polls collapsed", len(recs) == 2, f"{len(recs)} records")
 check("repeat count retained", recs[0].get("repeats") == 50, str(recs[0].get("repeats")))
 check("the DIFFERING response is kept", "Succeeded" in recs[1]["body"])
 
-print("\n[9] THE SUBPROCESS PATH — a child interpreter captures its own HTTP")
+
+print("\n[9] urllib is tapped — an adapter may use no SDK at all")
+# The provider that exposed this called the REST API with the standard library, so three
+# rounds of "the tap is fixed" (sync, then async, then subprocess) all still captured nothing
+# for it. A capture layer must also not BREAK its caller: reading a urllib response consumes
+# it, so the caller is handed back an equivalent response over the bytes already read.
+capture.reset()
+capture.install_taps()
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+check("urlopen is tapped", getattr(urllib.request.urlopen, "_oeb_tapped", False))
+try:
+    resp = urllib.request.urlopen("https://example.com", timeout=15)
+    body = resp.read()
+except Exception as exc:  # noqa: BLE001
+    print(f"  SKIP  network unavailable ({type(exc).__name__})")
+else:
+    check("caller still receives the body", len(body) > 0, f"{len(body)} bytes")
+    check("caller still receives the status", resp.status == 200, str(resp.status))
+    check("caller still receives getcode()", resp.getcode() == 200)
+    check("the call was captured", any(r["url"] == "https://example.com"
+                                       for r in capture.records()))
+
+print("\n[10] THE SUBPROCESS PATH — a child interpreter captures its own HTTP")
 # The in-process tap cannot reach a child, and this is the case that silently failed: the
 # harness recorded an empty `http` list for every provider whose adapter it shelled out to.
 capture.reset()

@@ -1,239 +1,135 @@
 """Capture vendor responses at the transport layer, so a run is paid for once.
 
 Benchmarking extraction vendors means spending real money on calls that are slow, sometimes
-nondeterministic, and often async. What you keep from each call decides whether a failure
-costs you an explanation or another invoice.
+nondeterministic, and often async. What you keep from each call decides whether a failure costs
+you an explanation or another invoice.
 
-The mistake this module exists to prevent -- made here, twice, in the same benchmark -- is
-capturing at the WRONG LAYER. Wrapping the adapter records its return value: the parsed
-extraction. By then the interesting parts are gone.
+The mistake this module prevents is capturing at the WRONG LAYER. Wrapping the adapter records
+its return value: the parsed extraction. By then the interesting parts are gone.
 
-  * the model's text, when ``json.loads`` failed  -> a provider looks unreliable, and you
-    cannot tell whether it returned prose, a fenced block, or nothing
-  * the HTTP error body, reduced to a status code -> failures are unattributable, so a
-    harness bug is indistinguishable from a vendor limitation
-  * the vendor's own billing fields                -> the absence gets reported as "this
-    vendor does not report cost", which is a claim about your harness
+  * the model's text, when ``json.loads`` failed  -> a provider looks unreliable, and you cannot
+    tell whether it returned prose, a fenced block, or nothing
+  * the HTTP error body, reduced to a status code -> failures are unattributable, so a harness
+    bug is indistinguishable from a vendor limitation
+  * the vendor's own billing fields                -> the absence gets reported as "this vendor
+    does not report cost", which is a claim about your harness
 
-All three are one placement error, and all three were separately patched before the cause was
-seen. Capturing at the transport means the response body is recorded before anything gets a
-chance to interpret it, and every one of those questions stays answerable for free.
+All three are one placement error, and all three were separately patched here before the cause
+was seen.
 
-Two things to install, because most harnesses have two execution shapes:
+This module is a thin, module-level API over ``_tap.oeb_capture.Capture``, which holds the only
+implementation. The taps live there rather than here because a subprocess ``sitecustomize`` must
+import them without this package being installed in the child environment -- and because the
+same tap maintained as several near-copies is how three of the four transport gaps below
+survived a round of "capture is fixed now":
 
-    install_taps()                      # in-process SDK calls
-    env = subprocess_env(os.environ)    # adapters launched as their own interpreter
+    httpx.Client · httpx.AsyncClient · requests.Session · urllib.request
 
-The second is not optional-in-practice. Monkey-patching cannot reach a subprocess, so a
-harness that taps only the parent captures nothing for exactly the providers whose adapters it
-shells out to -- while still writing a capture file that looks complete. Verify contents, not
-the presence of a key: see ``tests/test_capture.py``.
+Cover every transport the code *could* use, not the one you believe it uses. A capture gap is
+invisible from the outside: the file exists, the key is present, the list is empty.
+
+Usage:
+
+    from omni_extract_bench import capture
+
+    capture.install_taps()
+    capture.reset()                        # per document; records are thread-local
+    result = run_one_document(pdf, schema)
+    record = {"result": result, "http": capture.records(),
+              "job_ids": capture.job_ids(), "usage": capture.usage_from_records()}
+
+For adapters launched as their own process, patching the parent reaches nothing:
+
+    env = capture.subprocess_env(os.environ, log_path)
+    subprocess.run(cmd, env=env, ...)
+    capture.merge_subprocess_log(log_path)     # on failure too -- especially then
 """
 from __future__ import annotations
 
 import json
 import os
-import re
+import sys
 import threading
-import time
+
+_TAP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_tap")
+if _TAP_DIR not in sys.path:
+    sys.path.insert(0, _TAP_DIR)
+
+from oeb_capture import ID_KEYS, MAX_BODY, USAGE_FIELDS, Capture, scrub_payload  # noqa: E402,F401
 
 _LOCAL = threading.local()
 
-#: Response keys that identify a job to the vendor. Async extraction APIs hand back an id and
-#: keep the job; that id is what lets you recover usage LATER from job history instead of
-#: re-running the document. Recovering a number a vendor will still give you, by paying to
-#: generate it again, is the worst available trade -- and for a nondeterministic provider it
-#: does not even reproduce the answer that was scored.
-ID_KEYS = ("request_id", "job_id", "jobId", "run_id", "runId", "id",
-           "operation_id", "operationId", "task_id")
 
-#: Usage fields worth keeping, in the vendor's own units. Several report `credits`, which is
-#: NOT dollars: the credit rate is contract-specific. Recording credits in a column named for
-#: dollars invents a number, so units stay attached to the value and conversion is the
-#: caller's explicit decision.
-USAGE_FIELDS = ("credits", "num_pages", "pages", "num_fields", "cost", "extract_mode", "tier")
+def _http():
+    """Thread-local record list.
 
-MAX_BODY = 20000
-
-#: Long base64 runs are elided from captured REQUESTS. A vendor 400 reading "Request contains
-#: an invalid argument" names no argument, so without the request the failure is not
-#: diagnosable and the only way to learn more is to pay for the call again. What makes keeping
-#: requests affordable is that their bulk is an encoded document, while the part that causes
-#: argument errors -- schema, model, generation parameters -- is small.
-_B64_RUN = re.compile(r"[A-Za-z0-9+/]{200,}={0,2}")
-
-
-def scrub_payload(raw):
-    """Return a request body as text, with long base64 runs replaced by a length marker."""
-    if raw is None:
-        return None
-    try:
-        text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
-    except Exception:  # noqa: BLE001
-        return None
-    return _B64_RUN.sub(lambda m: f"<base64 {len(m.group(0))} chars elided>", text)[:MAX_BODY]
-
-
-def records():
-    """Transport records captured on this thread.
-
-    Thread-local, not a module list: documents are typically graded by a pool, and a shared
-    list interleaves them -- storing one document's response inside another document's
-    capture, which is worse than storing nothing because it looks right.
+    Thread-local, not a module list: documents are typically graded by a pool, and a shared list
+    interleaves them -- storing one document's response inside another document's capture, which
+    is worse than storing nothing because it looks right.
     """
     if not hasattr(_LOCAL, "http"):
         _LOCAL.http = []
     return _LOCAL.http
 
 
-def job_ids():
-    """Vendor job identifiers seen on this thread, as ``{"key", "id", "source"}`` dicts."""
+def _ids():
     if not hasattr(_LOCAL, "ids"):
         _LOCAL.ids = []
     return _LOCAL.ids
 
 
-def reset():
-    """Clear this thread's capture. Call between documents."""
-    _LOCAL.http = []
-    _LOCAL.ids = []
-
-
-def note_job_id(body, source=""):
-    """Record the first identifier found in a response body, including one level of nesting."""
-    if not isinstance(body, dict):
-        return
-    for key in ID_KEYS:
-        value = body.get(key)
-        if isinstance(value, str) and 6 <= len(value) <= 80:
-            entry = {"key": key, "id": value, "source": source}
-            if entry not in job_ids():
-                job_ids().append(entry)
-            return
-    for nested in ("extractRun", "processorRun", "run", "job", "data", "result"):
-        if isinstance(body.get(nested), dict):
-            note_job_id(body[nested], source or nested)
-            return
-
-
-def record(method, url, status, body, elapsed=None, request=None):
-    """Append one transport record. Never raises: capture must not break the call it observes."""
-    try:
-        text = body if isinstance(body, str) else str(body)
-        try:
-            note_job_id(json.loads(text), f"{method} {str(url).split('?')[0].rsplit('/', 1)[-1]}")
-        except Exception:  # noqa: BLE001 -- most bodies are not JSON, and that is fine
-            pass
-        entry = {
-            "method": method,
-            "url": str(url).split("?")[0],       # query strings carry keys
-            "status": status,
-            "elapsed_s": round(elapsed, 2) if elapsed is not None else None,
-            "body": text[:MAX_BODY],
-            "truncated": len(text) > MAX_BODY,
-            "request": request,
-        }
-        log = records()
-        # Collapse a poll storm into one record with a count. An async provider here polled 582
-        # times on a single document, every response byte-identical: keeping each buys no
-        # evidence and buries the records that differ. The count is retained, so "polled 582
-        # times and never left Running" stays recoverable -- collapsing must not hide duration.
-        if log:
-            prev = log[-1]
-            if (prev["method"], prev["url"], prev["status"], prev["body"]) == (
-                    entry["method"], entry["url"], entry["status"], entry["body"]):
-                prev["repeats"] = prev.get("repeats", 1) + 1
-                prev["elapsed_s"] = entry["elapsed_s"]
-                return
-        log.append(entry)
-    except Exception:  # noqa: BLE001
-        pass
+CAPTURE = Capture(sink=_http, id_sink=_ids)
 
 
 def install_taps():
-    """Tap ``httpx.Client.send`` and ``requests.Session.send`` for in-process calls.
-
-    Both, because vendor SDKs disagree about which to use and you should not have to know.
-    Idempotent, and a missing library is not an error.
-    """
-    for module_name, class_name in (("httpx", "Client"), ("requests", "Session")):
-        try:
-            module = __import__(module_name)
-        except ImportError:
-            continue
-        cls = getattr(module, class_name)
-        original = cls.send
-        if getattr(original, "_oeb_tapped", False):
-            continue
-
-        def send(self, request, _original=original, **kwargs):
-            started = time.time()
-            response = _original(self, request, **kwargs)
-            try:
-                record(request.method, request.url, response.status_code,
-                       response.text, time.time() - started,
-                       scrub_payload(getattr(request, "content", None)
-                                     or getattr(request, "body", None)))
-            except Exception:  # noqa: BLE001
-                pass
-            return response
-
-        send._oeb_tapped = True
-        cls.send = send
-
-    _install_async_tap()
+    """Install every transport tap in this process. Idempotent."""
+    CAPTURE.install()
 
 
-def _install_async_tap():
-    """Tap ``httpx.AsyncClient.send``.
+def records():
+    """Transport records captured on this thread."""
+    return CAPTURE.records()
 
-    Not an afterthought: several vendor SDKs are async underneath, and a sync-only tap records
-    nothing for them while still writing a capture file that looks populated -- the same silent
-    gap as tapping only the parent process. One provider here captured zero HTTP for exactly
-    this reason, after the subprocess gap had already been fixed.
-    """
-    try:
-        import httpx
-    except ImportError:
-        return
-    original = httpx.AsyncClient.send
-    if getattr(original, "_oeb_tapped", False):
-        return
 
-    async def send(self, request, **kwargs):
-        started = time.time()
-        response = await original(self, request, **kwargs)
-        try:
-            try:
-                text = response.text
-            except Exception:  # noqa: BLE001 -- streaming response not read yet
-                await response.aread()
-                text = response.text
-            record(request.method, request.url, response.status_code, text,
-                   time.time() - started,
-                   scrub_payload(getattr(request, "content", None)))
-        except Exception:  # noqa: BLE001
-            pass
-        return response
+def job_ids():
+    """Vendor job identifiers seen on this thread, as ``{"key", "id", "source"}`` dicts."""
+    return CAPTURE.job_ids()
 
-    send._oeb_tapped = True
-    httpx.AsyncClient.send = send
+
+def reset():
+    """Clear this thread's capture. Call between documents."""
+    CAPTURE.reset()
+
+
+def record(method, url, status, body, elapsed=None, request=None):
+    """Append one record by hand (the taps call this for you)."""
+    CAPTURE.record(method, url, status, body, elapsed, request)
+
+
+def note_job_id(body, source=""):
+    """Record the first job identifier found in a response body."""
+    CAPTURE.note_job_id(body, source)
+
+
+def usage_from_records():
+    """Vendor usage from the captured bodies, in the vendor's own units."""
+    return CAPTURE.usage()
 
 
 def tap_dir():
     """Directory holding the ``sitecustomize`` that taps a subprocess."""
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "_tap")
+    return _TAP_DIR
 
 
 def subprocess_env(env, log_path):
     """Environment that makes a child interpreter capture its own HTTP to ``log_path``.
 
     Python imports ``sitecustomize`` at start-up, before the adapter or its SDK loads, so the
-    tap is in place in time and no adapter needs to change.
+    taps are in place in time and no adapter needs to change.
     """
     child = dict(env)
     existing = child.get("PYTHONPATH", "")
-    child["PYTHONPATH"] = f"{tap_dir()}{os.pathsep}{existing}" if existing else tap_dir()
+    child["PYTHONPATH"] = f"{_TAP_DIR}{os.pathsep}{existing}" if existing else _TAP_DIR
     child["OEB_HTTP_LOG"] = log_path
     return child
 
@@ -262,34 +158,3 @@ def merge_subprocess_log(log_path, remove=True):
                 os.unlink(log_path)
             except OSError:
                 pass
-
-
-def usage_from_records(recs=None):
-    """Harvest vendor usage out of captured bodies, keeping the vendor's units.
-
-    Returns a flat dict of whatever was found -- ``credits``, ``num_pages``, ``extract_mode``
-    and friends. ``extract_mode`` is worth keeping beside the billing: it is the vendor's own
-    statement of which tier served the request, which is better evidence than your config
-    claiming it asked for one.
-    """
-    found = {}
-    for rec in (records() if recs is None else recs):
-        body = rec.get("body") or ""
-        if '"usage"' not in body:
-            continue
-        try:
-            parsed = json.loads(body)
-        except Exception:  # noqa: BLE001
-            continue
-        usage = None
-        for candidate in ((parsed.get("result") or {}), parsed):
-            if isinstance(candidate, dict) and isinstance(candidate.get("usage"), dict):
-                usage = candidate["usage"]
-                break
-        if not usage:
-            continue
-        for key in USAGE_FIELDS:
-            if usage.get(key) is not None:
-                found.setdefault(key, usage[key])
-        found.setdefault("_endpoint", rec.get("url"))
-    return found
