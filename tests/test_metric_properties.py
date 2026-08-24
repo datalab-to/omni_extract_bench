@@ -387,6 +387,35 @@ report("P17 identity holds when a document contains all-null rows",
              f"identity={r_id['leaf_accuracy']:.2f} (want 100) partial={r_part['leaf_accuracy']:.2f} (want <100)"))
 
 
+# ── P18 an object key is a value: casing must not decide the score ──────────────
+# Object keys were compared LITERALLY while every other value went through canon_key -- a
+# second definition of equality, in the one place a document (not the schema) supplies the
+# string. Ground truth is not reliably verbatim about case, so grading it penalised the
+# extractor that transcribed the document more faithfully than gold did.
+SCH_P18 = {"type": "object", "properties": {
+    "groups": {"type": "object", "additionalProperties": {"type": "array",
+                                                          "items": {"type": "string"}}}}}
+gold_p18 = {"groups": {"Core Competencies": ["Brand Strategy", "SEO"], "Other": ["Slack"]}}
+same_but_caps = {"groups": {"CORE COMPETENCIES": ["Brand Strategy", "SEO"], "Other": ["Slack"]}}
+r_caps = FG.fair_grade(same_but_caps, copy.deepcopy(gold_p18), SCH_P18)
+report("P18 a key differing only in case scores identically",
+       check("P18", abs(r_caps["leaf_accuracy"] - 100.0) < 1e-6,
+             f"got {r_caps['leaf_accuracy']:.2f}, want 100"))
+
+# and the relaxation must not make WRONG values free
+wrong_p18 = {"groups": {"CORE COMPETENCIES": ["Nonsense", "SEO"], "Other": ["Slack"]}}
+r_wrong = FG.fair_grade(wrong_p18, copy.deepcopy(gold_p18), SCH_P18)
+report("P18b folding keys does not excuse wrong values",
+       check("P18b", r_wrong["leaf_accuracy"] < 99.0,
+             f"got {r_wrong['leaf_accuracy']:.2f}, want <100"))
+
+# COLLISION: two keys of one object that canonicalise together must NOT be merged, because
+# merging silently discards one side's value -- worse than the problem being fixed.
+pairs = FG.pair_object_keys({"Total": 1, "TOTAL": 2}, {"Total": 1})
+report("P18c colliding keys fall back to literal pairing",
+       check("P18c", len(pairs) == 2 and ("TOTAL", None) in pairs,
+             f"got {pairs}"))
+
 print(f"\n{'ALL METRIC PROPERTIES HOLD' if not FAILS else 'FAILURES:'}")
 for f in FAILS:
     print(f"   {f}")

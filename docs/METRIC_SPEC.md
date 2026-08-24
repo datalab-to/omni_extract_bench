@@ -118,3 +118,21 @@ scoring path can exist, which is the whole class rather than the instance.
 - No substring acceptance and no sign flipping to accommodate ground-truth conventions.
   Conventions are written into the schema instead (`schema_overlay.py`) so vendors are told,
   not guessed at.
+
+
+### Object keys are values
+
+An object's keys are compared by the same canonical form as its values, not literally. This
+matters only where the keys come from the DOCUMENT rather than the schema — an open
+`additionalProperties` map, whose keys are headings the extractor read off the page.
+Schema-declared property names are unaffected: both sides spell them the way the schema does.
+
+The reason is that ground truth is not reliably verbatim about case. In this corpus a document
+prints a heading in capitals, gold records it title-cased, and an extractor that transcribed it
+faithfully scored zero for that entire group — penalised for being closer to the document than
+the gold file. A benchmark cannot ask for verbatim transcription and then grade it against a
+normalised answer.
+
+If canonicalisation would merge two distinct keys of the same object (`Total` and `TOTAL`),
+that object falls back to literal pairing: merging them would silently discard one side's
+value, which is a worse failure than the one being fixed.

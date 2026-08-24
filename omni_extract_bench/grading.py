@@ -256,6 +256,46 @@ def _drop_empty_gt_rows(node):
         return [_drop_empty_gt_rows(x) for x in kept]
     return node
 
+def pair_object_keys(pred: dict, gold: dict):
+    """Pair the keys of two objects by CANONICAL form, not by literal string.
+
+    Object keys are values too. Comparing the same string canonically when it sits in a field
+    and exactly when it sits in a key is a second definition of "are these equal?" -- the thing
+    `canon_key` exists to make unrepresentable -- and it only shows up on objects whose keys
+    come from the DOCUMENT rather than from the schema (an open `additionalProperties` map).
+    Schema-declared property names are unaffected: both sides spell them the way the schema
+    does, so canonical pairing returns exactly what literal pairing returned.
+
+    It matters because ground truth is not reliably verbatim about case. In this corpus a
+    document prints a heading in capitals, gold records it title-cased, and an extractor that
+    transcribed it faithfully scored zero for the whole group -- penalised for being closer to
+    the document than the gold file is. A benchmark cannot ask for verbatim transcription and
+    then grade the transcription against a normalised answer.
+
+    Returns a list of ``(pred_key | None, gold_key | None)`` pairs, in gold-then-pred order.
+
+    COLLISION GUARD: if canonicalisation would merge two distinct keys of the SAME object
+    (``{"Total", "TOTAL"}``), that object falls back to literal pairing. Merging them would
+    silently discard one side's value, which is a worse failure than the one being fixed.
+    """
+    def index(obj):
+        out = {}
+        for k in obj:
+            ck = canon_key(k) if isinstance(k, str) else k
+            if ck in out:
+                return None                     # collision -> caller falls back to literal
+            out[ck] = k
+        return out
+
+    ip, ig = index(pred), index(gold)
+    if ip is None or ig is None:
+        keys = list(dict.fromkeys(list(gold) + list(pred)))
+        return [(k if k in pred else None, k if k in gold else None) for k in keys]
+
+    order = list(dict.fromkeys(list(ig) + list(ip)))
+    return [(ip.get(ck), ig.get(ck)) for ck in order]
+
+
 def fair_grade_value(pv, gv, sch):
     """Recursive leaf scorer, mirroring G.grade_value. Nested arrays penalize
     unmatched rows as leaf misses (exactly like the original). Scalar leaves use the
@@ -266,8 +306,14 @@ def fair_grade_value(pv, gv, sch):
         gv = gv if isinstance(gv, dict) else {}
         props = sch.get("properties") or {}
         t = m = 0
-        for k in set(pv) | set(gv):
-            tt, mm = fair_grade_value(pv.get(k), gv.get(k), props.get(k, {}))
+        for pk, gk in pair_object_keys(pv, gv):
+            # the schema names properties the way GOLD spells them
+            sub = props.get(gk if gk is not None else pk, {})
+            tt, mm = fair_grade_value(
+                pv.get(pk) if pk is not None else None,
+                gv.get(gk) if gk is not None else None,
+                sub,
+            )
             t += tt; m += mm
         return t, m
     if isinstance(pv, list) or isinstance(gv, list):
