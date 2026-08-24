@@ -37,6 +37,12 @@ ID_KEYS = ("request_id", "job_id", "jobId", "run_id", "runId", "id",
 # discarded a vendor's `num_pages_billed` purely because the name was not on it -- repeating,
 # one level down, the hard-coded-path mistake that had already made a provider look like it
 # reported no cost at all. Whatever the vendor puts in its usage block is what gets kept.
+#: Names vendors give the block that holds billing. Not one name: this benchmark assumed
+#: `usage` and silently recorded "reports no cost" for a vendor that calls it `usage_info` --
+#: the same hard-coded-name mistake as filtering the fields inside it, one level up. When a new
+#: vendor appears, add its name here rather than concluding it bills invisibly.
+USAGE_CONTAINER_KEYS = ("usage", "usage_info", "usageInfo", "usage_metadata", "billing")
+
 USAGE_FIELDS = ("credits", "num_pages", "num_pages_billed", "num_pages_extracted", "pages",
                 "num_fields", "cost", "extract_mode", "tier")
 
@@ -70,9 +76,10 @@ def _find_usage(parsed, depth=0):
     """
     if depth > 4 or not isinstance(parsed, dict):
         return None
-    usage = parsed.get("usage")
-    if isinstance(usage, dict) and usage:
-        return {k: v for k, v in usage.items() if not isinstance(v, (dict, list))}
+    for name in USAGE_CONTAINER_KEYS:
+        usage = parsed.get(name)
+        if isinstance(usage, dict) and usage:
+            return {k: v for k, v in usage.items() if not isinstance(v, (dict, list))}
     for value in parsed.values():
         if isinstance(value, dict):
             found = _find_usage(value, depth + 1)

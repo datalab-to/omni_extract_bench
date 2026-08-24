@@ -188,6 +188,16 @@ check("unfamiliar usage field names are kept",
 check("usage found when nested under a non-standard parent",
       unfamiliar.get("num_pages_extracted") == 2, str(unfamiliar))
 
+# Regression: the CONTAINER name varies too. Assuming the block is called "usage" recorded a
+# vendor as reporting no cost at all when it calls the block `usage_info` -- the same
+# hard-coded-name mistake as filtering the fields inside it, one level up.
+capture.reset()
+capture.record("POST", "https://vendor.example/v1/ocr", 200,
+               json.dumps({"pages": [], "usage_info": {"pages_processed": 7}}), 0.1)
+alt = capture.usage_from_records()
+check("a vendor-specific usage container is found",
+      alt.get("pages_processed") == 7, str(alt))
+
 print("\n[11] THE SUBPROCESS PATH — a child interpreter captures its own HTTP")
 # The in-process tap cannot reach a child, and this is the case that silently failed: the
 # harness recorded an empty `http` list for every provider whose adapter it shelled out to.
