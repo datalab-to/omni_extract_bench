@@ -63,13 +63,12 @@ over rows are reported separately and are never folded into `leaf_accuracy`.
 
 ## 5. Aggregation
 
+    score         = mean of leaf_accuracy over all documents
     subset_score  = mean of leaf_accuracy over that subset's documents
-    UNIFIED       = mean of the subset scores
 
-Equal weight per subset, because subsets differ ~10× in size; leaf- or document-weighting
-would let the largest subset decide the benchmark and would silently re-weight it whenever a
-subset grew. A document a vendor returned nothing usable for scores **0** — excluding failures
-would reward fragility. Coverage is reported beside the score, never inside it.
+The headline is the document mean; subset means are reported beside it. A document a vendor
+returned nothing usable for scores **0** — excluding failures would reward fragility. Coverage
+is reported beside the score, never inside it.
 
 ## 6. Ground truth adjustments
 

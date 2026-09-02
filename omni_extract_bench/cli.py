@@ -116,13 +116,8 @@ def _leaf_task(t):
 
 
 def cmd_leaderboard_subsets(args):
-    """The published headline: METRIC_SPEC section 5, UNIFIED = mean of the subset scores.
-
-    Subsets differ ~10x in size (329 documents vs 35). A document-mean lets the largest subset
-    decide the benchmark and silently re-weights it whenever a subset grows; the spec therefore
-    declares equal weight per subset. This command computes exactly that, and prints the
-    document-mean beside it, labelled, so the two are never confused. The two differ by 2-20
-    points per provider on the reference corpus.
+    """The published headline: METRIC_SPEC section 5, the mean over all documents. Per-subset
+    means are printed beside it.
 
     Expects the HF dataset layout: <data-root>/<subset>/<doc>/{ground_truth,schema}.json with
     predictions at <pred-root>/<provider>/<subset>/<doc>.json.
@@ -155,19 +150,17 @@ def cmd_leaderboard_subsets(args):
         scores, returned, n = per.setdefault(prov, {}).setdefault(sub, ([], 0, 0))
         scores.append(acc if acc is not None else 0.0)
         per[prov][sub] = (scores, returned + (1 if acc is not None else 0), n + 1)
-    head = f"{'provider':22}{'UNIFIED':>9}{'doc-mean':>10}{'coverage':>11}" + "".join(f"{s[:10]:>12}" for s in subsets)
+    head = f"{'provider':22}{'score':>8}{'coverage':>11}" + "".join(f"{s[:10]:>12}" for s in subsets)
     print(head); print("-" * len(head))
     table = []
     for prov, by in per.items():
         sub_means = [_mean(by[s][0]) for s in subsets if s in by]
-        macro = _mean(sub_means)
         allscores = [x for s in subsets if s in by for x in by[s][0]]
         ret = sum(by[s][1] for s in subsets if s in by); n = sum(by[s][2] for s in subsets if s in by)
-        table.append((prov, macro, _mean(allscores), ret, n, sub_means))
-    for prov, macro, dm, ret, n, subs in sorted(table, key=lambda t: -t[1]):
-        print(f"{prov:22}{macro:>8.2f}{dm:>10.2f}{f'{ret}/{n}':>11}" + "".join(f"{v:>12.2f}" for v in subs))
-    print(f"\nUNIFIED = mean of per-subset means (METRIC_SPEC section 5) -- the headline. doc-mean is shown for reference only.")
-    print("doc-mean = mean over all documents, shown for reference; NOT the headline.")
+        table.append((prov, _mean(allscores), ret, n, sub_means))
+    for prov, score, ret, n, subs in sorted(table, key=lambda t: -t[1]):
+        print(f"{prov:22}{score:>8.2f}{f'{ret}/{n}':>11}" + "".join(f"{v:>12.2f}" for v in subs))
+    print("\nscore = mean over all documents (METRIC_SPEC section 5); a missing prediction scores 0.")
     return 0
 
 
@@ -175,7 +168,7 @@ def cmd_leaderboard(args):
     if getattr(args, "data_root", None):
         return cmd_leaderboard_subsets(args)
     if not args.gt_dir:
-        print("leaderboard needs --gt-dir (one subset) or --data-root (all subsets, UNIFIED)", file=sys.stderr)
+        print("leaderboard needs --gt-dir (one subset) or --data-root (all subsets)", file=sys.stderr)
         return 2
     providers = sorted(p for p in Path(args.pred_root).iterdir() if p.is_dir())
     if not providers:
@@ -224,7 +217,7 @@ def main(argv=None):
     b.add_argument("--gt-dir", help="one directory of ground truth (document-mean over it)")
     b.add_argument("--schema-dir")
     b.add_argument("--data-root", help="HF-layout root with <subset>/<doc>/ dirs: reports the "
-                                        "declared headline, UNIFIED = mean of per-subset means")
+                                        "mean over all documents, with per-subset means")
     b.add_argument("--workers", type=int, default=0,
                    help="parallel scoring processes for --data-root (default: all cores; 1 = serial)")
     b.set_defaults(fn=cmd_leaderboard)
