@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -103,6 +104,17 @@ def _leaderboard_rows(pred_root, gt_dir, schema_dir):
     return rows
 
 
+def _leaf_task(t):
+    """leaf_accuracy for one (provider, subset, pred, gt, schema) task, or None if unusable.
+
+    Module-level so it pickles for the process pool; the big tables that make parallelism
+    worthwhile are exactly the ones a fork-safe worker has to be able to reach by name.
+    """
+    _, _, pred, gt, schema = t
+    r = _score_one(Path(pred), Path(gt), Path(schema))
+    return r["leaf_accuracy"] if r else None
+
+
 def cmd_leaderboard_subsets(args):
     """The published headline: METRIC_SPEC section 5, UNIFIED = mean of the subset scores.
 
@@ -120,18 +132,29 @@ def cmd_leaderboard_subsets(args):
     if not subsets:
         print(f"no subset directories under {root}", file=sys.stderr)
         return 1
-    per = {}                       # provider -> subset -> (scores, returned, n)
+    providers = sorted(p for p in Path(args.pred_root).iterdir() if p.is_dir())
+    # One task per (provider, subset, document). Scoring is a pure function of the three files,
+    # so the order of evaluation cannot change a number -- which is what makes it safe to fan
+    # out. A 20,000-row table takes minutes on one core; the reference corpus has several.
+    tasks = []
     for sub in subsets:
-        gt_dir = root / sub
-        docs = sorted(d for d in gt_dir.iterdir() if d.is_dir())
-        for prov in sorted(p for p in Path(args.pred_root).iterdir() if p.is_dir()):
-            scores, returned = [], 0
+        docs = sorted(d for d in (root / sub).iterdir() if d.is_dir())
+        for prov in providers:
             for d in docs:
-                r = _score_one(prov / sub / f"{d.name}.json", d / "ground_truth.json",
-                               d / "schema.json")
-                scores.append(r["leaf_accuracy"] if r else 0.0)
-                returned += 1 if r else 0
-            per.setdefault(prov.name, {})[sub] = (scores, returned, len(docs))
+                tasks.append((prov.name, sub, str(prov / sub / f"{d.name}.json"),
+                              str(d / "ground_truth.json"), str(d / "schema.json")))
+    workers = args.workers or os.cpu_count() or 1
+    if workers > 1 and len(tasks) > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            leaf = list(ex.map(_leaf_task, tasks, chunksize=1))
+    else:
+        leaf = [_leaf_task(t) for t in tasks]
+    per = {}                       # provider -> subset -> (scores, returned, n)
+    for (prov, sub, *_), acc in zip(tasks, leaf):
+        scores, returned, n = per.setdefault(prov, {}).setdefault(sub, ([], 0, 0))
+        scores.append(acc if acc is not None else 0.0)
+        per[prov][sub] = (scores, returned + (1 if acc is not None else 0), n + 1)
     head = f"{'provider':22}{'UNIFIED':>9}{'doc-mean':>10}{'coverage':>11}" + "".join(f"{s[:10]:>12}" for s in subsets)
     print(head); print("-" * len(head))
     table = []
@@ -202,6 +225,8 @@ def main(argv=None):
     b.add_argument("--schema-dir")
     b.add_argument("--data-root", help="HF-layout root with <subset>/<doc>/ dirs: reports the "
                                         "declared headline, UNIFIED = mean of per-subset means")
+    b.add_argument("--workers", type=int, default=0,
+                   help="parallel scoring processes for --data-root (default: all cores; 1 = serial)")
     b.set_defaults(fn=cmd_leaderboard)
 
     args = ap.parse_args(argv)

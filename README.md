@@ -44,7 +44,7 @@ From the command line:
 omni-extract-bench score      --pred p.json --gt g.json --schema s.json
 omni-extract-bench score-dir  --pred-dir preds/ --gt-dir gt/ --schema-dir schemas/
 omni-extract-bench leaderboard --pred-root baselines/ --gt-dir gt/ --schema-dir schemas/
-omni-extract-bench leaderboard --pred-root baselines/ --data-root data/   # all subsets, UNIFIED
+omni-extract-bench leaderboard --pred-root baselines/ --data-root data/   # all subsets, UNIFIED; --workers N
 ```
 
 `leaderboard` scores every provider directory under `--pred-root` over the same document list.
