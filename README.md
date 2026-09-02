@@ -44,9 +44,14 @@ From the command line:
 omni-extract-bench score      --pred p.json --gt g.json --schema s.json
 omni-extract-bench score-dir  --pred-dir preds/ --gt-dir gt/ --schema-dir schemas/
 omni-extract-bench leaderboard --pred-root baselines/ --gt-dir gt/ --schema-dir schemas/
+omni-extract-bench leaderboard --pred-root baselines/ --data-root data/   # all subsets, UNIFIED
 ```
 
 `leaderboard` scores every provider directory under `--pred-root` over the same document list.
+With `--data-root` it scores every subset and prints the published headline, **UNIFIED**
+(the mean of per-subset means), beside coverage and each subset's score. A plain
+document-mean is printed for reference only; it is not the headline, because the largest
+subset would decide it.
 
 ## What the metric does
 
@@ -71,6 +76,10 @@ truncating system above a complete one.
 or a system that fails on hard documents outranks one that attempts them. Coverage is reported
 alongside, and a "score on returned documents only" view separates *processes documents badly*
 from *silently fails on hard documents*.
+
+**One headline number, equal weight per subset.** Subsets differ ~10× in size. UNIFIED is
+the mean of the five subset means, so growing one subset cannot silently re-weight the
+benchmark, and a system that is strong only on the biggest subset does not lead it.
 
 **One definition of equality.** `canon_key(value)` is the only comparison rule, used by leaf
 scoring, row-pair weighting, and blocking alike. There is no per-field or per-vendor mode.

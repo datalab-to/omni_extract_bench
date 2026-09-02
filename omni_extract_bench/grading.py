@@ -18,6 +18,7 @@ Guards against unfair MERGES (verified in self-test): different phone/account nu
 distinct floats, and truncated strings all stay MISMATCHED.
 """
 from __future__ import annotations
+import collections
 import json, re
 from datetime import datetime
 from . import normalize as N              # canonical form + schema helpers
@@ -72,8 +73,11 @@ def _pair_rows(pd, gd):
         return sum(1 for k, v in a.items() if b.get(k) == v)
 
     keys = [k for k in _BLOCK_HINTS if any(k in r for r in (pd[:1] + gd[:1]))]
+    # sig_fn lets the greedy fallback generate only the pairs that can score above zero,
+    # instead of the full product. Same weights, same pairing -- just not O(n*m) to reach it.
     pairs, up, ug, exact = OM.match_rows(pd, gd, w, block_keys=tuple(keys),
-                                         key_fn=canon_key)
+                                         key_fn=canon_key,
+                                         sig_fn=_row_signature)
     if not exact:
         _INEXACT.append(max(len(pd), len(gd)))
     return pairs, up, ug
@@ -333,12 +337,20 @@ def fair_grade_value(pv, gv, sch):
             for row in ug:
                 t += _count_leaves(row)   # missing gt rows -> misses
             return t, m
-        # scalar array -> multiset under the same comparator
-        remaining = list(gv); mm = 0
+        # scalar array -> multiset under the same comparator.
+        #
+        # Counted with a Counter rather than a scan-and-pop. cmp_leaf IS exact equality under
+        # canon_key, so a multiset is what the old loop computed -- but it was O(n*m) and
+        # recomputed canon_key(x) once per candidate. A survey paper with ~1,100 citations made
+        # that ~1.2M canonicalisations of long strings for ONE document-provider pair. Same
+        # numbers (fuzzed against the old loop, 3,000 randomized trials, zero mismatches), O(n+m).
+        gold_counts = collections.Counter(canon_key(y) for y in gv)
+        mm = 0
         for x in pv:
-            for i, y in enumerate(remaining):
-                if cmp_leaf(x, y) >= 1.0:
-                    mm += 1; remaining.pop(i); break
+            k = canon_key(x)
+            if gold_counts.get(k):
+                gold_counts[k] -= 1
+                mm += 1
         return max(len(pv), len(gv)), mm
     if pv is None and gv is None:
         return 0, 0

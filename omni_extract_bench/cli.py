@@ -84,7 +84,76 @@ def cmd_score_dir(args):
     return 0
 
 
+def _leaderboard_rows(pred_root, gt_dir, schema_dir):
+    """(provider, scores-with-zeros, returned, n_docs) for one directory of ground truth."""
+    providers = sorted(p for p in Path(pred_root).iterdir() if p.is_dir())
+    docs = [g.stem for g in sorted(Path(gt_dir).glob("*.json"))]
+    rows = []
+    for prov in providers:
+        scores, returned = [], 0
+        for stem in docs:
+            schema = Path(schema_dir) / f"{stem}.json" if schema_dir else None
+            r = _score_one(prov / f"{stem}.json", Path(gt_dir) / f"{stem}.json", schema)
+            # A document a provider did not return scores 0; it is never dropped from the
+            # mean, or a provider that fails on hard documents would look better than one
+            # that attempts them.
+            scores.append(r["leaf_accuracy"] if r else 0.0)
+            returned += 1 if r else 0
+        rows.append((prov.name, scores, returned, len(docs)))
+    return rows
+
+
+def cmd_leaderboard_subsets(args):
+    """The published headline: METRIC_SPEC section 5, UNIFIED = mean of the subset scores.
+
+    Subsets differ ~10x in size (329 documents vs 35). A document-mean lets the largest subset
+    decide the benchmark and silently re-weights it whenever a subset grows; the spec therefore
+    declares equal weight per subset. This command computes exactly that, and prints the
+    document-mean beside it, labelled, so the two are never confused. The two differ by 2-20
+    points per provider on the reference corpus.
+
+    Expects the HF dataset layout: <data-root>/<subset>/<doc>/{ground_truth,schema}.json with
+    predictions at <pred-root>/<provider>/<subset>/<doc>.json.
+    """
+    root = Path(args.data_root)
+    subsets = sorted(d.name for d in root.iterdir() if d.is_dir())
+    if not subsets:
+        print(f"no subset directories under {root}", file=sys.stderr)
+        return 1
+    per = {}                       # provider -> subset -> (scores, returned, n)
+    for sub in subsets:
+        gt_dir = root / sub
+        docs = sorted(d for d in gt_dir.iterdir() if d.is_dir())
+        for prov in sorted(p for p in Path(args.pred_root).iterdir() if p.is_dir()):
+            scores, returned = [], 0
+            for d in docs:
+                r = _score_one(prov / sub / f"{d.name}.json", d / "ground_truth.json",
+                               d / "schema.json")
+                scores.append(r["leaf_accuracy"] if r else 0.0)
+                returned += 1 if r else 0
+            per.setdefault(prov.name, {})[sub] = (scores, returned, len(docs))
+    head = f"{'provider':22}{'UNIFIED':>9}{'doc-mean':>10}{'coverage':>11}" + "".join(f"{s[:10]:>12}" for s in subsets)
+    print(head); print("-" * len(head))
+    table = []
+    for prov, by in per.items():
+        sub_means = [_mean(by[s][0]) for s in subsets if s in by]
+        macro = _mean(sub_means)
+        allscores = [x for s in subsets if s in by for x in by[s][0]]
+        ret = sum(by[s][1] for s in subsets if s in by); n = sum(by[s][2] for s in subsets if s in by)
+        table.append((prov, macro, _mean(allscores), ret, n, sub_means))
+    for prov, macro, dm, ret, n, subs in sorted(table, key=lambda t: -t[1]):
+        print(f"{prov:22}{macro:>8.2f}{dm:>10.2f}{f'{ret}/{n}':>11}" + "".join(f"{v:>12.2f}" for v in subs))
+    print(f"\nUNIFIED = mean of per-subset means (METRIC_SPEC section 5) -- the headline. doc-mean is shown for reference only.")
+    print("doc-mean = mean over all documents, shown for reference; NOT the headline.")
+    return 0
+
+
 def cmd_leaderboard(args):
+    if getattr(args, "data_root", None):
+        return cmd_leaderboard_subsets(args)
+    if not args.gt_dir:
+        print("leaderboard needs --gt-dir (one subset) or --data-root (all subsets, UNIFIED)", file=sys.stderr)
+        return 2
     providers = sorted(p for p in Path(args.pred_root).iterdir() if p.is_dir())
     if not providers:
         print(f"no provider directories under {args.pred_root}", file=sys.stderr)
@@ -129,8 +198,10 @@ def main(argv=None):
 
     b = sub.add_parser("leaderboard", help="score every provider under a root directory")
     b.add_argument("--pred-root", required=True)
-    b.add_argument("--gt-dir", required=True)
+    b.add_argument("--gt-dir", help="one directory of ground truth (document-mean over it)")
     b.add_argument("--schema-dir")
+    b.add_argument("--data-root", help="HF-layout root with <subset>/<doc>/ dirs: reports the "
+                                        "declared headline, UNIFIED = mean of per-subset means")
     b.set_defaults(fn=cmd_leaderboard)
 
     args = ap.parse_args(argv)

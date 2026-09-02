@@ -165,7 +165,7 @@ def _hard_key(row, keys, key_fn):
     return tuple(key_fn(row.get(k)) for k in keys)
 
 
-def match_rows(pred_rows, gt_rows, weight, block_keys=(), key_fn=str):
+def match_rows(pred_rows, gt_rows, weight, block_keys=(), key_fn=str, sig_fn=None):
     """Optimal matching with safe blocking.
 
     block_keys: dimension fields on which rows must agree. Rows disagreeing on a block key can
@@ -184,27 +184,89 @@ def match_rows(pred_rows, gt_rows, weight, block_keys=(), key_fn=str):
         pairs, up, ug, exact = [], [], [], True
         for k, (ps, gs) in blocks.items():
             if not _exact_ok(len(ps), len(gs)):
-                p2, u2, g2 = _greedy(ps, gs, weight)
+                p2, u2, g2 = _greedy(ps, gs, weight, sig_fn)
                 exact = False
             else:
                 p2, u2, g2 = optimal_pairs(ps, gs, weight)
             pairs += p2; up += u2; ug += g2
         return pairs, up, ug, exact
     if not _exact_ok(len(pred_rows), len(gt_rows)):
-        p2, u2, g2 = _greedy(pred_rows, gt_rows, weight)
+        p2, u2, g2 = _greedy(pred_rows, gt_rows, weight, sig_fn)
         return p2, u2, g2, False
     p2, u2, g2 = optimal_pairs(pred_rows, gt_rows, weight)
     return p2, u2, g2, True
 
 
-def _greedy(pred_rows, gt_rows, weight):
-    """Documented fallback for oversized blocks: best-first greedy."""
+# Above this many candidate pairs the inverted index stops being a win and the memory for the
+# `scored` list starts to matter, so we shed the least informative index terms (see below).
+MAX_CANDIDATES = 20_000_000
+# Set of grades where candidate generation shed a term. Same policy as the greedy fallback
+# itself: an approximation is RECORDED, never silent.
+_SHED = []
+
+
+def _candidate_pairs(pred_rows, gt_rows, sig_fn):
+    """All pairs with weight > 0, without enumerating the full n*m product.
+
+    The weight is the number of (field, value) items two row signatures share, so a pair can
+    only score above zero if it shares at least one item. Indexing gold rows by item and
+    walking each predicted row's items therefore visits exactly the nonzero pairs and computes
+    their exact weights -- same numbers as the dense double loop, minus the work spent
+    confirming that the vast majority of pairs are zero.
+
+    This is what made an 18,494-row table unscoreable: the dense loop is ~342M weight() calls
+    and a `scored` list to match, which was OOM-killed at 5.5 GB.
+
+    Returns (scored, shed) or (None, 0) if the caller should use the dense loop instead.
+    """
+    psigs = [sig_fn(r) for r in pred_rows]
+    gsigs = [sig_fn(r) for r in gt_rows]
+    index = {}
+    for j, sig in enumerate(gsigs):
+        for kv in sig.items():
+            try:
+                index.setdefault(kv, []).append(j)
+            except TypeError:          # unhashable value: cannot index, fall back
+                return None, 0
+
+    # A term carried by almost every row (a constant column, a shared year) adds +1 to nearly
+    # every weight while separating nothing, and its posting list alone costs n*m to walk.
+    # Shedding the worst offenders keeps the ordering that decides the pairing while bounding
+    # the work; how many were shed is returned so the caller can record it.
+    shed = 0
+    est = lambda: sum(len(v) for v in index.values()) * (len(psigs) / max(1, len(gsigs)))
+    while index and est() > MAX_CANDIDATES:
+        worst = max(index, key=lambda k: len(index[k]))
+        if len(index[worst]) < 2:
+            break
+        del index[worst]
+        shed += 1
+
     scored = []
-    for i, p in enumerate(pred_rows):
-        for j, g in enumerate(gt_rows):
-            w = weight(p, g)
-            if w > 0:
-                scored.append((-w, i, j))
+    for i, sig in enumerate(psigs):
+        counts = {}
+        for kv in sig.items():
+            for j in index.get(kv, ()):
+                counts[j] = counts.get(j, 0) + 1
+        for j, w in counts.items():
+            scored.append((-w, i, j))
+    return scored, shed
+
+
+def _greedy(pred_rows, gt_rows, weight, sig_fn=None):
+    """Documented fallback for oversized blocks: best-first greedy."""
+    scored = None
+    if sig_fn is not None and len(pred_rows) * len(gt_rows) > 250_000:
+        scored, shed = _candidate_pairs(pred_rows, gt_rows, sig_fn)
+        if scored is not None and shed:
+            _SHED.append(shed)
+    if scored is None:
+        scored = []
+        for i, p in enumerate(pred_rows):
+            for j, g in enumerate(gt_rows):
+                w = weight(p, g)
+                if w > 0:
+                    scored.append((-w, i, j))
     scored.sort()
     up_used, ug_used, pairs = set(), set(), []
     for _, i, j in scored:

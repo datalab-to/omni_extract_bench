@@ -136,3 +136,29 @@ normalised answer.
 If canonicalisation would merge two distinct keys of the same object (`Total` and `TOTAL`),
 that object falls back to literal pairing: merging them would silently discard one side's
 value, which is a worse failure than the one being fixed.
+
+## 9. Run protocol
+
+The metric is only fair if the inputs to it were produced the same way. Every published run
+follows these rules, and each is recorded per document in the stored raw record so it can be
+audited rather than trusted:
+
+- **One timeout for everyone** (1800 s per document). A document that exceeds it scores 0
+  for that provider unless the provider's job completed server-side and can be fetched by its
+  job id after the deadline — in which case the result counts and the timeout is *also*
+  reported. Recovery measures accuracy, not latency; the timeout count is published beside the
+  score. The rule is applied to every provider; whether it can benefit depends on whether the
+  vendor retains results, and that difference is stated.
+- **Maximum tier for everyone.** Each provider runs at its highest-accuracy setting. Any
+  exception is disclosed in the same sentence as that provider's score.
+- **Same schema for everyone.** Benchmark-only keys are stripped before a schema is sent;
+  a conventions overlay, where used, is applied to the same documents for every provider.
+- **Every raw response is kept** — status, body, headers, request and job ids, vendor-reported
+  usage — so any score can be recomputed, and any intervention checked, without re-running.
+- **Interventions are rules, not edits.** A re-run happens only when a stored result was
+  produced by a harness fault (a capture crash, an account-level stop, an empty 200) and
+  never because a score looked wrong. Each rule and the documents it touched are listed with
+  the results.
+- **Exclusions are declared** and applied to every provider, including already-scored ones.
+- **Coverage is published beside every score**, per §5, together with the count of documents
+  recovered after the deadline.
