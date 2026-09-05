@@ -31,24 +31,45 @@ _BLOCK_HINTS = ("segment_type",)
 
 
 def _row_signature(row):
-    """Canonical (field -> value) map for the row's SCALAR leaves.
+    """Canonical multiset of the row's scalar leaves, keyed by path, used as the assignment
+    weight for row pairing.
 
-    Used as the assignment weight. Computing the exact weight would mean a full recursive
-    grade for every candidate pair — O(n*m) full grades, infeasible on micro1's thousand-row
-    tables. The signature is computed ONCE per row (O(n+m) total) and the weight is then a
-    dict intersection.
+    Computing the exact weight would mean a full recursive grade for every candidate pair --
+    O(n*m) full grades, infeasible on thousand-row tables. The signature is computed ONCE per
+    row (O(n+m) total) and the weight is a dict intersection.
 
-    For flat rows (the overwhelming majority of benchmark arrays) this equals the exact
-    matched-leaf count, so the assignment is optimal for the true objective. For rows with
-    nested structure it is a lower bound used only to CHOOSE the pairing; the reported score
-    is always computed by full grading afterwards.
+    It covers EVERY scalar leaf of the row, including those inside nested arrays and objects,
+    with arrays contributing under an index-free path. The previous version used top-level
+    scalars only, so rows whose identity lives in a nested payload -- `{"row_label": "16 to 19
+    years old", "values": [...]}` repeated once per section -- tied on weight and were paired by
+    position. The score then depended on the ORDER a provider emitted rows in: shuffling a
+    correct prediction moved one document from 100.0 to 53.6, and 24 of 68 documents with
+    duplicate-label rows moved by up to 46 points. Row order is declared free by this metric,
+    so the pairing weight must not see it; an index-free multiset does not.
+
+    For flat rows this equals the exact matched-leaf count, so the assignment is optimal for the
+    true objective. For nested rows it is now the matched-leaf count under the same order-free
+    treatment scoring applies to scalar arrays. The reported score is always computed by full
+    grading afterwards.
     """
-    sig = {}
-    for k, v in row.items():
-        if k.endswith(("_citations", "_meta")) or isinstance(v, (dict, list)) or v is None:
-            continue
-        sig[k] = canon_key(v)
-    return sig
+    counts = {}
+
+    def walk(o, pre):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k.endswith(("_citations", "_meta")):
+                    continue
+                walk(v, f"{pre}.{k}" if pre else k)
+        elif isinstance(o, list):
+            for x in o:
+                walk(x, f"{pre}[]")
+        elif o is not None:
+            key = (pre, canon_key(o))
+            counts[key] = counts.get(key, 0) + 1
+
+    walk(row, "")
+    # one dict key per OCCURRENCE so a plain dict intersection is a multiset intersection
+    return {f"{p}#{v}#{i}": True for (p, v), n in counts.items() for i in range(n)}
 
 
 # Set of grades in which some block exceeded optimal_match.MAX_EXACT and fell back to greedy.
