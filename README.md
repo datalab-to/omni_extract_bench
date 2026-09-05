@@ -63,8 +63,9 @@ approximate and **says so** in `matching_exact` — an approximate score is neve
 though it were exact.
 
 **Format is free; content is not.** `10/31/2024` equals `2024-10-31`; `5`, `5.0` and `"5.00"`
-agree; `(98.2)` equals `-98.2`. But `-98.2` never equals `98.2`, and ID-like integers stay
-exact so `8303911426` never equals `8303511426`.
+agree; `(98.2)` equals `-98.2`; `Acme Inc.` equals `Acme Inc`. But `-98.2` never equals `98.2`,
+ID-like integers stay exact so `8303911426` never equals `8303511426`, and punctuation between
+characters is content: `1/2` is not `12`, `Section 2.1` is not `Section 21`.
 
 **Omission is charged.** Returning 44 of 349 rows scores about 12, not 100. This is the single
 most important property: a metric that lets an extractor skip rows for free will rank a

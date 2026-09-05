@@ -21,7 +21,25 @@ Deterministic and type-directed. No model participates.
 | integer / identifier-like | exact after canonicalisation — IDs, phone numbers and account numbers never fuzzy-match |
 | decimal number | equal within `1e-6 · max(1, |g|)`; **sign notation** folded (`(98.2)`, `−98.2`, `98.2-` all parse to −98.2) but **sign value preserved** (`−98.2 ≠ +98.2`) |
 | date-like string | equal if both parse to the same calendar date under any supported format |
-| other string | canonical equality (case, whitespace, punctuation, smart quotes, unicode fractions) |
+| other string | canonical equality under the string fold below |
+
+**The string fold** (`normalize.canonical`): lowercase; NFKD with combining marks dropped; smart
+quotes and dashes to ASCII; placeholder markers (`n/a`, `none`, `-`, `..`) to empty; short footnote
+markers (`[1]`, `[a]`) removed; whitespace collapsed to one space; punctuation stripped from the
+**edges** of the value only; leading zeros inside digit runs dropped; unicode fractions expanded.
+Punctuation **between** characters is content and is kept.
+
+| equal | distinct |
+| --- | --- |
+| `Acme Inc.` / `Acme Inc` | `1/2` / `12` |
+| `ABN AMRO Bank N.V.` / `ABN AMRO BANK N.V.,` | `Section 2.1` / `Section 21` |
+| `"quoted"` / `quoted` | `v1.2` / `v12` |
+| `[1] Y. Bengio` / `Y. Bengio` | `Inst itutional` / `Institutional` |
+| `Table  B-1.` / `Table B-1` | `UBS AG, Stamford Branch` / `UBS AG (Stamford Branch)` |
+
+An earlier fold deleted every internal period, slash, hyphen and space, which merged the
+right-hand column. Measured on the reference corpus, the narrower rule costs every provider
+0.3–0.6 points about equally and changes no rank.
 
 Canonicalisation is a single shared function applied identically to `p` and `g`, so the
 comparison is symmetric by construction.

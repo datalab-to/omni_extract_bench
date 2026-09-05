@@ -132,5 +132,15 @@ for _ in range(1500):
     if FG.fair_grade_value(pv, gv, {"type": "array", "items": {"type": "string"}}) != _scan_and_pop(pv, gv): _mm2 += 1
 check("scalar-array Counter multiset == scan-and-pop (1500 fuzz)", _mm2 == 0, f"{_mm2} mismatches")
 
+# 14. THE STRING FOLD: edge punctuation, quotes, whitespace and footnote markers are format;
+#     punctuation BETWEEN characters is content. The previous fold deleted every internal
+#     period, slash, hyphen and space and merged the pairs marked 0 below.
+_fold = [("Acme Inc.", "Acme Inc", 1), ("ABN AMRO Bank N.V.", "ABN AMRO BANK N.V.,", 1),
+         ('"quoted"', "quoted", 1), ("[1] Y. Bengio", "Y. Bengio", 1), ("Table  B-1.", "Table B-1", 1),
+         ("1/2", "12", 0), ("Section 2.1", "Section 21", 0), ("v1.2", "v12", 0), ("1.5M", "15M", 0),
+         ("Inst itutional", "Institutional", 0)]
+for _a, _b, _want in _fold:
+    check(f"fold: {_a!r} vs {_b!r} -> {'equal' if _want else 'distinct'}", int(FG.cmp_leaf(_a, _b)) == _want)
+
 print(f"\n{'ALL INVARIANTS HOLD' if not fails else 'FAILURES: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)
