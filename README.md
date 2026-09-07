@@ -53,6 +53,8 @@ beside coverage and each subset's mean.
 
 ## What the metric does
 
+Every scalar value in the gold JSON is one point. A prediction earns the point when its value at the same place matches under one canonical comparison: numbers compared numerically, dates by calendar day, everything else case-, whitespace- and edge-punctuation-insensitive, with placeholders like "N/A" treated as empty. Rows of an array are paired first by maximum-weight assignment on how many values they share, so row order never matters and no key has to be guessed. The score for a document is matched points divided by gold points plus every predicted value that has no gold counterpart, so omitting rows and inventing them both cost; a document the system returned nothing for scores zero and stays in. The benchmark score is the mean over documents.
+
 **Leaf value accuracy.** Every scalar in the ground truth is one point. The score is the
 fraction matched, counting spurious predicted leaves against you as well as missing ones.
 

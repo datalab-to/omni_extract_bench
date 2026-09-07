@@ -1,5 +1,8 @@
 # Metric specification
 
+**In one paragraph.** Every scalar value in the gold JSON is one point. A prediction earns the point when its value at the same place matches under one canonical comparison: numbers compared numerically, dates by calendar day, everything else case-, whitespace- and edge-punctuation-insensitive, with placeholders like "N/A" treated as empty. Rows of an array are paired first by maximum-weight assignment on how many values they share, so row order never matters and no key has to be guessed. The score for a document is matched points divided by gold points plus every predicted value that has no gold counterpart, so omitting rows and inventing them both cost; a document the system returned nothing for scores zero and stays in. The benchmark score is the mean over documents.
+
+
 The complete definition of the benchmark score. Everything the grader does is here; anything
 not here is a bug. Properties are stated formally and each is enforced by a test in
 `tests/test_metric_properties.py`.
