@@ -1,8 +1,8 @@
-"""Omni Extract Bench -- one scorer for document-extraction benchmarks.
+"""Fair Extract Bench -- one scorer for document-extraction benchmarks.
 
 The public surface is deliberately small:
 
-    from omni_extract_bench import grade, canon_key
+    from fair_extract_bench import grade, canon_key
 
     result = grade(prediction, ground_truth, schema)
     result["leaf_accuracy"]   # 0-100, the headline number

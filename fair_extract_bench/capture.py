@@ -30,7 +30,7 @@ invisible from the outside: the file exists, the key is present, the list is emp
 
 Usage:
 
-    from omni_extract_bench import capture
+    from fair_extract_bench import capture
 
     capture.install_taps()
     capture.reset()                        # per document; records are thread-local

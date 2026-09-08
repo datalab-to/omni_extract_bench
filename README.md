@@ -1,4 +1,4 @@
-# Omni Extract Bench
+# Fair Extract Bench
 
 One scorer for document-extraction benchmarks.
 
@@ -14,7 +14,7 @@ run extractors, and it ships no benchmark data.
 
 The frozen 169-document evaluation set, with verified ground-truth corrections already applied,
 is published separately:
-[`datalab-to/omni_extract_bench`](https://huggingface.co/datasets/datalab-to/omni_extract_bench).
+[`datalab-to/fair_extract_bench`](https://huggingface.co/datasets/datalab-to/fair_extract_bench).
 
 This repository holds the scorer only; it ships no benchmark data and no benchmark results.
 
@@ -29,7 +29,7 @@ Python 3.9+. No dependencies beyond the standard library.
 ## Use
 
 ```python
-from omni_extract_bench import grade
+from fair_extract_bench import grade
 
 result = grade(prediction, ground_truth, schema)
 result["leaf_accuracy"]   # 0-100, the headline number
@@ -41,10 +41,10 @@ result["matching_exact"]  # False if an array was too large to solve exactly
 From the command line:
 
 ```bash
-omni-extract-bench score      --pred p.json --gt g.json --schema s.json
-omni-extract-bench score-dir  --pred-dir preds/ --gt-dir gt/ --schema-dir schemas/
-omni-extract-bench leaderboard --pred-root baselines/ --gt-dir gt/ --schema-dir schemas/
-omni-extract-bench leaderboard --pred-root baselines/ --data-root data/   # all subsets; --workers N
+fair-extract-bench score      --pred p.json --gt g.json --schema s.json
+fair-extract-bench score-dir  --pred-dir preds/ --gt-dir gt/ --schema-dir schemas/
+fair-extract-bench leaderboard --pred-root baselines/ --gt-dir gt/ --schema-dir schemas/
+fair-extract-bench leaderboard --pred-root baselines/ --data-root data/   # all subsets; --workers N
 ```
 
 `leaderboard` scores every provider directory under `--pred-root` over the same document list.
@@ -113,11 +113,11 @@ change its score, no depth-dependent scoring path can exist.
 
 Benchmarking extraction vendors costs real money on calls that are slow, often async, and
 sometimes nondeterministic. What you keep from each call decides whether a failure costs you an
-explanation or another invoice — so `omni_extract_bench.capture` records responses at the
+explanation or another invoice — so `fair_extract_bench.capture` records responses at the
 **transport layer**, before anything parses them.
 
 ```python
-from omni_extract_bench import capture
+from fair_extract_bench import capture
 
 capture.install_taps()                 # in-process SDK calls (httpx + requests)
 capture.reset()                        # per document; records are thread-local
@@ -183,10 +183,10 @@ Every vendor accepts a different subset of JSON Schema, and the strict ones reje
 permissive ones ignore. Send one shape to everyone and the strict vendors score zero on
 documents they could have handled — a fact about your harness, reported as a fact about them.
 
-`omni_extract_bench.dialects` holds the transforms, split by intent:
+`fair_extract_bench.dialects` holds the transforms, split by intent:
 
 ```python
-from omni_extract_bench.dialects import (
+from fair_extract_bench.dialects import (
     strip_benchmark_keys,    # remove YOUR grader metadata — every vendor
     resolve_refs,            # inline $ref so the schema is self-describing
     to_strict_dialect,       # allowlisted keys; nullable properties, bare array items
@@ -219,4 +219,4 @@ Provider APIs change; treat it as an example rather than a maintained client.
 Apache 2.0 — see [`LICENSE`](LICENSE).
 
 Value canonicalisation builds on the `longextract_bench` grader (MIT, © Micro1), vendored under
-`omni_extract_bench/vendor/` with its licence intact. See [`NOTICE`](NOTICE).
+`fair_extract_bench/vendor/` with its licence intact. See [`NOTICE`](NOTICE).

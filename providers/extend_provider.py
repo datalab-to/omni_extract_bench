@@ -23,9 +23,9 @@ Auth note: organisation-level API keys REQUIRE `x-extend-workspace-id`; without 
 upload 400s. That was a real bug in the vendored provider.
 
 Schemas must be reshaped before sending -- Extend validates strictly and rejects the JSON
-Schema dialect most benchmarks emit. Use `omni_extract_bench.dialects`:
+Schema dialect most benchmarks emit. Use `fair_extract_bench.dialects`:
 
-    from omni_extract_bench.dialects import (
+    from fair_extract_bench.dialects import (
         strip_benchmark_keys, resolve_refs, to_strict_dialect)
     payload_schema = to_strict_dialect(resolve_refs(strip_benchmark_keys(schema)))
 
