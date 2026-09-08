@@ -22,7 +22,7 @@ import tempfile
 # run from anywhere: `python tests/x.py` puts tests/ on the path, not the repo root
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from fair_extract_bench import capture  # noqa: E402
+from omni_extract_bench import capture  # noqa: E402
 
 FAILS = []
 

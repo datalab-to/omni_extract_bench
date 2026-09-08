@@ -1,5 +1,5 @@
 [project]
-name = "fair-extract-bench"
+name = "omni-extract-bench"
 version = "0.1.0"
 description = "One scorer for document-extraction benchmarks: leaf value accuracy with optimal row matching."
 readme = "README.md"
@@ -15,15 +15,15 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/datalab-to/fair_extract_bench"
+Homepage = "https://github.com/datalab-to/omni_extract_bench"
 Datalab = "https://datalab.to"
 
 [project.scripts]
-fair-extract-bench = "fair_extract_bench.cli:main"
+omni-extract-bench = "omni_extract_bench.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["fair_extract_bench"]
+packages = ["omni_extract_bench"]

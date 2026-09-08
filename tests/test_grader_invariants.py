@@ -5,7 +5,7 @@ import sys, json
 # run from anywhere: `python tests/x.py` puts tests/ on the path, not the repo root
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from fair_extract_bench import grading as FG
+from omni_extract_bench import grading as FG
 
 fails = []
 def check(name, cond, detail=""):
@@ -90,7 +90,7 @@ check("no per-field metric modes remain", not hasattr(FG, "HONOR_EVAL_CONFIG"))
 #     implementations of one rule" is exactly how this grader has drifted before. A mismatch
 #     is a scoring change and must fail loudly.
 import random as _random
-from fair_extract_bench import matching as _OM
+from omni_extract_bench import matching as _OM
 
 def _dense_pairs(pred, gt):
     ps = [FG._row_signature(r) for r in pred]; gs = [FG._row_signature(r) for r in gt]

@@ -1,4 +1,4 @@
-Fair Extract Bench
+Omni Extract Bench
 Copyright 2026 Datalab
 
 This product includes software developed at Datalab (https://datalab.to).
@@ -8,15 +8,15 @@ Third-party components
 --------------------------------------------------------------------------------
 
 longextract_bench
-  Vendored at: fair_extract_bench/vendor/longextract_bench/
+  Vendored at: omni_extract_bench/vendor/longextract_bench/
   Copyright (c) 2026 Micro1
   Licensed under the MIT License; the full licence text is retained alongside the
-  vendored source at fair_extract_bench/vendor/longextract_bench/LICENSE.
+  vendored source at omni_extract_bench/vendor/longextract_bench/LICENSE.
 
   Used for value canonicalisation and structural helpers. It is vendored rather than
   reimplemented so that scores produced here remain identical to the upstream metric on
   the same inputs -- reimplementing string normalisation risks silent divergence.
 
-  Local modifications are applied at import time in fair_extract_bench/normalize.py
+  Local modifications are applied at import time in omni_extract_bench/normalize.py
   (documented there) rather than by editing the vendored source, so the vendored copy
   stays a faithful copy of the original.

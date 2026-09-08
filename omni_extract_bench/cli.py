@@ -1,8 +1,8 @@
 """Command-line interface.
 
-    fair-extract-bench score --pred p.json --gt g.json --schema s.json
-    fair-extract-bench score-dir --pred-dir preds/ --gt-dir gt/ --schema-dir schemas/
-    fair-extract-bench leaderboard --pred-root baselines/ --gt-dir gt/ --schema-dir schemas/
+    omni-extract-bench score --pred p.json --gt g.json --schema s.json
+    omni-extract-bench score-dir --pred-dir preds/ --gt-dir gt/ --schema-dir schemas/
+    omni-extract-bench leaderboard --pred-root baselines/ --gt-dir gt/ --schema-dir schemas/
 
 `score-dir` pairs files by basename. `leaderboard` expects one sub-directory per provider
 under `--pred-root` and scores them all over the same document list, which is what makes the
@@ -196,7 +196,7 @@ def cmd_leaderboard(args):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="fair-extract-bench",
+    ap = argparse.ArgumentParser(prog="omni-extract-bench",
                                  description="Score document-extraction predictions.")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

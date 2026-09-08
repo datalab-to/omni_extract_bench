@@ -57,7 +57,7 @@ For an array with predicted rows `P₁…Pₙ` and gold rows `G₁…Gₘ`:
    only accepted literal equality paired the rows arbitrarily and a correct extraction scored
    50 — reintroducing the very format penalty §2 removes.
 2. **Pairing** = the assignment maximising `Σ w` over all matchings — solved exactly
-   (Hungarian, `fair_extract_bench/matching.py`). Pairs with `w = 0` are discarded: two rows sharing nothing
+   (Hungarian, `omni_extract_bench/matching.py`). Pairs with `w = 0` are discarded: two rows sharing nothing
    are not a pair.
 3. Leaves inside paired rows are scored recursively. Leaves of unpaired rows count as misses —
    on either side, so both omission and over-production are penalised.
