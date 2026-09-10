@@ -58,9 +58,10 @@ omit = grade({"lines": BASE}, GOLD, SCH)
 partial = [grade({"lines": BASE + [row(i, j) for i in range(5, N)]}, GOLD, SCH)
            for j in range(K + 1)]
 
-report("a row paired on ANY matching field keeps the omitted row's denominator",
+report("a row of NAMED fields keeps the omitted row's denominator once it pairs",
        all(p["total"] == omit["total"] for p in partial[1:]),
        f"omit {omit['total']}, attempts {[p['total'] for p in partial[1:]]}")
+note("named fields only -- a wrong scalar-array element DOES grow it, see the last section")
 report("...so under accuracy, attempting beats omitting from one field right",
        all(p["accuracy"] > omit["accuracy"] + 1e-9 for p in partial[1:]),
        f"omit {omit['accuracy']:.1f}, attempts "
@@ -125,6 +126,11 @@ a_honest = grade({"lines": ABASE + [{"sku": f"s{i}"} for i in range(5, N)]}, AG,
 report("guessing a row of unreadable array content loses to omitting it",
        a_guess["accuracy"] < a_omit["accuracy"] - 1e-9,
        f"guess {a_guess['accuracy']:.1f} vs omit {a_omit['accuracy']:.1f}")
+report("a row can PAIR and still score below omitting, so 'paired' is not the test",
+       a_guess["matched_rows"] == N and a_guess["accuracy"] < a_omit["accuracy"] - 1e-9,
+       f"matched_rows {a_guess['matched_rows']}/{N}, "
+       f"acc {a_guess['accuracy']:.1f} vs omit {a_omit['accuracy']:.1f}")
+note("this is why P17 is about values read CORRECTLY, not about the row pairing")
 report("but abstaining per FIELD beats both, on accuracy and on f1",
        a_honest["accuracy"] > a_omit["accuracy"] + 1e-9
        and a_honest["accuracy"] > a_guess["accuracy"] + 1e-9
@@ -136,6 +142,23 @@ report("but abstaining per FIELD beats both, on accuracy and on f1",
 report("abstaining per field costs the omitted row's denominator, and no more",
        a_honest["total"] == a_omit["total"],
        f"honest {a_honest['total']} vs omit {a_omit['total']}")
+
+print("\nP17 AS STATED IN THE SPEC: ONLY VALUES READ CORRECTLY")
+# The general claim. Emitting a row that carries only the values the model read correctly
+# puts them at gold's own addresses, so the row costs what omitting it would have cost and
+# earns what it got right. True for named fields and array elements alike, which is why the
+# property is phrased this way and not in terms of the row pairing.
+for lbl, gold_doc, omit_pred, honest_pred, sch in (
+    ("named fields", {"lines": [row(i) for i in range(N)]},
+     {"lines": BASE}, {"lines": BASE + [{"sku": f"sku{i}"} for i in range(5, N)]}, SCH),
+    ("scalar arrays", AG, {"lines": ABASE},
+     {"lines": ABASE + [{"sku": f"s{i}"} for i in range(5, N)]}, ARR_S),
+):
+    o, h = grade(omit_pred, gold_doc, sch), grade(honest_pred, gold_doc, sch)
+    report(f"P17 holds for {lbl}: same denominator, higher numerator",
+           h["total"] == o["total"] and h["matched"] > o["matched"]
+           and h["accuracy"] > o["accuracy"] + 1e-9,
+           f"omit {o['matched']}/{o['total']}, honest {h['matched']}/{h['total']}")
 
 print("\nAND A STRICT SCHEMA CANNOT TAKE ABSTENTION AWAY")
 # Strict structured outputs require every declared property to be present, so a model may
