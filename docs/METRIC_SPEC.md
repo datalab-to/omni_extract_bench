@@ -294,8 +294,35 @@ named field:
 | `name` read wrongly | 1 `misread` | 3 | 66.7 |
 | `q[1]` read wrongly | 1 `unfound` + 1 `invented_item` | 4 | 50.0 |
 
-This is not new behaviour — the multiset denominator has always been
-`len(gold) + len(pred) − matches` — but it was undocumented. It follows from the array being
-order-free: with no cell identity there is nothing for a value to be *wrong about*, only
-content that is present or absent. Naming the array in `order_matters` gives its positions
-meaning and restores `misread` for it.
+It follows from the array being order-free. With no cell identity there is nothing for a
+value to be *wrong about*, only content that is present or absent.
+
+That looks like the score depending on how the schema models the data, which §10 rules out
+elsewhere, so it is worth showing what the array gets in exchange. The same three facts, as
+an array of scalars and as three named fields:
+
+| | array | named fields |
+| --- | --- | --- |
+| all three right | 100.0 | 100.0 |
+| all three right, **reordered** | **100.0** | **0.0** |
+| one value read wrongly | **50.0** | **66.7** |
+| one omitted | 66.7 | 66.7 |
+| one extra invented | 75.0 | 75.0 |
+
+**You cannot have both order-freedom and cell identity.** The named-field version can say
+"`t2` is wrong" precisely because it demands that value be in `t2`, and row two is what that
+demand costs. Declaring the array in `order_matters` buys cell identity back — the wrong
+value becomes a `misread` and the score becomes 66.7 — at the price of the second row.
+
+This does not threaten comparability, which is the standard §10 applies. Schema *width* was
+fatal because it moved scores within a comparison: the same documents, differently verbose
+schemas, incomparable numbers. Here the shape is fixed — the harness sends one schema to
+every provider, and no dialect transform turns an array into named fields — so every provider
+faces the same trade on the same arrays. Choosing an array over named fields is choosing
+*what to measure*.
+
+The alternative would be to cap the array's denominator at `max(len(gold), len(pred))`, which
+makes the array agree with named fields. That was the old behaviour and it was removed as a
+defect: it carves out an exception to the rule that a predicted leaf with no gold address is
+spurious, so `["a","b","c"]` against gold `["a","x","c"]` had a denominator of 3 and the
+invented `b` was free.

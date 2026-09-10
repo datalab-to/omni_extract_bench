@@ -177,6 +177,28 @@ report("so the array error costs more, because it is charged on both sides",
 note(f"array {in_array['accuracy']:.1f} (denominator {in_array['total']}), "
      f"field {in_field['accuracy']:.1f} (denominator {in_field['total']})")
 
+# What order-freedom buys, and what it costs. Both directions are pinned, because the cost
+# looks like a defect on its own and only reads correctly next to the compensation.
+ARR_S2 = {"properties": {"tags": {"type": "array", "items": {"type": "string"}}}}
+FLD_S2 = {"properties": {k: {"type": "string"} for k in ("t1", "t2", "t3")}}
+A_G, F_G = {"tags": ["a", "x", "c"]}, {"t1": "a", "t2": "x", "t3": "c"}
+report("reordering is free for the array and fatal for named fields",
+       abs(grade({"tags": ["c", "a", "x"]}, A_G, ARR_S2)["accuracy"] - 100) < 1e-9
+       and grade({"t1": "c", "t2": "a", "t3": "x"}, F_G, FLD_S2)["accuracy"] < 1e-9)
+report("...which is what the harsher value error pays for",
+       grade({"tags": ["a", "W", "c"]}, A_G, ARR_S2)["accuracy"]
+       < grade({"t1": "a", "t2": "W", "t3": "c"}, F_G, FLD_S2)["accuracy"] - 1e-9)
+report("order_matters buys cell identity back",
+       abs(grade({"tags": ["a", "W", "c"]}, A_G, ARR_S2,
+                 order_matters=["tags"])["accuracy"] - 200 / 3) < 1e-6)
+report("omission and invention cost the same either way",
+       abs(grade({"tags": ["a", "c"]}, A_G, ARR_S2)["accuracy"]
+           - grade({"t1": "a", "t3": "c"}, F_G, FLD_S2)["accuracy"]) < 1e-9
+       and abs(grade({"tags": ["a", "x", "c", "Z"]}, A_G, ARR_S2)["accuracy"]
+               - grade({"t1": "a", "t2": "x", "t3": "c", "t4": "Z"},
+                       F_G, FLD_S2)["accuracy"]) < 1e-9)
+note("so the two shapes differ ONLY on order and on localising a wrong value")
+
 print("\nTHE IDENTITIES HOLD OVER GENERATED DOCUMENTS, NOT JUST THE EXAMPLE")
 import copy                                                                 # noqa: E402
 import random                                                               # noqa: E402
