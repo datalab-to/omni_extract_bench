@@ -18,6 +18,7 @@ Guards against unfair MERGES (verified in self-test): different phone/account nu
 distinct floats, and truncated strings all stay MISMATCHED.
 """
 from __future__ import annotations
+import collections
 import json, re
 from datetime import datetime
 from . import normalize as N              # canonical form + schema helpers
@@ -30,24 +31,45 @@ _BLOCK_HINTS = ("segment_type",)
 
 
 def _row_signature(row):
-    """Canonical (field -> value) map for the row's SCALAR leaves.
+    """Canonical multiset of the row's scalar leaves, keyed by path, used as the assignment
+    weight for row pairing.
 
-    Used as the assignment weight. Computing the exact weight would mean a full recursive
-    grade for every candidate pair — O(n*m) full grades, infeasible on micro1's thousand-row
-    tables. The signature is computed ONCE per row (O(n+m) total) and the weight is then a
-    dict intersection.
+    Computing the exact weight would mean a full recursive grade for every candidate pair --
+    O(n*m) full grades, infeasible on thousand-row tables. The signature is computed ONCE per
+    row (O(n+m) total) and the weight is a dict intersection.
 
-    For flat rows (the overwhelming majority of benchmark arrays) this equals the exact
-    matched-leaf count, so the assignment is optimal for the true objective. For rows with
-    nested structure it is a lower bound used only to CHOOSE the pairing; the reported score
-    is always computed by full grading afterwards.
+    It covers EVERY scalar leaf of the row, including those inside nested arrays and objects,
+    with arrays contributing under an index-free path. The previous version used top-level
+    scalars only, so rows whose identity lives in a nested payload -- `{"row_label": "16 to 19
+    years old", "values": [...]}` repeated once per section -- tied on weight and were paired by
+    position. The score then depended on the ORDER a provider emitted rows in: shuffling a
+    correct prediction moved one document from 100.0 to 53.6, and 24 of 68 documents with
+    duplicate-label rows moved by up to 46 points. Row order is declared free by this metric,
+    so the pairing weight must not see it; an index-free multiset does not.
+
+    For flat rows this equals the exact matched-leaf count, so the assignment is optimal for the
+    true objective. For nested rows it is now the matched-leaf count under the same order-free
+    treatment scoring applies to scalar arrays. The reported score is always computed by full
+    grading afterwards.
     """
-    sig = {}
-    for k, v in row.items():
-        if k.endswith(("_citations", "_meta")) or isinstance(v, (dict, list)) or v is None:
-            continue
-        sig[k] = canon_key(v)
-    return sig
+    counts = {}
+
+    def walk(o, pre):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k.endswith(("_citations", "_meta")):
+                    continue
+                walk(v, f"{pre}.{k}" if pre else k)
+        elif isinstance(o, list):
+            for x in o:
+                walk(x, f"{pre}[]")
+        elif o is not None:
+            key = (pre, canon_key(o))
+            counts[key] = counts.get(key, 0) + 1
+
+    walk(row, "")
+    # one dict key per OCCURRENCE so a plain dict intersection is a multiset intersection
+    return {f"{p}#{v}#{i}": True for (p, v), n in counts.items() for i in range(n)}
 
 
 # Set of grades in which some block exceeded optimal_match.MAX_EXACT and fell back to greedy.
@@ -72,8 +94,11 @@ def _pair_rows(pd, gd):
         return sum(1 for k, v in a.items() if b.get(k) == v)
 
     keys = [k for k in _BLOCK_HINTS if any(k in r for r in (pd[:1] + gd[:1]))]
+    # sig_fn lets the greedy fallback generate only the pairs that can score above zero,
+    # instead of the full product. Same weights, same pairing -- just not O(n*m) to reach it.
     pairs, up, ug, exact = OM.match_rows(pd, gd, w, block_keys=tuple(keys),
-                                         key_fn=canon_key)
+                                         key_fn=canon_key,
+                                         sig_fn=_row_signature)
     if not exact:
         _INEXACT.append(max(len(pd), len(gd)))
     return pairs, up, ug
@@ -333,12 +358,20 @@ def fair_grade_value(pv, gv, sch):
             for row in ug:
                 t += _count_leaves(row)   # missing gt rows -> misses
             return t, m
-        # scalar array -> multiset under the same comparator
-        remaining = list(gv); mm = 0
+        # scalar array -> multiset under the same comparator.
+        #
+        # Counted with a Counter rather than a scan-and-pop. cmp_leaf IS exact equality under
+        # canon_key, so a multiset is what the old loop computed -- but it was O(n*m) and
+        # recomputed canon_key(x) once per candidate. A survey paper with ~1,100 citations made
+        # that ~1.2M canonicalisations of long strings for ONE document-provider pair. Same
+        # numbers (fuzzed against the old loop, 3,000 randomized trials, zero mismatches), O(n+m).
+        gold_counts = collections.Counter(canon_key(y) for y in gv)
+        mm = 0
         for x in pv:
-            for i, y in enumerate(remaining):
-                if cmp_leaf(x, y) >= 1.0:
-                    mm += 1; remaining.pop(i); break
+            k = canon_key(x)
+            if gold_counts.get(k):
+                gold_counts[k] -= 1
+                mm += 1
         return max(len(pv), len(gv)), mm
     if pv is None and gv is None:
         return 0, 0

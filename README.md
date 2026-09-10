@@ -44,11 +44,16 @@ From the command line:
 omni-extract-bench score      --pred p.json --gt g.json --schema s.json
 omni-extract-bench score-dir  --pred-dir preds/ --gt-dir gt/ --schema-dir schemas/
 omni-extract-bench leaderboard --pred-root baselines/ --gt-dir gt/ --schema-dir schemas/
+omni-extract-bench leaderboard --pred-root baselines/ --data-root data/   # all subsets; --workers N
 ```
 
 `leaderboard` scores every provider directory under `--pred-root` over the same document list.
+With `--data-root` it scores every subset and prints the headline (the mean over all documents)
+beside coverage and each subset's mean.
 
 ## What the metric does
+
+Every scalar value in the gold JSON is one point. A prediction earns the point when its value at the same place matches under one canonical comparison: numbers compared numerically, dates by calendar day, everything else case-, whitespace- and edge-punctuation-insensitive, with placeholders like "N/A" treated as empty. Rows of an array are paired first by maximum-weight assignment on how many values they share, so row order never matters and no key has to be guessed. The score for a document is matched points divided by gold points plus every predicted value that has no gold counterpart, so omitting rows and inventing them both cost; a document the system returned nothing for scores zero and stays in. The benchmark score is the mean over documents.
 
 **Leaf value accuracy.** Every scalar in the ground truth is one point. The score is the
 fraction matched, counting spurious predicted leaves against you as well as missing ones.
@@ -60,8 +65,9 @@ approximate and **says so** in `matching_exact` — an approximate score is neve
 though it were exact.
 
 **Format is free; content is not.** `10/31/2024` equals `2024-10-31`; `5`, `5.0` and `"5.00"`
-agree; `(98.2)` equals `-98.2`. But `-98.2` never equals `98.2`, and ID-like integers stay
-exact so `8303911426` never equals `8303511426`.
+agree; `(98.2)` equals `-98.2`; `Acme Inc.` equals `Acme Inc`. But `-98.2` never equals `98.2`,
+ID-like integers stay exact so `8303911426` never equals `8303511426`, and punctuation between
+characters is content: `1/2` is not `12`, `Section 2.1` is not `Section 21`.
 
 **Omission is charged.** Returning 44 of 349 rows scores about 12, not 100. This is the single
 most important property: a metric that lets an extractor skip rows for free will rank a

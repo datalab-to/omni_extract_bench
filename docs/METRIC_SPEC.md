@@ -1,5 +1,8 @@
 # Metric specification
 
+**In one paragraph.** Every scalar value in the gold JSON is one point. A prediction earns the point when its value at the same place matches under one canonical comparison: numbers compared numerically, dates by calendar day, everything else case-, whitespace- and edge-punctuation-insensitive, with placeholders like "N/A" treated as empty. Rows of an array are paired first by maximum-weight assignment on how many values they share, so row order never matters and no key has to be guessed. The score for a document is matched points divided by gold points plus every predicted value that has no gold counterpart, so omitting rows and inventing them both cost; a document the system returned nothing for scores zero and stays in. The benchmark score is the mean over documents.
+
+
 The complete definition of the benchmark score. Everything the grader does is here; anything
 not here is a bug. Properties are stated formally and each is enforced by a test in
 `tests/test_metric_properties.py`.
@@ -21,7 +24,25 @@ Deterministic and type-directed. No model participates.
 | integer / identifier-like | exact after canonicalisation — IDs, phone numbers and account numbers never fuzzy-match |
 | decimal number | equal within `1e-6 · max(1, |g|)`; **sign notation** folded (`(98.2)`, `−98.2`, `98.2-` all parse to −98.2) but **sign value preserved** (`−98.2 ≠ +98.2`) |
 | date-like string | equal if both parse to the same calendar date under any supported format |
-| other string | canonical equality (case, whitespace, punctuation, smart quotes, unicode fractions) |
+| other string | canonical equality under the string fold below |
+
+**The string fold** (`normalize.canonical`): lowercase; NFKD with combining marks dropped; smart
+quotes and dashes to ASCII; placeholder markers (`n/a`, `none`, `-`, `..`) to empty; short footnote
+markers (`[1]`, `[a]`) removed; whitespace collapsed to one space; punctuation stripped from the
+**edges** of the value only; leading zeros inside digit runs dropped; unicode fractions expanded.
+Punctuation **between** characters is content and is kept.
+
+| equal | distinct |
+| --- | --- |
+| `Acme Inc.` / `Acme Inc` | `1/2` / `12` |
+| `ABN AMRO Bank N.V.` / `ABN AMRO BANK N.V.,` | `Section 2.1` / `Section 21` |
+| `"quoted"` / `quoted` | `v1.2` / `v12` |
+| `[1] Y. Bengio` / `Y. Bengio` | `Inst itutional` / `Institutional` |
+| `Table  B-1.` / `Table B-1` | `UBS AG, Stamford Branch` / `UBS AG (Stamford Branch)` |
+
+An earlier fold deleted every internal period, slash, hyphen and space, which merged the
+right-hand column. Measured on the reference corpus, the narrower rule costs every provider
+0.3–0.6 points about equally and changes no rank.
 
 Canonicalisation is a single shared function applied identically to `p` and `g`, so the
 comparison is symmetric by construction.
@@ -63,13 +84,12 @@ over rows are reported separately and are never folded into `leaf_accuracy`.
 
 ## 5. Aggregation
 
+    score         = mean of leaf_accuracy over all documents
     subset_score  = mean of leaf_accuracy over that subset's documents
-    UNIFIED       = mean of the subset scores
 
-Equal weight per subset, because subsets differ ~10× in size; leaf- or document-weighting
-would let the largest subset decide the benchmark and would silently re-weight it whenever a
-subset grew. A document a vendor returned nothing usable for scores **0** — excluding failures
-would reward fragility. Coverage is reported beside the score, never inside it.
+The headline is the document mean; subset means are reported beside it. A document a vendor
+returned nothing usable for scores **0** — excluding failures would reward fragility. Coverage
+is reported beside the score, never inside it.
 
 ## 6. Ground truth adjustments
 
@@ -136,3 +156,29 @@ normalised answer.
 If canonicalisation would merge two distinct keys of the same object (`Total` and `TOTAL`),
 that object falls back to literal pairing: merging them would silently discard one side's
 value, which is a worse failure than the one being fixed.
+
+## 9. Run protocol
+
+The metric is only fair if the inputs to it were produced the same way. Every published run
+follows these rules, and each is recorded per document in the stored raw record so it can be
+audited rather than trusted:
+
+- **One timeout for everyone** (1800 s per document). A document that exceeds it scores 0
+  for that provider unless the provider's job completed server-side and can be fetched by its
+  job id after the deadline — in which case the result counts and the timeout is *also*
+  reported. Recovery measures accuracy, not latency; the timeout count is published beside the
+  score. The rule is applied to every provider; whether it can benefit depends on whether the
+  vendor retains results, and that difference is stated.
+- **Maximum tier for everyone.** Each provider runs at its highest-accuracy setting. Any
+  exception is disclosed in the same sentence as that provider's score.
+- **Same schema for everyone.** Benchmark-only keys are stripped before a schema is sent;
+  a conventions overlay, where used, is applied to the same documents for every provider.
+- **Every raw response is kept** — status, body, headers, request and job ids, vendor-reported
+  usage — so any score can be recomputed, and any intervention checked, without re-running.
+- **Interventions are rules, not edits.** A re-run happens only when a stored result was
+  produced by a harness fault (a capture crash, an account-level stop, an empty 200) and
+  never because a score looked wrong. Each rule and the documents it touched are listed with
+  the results.
+- **Exclusions are declared** and applied to every provider, including already-scored ones.
+- **Coverage is published beside every score**, per §5, together with the count of documents
+  recovered after the deadline.

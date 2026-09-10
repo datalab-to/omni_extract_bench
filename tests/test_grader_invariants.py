@@ -85,5 +85,62 @@ check("scoring and pairing share one comparator",
       and "canon_key(" in _inspect.getsource(FG._row_signature))
 check("no per-field metric modes remain", not hasattr(FG, "HONOR_EVAL_CONFIG"))
 
+# 12. FAST PATHS ARE EXACT. Two optimisations replaced O(n*m) loops with O(n+m) ones. Each is
+#     fuzzed here against the loop it replaced, through the real code, because "two
+#     implementations of one rule" is exactly how this grader has drifted before. A mismatch
+#     is a scoring change and must fail loudly.
+import random as _random
+from omni_extract_bench import matching as _OM
+
+def _dense_pairs(pred, gt):
+    ps = [FG._row_signature(r) for r in pred]; gs = [FG._row_signature(r) for r in gt]
+    out = []
+    for i, a in enumerate(ps):
+        for j, b in enumerate(gs):
+            lo, hi = (a, b) if len(a) <= len(b) else (b, a)
+            w = sum(1 for k, v in lo.items() if hi.get(k) == v)
+            if w > 0: out.append((-w, i, j))
+    return sorted(out)
+
+_random.seed(1)
+_mm = 0
+for _ in range(300):
+    n, m = _random.randint(1, 30), _random.randint(1, 30); nc = _random.randint(1, 4)
+    voc = _random.choice([2, 3, 40])
+    def _row():
+        r = {f"c{c}": (_random.choice(["k", "same"]) if voc == 2 else str(_random.randrange(voc)))
+             for c in range(nc) if _random.random() < 0.85}
+        if _random.random() < 0.1: r["const"] = "X"
+        return r
+    pred = [_row() for _ in range(n)]; gt = [_row() for _ in range(m)]
+    sp, shed = _OM._candidate_pairs(pred, gt, FG._row_signature)
+    if shed == 0 and sorted(sp) != _dense_pairs(pred, gt): _mm += 1
+check("sparse row-candidate generation == dense loop (300 fuzz)", _mm == 0, f"{_mm} mismatches")
+
+def _scan_and_pop(pv, gv):
+    rem = list(gv); mm = 0
+    for x in pv:
+        for i, y in enumerate(rem):
+            if FG.cmp_leaf(x, y) >= 1.0: mm += 1; rem.pop(i); break
+    return max(len(pv), len(gv)), mm
+
+_random.seed(2); _mm2 = 0
+_voc = ["a", "A ", "b", "5", "5.0", "n/a", None, "", "x-y", "2024-01-15", "01/15/2024"]
+for _ in range(1500):
+    pv = [_random.choice(_voc) for _ in range(_random.randint(0, 9))]
+    gv = [_random.choice(_voc) for _ in range(_random.randint(0, 9))]
+    if FG.fair_grade_value(pv, gv, {"type": "array", "items": {"type": "string"}}) != _scan_and_pop(pv, gv): _mm2 += 1
+check("scalar-array Counter multiset == scan-and-pop (1500 fuzz)", _mm2 == 0, f"{_mm2} mismatches")
+
+# 14. THE STRING FOLD: edge punctuation, quotes, whitespace and footnote markers are format;
+#     punctuation BETWEEN characters is content. The previous fold deleted every internal
+#     period, slash, hyphen and space and merged the pairs marked 0 below.
+_fold = [("Acme Inc.", "Acme Inc", 1), ("ABN AMRO Bank N.V.", "ABN AMRO BANK N.V.,", 1),
+         ('"quoted"', "quoted", 1), ("[1] Y. Bengio", "Y. Bengio", 1), ("Table  B-1.", "Table B-1", 1),
+         ("1/2", "12", 0), ("Section 2.1", "Section 21", 0), ("v1.2", "v12", 0), ("1.5M", "15M", 0),
+         ("Inst itutional", "Institutional", 0)]
+for _a, _b, _want in _fold:
+    check(f"fold: {_a!r} vs {_b!r} -> {'equal' if _want else 'distinct'}", int(FG.cmp_leaf(_a, _b)) == _want)
+
 print(f"\n{'ALL INVARIANTS HOLD' if not fails else 'FAILURES: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)

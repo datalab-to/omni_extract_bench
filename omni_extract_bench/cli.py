@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -84,7 +85,91 @@ def cmd_score_dir(args):
     return 0
 
 
+def _leaderboard_rows(pred_root, gt_dir, schema_dir):
+    """(provider, scores-with-zeros, returned, n_docs) for one directory of ground truth."""
+    providers = sorted(p for p in Path(pred_root).iterdir() if p.is_dir())
+    docs = [g.stem for g in sorted(Path(gt_dir).glob("*.json"))]
+    rows = []
+    for prov in providers:
+        scores, returned = [], 0
+        for stem in docs:
+            schema = Path(schema_dir) / f"{stem}.json" if schema_dir else None
+            r = _score_one(prov / f"{stem}.json", Path(gt_dir) / f"{stem}.json", schema)
+            # A document a provider did not return scores 0; it is never dropped from the
+            # mean, or a provider that fails on hard documents would look better than one
+            # that attempts them.
+            scores.append(r["leaf_accuracy"] if r else 0.0)
+            returned += 1 if r else 0
+        rows.append((prov.name, scores, returned, len(docs)))
+    return rows
+
+
+def _leaf_task(t):
+    """leaf_accuracy for one (provider, subset, pred, gt, schema) task, or None if unusable.
+
+    Module-level so it pickles for the process pool; the big tables that make parallelism
+    worthwhile are exactly the ones a fork-safe worker has to be able to reach by name.
+    """
+    _, _, pred, gt, schema = t
+    r = _score_one(Path(pred), Path(gt), Path(schema))
+    return r["leaf_accuracy"] if r else None
+
+
+def cmd_leaderboard_subsets(args):
+    """The published headline: METRIC_SPEC section 5, the mean over all documents. Per-subset
+    means are printed beside it.
+
+    Expects the HF dataset layout: <data-root>/<subset>/<doc>/{ground_truth,schema}.json with
+    predictions at <pred-root>/<provider>/<subset>/<doc>.json.
+    """
+    root = Path(args.data_root)
+    subsets = sorted(d.name for d in root.iterdir() if d.is_dir())
+    if not subsets:
+        print(f"no subset directories under {root}", file=sys.stderr)
+        return 1
+    providers = sorted(p for p in Path(args.pred_root).iterdir() if p.is_dir())
+    # One task per (provider, subset, document). Scoring is a pure function of the three files,
+    # so the order of evaluation cannot change a number -- which is what makes it safe to fan
+    # out. A 20,000-row table takes minutes on one core; the reference corpus has several.
+    tasks = []
+    for sub in subsets:
+        docs = sorted(d for d in (root / sub).iterdir() if d.is_dir())
+        for prov in providers:
+            for d in docs:
+                tasks.append((prov.name, sub, str(prov / sub / f"{d.name}.json"),
+                              str(d / "ground_truth.json"), str(d / "schema.json")))
+    workers = args.workers or os.cpu_count() or 1
+    if workers > 1 and len(tasks) > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            leaf = list(ex.map(_leaf_task, tasks, chunksize=1))
+    else:
+        leaf = [_leaf_task(t) for t in tasks]
+    per = {}                       # provider -> subset -> (scores, returned, n)
+    for (prov, sub, *_), acc in zip(tasks, leaf):
+        scores, returned, n = per.setdefault(prov, {}).setdefault(sub, ([], 0, 0))
+        scores.append(acc if acc is not None else 0.0)
+        per[prov][sub] = (scores, returned + (1 if acc is not None else 0), n + 1)
+    head = f"{'provider':22}{'score':>8}{'coverage':>11}" + "".join(f"{s[:10]:>12}" for s in subsets)
+    print(head); print("-" * len(head))
+    table = []
+    for prov, by in per.items():
+        sub_means = [_mean(by[s][0]) for s in subsets if s in by]
+        allscores = [x for s in subsets if s in by for x in by[s][0]]
+        ret = sum(by[s][1] for s in subsets if s in by); n = sum(by[s][2] for s in subsets if s in by)
+        table.append((prov, _mean(allscores), ret, n, sub_means))
+    for prov, score, ret, n, subs in sorted(table, key=lambda t: -t[1]):
+        print(f"{prov:22}{score:>8.2f}{f'{ret}/{n}':>11}" + "".join(f"{v:>12.2f}" for v in subs))
+    print("\nscore = mean over all documents (METRIC_SPEC section 5); a missing prediction scores 0.")
+    return 0
+
+
 def cmd_leaderboard(args):
+    if getattr(args, "data_root", None):
+        return cmd_leaderboard_subsets(args)
+    if not args.gt_dir:
+        print("leaderboard needs --gt-dir (one subset) or --data-root (all subsets)", file=sys.stderr)
+        return 2
     providers = sorted(p for p in Path(args.pred_root).iterdir() if p.is_dir())
     if not providers:
         print(f"no provider directories under {args.pred_root}", file=sys.stderr)
@@ -129,8 +214,12 @@ def main(argv=None):
 
     b = sub.add_parser("leaderboard", help="score every provider under a root directory")
     b.add_argument("--pred-root", required=True)
-    b.add_argument("--gt-dir", required=True)
+    b.add_argument("--gt-dir", help="one directory of ground truth (document-mean over it)")
     b.add_argument("--schema-dir")
+    b.add_argument("--data-root", help="HF-layout root with <subset>/<doc>/ dirs: reports the "
+                                        "mean over all documents, with per-subset means")
+    b.add_argument("--workers", type=int, default=0,
+                   help="parallel scoring processes for --data-root (default: all cores; 1 = serial)")
     b.set_defaults(fn=cmd_leaderboard)
 
     args = ap.parse_args(argv)

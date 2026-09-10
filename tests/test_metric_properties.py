@@ -416,6 +416,32 @@ report("P18c colliding keys fall back to literal pairing",
        check("P18c", len(pairs) == 2 and ("TOTAL", None) in pairs,
              f"got {pairs}"))
 
+# P19. ROW ORDER IS FREE -- including when a row's identity lives in a NESTED payload.
+#      Rows here repeat their only top-level scalar (a section label) and differ in a nested
+#      scalar array. A pairing weight built from top-level scalars alone ties on every such row
+#      and pairs by position, so a correct prediction scored 100.0 in document order and 53.6
+#      shuffled (real document: census_statab_employment). The score must not move under any
+#      permutation of rows, nor of the scalar arrays inside them.
+import random as _rnd
+_sch16 = {"type": "object", "properties": {"rows": {"type": "array", "items": {"type": "object", "properties": {
+    "label": {"type": "string"}, "values": {"type": "array", "items": {"type": "number"}}}}}}}
+_gt16 = {"rows": [{"label": "16 to 19", "values": [1528, 1460, 50.4]}, {"label": "16 to 19", "values": [863, 821, 50.7]},
+                  {"label": "20 to 24", "values": [9000, 8100, 71.0]}, {"label": "20 to 24", "values": [4400, 4000, 70.2]}]}
+def _shuf16(o, rng):
+    if isinstance(o, dict): return {k: _shuf16(v, rng) for k, v in o.items()}
+    if isinstance(o, list):
+        l = [_shuf16(x, rng) for x in o]; rng.shuffle(l); return l
+    return o
+_base = FG.fair_grade(_gt16, _gt16, _sch16)["leaf_accuracy"]
+report("P19 identity holds with duplicate-label rows", check("P19a", _base == 100.0, str(_base)))
+_stable = all(FG.fair_grade(_shuf16(_gt16, _rnd.Random(seed)), _gt16, _sch16)["leaf_accuracy"] == 100.0 for seed in range(20))
+report("P19 shuffling rows and nested arrays never moves the score", check("P19b", _stable))
+_wrong = {"rows": [dict(r, values=[v + (1 if i == 0 else 0) for i, v in enumerate(r["values"])]) for r in _gt16["rows"]]}
+_w0 = FG.fair_grade(_wrong, _gt16, _sch16)["leaf_accuracy"]
+_wvals = {FG.fair_grade(_shuf16(_wrong, _rnd.Random(seed)), _gt16, _sch16)["leaf_accuracy"] for seed in range(20)}
+report("P19 a partially wrong prediction scores the same in every order",
+       check("P19c", _wvals == {_w0}, f"{_w0} vs {sorted(_wvals)}"))
+
 print(f"\n{'ALL METRIC PROPERTIES HOLD' if not FAILS else 'FAILURES:'}")
 for f in FAILS:
     print(f"   {f}")

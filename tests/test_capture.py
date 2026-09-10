@@ -228,5 +228,70 @@ else:
         check("child record carries a body", got[0]["body"] is not None)
 check("child log file cleaned up", not os.path.exists(log_path))
 
+
+print("\n[12] every httpx FORK is tapped -- openai>=3 ships its own copy as `httpx2`")
+# Tapping only `httpx` captured 0% of one provider on the run machine and 85% on the laptop,
+# because the two had different openai versions. The tap must patch each installed fork.
+import importlib  # noqa: E402
+check("httpx2 is in the tap list", "httpx2" in capture.CAPTURE.HTTPX_MODULES,
+      str(capture.CAPTURE.HTTPX_MODULES))
+for _mod in capture.CAPTURE.HTTPX_MODULES:
+    try:
+        _hx = importlib.import_module(_mod)
+    except ImportError:
+        print(f"  SKIP  {_mod} not installed here")
+        continue
+    check(f"{_mod}.Client.send is tapped", getattr(_hx.Client.send, "_oeb_tapped", False))
+    check(f"{_mod}.AsyncClient.send is tapped", getattr(_hx.AsyncClient.send, "_oeb_tapped", False))
+
+
+print("\n[13] the tap never fails the call it observes")
+# A file upload is a STREAMING request: `request.content` raises RequestNotRead. Reading it
+# unguarded let the exception escape send() and destroyed 433 documents of one provider. Emit
+# must swallow everything and still keep a record.
+import httpx  # noqa: E402
+capture.reset()
+_req = httpx.Request("POST", "https://vendor.example/upload", content=iter([b"chunk"]))
+_resp = httpx.Response(200, content=b'{"job_id": "stream-req-7"}', request=_req)
+try:
+    capture.CAPTURE._emit(_req, _resp, 0.3)
+    raised = False
+except Exception as exc:  # noqa: BLE001
+    raised = exc
+check("streaming request does not raise into the caller", raised is False, repr(raised))
+check("...and the response is still recorded",
+      any("stream-req-7" in (r.get("body") or "") for r in capture.records()),
+      str(capture.records())[:200])
+
+
+print("\n[14] a streamed response is captured when the CALLER reads it")
+# Modern SDKs call send(stream=True) and read later. At send() time there is no body; the old
+# tap recorded nothing. Now the record is emitted from the caller's own read().
+capture.reset()
+def _handler(request):
+    # a real stream: the body is NOT available until the caller drains it
+    return httpx.Response(200, stream=httpx.ByteStream(b'{"id": "streamed-body-99", "ok": true}'),
+                          headers={"x-request-id": "req-abcdef123"})
+with httpx.Client(transport=httpx.MockTransport(_handler)) as _c:
+    _r = _c.send(_c.build_request("GET", "https://vendor.example/stream"), stream=True)
+    before = any("streamed-body-99" in (r.get("body") or "") for r in capture.records())
+    _r.read()
+    after = any("streamed-body-99" in (r.get("body") or "") for r in capture.records())
+check("body absent before the caller reads", not before)
+check("body captured after the caller reads", after, str(capture.records())[:200])
+check("header-borne id kept", any((r.get("id_headers") or {}).get("x-request-id") == "req-abcdef123"
+                                  for r in capture.records()), str(capture.records())[:200])
+
+
+print("\n[15] ids that arrive only in HEADERS are harvested")
+# Some vendors return the job/request id in a header and an empty or opaque body.
+capture.reset()
+capture.record("POST", "https://vendor.example/jobs", 202, "", 0.1,
+               headers={"X-Request-Id": "hdr-only-id-123", "Content-Type": "text/plain"})
+rec = capture.records()[0]
+check("id header kept, lowercased", (rec.get("id_headers") or {}).get("x-request-id") == "hdr-only-id-123",
+      str(rec))
+check("non-id header not kept", "content-type" not in (rec.get("id_headers") or {}))
+
 print(f"\n{'ALL CAPTURE TESTS PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}")
 sys.exit(1 if FAILS else 0)
