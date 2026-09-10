@@ -766,17 +766,18 @@ report("rows returned under an undeclared key are counted as predicted rows",
 note(f"both charge the undeclared leaves in the score (tree {u_tree['leaf_accuracy']:.2f}, "
      f"path {u_path['accuracy']:.2f}), but only the path scorer counts them as rows")
 
-# The paired walker's row counts COLLAPSE TO ZERO without a schema; the path scorer's do not.
-# This is not a difference of opinion, it is a footgun: `cli._score_one` passes `{}` whenever
-# the schema file is absent, so `score-dir` and `leaderboard` run without `--schema-dir`
-# report recall and precision of 0.00 for every document while still printing a leaf score.
+# The paired walker's row counts COLLAPSE TO ZERO without a schema; this scorer's do not,
+# and it now refuses to run without one at all (P19). The footgun this used to describe --
+# `cli._score_one` passing `{}` whenever the schema file was absent, so a run without
+# `--schema-dir` reported recall 0.00 for every document while still printing a score -- is
+# fixed: a missing schema is a reported failure, covered by tests/test_cli.py.
 g_rc, p_rc = {"rows": [{"x": 1}, {"x": 2}]}, {"rows": [{"x": 1}]}
 no_sch = fair_grade(copy.deepcopy(p_rc), copy.deepcopy(g_rc), {})
-report("the path scorer's row counts do not depend on being handed a schema",
+report("this scorer's row counts do not depend on what the schema declares",
        ACC(p_rc, g_rc)["recall"] == 0.5,
        f"recall {ACC(p_rc, g_rc)['recall']}")
 note(f"paired walker with no schema reports gt_rows={no_sch['gt_rows']}, "
-     f"recall={no_sch['recall']:.2f} for a document with 2 gold rows -- see cli._score_one")
+     f"recall={no_sch['recall']:.2f} for a document with 2 gold rows")
 
 # the one case they are EXPECTED to differ on: a row with no leaves at all
 er = ACC({"rows": [{}, {"x": 1}]}, {"rows": [{}, {"x": 1}]})
@@ -852,19 +853,6 @@ report("gold rows whose payload is entirely null are dropped from both sides",
 
 # ═══════════════════════════════════════════════════════════════════════════════
 print("\nTHE SCHEMA ARGUMENT DOES NOT AFFECT THE SCORE")
-# grade accepts a schema for call compatibility and ignores it: leaf comparison never
-# depended on declared types, and array detection now comes from the data rather than from
-# `arrays_of`, which only recognised arrays it could see through anyOf.
-SCH = {"properties": {"rows": {"anyOf": [{"type": "array", "items": {"type": "object"}},
-                                         {"type": "null"}]}}}
-g_any = {"rows": [{"x": 1}, {"x": 2}]}
-p_any = {"rows": [{"x": 2}, {"x": 9}]}
-with_s, without_s = ACC(p_any, g_any), grade(p_any, g_any)
-report("passing a schema, or none, gives the same score and the same row counts",
-       with_s == without_s, f"{with_s} vs {without_s}")
-t_any = fair_grade(copy.deepcopy(p_any), copy.deepcopy(g_any), SCH)
-note(f"nullable (anyOf) array row counts: paired walker {t_any['gt_rows']}, "
-     f"path scorer {with_s['gt_rows']}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 print("\nBEHAVIOUR WE HAVE DECIDED NOT TO CHANGE YET (pinned so it cannot drift)")
