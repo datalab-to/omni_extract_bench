@@ -36,6 +36,34 @@ PRED = {"n": "INV", "t": 999.0, "d": 5.0, "z": "x",
 R = grade(PRED, GT, SCH)
 
 # ═══════════════════════════════════════════════════════════════════════════════
+print("\nTHE DOCUMENT REFERS TO SECTIONS THAT EXIST")
+# Renumbering during a rewrite left two references pointing at the wrong section: the header
+# sent readers to the wrong place for the properties, and section 3 sent them to Aggregation
+# for the order-freedom trade. Cheap to check, so it is checked.
+import re                                                                   # noqa: E402
+from pathlib import Path as _P                                              # noqa: E402
+
+SPEC = (_P(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+        / "docs" / "METRIC_SPEC.md").read_text().splitlines()
+heads = {int(m.group(1)) for line in SPEC if (m := re.match(r"## (\d+)\. ", line))}
+broken = [(i, int(m.group(1)))
+          for i, line in enumerate(SPEC, 1)
+          for m in re.finditer(r"§(\d+)", line)
+          if int(m.group(1)) not in heads]
+report(f"every cross-reference points at a real section ({len(heads)} sections)",
+       not broken, f"broken: {broken}")
+
+print("\nAND CITES NO FILE THAT IS NOT HERE")
+cited = {m.group(1) for line in SPEC for m in re.finditer(r"`([\w/]+\.(?:py|md))`", line)}
+root = _P(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+missing = sorted(c for c in cited
+                 if not (root / c).exists()
+                 and not (root / "omni_extract_bench" / c).exists()
+                 and not (root / "docs" / c).exists()
+                 and not (root / "tests" / c).exists())
+report("every .py or .md file the spec names in backticks exists",
+       not missing, f"missing: {missing}")
+
 print("\nSECTION 3 -- THE EXACTNESS BUDGET")
 report("MAX_CELLS is 250 million, as the spec states",
        OM.MAX_CELLS == 250 * 10**6, f"got {OM.MAX_CELLS}")
