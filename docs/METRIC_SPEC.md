@@ -40,13 +40,43 @@ rule, used by leaf scoring and by row pairing alike, so the two cannot disagree.
 | --- | --- |
 | boolean | canonical equality |
 | integer / identifier-like | exact after canonicalisation — IDs, phone numbers and account numbers never fuzzy-match |
-| decimal number | equal within `1e-6 · max(1, |g|)`; **sign notation** folded (`(98.2)`, `−98.2`, `98.2-` all parse to −98.2) but **sign value preserved** (`−98.2 ≠ +98.2`) |
+| decimal number | rounded to **7 significant digits**; **sign notation** folded (`(98.2)`, `−98.2`, `98.2-` all parse to −98.2) but **sign value preserved** (`−98.2 ≠ +98.2`) |
 | date-like string | equal if both parse to the same calendar date under any supported format |
 | other string | canonical equality (case, whitespace, punctuation, smart quotes, unicode fractions) |
 
 Canonicalisation is applied identically to `p` and `g`, so comparison is symmetric by
-construction. A consequence worth knowing: format-only differences score 100, so any
-disagreement the grader reports is a real one.
+construction.
+
+**Seven significant digits is a bucket, not a tolerance.** Values are compared by turning each
+into a key and testing the keys for equality — that is what lets the scorer do set arithmetic
+on addresses instead of comparing pairs. The cost is boundary effects: `0.99999994` and
+`1.00000004` differ by one part in ten million and land in different buckets, so they are
+scored as a disagreement. A relative tolerance would call them equal, but a tolerance cannot
+be expressed as a key. Anything agreeing to seven significant digits without straddling a
+boundary matches.
+
+**Format differences are free only where the table above says so.** These are folded, and
+are tested by `tests/test_comparison_surface.py`:
+
+    1,234 = 1234        $1,234.56 = 1234.56      12.34% = 12.34      1 234.56 = 1234.56
+    5.00 = 5            1.0 = 1                  (1,234.56) = -1234.56
+    1234.56- = -1234.56    −1234.56 = -1234.56
+    31/10/2024 = 2024-10-31    10/31/24 = 2024-10-31    Oct 31, 2024 = 2024-10-31
+    ACME CORP = Acme Corp      "Acme  Corp." = "Acme Corp"      TRUE = true
+    "N/A" = "-" = "" (all canonicalise to empty)
+
+These are **not**, and will score as disagreements even though a human would call them
+formatting:
+
+    USD 1234.56 ≠ 1234.56        1234.56 USD ≠ 1234.56       currency codes are not stripped
+    1.234,56 ≠ 1234.56           European decimal notation
+    2024-10-31T00:00:00Z ≠ 2024-10-31        an ISO timestamp is not read as a date
+    2024-10-31 00:00:00 ≠ 2024-10-31
+    "yes" ≠ true                 only true/false spellings are booleans
+
+So a disagreement the grader reports is a real one *for the formats above*, and the second
+list is where to look first if a provider's misses look like formatting. It is a list of
+candidate scorer gaps, not of vendor errors.
 
 ## 3. Aligning arrays
 
