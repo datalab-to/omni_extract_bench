@@ -1,8 +1,13 @@
 # To look at
 
-Open questions from scoring datalab's R2 predictions against the Hub ground truth.
-Found while lining up the pipeline, not yet explained. Ordered by how likely each is to
-be a harness problem rather than a model result.
+Open questions from scoring the R2 predictions against the Hub ground truth. Ordered by
+how likely each is to be a harness problem rather than a model result.
+
+**Nothing here is closed.** Every item carries what is known so far and an explicit
+**Next**, including the ones where the mechanism is already understood -- knowing why
+something happens is not the same as having decided what to do about it. Where a question
+has actually been ruled out, it says so inside the item rather than being deleted, so the
+same ground does not get covered twice.
 
 Sample: 40 documents, 8 per suite, seed 20260910, the three giant documents excluded.
 Predictions from `s3://datalab-training-pipelines/omni-extract-bench/runs/full/baselines/`.
@@ -14,7 +19,7 @@ Four vendors scored on the identical sample, ~35s each at `-j 6`:
 | reducto | **88.78** | 88.78 | |
 | datalab | **88.66** | 88.66 | |
 | extend | **82.36** | 82.36 | |
-| llamaextract | **71.34** | 73.17 | 1 document absent in R2, scored 0 |
+| llamaextract | **71.34** | 73.17 | 1 document returned a vendor error, scored 0 (item 10) |
 
 All four use the same `{"result": ..., "_secs": ...}` envelope, so bug 1 below hits every
 vendor equally -- nothing here is scoreable through `cli.py` as it stands. Treat these
@@ -25,7 +30,12 @@ unresolved.
 
 ## 1. The `{"result": ...}` envelope is not unwrapped by `cli.py`
 
-**Status: understood, fixed only in the scratch script. Needs a real fix.**
+**Known so far:** the cause is nailed down and a working rule exists in the scratch
+script. Nothing is fixed in the repo.
+
+**Next:** decide where the rule belongs -- `prediction_io.py` alongside `usable()` is
+the obvious home, since this is the same question that module already owns -- then
+make `usable()` reject a bare envelope so this can never pass silently again.
 
 `cli.py::_unwrap` unwraps only when the object is *exactly* `{"result": ...}`:
 
@@ -57,8 +67,12 @@ notions of "usable" disagreeing, with the coverage column paying for it.
 
 ## 2. Arrays of free-text strings are near-unscoreable
 
-**Status: diagnosed. This is a metric design question, not a bug. Probably the most
-important item here.**
+**Known so far:** the mechanism is fully understood, but nothing is decided. This is
+probably the most consequential item in the file.
+
+**Next:** pick one of the three options at the bottom of this section, or reject all
+three deliberately. Whichever way it goes, the choice belongs in `METRIC_SPEC.md`,
+because right now the spec does not say that formatting counts on free-text arrays.
 
 Seen on `contextual/research__survey of dimensionality reduction techniques`, which scores
 **4.72 for datalab, 4.13 reducto, 3.35 extend, 4.09 llamaextract** -- `found` of 3-5% for
@@ -97,7 +111,13 @@ problem on top.
 
 ## 3. `contextual/10kq__nke_10q_fy2025q2` -- every vendor 48-58
 
-**Status: partly diagnosed. Looks like a ground-truth completeness question.**
+**Known so far:** the extras are identified and they are real balance-sheet line
+items, not noise. Whether the gold or the models are wrong is NOT established.
+
+**Next:** open the Nike 10-Q and check whether `short_term_debt` actually has a value
+in the filing. If it does, the gold is incomplete and this document is mis-scoring
+every vendor. That single check decides the item. If the gold is right, the question
+becomes why four vendors invent the same line items.
 
 | vendor | accuracy | found |
 |---|---|---|
@@ -129,7 +149,12 @@ not the cause here and are not a scoring problem anywhere.
 
 ## 4. `contextual` is the worst suite for ALL FOUR vendors
 
-**Status: no longer a datalab question. Systematic.**
+**Known so far:** it is systematic across all four vendors, and items 2 and 3 explain
+two of the eight documents. The other six are unexamined.
+
+**Next:** look at the remaining six `contextual` documents the way item 3 was looked
+at -- what the extras and misses actually are. Until then it is unknown whether this
+suite is genuinely hard or systematically mis-scored.
 
 | suite | datalab | reducto | extend | llamaextract |
 |---|---|---|---|---|
@@ -159,8 +184,12 @@ just with the gold.
 
 ## 5. `micro1/m1__Healthcare_facility_quality_measure_public_reporting` -- 46.71
 
-**Status: understood. A real provider failure, not a harness one. Listed so it is not
-re-investigated.**
+**Known so far:** the immediate cause is clear -- it timed out and returned partial
+output -- so the 46.71 is a fair score for what came back.
+
+**Next:** low priority for the metric, but worth asking why a 5,711-row extraction
+takes 30 minutes and what `recovered_after_timeout` is meant to guarantee. If the
+timeout is tunable this document may be recoverable rather than lost.
 
 ```
 _secs: 1807.2        recovered_after_timeout: true
@@ -175,7 +204,17 @@ so it is also the document that exposed bug 1.
 
 ## 6. Three documents are scored by the greedy fallback, not optimal matching
 
-**Status: known, quantified, low impact. Two stale comments should be fixed.**
+**Known so far:** the cost of greedy is measured (<=0.177 points, always
+under-crediting) and raising the caps is not worth it. Two comments in `matching.py`
+are provably false and nothing has been changed.
+
+**Next:** fix the two comments -- they are how the next person sizes these constants.
+Optionally surface the greedy count in the run summary so "3 of 660 approximately
+matched" is visible at the top rather than per-document.
+
+**Unmeasured:** the 0.177 figure comes from documents of 532-4,278 rows. Nobody has
+measured what greedy costs at 26,725 rows, which needs an exact solve on the biggest
+document to compare against (~40 minutes for the pair).
 
 `_exact_ok` sends these to greedy -- the first over `MAX_EXACT`, the other two over
 `MAX_CELLS`:
@@ -203,7 +242,13 @@ constants:
 
 ## 7. `_greedy` has no memory bound, and it is the fallback for running out of memory
 
-**Status: latent. Not hit by this corpus, but the guard is on the wrong side.**
+**Known so far:** measured on this corpus greedy is safe (1.74% density, 1.86 GB vs
+~5.8 GB for exact). The unbounded case is reasoned, not observed.
+
+**Next:** switch `_greedy` to three numpy arrays plus an `argsort` instead of a list
+of tuples. It is a contained change, keeps the algorithm and results identical, and
+takes the pathological case from ~71 GB to ~8.6 GB. Worth doing before a provider
+hands you a document with a repeated status column.
 
 `MAX_CELLS` caps the exact solver's dense matrix; nothing caps `_greedy`, which builds a
 Python list holding one `(-w, i, j)` tuple per positive-weight pair at ~100 bytes each,
@@ -226,7 +271,12 @@ pathological case lands at 8.6 GB rather than 71 GB.
 
 ## 8. `scripts/test.py` does not strip benchmark keys
 
-**Status: minor, but it makes the self-grade harness disagree with the CLI.**
+**Known so far:** the two paths prepare schemas differently and 243 of 660 schemas
+are affected. Whether it changes any score is NOT established.
+
+**Next:** one-line fix to `scripts/test.py`. Before or after, check whether stripping
+actually moves any score -- the scorer only reads `additionalProperties`, so it may
+be inert, and knowing which would be useful.
 
 `cli.py` prepares schemas with `resolve_refs(strip_benchmark_keys(schema))`;
 `scripts/test.py` only calls `resolve_refs`. **243 of the 660 schemas** contain
@@ -236,7 +286,12 @@ pathological case lands at 8.6 GB rather than 71 GB.
 
 ## 9. `pytest tests/` cannot collect this suite at all
 
-**Status: pre-existing, unrelated to any change here, and a hazard for CI.**
+**Known so far:** reproducible and understood. Pre-existing, unrelated to anything on
+this branch.
+
+**Next:** guard the two `sys.exit()` calls behind `if __name__ == "__main__"`, or
+commit to the script style and add a runner that executes each file and aggregates
+exit codes. Either way CI should not be able to report success on zero tests.
 
 `tests/test_capture.py` and `tests/test_cli.py` call `sys.exit()` at import time. Under
 pytest that raises `SystemExit` during collection and the whole run dies with
@@ -251,7 +306,12 @@ guard those two `sys.exit()` calls behind `if __name__ == "__main__"`.
 
 ## 10. One llamaextract prediction is a recorded vendor error, not a miss
 
-**Status: understood. Noted so the number is read correctly.**
+**Known so far:** fully understood. Recorded so the 0 is read as a vendor-side
+service failure rather than a bad extraction.
+
+**Next:** nothing for the harness. When the full run happens, count how many
+`__error__` payloads each vendor has -- that is a coverage statistic worth reporting
+next to the score, and it is invisible in the mean.
 
 `longarray/cae_v2_10_n742` is present in R2 but its payload is:
 
@@ -270,7 +330,11 @@ unusable one.
 
 ## 11. The 40-document sample cannot separate the top two
 
-**Status: methodological. Do not publish a datalab-vs-reducto ordering from it.**
+**Known so far:** the top two are not separable at this sample size. The extend and
+llamaextract gaps are large and stable enough to trust.
+
+**Next:** run the full 660 for all four vendors -- this is the item most other things
+are waiting on. Needs item 1 fixed first, or every document scores 0.
 
 | vendor | score |
 |---|---|
@@ -294,7 +358,12 @@ three largest documents by construction.
 
 ## 12. Similarity matching changes the cost model of pairing
 
-**Status: understood, mitigated in the experiment. Relevant if option 2 is ever adopted.**
+**Known so far:** the cost is characterised and the three guards that make it
+tractable are known and working.
+
+**Next:** only relevant if item 2 lands on the similarity option. If it does, the
+guards are not optional and the prefilter belongs in the implementation, not the
+caller.
 
 Strict matching compares canonical values by hash equality, O(1) a pair, inside a fill
 that is already O(n*m). Similarity replaces that with a string diff, so a 1,300-row array
