@@ -156,9 +156,19 @@ def canon_key(v):
 
     Four cases, in this order:
       1. booleans   -- canonical form, never coerced to a number
-      2. numbers    -- rounded to 7 significant digits (matching the previous 1e-6 relative
-                       tolerance) and canonicalised, so 5, 5.0 and "5.00" agree. Only decimals
-                       parse, so ID-like integers stay exact.
+      2. numbers    -- parsed and canonicalised, so 5, 5.0 and "5.00" agree, and so do
+                       "$1,234.56" and 1234.56. Only text containing a "." is parsed at all,
+                       so an ID-like integer is never touched; and an integral float keys as
+                       its integer, so 8303911426.0 agrees with 8303911426 rather than being
+                       rounded away from it.
+
+                       A value with a real fractional part is rounded to 7 significant
+                       digits. That is a bucket, not a tolerance -- two values land in the
+                       same bucket or they do not, because a comparison cannot be a key.
+                       It buys agreement on precision: 33.33333333 and 33.3333333 are one
+                       printed rate at two precisions and they match. It costs cents above
+                       six figures, where 123456.78 and 123456.79 key alike. Both halves
+                       of that trade are deliberate; see docs/METRIC_SPEC.md section 2.
       3. dates      -- ISO form, so 2024-01-15 and 01/15/2024 agree, and so does a
                        timestamp at midnight. `_asdate` is strict: "1/2", "Q1" and "2-3-13"
                        are not dates, so this cannot swallow values that mean something else.
@@ -170,6 +180,19 @@ def canon_key(v):
         return _canon(v)
     f = _asfloat(v)
     if f is not None:
+        # An integral float is an integer, and must key as one. Only values containing a "."
+        # are parsed at all, which is what keeps an ID exact -- but a vendor emitting that
+        # same ID as a JSON float would otherwise have it rounded: 8303911426.0 keyed as
+        # 8303911000, so a correct account number scored as wrong, and two IDs differing in
+        # their last three digits scored as equal. Both are spelling, not extraction.
+        if f == int(f):
+            return _canon(int(f))
+        # A value with a real fractional part is rounded to 7 significant digits, matching the
+        # 1e-6 relative tolerance this replaced. It is a bucket, not a tolerance: two values
+        # either land in the same bucket or they do not. The consequence to know is that cents
+        # merge once an amount reaches six figures -- 123456.78 and 123456.79 key alike -- in
+        # exchange for 33.33333333 and 33.3333333 agreeing, which is the case that matters
+        # more often: a printed rate re-derived at a different precision.
         try:
             return _canon(float(f"{f:.7g}"))
         except (ValueError, OverflowError):
