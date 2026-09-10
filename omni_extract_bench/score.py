@@ -37,7 +37,7 @@ from typing import Any, Literal, NamedTuple
 
 from . import matching as OM
 from . import normalize as N
-from .grading import _drop_empty_gt_rows, _unwrap_schema, canon_key, cmp_leaf
+from .values import canon_key, cmp_leaf, drop_empty_gt_rows, unwrap_schema
 
 # An address is a tuple of steps. Each step is tagged, because a document may contain the key
 # "0" and ("k", "0") must not join ("i", 0).
@@ -123,7 +123,7 @@ def flatten(node: Any, schema: Any = None, prefix: Address = (),
     date           = '2024-03-31'
     rows[0].x      = 1
     """
-    schema = _unwrap_schema(schema) if isinstance(schema, dict) else {}
+    schema = unwrap_schema(schema) if isinstance(schema, dict) else {}
     if N.is_open_map(schema):
         if skipped is not None:
             skipped.append(prefix)
@@ -154,7 +154,7 @@ def _schema_arrays(schema: Any, prefix: Address = ()) -> list[Address]:
     ...                              "items": {"properties": {"tags": {"type": "array"}}}}}})]
     ['rows', 'rows[*].tags']
     """
-    schema = _unwrap_schema(schema) if isinstance(schema, dict) else {}
+    schema = unwrap_schema(schema) if isinstance(schema, dict) else {}
     out = []
     if schema.get("type") == "array" or "items" in schema:
         out.append(prefix)
@@ -207,7 +207,7 @@ def _schema_leaves(schema: Any, prefix: Address = ()) -> set[Address]:
     ...     key=format_node)]
     ['n', 'rows[*].q']
     """
-    schema = _unwrap_schema(schema) if isinstance(schema, dict) else {}
+    schema = unwrap_schema(schema) if isinstance(schema, dict) else {}
     if N.is_open_map(schema):
         return set()
     props, item = schema.get("properties") or {}, schema.get("items")
@@ -581,8 +581,8 @@ def _both(pred: Any, gt: Any, schema: Any,
             "written inline is skipped."
         )
     raw_gt, raw_pred = gt or {}, pred or {}
-    gt = _drop_empty_gt_rows(N.prep_ground_truth(raw_gt))
-    pred = _drop_empty_gt_rows(N.prep_prediction(raw_pred))
+    gt = drop_empty_gt_rows(N.prep_ground_truth(raw_gt))
+    pred = drop_empty_gt_rows(N.prep_prediction(raw_pred))
     ordered = _resolve_order(order_matters, schema, (raw_gt, raw_pred, gt, pred))
     skipped: list[Address] = []
     gold_leaves = flatten(gt, schema, skipped=skipped)

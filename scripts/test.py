@@ -56,11 +56,42 @@ def self_grade(task):
     return suite, doc_id, result, time.monotonic() - start
 
 
+#: Resident memory to budget per worker, in GB. The measured peak on this corpus
+#: was 3.2 GB, on the 13 MB ground truth; `matching.MAX_CELLS` permits a 2 GB cost
+#: matrix on top of the parsed document, so the tail is fat.
+GB_PER_WORKER = 4
+
+
+def default_jobs():
+    """How many workers to run by default.
+
+    Not `cpu_count()`, because grading is memory-hungry as well as slow and the
+    two limits bind in opposite directions. `matching.MAX_CELLS` lets one cost
+    matrix reach 250 million float64 cells -- 2 GB -- and that ceiling was sized
+    for one process at a time. N workers multiply it by N.
+
+    Longest-first scheduling sharpens this rather than smoothing it: the order
+    that minimises wall clock is exactly the one that starts every expensive
+    document at once, so peak memory arrives in the first seconds of the run.
+    Measured here, `-j 18` on a 24 GB machine drove swap to 24 of 25 GB and the
+    one running worker down to 13% CPU -- it had stopped computing and was just
+    paging. Fewer workers finished sooner.
+
+    So budget by memory and take whichever limit is tighter. `-j` overrides.
+    """
+    cpus = os.cpu_count() or 1
+    try:
+        ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+    except (AttributeError, ValueError, OSError):
+        return min(cpus, 4)          # unknown RAM: assume little of it
+    return max(1, min(cpus, int(ram // GB_PER_WORKER)))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--limit", type=int, help="stop after N documents")
     ap.add_argument("--suite", help="only this suite (extractbench, micro1, ...)")
-    ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count(),
+    ap.add_argument("-j", "--jobs", type=int, default=default_jobs(),
                     help="worker processes; 1 grades in-process, for debugging")
     args = ap.parse_args()
 

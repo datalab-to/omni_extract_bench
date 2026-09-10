@@ -154,129 +154,18 @@ def _pair_rows(pd, gd):
 # Levenshtein implementation and an LLM judge to the surface that had to be reasoned about.
 # Per-vendor comparison rules are also the thing a competitor would most reasonably object to.
 
-# ── string / value normalizers ───────────────────────────────────────────────────
-_FRAC = {"½": "1/2", "¼": "1/4", "¾": "3/4", "⅓": "1/3", "⅔": "2/3", "⅛": "1/8",
-         "⅜": "3/8", "⅝": "5/8", "⅞": "7/8", "⅕": "1/5", "⅙": "1/6", "⅐": "1/7"}
-def _defrac(s: str) -> str:
-    for u, a in _FRAC.items():
-        s = s.replace(u, a)
-    return s
+# ── value comparison, schema unwrapping, and empty-row dropping now live in values.py ──
+# They moved so that `score.py` can be built on them without importing a grader -- see
+# docs/SCORER_CHANGES.md. Re-exported here under their original names because this module and
+# its tests refer to them throughout, and because `canon_key` being importable from exactly
+# one place is the point of it.
+from .values import (                                                  # noqa: E402
+    _asdate, _asfloat, _canon, _defrac, _sign_normalize,               # noqa: F401
+    canon_key, cmp_leaf,
+    drop_empty_gt_rows as _drop_empty_gt_rows,
+    unwrap_schema as _unwrap_schema,
+)
 
-_DATEFMTS = ["%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%B %d, %Y", "%b %d, %Y",
-             "%d %B %Y", "%d-%b-%Y", "%d%b%Y", "%m/%d/%y", "%Y/%m/%d", "%d.%m.%Y",
-             "%m.%d.%Y", "%b %d %Y", "%B %d %Y"]
-def _asdate(v):
-    s = str(v).strip()
-    if not re.search(r"\d", s) or len(s) > 24:
-        return None
-    for f in _DATEFMTS:
-        try:
-            return datetime.strptime(s, f).date().isoformat()
-        except ValueError:
-            pass
-    return None
-
-# Sign NOTATION varies by convention; sign SEMANTICS must not. Accounting parentheses,
-# the unicode minus, and a trailing minus all mean "negative" — those are spellings of the
-# same number and are folded. A disagreement about whether the value IS negative is a real
-# error and stays a mismatch: -98.2 never equals +98.2.
-_NEG_WRAP = re.compile(r"^\((.*)\)$")
-
-
-def _sign_normalize(s: str):
-    """Return (unsigned_text, sign) with sign in {1,-1}, folding notation variants."""
-    s = s.strip()
-    sign = 1
-    m = _NEG_WRAP.match(s)          # (98.2) -> accounting negative
-    if m:
-        sign, s = -1, m.group(1).strip()
-    s = s.replace("\u2212", "-").replace("\u2013", "-")   # unicode minus / en-dash
-    if s.endswith("-"):             # trailing minus (some ERP exports)
-        sign, s = -sign, s[:-1].strip()
-    while s.startswith(("-", "+")):
-        if s[0] == "-":
-            sign = -sign
-        s = s[1:].strip()
-    return s, sign
-
-
-def _asfloat(v):
-    """Parse a float ONLY if it looks decimal (has a '.') — integers/IDs stay exact.
-
-    Sign notation is normalized first, so `(98.2)`, `-98.2` and `\u221298.2` all parse to
-    -98.2 — but the resulting SIGN is preserved and compared.
-    """
-    body, sign = _sign_normalize(str(v))
-    body = body.replace(",", "").replace("$", "").replace("%", "").replace(" ", "")
-    if "." not in body:
-        return None
-    try:
-        return sign * float(body)
-    except ValueError:
-        return None
-
-# ── leaf comparators -> 1.0 (match) or 0.0 ───────────────────────────────────────
-def _canon(v):
-    try:
-        return N.canonical(v)
-    except Exception:
-        return str(v).lower()
-
-def canon_key(v):
-    """THE canonical form of a value. Two values are equal iff their keys are equal.
-
-    This is the whole comparison rule. There is exactly one of these functions, and both jobs
-    that need "are these equal?" -- scoring a leaf, and weighting a candidate row pairing --
-    call it. That is not a stylistic preference: the benchmark previously had two independent
-    implementations that were required to agree, and they silently diverged twice. Once when
-    the pairing weight demanded literal equality while scoring accepted date formats (a correct
-    extraction scored 50.0), and again when a numeric fix put integers and decimals in
-    different namespaces so `5` and `5.0` stopped pairing (one provider's recall went to 0.000
-    across two entire subsets). With a single function, a pairing/scoring disagreement is not a
-    bug that testing has to catch -- it is unrepresentable.
-
-    Four cases, in this order:
-      1. booleans   -- canonical form, never coerced to a number
-      2. numbers    -- rounded to 7 significant digits (matching the previous 1e-6 relative
-                       tolerance) and canonicalised, so 5, 5.0 and "5.00" agree. Only decimals
-                       parse, so ID-like integers stay exact.
-      3. dates      -- ISO form, so 2024-01-15 and 01/15/2024 agree. `_asdate` is strict:
-                       "1/2", "Q1" and "2-3-13" are not dates, so this cannot swallow values
-                       that mean something else.
-      4. otherwise  -- unicode fractions expanded, then canonicalised
-    """
-    if isinstance(v, bool):
-        return _canon(v)
-    f = _asfloat(v)
-    if f is not None:
-        try:
-            return _canon(float(f"{f:.7g}"))
-        except (ValueError, OverflowError):
-            return _canon(v)
-    d = _asdate(v)
-    if d:
-        return f"#d{d}"
-    return _canon(_defrac(str(v)))
-
-
-def cmp_leaf(pred, gold) -> float:
-    """1.0 if the two values are equal under `canon_key`, else 0.0."""
-    return 1.0 if canon_key(pred) == canon_key(gold) else 0.0
-
-
-# ── schema helpers ───────────────────────────────────────────────────────────────
-def _unwrap_schema(node):
-    """Resolve anyOf/oneOf to the non-null branch."""
-    if not isinstance(node, dict):
-        return {}
-    for br in ("anyOf", "oneOf", "allOf"):
-        for sub in node.get(br, []) or []:
-            if isinstance(sub, dict) and sub.get("type") != "null":
-                merged = dict(sub)
-                if "evaluation_config" in node and "evaluation_config" not in merged:
-                    merged["evaluation_config"] = node["evaluation_config"]
-                return merged
-    return node
 
 def _is_array(node):
     node = _unwrap_schema(node)

@@ -77,4 +77,46 @@ drop_g = {"r": [{"k": None, "v": None}, {"k": "x"}]}
 print(f"  gold all-null row omitted      {round(grade({'r':[{'k':'x'}]}, drop_g)['accuracy'],1)}  want 100.0")
 print(f"  pred all-null row invented     "
       f"{round(grade({'r':[{'k':'x'},{'k':None,'v':None}]}, {'r':[{'k':'x'}]})['accuracy'],1)}  want 100.0")
+
+# ── section 5: abstention IS measurable ───────────────────────────────────────────────
+# The spec used to claim otherwise. It does not, because abstaining is producing no value at
+# an address -- null and an absent key are two spellings of one behaviour, and `precision`
+# separates a model that declines from one that guesses. The numbers printed in section 5 are
+# these.
+print("\nABSTENTION IS MEASURABLE (section 5)")
+NN = 20
+AB_S = {"properties": {"lines": {"type": "array", "items": {"properties": {
+    "sku": {"type": "string"}, "note": {"type": "string"}}}}}}
+ab_gold = {"lines": [{"sku": f"s{i}", "note": f"n{i}"} for i in range(NN)]}
+declines = {"lines": [{"sku": f"s{i}", "note": (None if i % 4 == 1 else f"n{i}")}
+                      for i in range(NN)]}
+omits = {"lines": [dict({"sku": f"s{i}"}, **({} if i % 4 == 1 else {"note": f"n{i}"}))
+                   for i in range(NN)]}
+guesses = {"lines": [{"sku": f"s{i}", "note": ("n0" if i % 4 == 1 else f"n{i}")}
+                     for i in range(NN)]}
+truncated = {"lines": [{"sku": f"s{i}", "note": f"n{i}"} for i in range(NN - 5)]}
+D, O, G, T = (grade(x, ab_gold, AB_S) for x in (declines, omits, guesses, truncated))
+
+checks = [
+    ("declining with null scores exactly as omitting the key",
+     (round(D["accuracy"], 2), round(D["f1"], 4), round(D["precision"], 4))
+     == (round(O["accuracy"], 2), round(O["f1"], 4), round(O["precision"], 4))),
+    ("...and both give precision 1.00: nothing said was untrue",
+     D["precision"] == 1.0 and O["precision"] == 1.0),
+    ("guessing instead of declining is charged by precision and f1",
+     G["precision"] < D["precision"] - 1e-9 and G["f1"] < D["f1"] - 1e-9),
+    ("...while accuracy cannot tell them apart",
+     abs(G["accuracy"] - D["accuracy"]) < 1e-9),
+    ("the section 5 figures are the ones the scorer produces",
+     (round(D["accuracy"], 2), round(D["f1"] * 100, 2), round(D["precision"] * 100, 2)) == (87.50, 93.33, 100.00)
+     and (round(G["accuracy"], 2), round(G["f1"] * 100, 2), round(G["precision"] * 100, 2)) == (87.50, 87.50, 87.50)),
+    ("truncation is distinguishable from declining, by how much is unfound",
+     T["unfound"] > D["unfound"]),
+]
+for name, passed in checks:
+    print(f"  {'PASS' if passed else 'FAIL'}  {name}")
+print("          declining scatters across hard fields; truncation leaves a contiguous tail")
+if not all(c[1] for c in checks):
+    sys.exit(1)
+
 sys.exit(0 if ok else 1)
