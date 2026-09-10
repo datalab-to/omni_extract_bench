@@ -152,3 +152,59 @@ left to serve. It also required a collision guard — folding can merge two dist
 object and silently discard a value — and it was never consistent: `canonical` strips
 `, - . / ( )` and whitespace but keeps the underscore, so it forgave `Invoice_No` and not
 `invoice no`.
+
+## 10. `null` asserts nothing, and is scored that way
+
+**The rule.** A `null` is not a leaf and gets no address. The metric scores *facts*, so an
+assertion is scored and an absence is not. Everything below follows from that one sentence.
+
+| gold | prediction | verdict | accuracy | denominator |
+| --- | --- | --- | --- | --- |
+| `{a: 1, b: null}` | `{a: 1, b: null}` | — | 100.0 | 1 |
+| `{a: 1, b: null}` | `{a: 1}` | — | 100.0 | 1 |
+| `{a: 1, b: null}` | `{a: 1, b: 5}` | `b` spurious | 50.0 | 2 |
+| `{a: 1, b: 5}` | `{a: 1, b: null}` | `b` missing | 50.0 | 2 |
+| `{a: 1, b: 5}` | `{a: 1}` | `b` missing | 50.0 | 2 |
+
+Read the first two rows together: agreeing that a field is empty earns nothing, and neither
+does omitting it. Read the last two together: emitting `null` where gold has a value is
+charged exactly as omitting it is, and the two are currently **indistinguishable** — both
+report `missing`, so a diagnostic cannot separate a model that declined from one that never
+tried. Recovering that distinction means carrying the prediction's `null` addresses through
+alignment, which nothing does today.
+
+**Why absence-agreement earns nothing.** The loud argument is that it would pay for laziness:
+on a schema of 20 fields where gold fills 3, a prediction consisting of nothing but nulls
+would score **85.0** instead of 0.0. The quieter argument is the one that decides it —
+counting absence-agreement makes the score depend on **schema width instead of document
+content**. Add fifty optional fields to a schema and every provider's score rises, with no
+document and no extraction changed. Two benchmarks over the same corpus with differently
+verbose schemas would stop being comparable, which is the problem this metric exists to fix.
+Not charging gold-`null`/prediction-absent is the same argument mirrored: there is no fact
+there to find, so failing to find it costs nothing.
+
+This is property **P9**.
+
+**Rows that are entirely null are dropped, on both sides.** A gold row whose payload is all
+`null` asserts no fact, so charging a vendor for omitting it would penalise everyone for an
+unstated convention (§6). The same filter runs over the prediction, which means an *invented*
+all-null row is free — a model may pad its output with empty rows without penalty. That is
+consistent with scoring facts, an empty row being no claim at all, but it does mean output
+bloat is not measured here.
+
+**Inside an ordered array, position is the address, so a `null` occupies one.** With
+`order_matters` naming an array, a gold `null` becomes a placeholder the prediction has to
+keep:
+
+| gold | prediction | accuracy | why |
+| --- | --- | --- | --- |
+| `[a, null, c]` | `[a, null, c]` | 100.0 | `c` is at index 2 on both sides |
+| `[a, null, c]` | `[a, b, c]` | 66.7 | `b` is spurious, but `c` stays at index 2 |
+| `[a, null, c]` | `[a, c]` | 33.3 | closing the gap moves `c` to index 1: spurious *and* missing |
+
+Note the incentive in the last two rows: filling the empty slot with junk scores **higher**
+than omitting it, because the junk preserves the alignment of everything after it. That falls
+out of "the index is the address", which is the whole meaning of the flag, and it is recorded
+here rather than fixed — but it is a reason to name an array in `order_matters` only when its
+order genuinely carries meaning. Order-free arrays have no such trap: `[a, null, c]` and
+`[a, c]` both score 100.0, because the null was never an address to begin with.
