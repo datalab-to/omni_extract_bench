@@ -24,7 +24,8 @@ This repository holds the scorer only; it ships no benchmark data and no benchma
 pip install -e .
 ```
 
-Python 3.9+. No dependencies beyond the standard library.
+Python 3.11+. One dependency: `scipy`, for the assignment solver
+(`linear_sum_assignment`).
 
 ## Use
 
@@ -54,7 +55,7 @@ omni-extract-bench leaderboard --pred-root baselines/ --gt-dir gt/ --schema-dir 
 fraction matched, counting spurious predicted leaves against you as well as missing ones.
 
 **Arrays are matched optimally.** Rows are paired by maximum-weight bipartite matching
-(Hungarian / Jonker-Volgenant, pure stdlib), not by index or by a guessed key, so a provider is
+(Hungarian / Jonker-Volgenant, via `scipy`), not by index or by a guessed key, so a provider is
 never punished for row order. Where a document is too large to solve exactly, the fallback is
 approximate and **says so** in `matching_exact` — an approximate score is never reported as
 though it were exact.

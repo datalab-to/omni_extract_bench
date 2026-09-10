@@ -50,33 +50,102 @@ def _row_signature(row):
     return sig
 
 
-# Set of grades in which some block exceeded optimal_match.MAX_EXACT and fell back to greedy.
+def _sublist_signature(sub):
+    """Weight signature for a LIST element of an array (an array of arrays).
+
+    A sub-list has no field names, so it cannot be keyed like a row. Its identity is the
+    multiset of its scalar values, and the weight between two sub-lists is the multiset
+    intersection -- the exact matched-leaf count for flat sub-lists, and a lower bound when
+    they nest further, exactly as `_row_signature` is for rows.
+    """
+    sig = {}
+    for v in sub:
+        if isinstance(v, (dict, list)) or v is None:
+            continue
+        k = canon_key(v)
+        sig[k] = sig.get(k, 0) + 1
+    return sig
+
+
+def _dict_weight(a, b):
+    """Rows: (fields whose values agree, fields the two rows have in common)."""
+    if len(b) < len(a):
+        a, b = b, a
+    matched = shared = 0
+    for k, v in a.items():
+        if k in b:
+            shared += 1
+            if b[k] == v:
+                matched += 1
+    return matched, shared
+
+
+def _multiset_weight(a, b):
+    """Sub-lists: (multiset intersection of values, same). Positions are not addresses here,
+    so a shared value IS a shared address and the two terms coincide."""
+    if len(b) < len(a):
+        a, b = b, a
+    inter = sum(min(n, b.get(k, 0)) for k, n in a.items())
+    return inter, inter
+
+
+# Set of grades in which some block exceeded matching's exactness budget and fell back to greedy.
 # Greedy is SUBOPTIMAL (measured: it recovers 99.2-99.8% of the optimal assignment weight),
 # and the loss lands only on providers that return large tables -- i.e. the ones with the best
 # coverage. The fallback cannot be removed (the largest gold array is 6881 rows and the solver
-# is O(n^3)), so instead it is RECORDED and surfaced in the result, never silent.
+# cannot be removed (the largest gold array is 6881 rows and its cost matrix is 0.38 GB,
+# only ~12% under the ceiling), so instead it is RECORDED and surfaced, never silent.
 _INEXACT = []
+
+# Open-map nodes skipped during the current grade; reported, never silent.
+_IGNORED = []
+
+
+def _pair_elements(pe, ge, sig, weight, block_keys=()):
+    """Optimal max-weight pairing of like-kinded array elements (see optimal_match).
+
+    Elements of DIFFERENT kinds are never passed here together: a dict can never pair with a
+    list can never pair with a scalar, so cross-kind weight is 0 and kind is just another
+    blocking key -- the same argument that makes per-block optimal globally optimal.
+    """
+    ps = [sig(x) for x in pe]
+    gs = [sig(x) for x in ge]
+    pidx = {id(x): i for i, x in enumerate(pe)}
+    gidx = {id(x): i for i, x in enumerate(ge)}
+
+    # OBJECTIVE: matched fields first, then fields the two elements have IN COMMON. The second
+    # term is a tie-break the metric spec omits, and omitting it left the score UNDEFINED:
+    # 3.2 maximises matched leaves while 4 divides by the union of gold's fields and the
+    # prediction's spurious ones, so two assignments with the same matched count can score
+    # differently. A field a paired row shares with its partner is one it does not add to the
+    # denominator, so maximising shared fields minimises spurious ones. `scale` exceeds every
+    # achievable shared total, so the primary objective is untouched and only ties are decided.
+    #
+    # This is not cosmetic. Once a second solver exists (`matching` uses scipy when installed)
+    # the two returned different equal-weight assignments and therefore DIFFERENT SCORES on
+    # generated documents -- measured at 50.60 against 51.85. A score has to be a function of
+    # its input, not of what happens to be installed on the machine that computed it.
+    # An element paired with ITSELF shares everything it has, so that is its own upper bound
+    # on `shared`; summing those bounds the whole assignment. Derived from `weight` rather
+    # than from the signature's shape, because a row signature holds canonical values and a
+    # sub-list signature holds counts.
+    scale = 1 + sum(weight(sig_, sig_)[1] for sig_ in ps)
+
+    def w(p, g):
+        matched, shared = weight(ps[pidx[id(p)]], gs[gidx[id(g)]])
+        return matched * scale + shared if matched else 0
+
+    pairs, up, ug, exact = OM.match_rows(pe, ge, w, block_keys=block_keys, key_fn=canon_key)
+    if not exact:
+        _INEXACT.append(max(len(pe), len(ge)))
+    return pairs, up, ug
 
 
 def _pair_rows(pd, gd):
-    """Optimal max-weight pairing of predicted rows to GT rows (see optimal_match)."""
-    psig = [_row_signature(r) for r in pd]
-    gsig = [_row_signature(r) for r in gd]
-    pidx = {id(r): i for i, r in enumerate(pd)}
-    gidx = {id(r): i for i, r in enumerate(gd)}
+    """Optimal max-weight pairing of predicted ROWS to GT rows."""
+    keys = tuple(k for k in _BLOCK_HINTS if any(k in r for r in (pd[:1] + gd[:1])))
+    return _pair_elements(pd, gd, _row_signature, _dict_weight, keys)
 
-    def w(p, g):
-        a, b = psig[pidx[id(p)]], gsig[gidx[id(g)]]
-        if len(b) < len(a):
-            a, b = b, a
-        return sum(1 for k, v in a.items() if b.get(k) == v)
-
-    keys = [k for k in _BLOCK_HINTS if any(k in r for r in (pd[:1] + gd[:1]))]
-    pairs, up, ug, exact = OM.match_rows(pd, gd, w, block_keys=tuple(keys),
-                                         key_fn=canon_key)
-    if not exact:
-        _INEXACT.append(max(len(pd), len(gd)))
-    return pairs, up, ug
 
 # ONE method for ALL subsets and ALL providers: every field is compared the same way.
 # Contextual's per-field `evaluation_config` (string_fuzzy / string_semantic / number_tolerance
@@ -215,6 +284,16 @@ def _is_array(node):
     return t == "array" or (isinstance(t, list) and "array" in t)
 
 # ── the grader — mirrors G.grade/grade_value EXACTLY, but with typed leaf comparison ──
+def _kind(v):
+    """Which of the three JSON shapes a node is. Two nodes can only be compared leaf-for-leaf
+    when they agree here; see the shape-disagreement branch in `fair_grade_value`."""
+    if isinstance(v, dict):
+        return "dict"
+    if isinstance(v, list):
+        return "list"
+    return "scalar"
+
+
 def _count_leaves(node):
     if isinstance(node, dict):
         return sum(_count_leaves(v) for v in node.values())
@@ -257,43 +336,27 @@ def _drop_empty_gt_rows(node):
     return node
 
 def pair_object_keys(pred: dict, gold: dict):
-    """Pair the keys of two objects by CANONICAL form, not by literal string.
+    """Pair the keys of two objects by LITERAL name, in gold-then-pred order.
 
-    Object keys are values too. Comparing the same string canonically when it sits in a field
-    and exactly when it sits in a key is a second definition of "are these equal?" -- the thing
-    `canon_key` exists to make unrepresentable -- and it only shows up on objects whose keys
-    come from the DOCUMENT rather than from the schema (an open `additionalProperties` map).
-    Schema-declared property names are unaffected: both sides spell them the way the schema
-    does, so canonical pairing returns exactly what literal pairing returned.
+    A prediction is generated against the schema, so its property names are the schema's
+    property names, which are also ground truth's. Both sides spell them the same way by
+    construction, and a predicted key that is not exactly a gold key is a field the extractor
+    invented -- charged as spurious, with gold's unmatched key charged as missing.
 
-    It matters because ground truth is not reliably verbatim about case. In this corpus a
-    document prints a heading in capitals, gold records it title-cased, and an extractor that
-    transcribed it faithfully scored zero for the whole group -- penalised for being closer to
-    the document than the gold file is. A benchmark cannot ask for verbatim transcription and
-    then grade the transcription against a normalised answer.
+    Keys were previously paired by `canon_key`, so that a key differing only in case still
+    joined. That existed for open `additionalProperties` maps, whose keys are headings an
+    extractor reads off the page rather than names the schema supplies. Open maps are not a
+    shape this benchmark uses -- extraction APIs are built around a schema that names its
+    fields, and `dialects.STRICT_ALLOWED_KEYS` does not even forward the keyword to strict
+    vendors -- so the folding had no case left to serve. It also needed a collision guard,
+    since folding can merge two distinct keys of one object and silently discard a value, and
+    it was never consistent: `canonical` strips ``, - . / ( )`` and whitespace but keeps the
+    underscore, so it forgave ``Invoice_No`` and not ``invoice no``.
 
-    Returns a list of ``(pred_key | None, gold_key | None)`` pairs, in gold-then-pred order.
-
-    COLLISION GUARD: if canonicalisation would merge two distinct keys of the SAME object
-    (``{"Total", "TOTAL"}``), that object falls back to literal pairing. Merging them would
-    silently discard one side's value, which is a worse failure than the one being fixed.
+    Returns a list of ``(pred_key | None, gold_key | None)`` pairs.
     """
-    def index(obj):
-        out = {}
-        for k in obj:
-            ck = canon_key(k) if isinstance(k, str) else k
-            if ck in out:
-                return None                     # collision -> caller falls back to literal
-            out[ck] = k
-        return out
-
-    ip, ig = index(pred), index(gold)
-    if ip is None or ig is None:
-        keys = list(dict.fromkeys(list(gold) + list(pred)))
-        return [(k if k in pred else None, k if k in gold else None) for k in keys]
-
-    order = list(dict.fromkeys(list(ig) + list(ip)))
-    return [(ip.get(ck), ig.get(ck)) for ck in order]
+    keys = list(dict.fromkeys(list(gold) + list(pred)))
+    return [(k if k in pred else None, k if k in gold else None) for k in keys]
 
 
 def fair_grade_value(pv, gv, sch):
@@ -301,6 +364,26 @@ def fair_grade_value(pv, gv, sch):
     unmatched rows as leaf misses (exactly like the original). Scalar leaves use the
     typed comparator (evaluation_config or inferred)."""
     sch = _unwrap_schema(sch) if isinstance(sch, dict) else {}
+    # OPEN MAPS ARE NOT EVALUATED. A node whose keys the schema leaves to the document is
+    # skipped on BOTH sides: it adds nothing to the numerator and nothing to the denominator,
+    # exactly like a `null`. Grading it would score a request the harness never delivered --
+    # the strict dialect drops `additionalProperties` before the schema reaches a vendor, so
+    # a strict vendor is asked for a bare object and has nothing to answer with. Skipping is
+    # not silent: the count is reported on the grade.
+    if N.is_open_map(sch):
+        _IGNORED.append(1)
+        return 0, 0
+    # SHAPE DISAGREEMENT. The two sides can disagree about whether a node is an object, an
+    # array or a scalar -- a vendor returning `{}` where gold has `[]`, or a bare string where
+    # gold has a list. Nothing can match across a shape boundary, so BOTH sides are unmatched
+    # and both are charged, exactly as the array branch below charges unmatched rows on either
+    # side. This branch must precede the others: they each coerce the non-conforming side to an
+    # empty container, which DISCARDED that side's leaves instead of charging them -- a gold
+    # table returned as an object left the denominator entirely and scored 100.0. `None` is
+    # excluded because an absent field is not a disagreement about shape; it falls through to
+    # the branch that charges gold's leaves as misses.
+    if pv is not None and gv is not None and _kind(pv) != _kind(gv):
+        return _count_leaves(pv) + _count_leaves(gv), 0
     if isinstance(pv, dict) or isinstance(gv, dict):
         pv = pv if isinstance(pv, dict) else {}
         gv = gv if isinstance(gv, dict) else {}
@@ -320,11 +403,17 @@ def fair_grade_value(pv, gv, sch):
         pv = pv if isinstance(pv, list) else []
         gv = gv if isinstance(gv, list) else []
         item = sch.get("items") or {}
+        # An array's elements are partitioned BY KIND and each partition is scored on its own.
+        # Branching on "does this array contain any dict?" discarded every non-dict element of
+        # a mixed array -- gold footnote strings beside a table were never scored, so omitting
+        # them AND fabricating them were both free. Partitioning is not a workaround: a dict
+        # can never pair with a list or a scalar, so kind behaves as a blocking key and
+        # per-partition optimal is optimal overall.
+        t = m = 0
         pd = [x for x in pv if isinstance(x, dict)]
         gd = [x for x in gv if isinstance(x, dict)]
         if pd or gd:
             pairs, up, ug = _pair_rows(pd, gd)
-            t = m = 0
             for prow, grow in pairs:
                 tt, mm = fair_grade_value(prow, grow, item)
                 t += tt; m += mm
@@ -332,14 +421,44 @@ def fair_grade_value(pv, gv, sch):
                 t += _count_leaves(row)   # spurious pred rows -> misses
             for row in ug:
                 t += _count_leaves(row)   # missing gt rows -> misses
-            return t, m
-        # scalar array -> multiset under the same comparator
-        remaining = list(gv); mm = 0
-        for x in pv:
-            for i, y in enumerate(remaining):
-                if cmp_leaf(x, y) >= 1.0:
-                    mm += 1; remaining.pop(i); break
-        return max(len(pv), len(gv)), mm
+        # Sub-arrays are keyless too, so they go through the SAME solver with a multiset
+        # weight. They previously fell through to the scalar comparator, which stringified
+        # them: `str([1.5, 2.5])` canonicalises to '[1525]' with punctuation stripped, so
+        # [[15, 25]] compared EQUAL to gold [[1.5, 2.5]] and scored 100.0 on wrong numbers.
+        ps = [x for x in pv if isinstance(x, list)]
+        gs = [x for x in gv if isinstance(x, list)]
+        if ps or gs:
+            pairs, up, ug = _pair_elements(ps, gs, _sublist_signature, _multiset_weight)
+            for psub, gsub in pairs:
+                tt, mm = fair_grade_value(psub, gsub, item)
+                t += tt; m += mm
+            for sub in up:
+                t += _count_leaves(sub)
+            for sub in ug:
+                t += _count_leaves(sub)
+        # Scalars -> multiset under the same comparator. `None` elements are excluded: the
+        # denominator used to be `max(len(pv), len(gv))`, i.e. a count of POSITIONS, so a
+        # null element occupied a denominator slot and matched itself -- adding 1 to both
+        # numerator and denominator in violation of P9 (null asserts nothing, on either
+        # side) and P4 (one denominator slot per gold leaf). It stayed hidden because the
+        # property generator emitted no scalar arrays at all.
+        pc = [x for x in pv if not isinstance(x, (dict, list)) and x is not None]
+        gc = [x for x in gv if not isinstance(x, (dict, list)) and x is not None]
+        if pc or gc:
+            remaining = list(gc); mm = 0
+            for x in pc:
+                for i, y in enumerate(remaining):
+                    if cmp_leaf(x, y) >= 1.0:
+                        mm += 1; remaining.pop(i); break
+            # Denominator is the UNION -- gold's leaves plus the predicted leaves that
+            # matched nothing -- not `max(len(pc), len(gc))`. Max is only correct when one
+            # side is a subset of the other: gold ["a","b","c"] against ["a","x","c"] has one
+            # MISSING leaf and one SPURIOUS one, so the denominator is 4, and max() reported
+            # 3. That erosion inflated every document containing a scalar array with errors
+            # on both sides, in the direction of flattering the vendor -- the same direction
+            # as every other shape defect in this branch.
+            t += len(gc) + len(pc) - mm; m += mm
+        return t, m
     if pv is None and gv is None:
         return 0, 0
     # one-side None: let cmp_leaf decide via canonical ('none'/'n/a' canonicalize to '' like
@@ -348,6 +467,7 @@ def fair_grade_value(pv, gv, sch):
 
 def fair_grade(pred, gt, schema):
     del _INEXACT[:]                      # per-grade; see _INEXACT
+    del _IGNORED[:]
     """Score one document.
 
     Top-level array keys are scored by the SAME routine as nested ones
@@ -411,7 +531,10 @@ def fair_grade(pred, gt, schema):
             # False => at least one array was too large to solve exactly and used the greedy
             # fallback, so this score is a slight UNDER-estimate. Never silent.
             "matching_exact": not _INEXACT,
-            "greedy_blocks": sorted(_INEXACT, reverse=True)}
+            "greedy_blocks": sorted(_INEXACT, reverse=True),
+            # Non-zero => the schema declared open maps, whose contents were evaluated on
+            # neither side. The score covers the rest of the document.
+            "ignored_open_maps": len(_IGNORED)}
 
 
 # ── self-test: the equivalences hold AND the traps stay mismatched ───────────────

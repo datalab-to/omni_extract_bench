@@ -42,14 +42,14 @@ For an array with predicted rows `P₁…Pₙ` and gold rows `G₁…Gₘ`:
    on either side, so both omission and over-production are penalised.
 4. **Blocking**: rows may be partitioned by fields compared exactly; rows in different blocks
    can never pair, so per-block optimal is globally optimal.
-5. **Exactness budget**: the solver is `O(n²·m)` in the *smaller* dimension `n`. Blocks are
-   solved exactly while `n²·m ≤ MAX_WORK`; beyond that the solver falls back to greedy and
-   *reports* `exact=False` rather than claiming optimality. The budget is on work, not row
-   count: a truncating provider produces a cheap rectangular problem (44×349 ≈ 7e5 operations),
-   so gating on the larger dimension pushed exactly the cases that most need accurate scoring
-   onto the approximate path. Greedy costs 0.2–0.8% of assignment weight, and it is charged
-   only to providers returning very large tables, so it is surfaced per grade
-   (`matching_exact`, `greedy_blocks`) and never silent.
+5. **Exactness budget**: the assignment is solved by `scipy.optimize.linear_sum_assignment`,
+   so what bounds exactness is the **cost matrix**, which is `O(n·m)` whatever solves it —
+   the largest gold array here is 6881 rows, 47 million cells, 0.38 GB as float64, only ~12%
+   under the ceiling. Beyond `MAX_CELLS` (or `MAX_EXACT` on the smaller dimension) the solver
+   falls back to greedy and *reports* `exact=False` rather than claiming optimality. Greedy
+   costs 0.2–0.8% of assignment weight, and it is charged only to providers returning very
+   large tables, so it is surfaced per grade (`matching_exact`, `greedy_blocks`) and never
+   silent.
 
 *Why exact matching matters:* the previous key-inference heuristic lost 2.6 points on a single
 10-Q, and 28% of array-cell misses on one subset were the right value attached to the wrong row.
@@ -120,19 +120,35 @@ scoring path can exist, which is the whole class rather than the instance.
   not guessed at.
 
 
-### Object keys are values
+## 9. Open maps are not evaluated
 
-An object's keys are compared by the same canonical form as its values, not literally. This
-matters only where the keys come from the DOCUMENT rather than the schema — an open
-`additionalProperties` map, whose keys are headings the extractor read off the page.
-Schema-declared property names are unaffected: both sides spell them the way the schema does.
+A schema node declaring `additionalProperties` leaves the property names to the document: the
+extractor must invent them by reading headings off the page. This benchmark does not evaluate
+that shape, and the reason is delivery rather than taste — `dialects.STRICT_ALLOWED_KEYS` does
+not forward the keyword, so a strict vendor receives a bare `{"type": "object"}` and has
+nothing to answer with. Grading the node would score a request the harness never made.
 
-The reason is that ground truth is not reliably verbatim about case. In this corpus a document
-prints a heading in capitals, gold records it title-cased, and an extractor that transcribed it
-faithfully scored zero for that entire group — penalised for being closer to the document than
-the gold file. A benchmark cannot ask for verbatim transcription and then grade it against a
-normalised answer.
+Such a subtree is skipped on **both** sides: it contributes to neither the numerator nor the
+denominator, exactly as a `null` does. The rest of the document scores normally, and the skip
+is reported on the grade (`ignored_open_maps`) so an ungraded region can never pass unnoticed.
+Detection reads *explicit* presence of the keyword as intent; under JSON Schema semantics
+`additionalProperties` defaults to true, which would make every object qualify. With no schema
+supplied nothing is skipped, because nothing can be identified.
 
-If canonicalisation would merge two distinct keys of the same object (`Total` and `TOTAL`),
-that object falls back to literal pairing: merging them would silently discard one side's
-value, which is a worse failure than the one being fixed.
+Support can be added later if the corpus needs it. The natural shape is an array of
+`{name, value}` rows, which every vendor can produce and which the array machinery already
+grades — the heading becomes a value rather than an address.
+
+### Object keys are addresses
+
+An object's keys are matched literally. A prediction is generated against the schema, so its
+property names are the schema's property names, which are also ground truth's — a predicted
+key that is not exactly a gold key names a field the extractor invented, and is charged as
+spurious while gold's unmatched key is charged as missing.
+
+Keys were briefly compared by canonical form so that a key differing only in case still
+joined. That existed solely for open maps, which §9 now excludes, so the folding had no case
+left to serve. It also required a collision guard — folding can merge two distinct keys of one
+object and silently discard a value — and it was never consistent: `canonical` strips
+`, - . / ( )` and whitespace but keeps the underscore, so it forgave `Invoice_No` and not
+`invoice no`.

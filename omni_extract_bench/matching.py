@@ -27,97 +27,84 @@ EFFICIENCY
 O(n^3) is fine for typical arrays but not for micro1's giant tables (thousands of rows).
 `match_rows()` therefore BLOCKS first: rows are partitioned by an exact-match "hard key"
 (dimension fields whose values are directly comparable). Two rows in different blocks can
-never be paired anyway, so solving each block optimally is *globally* optimal, at
-O(sum b_i^3) << O(n^3). If no safe hard key exists and the array is larger than
-`MAX_EXACT`, we fall back to greedy and SAY SO (`exact=False`) rather than silently
-pretending optimality.
+never be paired anyway, so solving each block optimally is *globally* optimal.
 
-Pure stdlib on purpose — a scorer with no numeric dependencies is reproducible anywhere.
+SOLVER
+------
+`scipy.optimize.linear_sum_assignment` -- Jonker-Volgenant, compiled -- and nothing else. A
+pure-Python Hungarian implementation lived here as a fallback for when scipy was absent; scipy
+is now a declared dependency, so a second implementation of it was untested-in-practice
+duplication of the exact kind that produced this repository's worst bugs. Four separate
+notions of "are these two values equal?" that were required to agree and silently did not is
+how `canon_key` came to exist; two solvers for one assignment problem is the same shape.
+
+While both existed they were measured against each other, and that measurement earned its
+keep: they returned different equal-weight assignments and therefore DIFFERENT SCORES for one
+input (50.60 against 51.85), because the objective maximised matched leaves while the score
+divided by a union denominator. That is fixed at the source -- both scorers now maximise
+matched leaves and then shared addresses, so every assignment achieving the maximum yields the
+same score -- and the fix is asserted where it belongs, in the scorers' own property suites.
+
+WHAT STILL BOUNDS EXACTNESS
+---------------------------
+Not the solve. The COST MATRIX, which is O(n*m) whatever solves it: the largest gold array
+here is 6881 rows, 47 million cells, 0.38 GB as float64. Past the ceiling below the choice is
+greedy or an out-of-memory, so greedy stays -- and reports itself (`exact=False`) rather than
+pretending optimality.
 """
 from __future__ import annotations
 
-INF = float("inf")
-# The exact solver is O(n^2 * m) with n the SMALLER dimension (the caller transposes so n <= m).
-# Gating on the larger dimension was therefore the wrong gate in both directions: it forced
-# greedy on cheap RECTANGULAR cases (a provider returning 44 rows against 349 gold costs
-# 44^2 * 349 ~ 7e5 operations, trivially exact) while a square case at the same limit costs
-# ~100x more. Since a truncating provider produces exactly the rectangular shape, the old gate
-# pushed the cases that most need accurate scoring onto the approximate path.
-#
-# So the budget is on WORK, not row count. Calibrated on this hardware: 900x900 (7.3e8 units)
-# took 11.2s, i.e. ~6.5e7 units/sec. A 2e8 budget keeps any single array under ~3s while
-# admitting every rectangular case the benchmark actually contains.
-MAX_WORK = 2 * 10**8
+import numpy as _np
+from scipy.optimize import linear_sum_assignment as _lsa
+#: Ceilings on solving one block exactly. Both bound the COST MATRIX rather than the solve,
+#: because with a compiled solver the matrix is what costs: 250 million cells is ~2 GB as
+#: float64. A dimension cap as well as a cell cap, so a wildly rectangular problem cannot slip
+#: through on cells alone. Past either, `match_rows` falls back to greedy and says so.
+#:
+#: The cell cap was 60 million while the scorer also held a Python dict of every priced pair,
+#: which cost ~200 bytes a pair against the matrix's 8 -- so the matrix was never what ran the
+#: machine out of memory, and a ceiling set for it was really a ceiling for the dict. That
+#: dict is gone. The largest gold array in this corpus is 6881 x 6881, 47 million cells, which
+#: sat at 79% of the old cap: one table half again as large would have dropped a whole
+#: document to greedy. At 250 million the same cliff is past 15,000 rows.
+MAX_EXACT = 20000
+MAX_CELLS = 250 * 10**6
 
-# Hard ceiling on the smaller dimension, independent of the work budget: memory for the cost
-# matrix is O(n*m) and the pure-Python inner loop degrades badly past this.
-MAX_EXACT = 1500
+
+def force_approximate():
+    """Test hook: shrink the exactness budget so the greedy fallback engages.
+
+    Returns:
+        A callable that restores the real budget.
+
+    The greedy path is unreachable on any realistic input -- the ceilings sit above the largest
+    array this corpus contains -- so without a hook the property that an approximate score
+    announces itself would pass without ever exercising the path it describes. Building an
+    array big enough instead costs minutes per test for no extra coverage.
+    """
+    global MAX_EXACT, MAX_CELLS
+    saved = (MAX_EXACT, MAX_CELLS)
+    MAX_EXACT, MAX_CELLS = 8, 64
+
+    def restore():
+        global MAX_EXACT, MAX_CELLS
+        MAX_EXACT, MAX_CELLS = saved
+
+    return restore
 
 
 def _exact_ok(n, m):
-    """True when this block can be solved exactly within the work budget."""
-    lo, hi = (n, m) if n <= m else (m, n)
-    return lo <= MAX_EXACT and (lo * lo * hi) <= MAX_WORK
+    """True when one block's cost matrix fits the budget and can be solved exactly.
 
+    Args:
+        n, m: the two sides' element counts, in either order.
 
-def hungarian(cost):
-    """Minimum-cost assignment for a rectangular matrix.
-
-    cost: list of rows (len n) each of len m, n <= m enforced by caller-side transpose.
-    Returns: list `assign` of length n, assign[i] = column matched to row i (or -1).
-    Classic O(n^2 m) shortest augmenting path with potentials (JV/Hungarian).
+    Returns:
+        Whether `optimal_pairs` may be called directly. `match_rows` falls back to greedy when
+        this is False, and records that the grade is approximate.
     """
-    n = len(cost)
-    if n == 0:
-        return []
-    m = len(cost[0])
-    if m == 0:
-        return [-1] * n
-    # potentials and column->row assignment (1-indexed internal arrays)
-    u = [0.0] * (n + 1)
-    v = [0.0] * (m + 1)
-    p = [0] * (m + 1)          # p[j] = row assigned to column j
-    way = [0] * (m + 1)
-    for i in range(1, n + 1):
-        p[0] = i
-        j0 = 0
-        minv = [INF] * (m + 1)
-        used = [False] * (m + 1)
-        while True:
-            used[j0] = True
-            i0 = p[j0]
-            delta = INF
-            j1 = -1
-            for j in range(1, m + 1):
-                if used[j]:
-                    continue
-                cur = cost[i0 - 1][j - 1] - u[i0] - v[j]
-                if cur < minv[j]:
-                    minv[j] = cur
-                    way[j] = j0
-                if minv[j] < delta:
-                    delta = minv[j]
-                    j1 = j
-            if j1 == -1:
-                break
-            for j in range(m + 1):
-                if used[j]:
-                    u[p[j]] += delta
-                    v[j] -= delta
-                else:
-                    minv[j] -= delta
-            j0 = j1
-            if p[j0] == 0:
-                break
-        while j0:
-            j1 = way[j0]
-            p[j0] = p[j1]
-            j0 = j1
-    assign = [-1] * n
-    for j in range(1, m + 1):
-        if 1 <= p[j] <= n:
-            assign[p[j] - 1] = j - 1
-    return assign
+    lo, hi = (n, m) if n <= m else (m, n)
+    return lo <= MAX_EXACT and (lo * hi) <= MAX_CELLS
 
 
 def optimal_pairs(pred_rows, gt_rows, weight):
@@ -132,9 +119,23 @@ def optimal_pairs(pred_rows, gt_rows, weight):
         return [], list(pred_rows), list(gt_rows)
     transposed = len(pred_rows) > len(gt_rows)
     A, B = (gt_rows, pred_rows) if transposed else (pred_rows, gt_rows)
-    # cost = -weight (minimisation)
-    cost = [[-float(weight(a, b) if not transposed else weight(b, a)) for b in B] for a in A]
-    assign = hungarian(cost)
+    # cost = -weight, because both solvers minimise
+    # The matrix is filled IN a numpy array rather than built as a Python list and converted:
+    # at the largest real array (6881 x 6881, 47 million cells) a list of lists costs ~1.5 GB
+    # of float objects and list slots before scipy sees any of it, against 0.38 GB for the
+    # array itself. The O(n*m) matrix is what bounds exactness once the solve is compiled, so
+    # it is worth not doubling it.
+    cost = _np.empty((len(A), len(B)), dtype=float)
+    for ia, a in enumerate(A):
+        row = cost[ia]
+        for jb, b in enumerate(B):
+            row[jb] = -(weight(a, b) if not transposed else weight(b, a))
+    # scipy solves the rectangular problem directly, returning row/column index arrays rather
+    # than a per-row assignment vector.
+    rows, cols = _lsa(cost)
+    assign = [-1] * len(A)
+    for ia, jb in zip(rows.tolist(), cols.tolist()):
+        assign[ia] = jb
     pairs, used_b = [], set()
     for ia, jb in enumerate(assign):
         if jb < 0:

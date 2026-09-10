@@ -51,16 +51,71 @@ def rand_row(rnd, nf=None):
 
 
 def rand_doc(rnd, depth=0):
+    """Generate a document.
+
+    The array shapes here are load-bearing. This generator used to emit ONLY homogeneous
+    arrays of dicts, so three defects in the array branch -- mixed arrays silently dropping
+    their scalar elements, arrays of arrays compared by string repr, and shape disagreement
+    erasing one side's leaves -- were invisible to every property below. A generator that
+    only produces well-shaped input cannot test a scorer whose job is malformed input.
+    """
     d = {}
     for i in range(rnd.randint(2, 5)):
         r = rnd.random()
-        if r < 0.35 and depth < 2:
+        if r < 0.28 and depth < 2:                       # array of rows
             d[f"arr{i}"] = [rand_row(rnd, 4) for _ in range(rnd.randint(1, 6))]
-        elif r < 0.5 and depth < 2:
+        elif r < 0.38:                                   # array of scalars
+            d[f"sarr{i}"] = [rand_scalar(rnd) for _ in range(rnd.randint(1, 5))]
+        elif r < 0.46 and depth < 2:                     # MIXED array: rows + scalars
+            d[f"marr{i}"] = ([rand_row(rnd, 3) for _ in range(rnd.randint(1, 3))]
+                             + [rand_scalar(rnd) for _ in range(rnd.randint(1, 3))])
+        elif r < 0.54:                                   # array of arrays
+            d[f"aarr{i}"] = [[rand_scalar(rnd) for _ in range(rnd.randint(1, 3))]
+                             for _ in range(rnd.randint(1, 4))]
+        elif r < 0.66 and depth < 2:
             d[f"obj{i}"] = rand_doc(rnd, depth + 1)
         else:
             d[f"s{i}"] = rand_scalar(rnd)
     return d
+
+
+def reshape(node, rnd):
+    """Perturb a document's SHAPE, not its values: swap a container for another kind.
+
+    This is the mutation no existing test performed. A vendor really does return `{}` where
+    gold has `[]`, or a bare string where gold has an array, and the scorer's answer used to
+    be to coerce the offending side to an empty container -- discarding the other side's
+    leaves rather than charging them.
+    """
+    if isinstance(node, dict):
+        out = {}
+        for k, v in node.items():
+            if rnd.random() < 0.15:
+                out[k] = [] if isinstance(v, dict) else ({} if isinstance(v, list) else "s")
+            else:
+                out[k] = reshape(v, rnd)
+        return out
+    if isinstance(node, list):
+        return [reshape(x, rnd) for x in node]
+    return node
+
+
+def gold_leaf_paths(node, prefix=()):
+    """Every gold leaf path, enumerated WITHOUT consulting the prediction.
+
+    An independent count is the point: it is the one denominator the scorer cannot influence,
+    so comparing against it catches erasure that self-referential properties (P11) cannot.
+    """
+    out = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            out += gold_leaf_paths(v, prefix + (k,))
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            out += gold_leaf_paths(v, prefix + (i,))
+    elif node is not None:
+        out.append(prefix)
+    return out
 
 
 def leaves_of(node):
@@ -338,8 +393,13 @@ report(f"P14b equal values always share a pairing key  ({pairs_checked} pairs)",
 # rows, solver is O(n^3)); reporting a greedy score AS IF exact is not.
 small = {"rows": [{"i": n} for n in range(20)]}
 r_small = FG.fair_grade(small, small, SCH_ROWS)
-huge = {"rows": [{"i": n, "v": n % 7} for n in range(OM.MAX_EXACT + 200)]}
+# The budget is shrunk through `force_approximate` rather than by building an array big
+# enough to exceed the real ceiling: the real ceiling now depends on which solver is
+# installed, and a 20,000-row identity document costs minutes to grade for no extra coverage.
+_restore = OM.force_approximate()
+huge = {"rows": [{"i": n, "v": n % 7} for n in range(40)]}
 r_huge = FG.fair_grade(huge, huge, SCH_ROWS)
+_restore()
 # ── P16 one equality everywhere (REGRESSION: blocking used a third definition) ───
 # Blocking asserts "these rows can never pair". If it uses a STRICTER notion of equality than
 # the scorer, it silently forbids pairings the scorer would accept. It used bare str(), so rows
@@ -387,34 +447,39 @@ report("P17 identity holds when a document contains all-null rows",
              f"identity={r_id['leaf_accuracy']:.2f} (want 100) partial={r_part['leaf_accuracy']:.2f} (want <100)"))
 
 
-# ── P18 an object key is a value: casing must not decide the score ──────────────
-# Object keys were compared LITERALLY while every other value went through canon_key -- a
-# second definition of equality, in the one place a document (not the schema) supplies the
-# string. Ground truth is not reliably verbatim about case, so grading it penalised the
-# extractor that transcribed the document more faithfully than gold did.
-SCH_P18 = {"type": "object", "properties": {
+# ── P18 object keys are addresses, matched literally ────────────────────────────
+# Keys were briefly folded through canon_key so that a key differing only in case still
+# joined. That served open `additionalProperties` maps, whose keys an extractor reads off the
+# page; this benchmark does not use that shape, so a predicted key is either exactly a gold
+# key or a field the extractor invented.
+SCH_P18 = {"type": "object", "properties": {"total": {"type": "number"}}}
+same = FG.fair_grade({"total": 5.0}, {"total": 5.0}, SCH_P18)
+cased = FG.fair_grade({"Total": 5.0}, {"total": 5.0}, SCH_P18)
+report("P18 an exact key match scores 100",
+       check("P18", abs(same["leaf_accuracy"] - 100.0) < 1e-9, f"got {same['leaf_accuracy']:.2f}"))
+report("P18b a key that is not exactly gold's is charged, both ways",
+       check("P18b", cased["leaf_match"] == 0 and cased["leaf_total"] == 2,
+             f"got {cased['leaf_match']}/{cased['leaf_total']}, want 0/2 "
+             f"(1 gold key missing, 1 predicted key spurious)"))
+pairs = FG.pair_object_keys({"a": 1, "b": 2}, {"a": 1, "c": 3})
+report("P18c key pairing is literal and order-stable",
+       check("P18c", pairs == [("a", "a"), (None, "c"), ("b", None)], f"got {pairs}"))
+
+# ── P23 open maps are not evaluated, and the skip is reported ───────────────────
+# `additionalProperties` leaves the property names to the document. The strict dialect drops
+# the keyword before a schema reaches a vendor, so grading such a node scores a request the
+# harness never delivered. It is skipped on both sides and counted, never silently dropped.
+SCH_OM = {"type": "object", "properties": {
+    "invoice_no": {"type": "string"},
     "groups": {"type": "object", "additionalProperties": {"type": "array",
                                                           "items": {"type": "string"}}}}}
-gold_p18 = {"groups": {"Core Competencies": ["Brand Strategy", "SEO"], "Other": ["Slack"]}}
-same_but_caps = {"groups": {"CORE COMPETENCIES": ["Brand Strategy", "SEO"], "Other": ["Slack"]}}
-r_caps = FG.fair_grade(same_but_caps, copy.deepcopy(gold_p18), SCH_P18)
-report("P18 a key differing only in case scores identically",
-       check("P18", abs(r_caps["leaf_accuracy"] - 100.0) < 1e-6,
-             f"got {r_caps['leaf_accuracy']:.2f}, want 100"))
-
-# and the relaxation must not make WRONG values free
-wrong_p18 = {"groups": {"CORE COMPETENCIES": ["Nonsense", "SEO"], "Other": ["Slack"]}}
-r_wrong = FG.fair_grade(wrong_p18, copy.deepcopy(gold_p18), SCH_P18)
-report("P18b folding keys does not excuse wrong values",
-       check("P18b", r_wrong["leaf_accuracy"] < 99.0,
-             f"got {r_wrong['leaf_accuracy']:.2f}, want <100"))
-
-# COLLISION: two keys of one object that canonicalise together must NOT be merged, because
-# merging silently discards one side's value -- worse than the problem being fixed.
-pairs = FG.pair_object_keys({"Total": 1, "TOTAL": 2}, {"Total": 1})
-report("P18c colliding keys fall back to literal pairing",
-       check("P18c", len(pairs) == 2 and ("TOTAL", None) in pairs,
-             f"got {pairs}"))
+G_OM = {"invoice_no": "INV-1", "groups": {"Core Competencies": ["SEO"]}}
+r_om = FG.fair_grade({"invoice_no": "INV-1"}, copy.deepcopy(G_OM), SCH_OM)
+report("P23 an open map reaches neither numerator nor denominator, and is counted",
+       check("P23", (r_om["leaf_total"], r_om["leaf_match"]) == (1, 1)
+             and r_om["ignored_open_maps"] == 1,
+             f"got {r_om['leaf_match']}/{r_om['leaf_total']}, "
+             f"ignored={r_om['ignored_open_maps']}"))
 
 print(f"\n{'ALL METRIC PROPERTIES HOLD' if not FAILS else 'FAILURES:'}")
 for f in FAILS:

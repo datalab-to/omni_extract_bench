@@ -87,3 +87,25 @@ def prep_ground_truth(obj):
     """Unwrap common envelopes around ground truth."""
     obj = G.unwrap(obj)
     return obj if isinstance(obj, dict) else {}
+
+
+def is_open_map(node) -> bool:
+    """True when a schema node declares an object whose KEYS come from the document.
+
+    ``additionalProperties`` asks the extractor to invent the property names by reading them
+    off the page. This benchmark does not evaluate that shape: extraction APIs are built around
+    a schema that names its fields, and `dialects.STRICT_ALLOWED_KEYS` does not even forward
+    the keyword, so a strict vendor receives a bare ``{"type": "object"}`` and has nothing to
+    answer with. Grading such a node would score a request the harness never delivered.
+
+    Detection reads EXPLICIT presence as intent rather than JSON Schema semantics, under which
+    ``additionalProperties`` defaults to true and every object would qualify.
+    """
+    if not isinstance(node, dict):
+        return False
+    for branch in ("anyOf", "oneOf", "allOf"):
+        for sub in node.get(branch, []) or []:
+            if is_open_map(sub):
+                return True
+    extra = node.get("additionalProperties")
+    return extra is True or isinstance(extra, dict)

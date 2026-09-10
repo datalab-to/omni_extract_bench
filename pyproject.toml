@@ -3,7 +3,7 @@ name = "omni-extract-bench"
 version = "0.1.0"
 description = "One scorer for document-extraction benchmarks: leaf value accuracy with optimal row matching."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Datalab" }]
 keywords = ["benchmark", "document-extraction", "evaluation", "ocr", "structured-extraction"]
@@ -12,7 +12,9 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = []
+dependencies = [
+    "scipy>=1.13.1",
+]
 
 [project.urls]
 Homepage = "https://github.com/datalab-to/omni_extract_bench"
