@@ -57,8 +57,10 @@ For an array with predicted rows `P₁…Pₙ` and gold rows `G₁…Gₘ`:
    a nested array — so pricing a pair means solving the pairing of the arrays inside it, one
    array level per hop.
 2. **Pair** by the assignment maximising `Σ w`, solved exactly with
-   `scipy.optimize.linear_sum_assignment`. Ties are broken by shared addresses, so every
-   assignment achieving the maximum yields the same score.
+   `scipy.optimize.linear_sum_assignment`. Ties are broken by shared addresses. Without that
+   tie-break, two solvers returned different equal-weight assignments and so different scores
+   for one input — 50.60 against 51.85 — because the objective maximised matched values while
+   the score divided by a union denominator. P2 and P8 are what hold this now.
 3. **Discard any pair worth zero.** The bar is one matching value, and it decides the
    denominator: a row that clears it is charged once, a row that fails it is charged twice —
    once as gold nobody found, once as content the model made up. So neither omission nor
@@ -196,8 +198,9 @@ would reward fragility. Coverage is reported beside the score, never inside it.
 
 A benchmark is a set of incentives. Three rules, for anyone building against this:
 
-1. **Emit a row if you can read any part of it.** A paired row has the same denominator as an
-   omitted one, so attempting can only add to the numerator. Never truncate to be safe.
+1. **Emit a row if you can read any part of it, carrying only the parts you can read.** Those
+   values sit at gold's own addresses, so the row costs exactly what omitting it would have
+   cost and earns whatever it got right. Never truncate to be safe.
 2. **Leave a field empty rather than guess it.** `null`, `[]` and omitting the key cost the
    same, and none costs more than a wrong value.
 3. **Do not invent a row you cannot read at all.** It is charged twice.
@@ -214,6 +217,14 @@ attempted with *j* of 4 right:
 | emitted, 1 of 4 right | **62.5** | 62.5 |
 | emitted, 2 of 4 right | 75.0 | 75.0 |
 | emitted, 4 of 4 right | 100.0 | 100.0 |
+
+Note what rule 1 does **not** say. A row that pairs is not automatically better than an
+omitted one — fill its unreadable fields with guesses and the denominator grows. Take a row
+of one readable field and five unreadable list items: guessed, it scores **41.2** where
+omitting it scores 50.0, because the row pairs on the readable field but each wrong list
+element costs two denominator slots rather than one (§4). Emitting the row with only its
+readable field scores **58.3**, beating both. A strict schema cannot take that option away,
+since `null` and `[]` score exactly as an omitted key does.
 
 **Where the two headline numbers disagree, deliberately.** At one of four right, `accuracy`
 prefers attempting and `f1` prefers omitting. Both are correct: the model recovered a real
@@ -256,7 +267,7 @@ scorer produces.
 | P14 | Pairing/scoring agreement | the pairing that earned the score is the pairing that is committed |
 | P15 | No silent approximation | a grade that used the greedy fallback says so |
 | P16 | Bucket completeness | the six buckets partition every address, and equal `explain`'s verdicts |
-| P17 | Attempting beats omitting | a row paired on any matching value scores above omitting it |
+| P17 | Partial extraction beats omission | a row emitted with only the values read correctly scores above omitting that row |
 | P18 | Configuration is checked | an `order_matters` name fitting no array raises, rather than silently applying to nothing |
 | P19 | Schema is required | a grade without one raises, rather than reporting `fabricated: 0` |
 
