@@ -34,15 +34,77 @@ def _defrac(s: str) -> str:
 _DATEFMTS = ["%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%B %d, %Y", "%b %d, %Y",
              "%d %B %Y", "%d-%b-%Y", "%d%b%Y", "%m/%d/%y", "%Y/%m/%d", "%d.%m.%Y",
              "%m.%d.%Y", "%b %d %Y", "%B %d %Y"]
+
+# Nearly every value handed to `_asdate` is not a date, and the obvious loop learns that by
+# raising fifteen times -- which cost 40% of grading time on a table-heavy document. The
+# escape is that `strptime` does not really parse character by character: it compiles each
+# format to a regex, matches, and raises if the match fails or stops short of the end. So we
+# can ask that same regex first, and only call `strptime` for a format that can actually
+# match.
+#
+# The guard is BUILT FROM the parser rather than reasoning about it. An earlier version of
+# this worked out by hand which literals a format demands, and got it wrong: `strptime`
+# compiles whitespace in a format to `\s+`, so "January\t15\t2024" parses, while a
+# hand-rolled rule looking for a literal " " rejected it. Deriving the guard from
+# `_TimeRE_cache` makes that class of mistake unrepresentable -- the filter and the parser
+# are the same pattern.
+#
+# `_strptime` is private, so every use of it is guarded: if a future Python moves these, we
+# fall back to the plain loop and lose speed, never correctness.
+try:
+    import _strptime as _sp
+
+    def _fmt_regex(fmt):
+        """The regex `strptime` itself will use for `fmt`.
+
+        Goes through `_strptime`'s own cache, which that module clears when the locale
+        changes -- so the guard cannot be left describing a locale the parser has moved on
+        from.
+        """
+        return _sp._TimeRE_cache.compile(fmt)
+
+    #: One alternation over every format, to reject a non-date in a single regex call.
+    #: The per-format patterns all name their groups the same way, and duplicate group names
+    #: are illegal in an alternation, so they are stripped -- the prefilter only ever needs
+    #: to match, never to capture. Rebuilt when the locale changes, for the same reason
+    #: `_TimeRE_cache` is.
+    _STRIP_GROUP_NAMES = re.compile(r"\(\?P<\w+>")
+    _union_cache: tuple[object, "re.Pattern"] | None = None
+
+    def _union_regex():
+        global _union_cache
+        lang = _sp._getlang()
+        if _union_cache is None or _union_cache[0] != lang:
+            pattern = "|".join(
+                "(?:" + _STRIP_GROUP_NAMES.sub("(?:", _fmt_regex(f).pattern) + ")"
+                for f in _DATEFMTS)
+            _union_cache = (lang, re.compile(pattern, re.IGNORECASE))
+        return _union_cache[1]
+
+    def _candidate_formats(s):
+        if not _union_regex().match(s):
+            return                      # no format can match; skip all fifteen
+        for f in _DATEFMTS:
+            m = _fmt_regex(f).match(s)
+            # Exactly the two failures `strptime` reports as a format mismatch: no match,
+            # and a match that leaves unconverted data behind.
+            if m is not None and m.end() == len(s):
+                yield f
+
+except Exception:                       # pragma: no cover - stdlib internals moved
+    def _candidate_formats(s):
+        return iter(_DATEFMTS)
+
+
 def _asdate(v):
     s = str(v).strip()
     if not re.search(r"\d", s) or len(s) > 24:
         return None
-    for f in _DATEFMTS:
+    for f in _candidate_formats(s):
         try:
             return datetime.strptime(s, f).date().isoformat()
         except ValueError:
-            pass
+            pass                        # a real date error, e.g. February 30
     return None
 
 # Sign NOTATION varies by convention; sign SEMANTICS must not. Accounting parentheses,
