@@ -97,7 +97,7 @@ problem on top.
 
 ## 3. `contextual/10kq__nke_10q_fy2025q2` -- every vendor 48-58
 
-**Status: unexplained, and systematic across vendors.**
+**Status: partly diagnosed. Looks like a ground-truth completeness question.**
 
 | vendor | accuracy | found |
 |---|---|---|
@@ -106,10 +106,24 @@ problem on top.
 | extend | 47.88 | 49% |
 | llamaextract | 57.66 | 60% |
 
-datalab's run also shows 140 fabricated and 325 invented. Four vendors clustered in a
-ten-point band with `found` around 50-60% is the signature of a shared cause -- the
-document, the schema, or the ground truth -- rather than four independent models each
-being mediocre in the same way. Not yet diagnosed.
+datalab shows 140 fabricated and 325 invented items. Inspecting what those addresses
+actually are:
+
+```
+invented item   balance_sheet.goodwill[p1].value          (a row that paired with nothing)
+fabricated      balance_sheet.short_term_debt[0].value    (schema offered it, gold is silent)
+```
+
+So the models are producing balance-sheet line items the ground truth does not record --
+`short_term_debt` has a slot in the schema and no value in the gold, and the models fill
+it. Four vendors doing the same thing in the same places is more consistent with a gold
+file that captures a subset of the statement than with four models hallucinating the same
+line items. Worth checking the gold against the filing before treating this as a vendor
+result.
+
+Ruled out while looking: none of the 465 extras are `_citations`/`_meta` sidecars. Those
+suffixes appear all over datalab's output and are **not** counted as invented, so they are
+not the cause here and are not a scoring problem anywhere.
 
 ---
 
@@ -217,3 +231,77 @@ pathological case lands at 8.6 GB rather than 71 GB.
 `cli.py` prepares schemas with `resolve_refs(strip_benchmark_keys(schema))`;
 `scripts/test.py` only calls `resolve_refs`. **243 of the 660 schemas** contain
 `evaluation_config` or `default`, so the two paths are not grading the same schema.
+
+---
+
+## 9. `pytest tests/` cannot collect this suite at all
+
+**Status: pre-existing, unrelated to any change here, and a hazard for CI.**
+
+`tests/test_capture.py` and `tests/test_cli.py` call `sys.exit()` at import time. Under
+pytest that raises `SystemExit` during collection and the whole run dies with
+`INTERNALERROR`, reporting **"no tests ran"** -- not a failure, an abort. Every test file
+in the suite is written script-style (run directly, exit non-zero on failure), so this is
+consistent, but anyone who points CI at `pytest` gets a green-looking nothing.
+
+Either keep the house style and drive the suite with a runner that executes each file, or
+guard those two `sys.exit()` calls behind `if __name__ == "__main__"`.
+
+---
+
+## 10. One llamaextract prediction is a recorded vendor error, not a miss
+
+**Status: understood. Noted so the number is read correctly.**
+
+`longarray/cae_v2_10_n742` is present in R2 but its payload is:
+
+```json
+{"result": {"__error__": "RuntimeError: LlamaExtract FAILED: An internal service
+ error occurred during processing"}, "_secs": ...}
+```
+
+`usable()` correctly rejects it, so it scores 0 and stays in the mean -- which is why
+llamaextract shows `score 71.34` but `on returned 73.17`. The distinction is working as
+designed; it is only worth knowing that the 0 is a vendor-side service failure rather
+than a bad extraction. All 40 files exist for all four vendors; this is the only
+unusable one.
+
+---
+
+## 11. The 40-document sample cannot separate the top two
+
+**Status: methodological. Do not publish a datalab-vs-reducto ordering from it.**
+
+| vendor | score |
+|---|---|
+| reducto | 88.78 |
+| datalab | 88.66 |
+| extend | 82.36 |
+| llamaextract | 71.34 |
+
+datalab and reducto sit **0.12 points** apart, and across the similarity sweep they never
+separate by more than 0.42 and trade places twice. On 40 documents one document is 2.5%
+of the mean, and single documents in this sample differ by 40+ points between vendors --
+`m1__Healthcare_facility_quality_measure` alone scored datalab 46.71 because it timed
+out. Its presence or absence moves the mean by more than the entire gap.
+
+The extend and llamaextract gaps (~8 and ~16 points) are large and stable at every
+threshold, so those are probably real. The top two need the full 660 -- or at minimum a
+much larger sample -- before any ordering means anything. The sample also excludes the
+three largest documents by construction.
+
+---
+
+## 12. Similarity matching changes the cost model of pairing
+
+**Status: understood, mitigated in the experiment. Relevant if option 2 is ever adopted.**
+
+Strict matching compares canonical values by hash equality, O(1) a pair, inside a fill
+that is already O(n*m). Similarity replaces that with a string diff, so a 1,300-row array
+goes from 1.7M hash compares to 1.7M diffs -- the first attempt at the sweep had not
+finished one pass after ten minutes.
+
+Three guards brought it to ~37% over strict: a length gate (only strings >= 40 chars are
+eligible), difflib's own cheap upper bounds (`real_quick_ratio` then `quick_ratio`) before
+`ratio()`, and a memo, because the fill prices most pairs twice. Any real implementation
+needs all three.
