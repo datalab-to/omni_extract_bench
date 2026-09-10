@@ -158,10 +158,45 @@ key names, and those have different causes and different fixes.
 A detection is a keypath-and-value, so a value found at the right address but read wrongly is
 charged on both sides — as a box with the right location and the wrong class would be.
 
-`accuracy` and `f1` divide by different things, and it is worth knowing exactly when they
-disagree. The addresses both documents use — `matched + misread` — are counted **once** in
-`total` and **twice** in `gold + asserted`. So the two agree precisely when the documents use
-the same set of addresses, and diverge as soon as one address exists on only one side:
+### `accuracy` is the score; `f1` is the check on it
+
+The two divide by different things, and the difference is worth stating exactly, because they
+can rank two predictions oppositely. Write the buckets as `m` matched, `w` misread, `u`
+unfound, `x` everything asserted that gold has no address for. Then
+
+    gold      G = m + w + u
+    asserted  P = m + w + x
+    total     T = m + w + u + x
+
+    accuracy = m / T          = m / (m + w + u + x)
+    f1       = 2m / (G + P)   = 2m / (2m + 2w + u + x)
+
+**`f1` is the textbook measure and charges a misread twice.** Under the detection framing,
+`FP = P − m = w + x` and `FN = G − m = w + u`, so `w` is in both: a value at the right address
+with the wrong content is a thing you asserted that is untrue *and* a gold fact you did not
+recover. Object detection does the same with a right-place/wrong-class box. `f1` is exactly
+the Dice coefficient over `(address, value)` pairs.
+
+**`accuracy` deviates, deliberately, and charges a misread once.** Jaccard over those pairs
+would be `m / (m + 2w + u + x)`, because a misread contributes a distinct gold pair and a
+distinct predicted pair. `accuracy` is short by exactly `w`. That deviation *is* **P4** — each
+gold value contributes exactly 1 to the denominator — and it is what makes the headline
+literally interpretable: "you recovered 60% of this document". Charge a misread twice and the
+denominator exceeds the number of facts in the document, and the sentence stops being true.
+
+**The price of the deviation is that the two can disagree about which prediction is better.**
+When no value is misread, `accuracy` is Jaccard and `f1` is `2J/(1+J)`, a strictly increasing
+function of it, so their ordering is identical — measured over 3302 pairs, **zero**
+disagreements. Introduce misreads and the monotone relationship breaks: over 3234 pairs where
+one prediction misreads and the other omits and invents, they rank **2.1%** of them
+oppositely. `accuracy` is systematically kinder to a model that misreads; `f1` is kinder to
+one that omits and invents.
+
+So, to be unambiguous: **`accuracy` is the score and decides any ranking.** `f1` is not a
+tie-breaker for it. The signature of a model filling in fields it cannot read is `accuracy`
+holding up while **`precision`** falls — not `f1`, which nets out when a good guess is mixed
+with a hopeless one (§8). Report `accuracy`, `precision` and `recall` together: they are a
+complete basis, from which `f1`, `found` and `read_right` all follow.
 
 | | `misread` | accuracy | f1 |
 | --- | --- | --- | --- |
@@ -170,9 +205,7 @@ the same set of addresses, and diverge as soon as one address exists on only one
 | one value missing | 0 | 50.00 | **66.67** |
 | one value invented | 0 | 66.67 | **80.00** |
 
-Note the second row against the third: a *misread* is where they agree, and a missing or
-invented address is what splits them. Missing and invented content moves `f1` above
-`accuracy`, because `f1`'s denominator does not include the union of addresses.
+A misread is where they agree; a one-sided address is what splits them.
 
 **Row counts.** `gt_rows`, `pred_rows` and `matched_rows` count object-valued array elements
 at every depth. They support "returned 44 of 349 rows"; they do not feed precision or recall.
@@ -301,12 +334,44 @@ since `null` and `[]` score exactly as an omitted key does.
 prefers attempting and `f1` prefers omitting. Both are correct: the model recovered a real
 fact, *and* most of what it said was false. So neither should be quoted alone.
 
-**The one exploit worth naming.** Under `accuracy` alone, filling in fields you cannot read is
-free — a wrong value at a gold address costs exactly what a blank costs, so a model spraying
-priors over unreadable fields beats an honest one by 17 points on identical reading ability.
-`f1` charges it: a guess improves `f1` only if its chance of being right exceeds roughly half
-the current `f1`. That is an abstention threshold arising from the metric rather than bolted
-on. `accuracy` has none — its gradient at a hopeless guess is exactly zero.
+### `accuracy` is not gameable; it is indifferent
+
+Searched exhaustively over every strategy on a four-field document — each field omitted, filled
+correctly, or filled wrongly — the highest reachable `accuracy` is monotone in the number of
+correct values produced, and **no strategy scores above one that produced more correct
+values**:
+
+| correct values produced | 0 | 1 | 2 | 3 | 4 |
+| --- | --- | --- | --- | --- | --- |
+| best `accuracy` | 0.00 | 25.00 | 50.00 | 75.00 | 100.00 |
+
+So `accuracy` cannot be raised except by being right more often. Guessing well raises it
+because guessing well produces correct values, which is the metric working rather than an
+exploit. A model that outputs `"US"` by reading the page and one that outputs it by knowing
+the column is usually `US` have produced the same output, and `accuracy` — which scores
+output, not process — says so. No measure that looks only at the output can separate them.
+
+Nor does corpus diversity separate them. Measured against a model that abstains, always
+guessing the modal value gains **+43.25** where the base rate is 90%, **+25.25** across a
+mixed corpus averaging 53%, and **+5.00** even where the prior is inverted. Variance does not
+defeat the strategy; it prices the guess at the corpus-average hit rate, which is the right
+price for it.
+
+**What `accuracy` genuinely does not do is distinguish a wrong value from a blank.** Both cost
+the same, because the gold address is in the denominator either way. That is not an
+inflation — nothing is gained — but it matters to whoever consumes the output, who would act
+on a wrong value and would know to ignore a blank.
+
+**`precision` is what resolves that**, and it is why the two travel together:
+
+    accuracy    how much of the document did you recover
+    precision   how much of what you said can I trust
+
+`precision` falls for *every* wrong assertion, monotonically, so unlike `f1` it cannot be
+masked by mixing a good guess with a hopeless one. `f1` answers a third question — *was that
+particular guess worth making* — improving only when a guess is right more often than roughly
+half the current `f1`. That is a real abstention threshold, and `accuracy` has none: its
+gradient at a hopeless guess is exactly zero.
 
 **Order-freedom is a trade, not a gift.** A wrong value costs more inside a scalar array
 (50.0) than in a named field (66.7), because array elements have no identity for a value to be
@@ -341,6 +406,8 @@ scorer produces.
 | P17 | Partial extraction beats omission | a row emitted with only the values read correctly scores above omitting that row |
 | P18 | Configuration is checked | an `order_matters` name fitting no array raises, rather than silently applying to nothing |
 | P19 | Schema is required | a grade without one raises, rather than reporting `fabricated: 0` |
+| P20 | `accuracy` and `f1` agree on ranking when nothing is misread | with `misread = 0` on both sides, `accuracy` is Jaccard and `f1` is `2J/(1+J)`, so their ordering is identical |
+| P21 | `accuracy` is not gameable | no prediction scores above one that produced more correct values; `accuracy` rises only by being right more often |
 
 P11–P15 are regressions, not hypotheticals — each corresponds to a defect that reached a
 leaderboard before it was caught. P11 is the strongest: if depth cannot change the score, no
