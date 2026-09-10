@@ -94,9 +94,12 @@ For an array with predicted rows `P₁…Pₙ` and gold rows `G₁…Gₘ`:
    for one input — 50.60 against 51.85 — because the objective maximised matched values while
    the score divided by a union denominator. P2 and P8 are what hold this now.
 3. **Discard any pair worth zero.** The bar is one matching value, and it decides the
-   denominator: a row that clears it is charged once, a row that fails it is charged twice —
-   once as gold nobody found, once as content the model made up. So neither omission nor
-   invention is free.
+   denominator. Clearing it means the row's values are compared against its partner's.
+   Failing it means every gold value in the row is charged as missing *and* everything the
+   prediction put there is charged as invented — so neither omission nor invention is free.
+   Clearing the bar does not make the rest of a row free: anything it asserts that gold does
+   not have still adds to the denominator, which is why a row of one readable field and five
+   wrongly-guessed list items can score below omitting it (§8).
 4. **Renumber** the prediction onto the gold row it paired with. A predicted row that paired
    with nothing keeps an index of its own, written `lines[p2]`, so it can never be mistaken
    for a gold row and cannot be silently dropped.
@@ -153,9 +156,23 @@ key names, and those have different causes and different fixes.
                  found · read_right = accuracy / 100
 
 A detection is a keypath-and-value, so a value found at the right address but read wrongly is
-charged on both sides — as a box with the right location and the wrong class would be. Note
-that `misread` appears in both `asserted` and `gold` but only **once** in `total`. That is the
-entire reason `accuracy` and `f1` differ.
+charged on both sides — as a box with the right location and the wrong class would be.
+
+`accuracy` and `f1` divide by different things, and it is worth knowing exactly when they
+disagree. The addresses both documents use — `matched + misread` — are counted **once** in
+`total` and **twice** in `gold + asserted`. So the two agree precisely when the documents use
+the same set of addresses, and diverge as soon as one address exists on only one side:
+
+| | `misread` | accuracy | f1 |
+| --- | --- | --- | --- |
+| perfect | 0 | 100.00 | 100.00 |
+| one value misread | 1 | 50.00 | 50.00 |
+| one value missing | 0 | 50.00 | **66.67** |
+| one value invented | 0 | 66.67 | **80.00** |
+
+Note the second row against the third: a *misread* is where they agree, and a missing or
+invented address is what splits them. Missing and invented content moves `f1` above
+`accuracy`, because `f1`'s denominator does not include the union of addresses.
 
 **Row counts.** `gt_rows`, `pred_rows` and `matched_rows` count object-valued array elements
 at every depth. They support "returned 44 of 349 rows"; they do not feed precision or recall.
