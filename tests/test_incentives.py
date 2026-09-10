@@ -67,6 +67,20 @@ report("...so under accuracy, attempting beats omitting from one field right",
        f"{[round(p['accuracy'], 1) for p in partial[1:]]}")
 note("if this ever reverses, providers are being paid to truncate")
 
+# METRIC_SPEC section 12 prints these exact figures. Assert them, so the spec cannot drift
+# away from the scorer without a test failing.
+SPEC_TABLE = {None: (50.0, 66.7), 0: (33.3, 50.0), 1: (62.5, 62.5),
+              2: (75.0, 75.0), 4: (100.0, 100.0)}
+drift = []
+for j, (want_acc, want_f1) in SPEC_TABLE.items():
+    r = omit if j is None else partial[j]
+    if (abs(round(r["accuracy"], 1) - want_acc) > 1e-9
+            or abs(round(r["f1"] * 100, 1) - want_f1) > 1e-9):
+        drift.append((j, round(r["accuracy"], 1), round(r["f1"] * 100, 1),
+                      want_acc, want_f1))
+report("the figures printed in METRIC_SPEC section 12 are the ones the scorer produces",
+       not drift, f"drifted: {drift}")
+
 print("\nA ROW WITH NOTHING RIGHT IS WORSE THAN OMITTING IT")
 report("a row that pairs with nothing is charged on both sides",
        partial[0]["accuracy"] < omit["accuracy"] - 1e-9
