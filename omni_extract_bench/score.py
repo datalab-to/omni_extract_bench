@@ -325,9 +325,29 @@ def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: i
 
     Returns one entry per pair: (predicted index, ground-truth index, matched, shared).
 
-    A predicted row that shares no value with any ground-truth row is left out. Pairing
-    those would be pretending. It is a missing row and an invented row, and both get
+    The bar for keeping a pair is one matching value, and a row that fails it is left out.
+    Pairing those would be pretending: it is a missing row and an invented row, and both get
     charged.
+
+    Where that bar sits decides the denominator, which is why it is low. A row that clears it
+    is charged once -- its fields are compared against its partner's, and the wrong ones score
+    as wrong. A row that fails it is charged twice, once as a gold row nobody found and once
+    as a row the model made up. So neither omission nor invention is free. Setting the bar
+    higher would charge a row twice for a single wrong field, and there is no non-arbitrary
+    place to put it above one.
+
+    A low bar has one consequence worth knowing about. If every row repeats some value -- a
+    currency, a fiscal year, a report date -- then every pair is worth at least one and none
+    is ever discarded. Two entirely wrong rows will pair on the strength of the shared
+    currency and take partial credit instead of reading as a miss:
+
+        gold  [{cur: USD, sku: x}, {cur: USD, sku: y}]
+        pred  [{cur: USD, sku: q}, {cur: USD, sku: r}]   -> 50.0, denominator 4
+
+    Drop the currency from both and the same prediction scores 0.0 with a denominator of 6.
+    Neither number is wrong -- the first really did get two of four values right -- but a
+    document like this shows up as `matched_rows` claiming two rows matched while
+    `read_right` says the values in them are wrong.
 
     We pick the pairing that matches the most values. If two pairings match the same number,
     we take the one sharing more addresses. `scale` makes that ordering work: it is bigger
@@ -545,6 +565,10 @@ def grade(pred: Any, gt: Any, schema: Any = None,
     What comes back:
 
     `accuracy` is the score, 0 to 100. `matched` over `total` is where it comes from.
+
+    `found` counts addresses, not rows: of every address either document used, the share both
+    used. A row's addresses only become shared if that row was paired, so `_best_pairing`'s
+    threshold decides this number -- see its docstring.
 
     `found` and `read_right` multiply to give the accuracy. `found` is the share of
     addresses that appear in both documents: did the model pick out the right cells?

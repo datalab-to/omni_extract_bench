@@ -665,6 +665,36 @@ report("recall counts leaves, so it is the same flat or wrapped",
 report("a wrong value is charged by precision and recall, as a wrong class would be",
        grade({"a": 1, "b": 99}, {"a": 1, "b": 2})["precision"] == 0.5
        and grade({"a": 1, "b": 99}, {"a": 1, "b": 2})["recall"] == 0.5)
+# The bar for keeping a row pair is ONE matching value. Where that bar sits decides the
+# denominator, so it is worth pinning from both sides.
+ONE_G = {"lines": [{"sku": "x", "qty": 2, "price": 1.5}]}
+one_hit = grade({"lines": [{"sku": "x", "qty": 99, "price": 99.0}]}, ONE_G)
+no_hit = grade({"lines": [{"sku": "q", "qty": 99, "price": 99.0}]}, ONE_G)
+report("one matching value is enough to pair a row, and the row is then charged once",
+       one_hit["total"] == 3 and abs(one_hit["found"] - 1.0) < 1e-9
+       and abs(one_hit["read_right"] - 1 / 3) < 1e-9,
+       f"total={one_hit['total']} found={one_hit['found']:.2f} read={one_hit['read_right']:.2f}")
+report("no matching value means no pair, and the row is charged twice",
+       no_hit["total"] == 6 and no_hit["found"] == 0.0 and no_hit["accuracy"] == 0.0,
+       f"total={no_hit['total']} found={no_hit['found']:.2f}")
+note("3 leaves against 6: once as a gold row nobody found, once as a row the model made up")
+
+# A value repeated on every row makes every pair worth at least one, so none is discarded.
+# Documented on _best_pairing: wholesale invention then takes partial credit.
+CONST_G = {"lines": [{"cur": "USD", "sku": "x"}, {"cur": "USD", "sku": "y"}]}
+with_const = grade({"lines": [{"cur": "USD", "sku": "q"}, {"cur": "USD", "sku": "r"}]}, CONST_G)
+without = grade({"lines": [{"sku": "q"}, {"sku": "r"}]},
+                {"lines": [{"sku": "x"}, {"sku": "y"}]})
+report("a value repeated on every row pairs rows that are otherwise entirely wrong",
+       abs(with_const["accuracy"] - 50.0) < 1e-9 and with_const["total"] == 4
+       and with_const["matched_rows"] == 2,
+       f"accuracy={with_const['accuracy']} total={with_const['total']} "
+       f"matched_rows={with_const['matched_rows']}")
+report("...and without it the same prediction is charged on both sides",
+       without["accuracy"] == 0.0 and without["total"] == 4,
+       f"accuracy={without['accuracy']} total={without['total']}")
+note("matched_rows says 2 while read_right says the values are wrong -- that pairing is why")
+
 report("invented fields are charged even with no array in the document",
        abs(grade({"a": 1, "b": 2, "z": 9}, {"a": 1, "b": 2})["precision"] - 2/3) < 1e-9)
 
