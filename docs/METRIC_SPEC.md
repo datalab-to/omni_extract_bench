@@ -1,19 +1,40 @@
 # Metric specification
 
-The complete definition of the benchmark score. Everything the grader does is here; anything
-not here is a bug. Properties are stated formally and each is enforced by a test in
-`tests/test_metric_properties.py`.
+The complete definition of the benchmark score. Anything the grader does that is not here is
+a bug. Every property in §8 is enforced by a test, and the tests are named where they matter.
 
-## 1. Objects
+## The idea
 
-- **Document** `d` with ground truth `G` and schema `S`. A vendor returns prediction `P`.
-- **Leaf**: a scalar reachable in `G` or `P` by walking objects and arrays. `null` on both
-  sides is *not* a leaf (it asserts nothing). Objects and arrays are never leaves themselves.
-- **Row**: an object element of an array. Arrays of scalars are compared as multisets.
+Give every value in a document an address, then compare addresses.
 
-## 2. Leaf comparison — `cmp(p, g) ∈ {0, 1}`
+Object keys are addresses already. The model was handed the schema, so it uses the key names
+the ground truth uses: `invoice.total` means the same thing in both documents.
 
-Deterministic and type-directed. No model participates.
+Array indices are not addresses. The model emits rows in whatever order it read them off the
+page, so its row 0 may be the ground truth's row 2. That is the only real problem to solve:
+work out which predicted row goes with which gold row, renumber the prediction to match, and
+then every value has an address that means the same thing on both sides.
+
+Scoring is then set arithmetic on two sets of addresses.
+
+## 1. Addresses
+
+- **Document** `d` with ground truth `G`, prediction `P`, and schema `S`. The schema is
+  **required** — §5 and §4 both depend on it.
+- **Value**: a scalar at a complete path. Objects and arrays are never values; addresses pass
+  through them. `{"a": {"b": [{"c": 1}]}}` holds exactly one value, at `a.b[0].c`.
+- **Address**: the path to a value, as tagged steps — a key or an index. The tag matters,
+  because a document may contain the key `"0"` and it must not join index `0`.
+- **Row**: an object element of an array. Arrays of scalars are compared as multisets, so
+  their elements are values, not rows.
+- **Node key**: an address with the index numbers blanked, so `books[0].chapters` and
+  `books[7].chapters` share one name. Written `books[*].chapters`. This is how an array is
+  named in `order_matters`.
+
+## 2. Comparing one value
+
+Deterministic and type-directed. No model participates. `canon_key` is the single comparison
+rule, used by leaf scoring and by row pairing alike, so the two cannot disagree.
 
 | gold type | rule |
 | --- | --- |
@@ -23,330 +44,168 @@ Deterministic and type-directed. No model participates.
 | date-like string | equal if both parse to the same calendar date under any supported format |
 | other string | canonical equality (case, whitespace, punctuation, smart quotes, unicode fractions) |
 
-Canonicalisation is a single shared function applied identically to `p` and `g`, so the
-comparison is symmetric by construction.
+Canonicalisation is applied identically to `p` and `g`, so comparison is symmetric by
+construction. A consequence worth knowing: format-only differences score 100, so any
+disagreement the grader reports is a real one.
 
-## 3. Array semantics — optimal assignment
+## 3. Aligning arrays
 
 For an array with predicted rows `P₁…Pₙ` and gold rows `G₁…Gₘ`:
 
-1. **Weight** `w(Pᵢ, Gⱼ)` = number of leaves that match if the two are paired. The weight uses
-   **the same equivalences as `cmp`** (dates, float precision, unicode fractions, sign
-   notation). It must: when the field that *distinguishes* two rows is a date, a weight that
-   only accepted literal equality paired the rows arbitrarily and a correct extraction scored
-   50 — reintroducing the very format penalty §2 removes.
-2. **Pairing** = the assignment maximising `Σ w` over all matchings — solved exactly
-   (Hungarian, `omni_extract_bench/matching.py`). Pairs with `w = 0` are discarded: two rows sharing nothing
-   are not a pair.
-3. Leaves inside paired rows are scored recursively. Leaves of unpaired rows count as misses —
-   on either side, so both omission and over-production are penalised.
-4. **Blocking**: rows may be partitioned by fields compared exactly; rows in different blocks
-   can never pair, so per-block optimal is globally optimal.
-5. **Exactness budget**: the assignment is solved by `scipy.optimize.linear_sum_assignment`,
-   so what bounds exactness is the **cost matrix**, which is `O(n·m)` whatever solves it —
-   the largest gold array here is 6881 rows, 47 million cells, 0.38 GB as float64, only ~12%
-   under the ceiling. Beyond `MAX_CELLS` (or `MAX_EXACT` on the smaller dimension) the solver
-   falls back to greedy and *reports* `exact=False` rather than claiming optimality. Greedy
-   costs 0.2–0.8% of assignment weight, and it is charged only to providers returning very
-   large tables, so it is surfaced per grade (`matching_exact`, `greedy_blocks`) and never
-   silent.
+1. **Price** every candidate pair: `w(Pᵢ, Gⱼ)` is the number of values that would match. It
+   uses the same equivalences as §2. Pricing descends — two rows can be identical apart from
+   a nested array — so pricing a pair means solving the pairing of the arrays inside it, one
+   array level per hop.
+2. **Pair** by the assignment maximising `Σ w`, solved exactly with
+   `scipy.optimize.linear_sum_assignment`. Ties are broken by shared addresses, so every
+   assignment achieving the maximum yields the same score.
+3. **Discard any pair worth zero.** The bar is one matching value, and it decides the
+   denominator: a row that clears it is charged once, a row that fails it is charged twice —
+   once as gold nobody found, once as content the model made up. So neither omission nor
+   invention is free.
+4. **Renumber** the prediction onto the gold row it paired with. A predicted row that paired
+   with nothing keeps an index of its own, written `lines[p2]`, so it can never be mistaken
+   for a gold row and cannot be silently dropped.
+5. **Exactness budget.** What bounds exactness is the cost matrix, `O(n·m)` whatever solves
+   it. Past `MAX_CELLS` (250 million) or `MAX_EXACT` (20 000 on the smaller dimension), the
+   solver falls back to greedy and reports `matching_exact: false`. The largest gold array in
+   this corpus is 6881 rows — 47 million cells, 19% of the cap — and solves exactly.
+
+Order is free by default, because the order rows appear in a document is usually an artefact
+of layout. Naming an array in `order_matters` makes its index an address again; see §7 for
+what that trades away.
 
 *Why exact matching matters:* the previous key-inference heuristic lost 2.6 points on a single
-10-Q, and 28% of array-cell misses on one subset were the right value attached to the wrong row.
+10-Q, and 28% of array-cell misses on one subset were the right value attached to the wrong
+row.
 
-## 4. Document score
+## 4. What is reported
 
-    leaf_accuracy(d) = 100 · (matched leaves) / (total leaves)
+Once the prediction is renumbered, every address falls into exactly one bucket. These are the
+verdicts `explain()` returns, one per address, and `grade()` reports their counts.
 
-`total leaves` counts every gold leaf plus every spurious predicted leaf. Recall and precision
-over rows are reported separately and are never folded into `leaf_accuracy`.
+| bucket | meaning |
+| --- | --- |
+| `matched` | address on both sides, values agree |
+| `misread` | address on both sides, values differ — the document has it, the model read it wrongly |
+| `unfound` | gold address the prediction never used |
+| `fabricated` | the schema offered this slot, the document is silent, the model asserted a value |
+| `invented_item` | an array element that paired with nothing |
+| `invented_field` | a name the schema never declared |
 
-## 5. Aggregation
+`fabricated` is the sharpest hallucination signal available: the document does not say this,
+and the model said it anyway, in a slot the schema held open. It keys off the **schema**, not
+gold's `null`s — a gold field written `null` and one left out mean the same thing (§5), so
+keying off gold would sort two identical ground truths into different buckets.
 
-    subset_score  = mean of leaf_accuracy over that subset's documents
-    UNIFIED       = mean of the subset scores
+`invented_item` is separate from `invented_field` because their magnitudes differ. One
+invented row contributes a value for every column it has; one invented field contributes one.
+Lumped together, a hallucinated twelve-column row is indistinguishable from twelve invented
+key names, and those have different causes and different fixes.
+
+**Everything else is arithmetic on those six numbers:**
+
+    asserted  = matched + misread + fabricated + invented_item + invented_field
+    gold      = matched + misread + unfound
+    total     = matched + misread + unfound + fabricated + invented_item + invented_field
+
+    accuracy   = 100 · matched / total       how much of the document you recovered
+    precision  = matched / asserted          how much of what you said was true
+    recall     = matched / gold
+    f1         = 2·precision·recall / (precision + recall)
+
+    found      = (matched + misread) / total did you look in the right places
+    read_right = matched / (matched + misread)  ...and read them correctly
+                 found · read_right = accuracy / 100
+
+A detection is a keypath-and-value, so a value found at the right address but read wrongly is
+charged on both sides — as a box with the right location and the wrong class would be. Note
+that `misread` appears in both `asserted` and `gold` but only **once** in `total`. That is the
+entire reason `accuracy` and `f1` differ.
+
+**Row counts.** `gt_rows`, `pred_rows` and `matched_rows` count object-valued array elements
+at every depth. They support "returned 44 of 349 rows"; they do not feed precision or recall.
+`matched_rows` is not row *correctness* — a value repeated on every row (a currency, a fiscal
+year) pairs rows that are otherwise entirely wrong. For row correctness, group `explain()`'s
+verdicts by the address up to the last index step.
+
+**Honesty flags.** `matching_exact` and `approximated` say when an array was too large to
+solve exactly. `skipped_open_maps` says which subtrees were not graded at all (§5).
+
+Asserted by `tests/test_false_assertions.py`, over a worked example and 2400 generated
+gradings, including that `grade`'s counts equal `explain`'s verdict histogram.
+
+## 5. What is not scored
+
+One rule with three instances: **the metric scores facts, so anything asserting no fact is
+not scored, on either side.**
+
+**`null` is not a value and gets no address.** Agreeing that a field is empty earns nothing;
+so does omitting it. Asserting a value where gold is silent is charged. A prediction that
+says `null` scores exactly as one that omits the key.
+
+That last point is a comparability guarantee, not a convenience. `dialects.to_strict_dialect`
+rewrites properties as `["string","null"]` because strict vendors must emit every declared
+property and use `null` for "no value", while permissive vendors omit the key. The harness
+therefore *causes* both conventions to exist across providers. If they scored differently, a
+vendor's score would move with the serialization convention the harness imposed on it.
+
+The deeper reason absence cannot earn credit: it would make the score depend on **schema width
+instead of document content**. Add fifty optional fields and every provider's score rises,
+with no document and no extraction changed — and two benchmarks over the same corpus with
+differently verbose schemas would stop being comparable, which is the problem this metric
+exists to fix. Both rules reduce to one: *score the facts in the document, and nothing about
+the shape of the request.*
+
+**`additionalProperties` objects are not graded.** Such a node leaves the property names to
+the document, so the model must invent them by reading headings off the page. The reason for
+skipping is delivery rather than taste: `dialects.STRICT_ALLOWED_KEYS` does not forward the
+keyword, so a strict vendor receives a bare `{"type":"object"}` and has nothing to answer
+with. Grading it would score a request the harness never made. Skipped on both sides,
+reported in `skipped_open_maps`, and detected from *explicit* presence of the keyword.
+
+**All-null rows are dropped, on both sides.** A gold row whose payload is entirely `null`
+asserts no fact, so charging a vendor for omitting it would penalise everyone for an unstated
+convention. The same filter runs over the prediction, so an invented empty row is free —
+consistent with scoring facts, but it does mean output bloat is not measured here.
+
+**The price of all this:** `{"b": null}` and `{}` are indistinguishable, so whether a model
+abstains *honestly* is not a claim this benchmark can make.
+
+Asserted by `tests/test_spec_null_semantics.py`.
+
+## 6. Ground truth adjustments
+
+Applied uniformly, before scoring, to every vendor alike.
+
+- **Placeholder rows dropped** — see §5.
+- **Verified corrections** applied as an overlay only where a human read the source and the
+  evidence is recorded (`GT_LEDGER.md`). Benchmark corpora are never edited in place.
+
+## 7. Aggregation
+
+    subset_score = mean of accuracy over that subset's documents
+    UNIFIED      = mean of the subset scores
 
 Equal weight per subset, because subsets differ ~10× in size; leaf- or document-weighting
 would let the largest subset decide the benchmark and would silently re-weight it whenever a
 subset grew. A document a vendor returned nothing usable for scores **0** — excluding failures
 would reward fragility. Coverage is reported beside the score, never inside it.
 
-## 6. Ground truth adjustments
+## 8. What the metric pays for
 
-Applied uniformly, before scoring, to every vendor alike:
-
-- **Placeholder rows dropped**: a gold row whose payload fields are all `null` asserts no fact.
-  Charging a vendor for omitting it penalises everyone for an unstated convention.
-- **Verified corrections**: applied as an overlay only where a human read the source and the
-  evidence is recorded (`GT_LEDGER.md`). Benchmark corpora are never edited in place.
-
-## 7. Properties
-
-| # | property | statement |
-| --- | --- | --- |
-| P1 | Identity | `score(G, G) = 100` for every `G` |
-| P2 | Permutation invariance | reordering any array in `P` or `G` leaves the score unchanged |
-| P3 | Monotonicity | correcting one wrong leaf never lowers the score |
-| P4 | No double counting | each gold leaf contributes exactly 1 to the denominator |
-| P5 | Determinism | identical inputs produce identical output, always |
-| P6 | Coverage honesty | a missing prediction scores 0 and is never dropped from the mean |
-| P7 | Symmetry of canonicalisation | `cmp(p, g) = cmp(g, p)` |
-| P8 | Optimality | no pairing of array rows yields a higher score than the one chosen |
-| P9 | Null neutrality | `null` on both sides adds nothing to numerator or denominator |
-| P10 | Sign fidelity | sign notation is free; a wrong sign is never free |
-| P11 | Nesting invariance | wrapping a document in an extra level changes neither score nor denominator |
-| P12 | Omission is charged | returning a subset of the gold rows never scores 100 |
-| P13 | Scalar arrays are scored | an array of scalars contributes leaves at every depth |
-| P14 | Pairing/scoring agreement | any equivalence `cmp` honours is honoured when choosing the pairing |
-| P15 | No silent approximation | a grade that used the greedy fallback says so |
-
-P1, P2, P5–P7, P9, P10 were already enforced. P3, P4 and P8 were added when this spec was
-written — the plan flagged monotonicity and no-double-counting as unasserted, and optimality
-was claimed before it was tested.
-
-**P11–P15 are regressions, not hypotheticals.** Each corresponds to a defect that reached the
-leaderboard before it was caught; the README summarises them. P11/P12 cover a defect that made omission
-free for top-level arrays — one provider scored 100.0 on a document where it returned almost
-nothing. P11 is the strongest of these: if depth cannot change the score, no depth-dependent
-scoring path can exist, which is the whole class rather than the instance.
-
-## 8. Deliberate non-goals
-
-- No LLM judge in scoring. Measured worth ≈ 0.2 points on one subset; not worth
-  nondeterminism in a benchmark.
-- No per-subset scoring paths. One grader or the comparison is meaningless.
-- No substring acceptance and no sign flipping to accommodate ground-truth conventions.
-  Conventions are written into the schema instead (`schema_overlay.py`) so vendors are told,
-  not guessed at.
-
-
-## 9. Open maps are not evaluated
-
-A schema node declaring `additionalProperties` leaves the property names to the document: the
-extractor must invent them by reading headings off the page. This benchmark does not evaluate
-that shape, and the reason is delivery rather than taste — `dialects.STRICT_ALLOWED_KEYS` does
-not forward the keyword, so a strict vendor receives a bare `{"type": "object"}` and has
-nothing to answer with. Grading the node would score a request the harness never made.
-
-Such a subtree is skipped on **both** sides: it contributes to neither the numerator nor the
-denominator, exactly as a `null` does. The rest of the document scores normally, and the skip
-is reported on the grade (`ignored_open_maps`) so an ungraded region can never pass unnoticed.
-Detection reads *explicit* presence of the keyword as intent; under JSON Schema semantics
-`additionalProperties` defaults to true, which would make every object qualify. With no schema
-supplied nothing is skipped, because nothing can be identified.
-
-Support can be added later if the corpus needs it. The natural shape is an array of
-`{name, value}` rows, which every vendor can produce and which the array machinery already
-grades — the heading becomes a value rather than an address.
-
-### Object keys are addresses
-
-An object's keys are matched literally. A prediction is generated against the schema, so its
-property names are the schema's property names, which are also ground truth's — a predicted
-key that is not exactly a gold key names a field the extractor invented, and is charged as
-spurious while gold's unmatched key is charged as missing.
-
-Keys were briefly compared by canonical form so that a key differing only in case still
-joined. That existed solely for open maps, which §9 now excludes, so the folding had no case
-left to serve. It also required a collision guard — folding can merge two distinct keys of one
-object and silently discard a value — and it was never consistent: `canonical` strips
-`, - . / ( )` and whitespace but keeps the underscore, so it forgave `Invoice_No` and not
-`invoice no`.
-
-## 10. `null` asserts nothing, and is scored that way
-
-**The rule.** A `null` is not a leaf and gets no address. The metric scores *facts*, so an
-assertion is scored and an absence is not. Everything below follows from that one sentence.
-
-| gold | prediction | verdict | accuracy | denominator |
-| --- | --- | --- | --- | --- |
-| `{a: 1, b: null}` | `{a: 1, b: null}` | — | 100.0 | 1 |
-| `{a: 1, b: null}` | `{a: 1}` | — | 100.0 | 1 |
-| `{a: 1, b: null}` | `{a: 1, b: 5}` | `b` spurious | 50.0 | 2 |
-| `{a: 1, b: 5}` | `{a: 1, b: null}` | `b` missing | 50.0 | 2 |
-| `{a: 1, b: 5}` | `{a: 1}` | `b` missing | 50.0 | 2 |
-
-Read the first two rows together: agreeing that a field is empty earns nothing, and neither
-does omitting it. Read the last two together: emitting `null` where gold has a value is
-charged exactly as omitting it is, and the two are currently **indistinguishable** — both
-report `missing`, so a diagnostic cannot separate a model that declined from one that never
-tried. Recovering that distinction means carrying the prediction's `null` addresses through
-alignment, which nothing does today.
-
-**Why absence-agreement earns nothing.** The loud argument is that it would pay for laziness:
-on a schema of 20 fields where gold fills 3, a prediction consisting of nothing but nulls
-would score **85.0** instead of 0.0. The quieter argument is the one that decides it —
-counting absence-agreement makes the score depend on **schema width instead of document
-content**. Add fifty optional fields to a schema and every provider's score rises, with no
-document and no extraction changed. Two benchmarks over the same corpus with differently
-verbose schemas would stop being comparable, which is the problem this metric exists to fix.
-Not charging gold-`null`/prediction-absent is the same argument mirrored: there is no fact
-there to find, so failing to find it costs nothing.
-
-This is property **P9**.
-
-**A prediction that says `null` scores exactly as one that omits the key**, and that is a
-comparability guarantee rather than a convenience. `dialects.to_strict_dialect` rewrites
-properties as `["string", "null"]` because strict vendors require every declared property to
-be present and use `null` to mean "no value"; permissive vendors simply omit the key. The
-harness therefore *causes* the two conventions to coexist across providers. If the two scored
-differently, a vendor's score would move with the serialization convention this harness
-imposed on it rather than with how well it read the document.
-
-That is the same argument as schema width, one level down. Absence-agreement cannot count, or
-schema width would move scores; absence-notation cannot matter, or dialect would. Both reduce
-to one rule: **score the facts in the document, and nothing about the shape of the request.**
-
-The price is specific. A `null` may be a considered decline while an absent key may be a
-truncated response, and this decision makes them indistinguishable — so this benchmark cannot
-report whether a model abstains honestly. Recovering that would mean carrying the
-*prediction's* `null` addresses through alignment. Note that the fabrication measure in §11
-is unaffected: it keys off **gold's** nulls, and gold is never renumbered.
-
-**Rows that are entirely null are dropped, on both sides.** A gold row whose payload is all
-`null` asserts no fact, so charging a vendor for omitting it would penalise everyone for an
-unstated convention (§6). The same filter runs over the prediction, which means an *invented*
-all-null row is free — a model may pad its output with empty rows without penalty. That is
-consistent with scoring facts, an empty row being no claim at all, but it does mean output
-bloat is not measured here.
-
-**Inside an ordered array, position is the address, so a `null` occupies one.** With
-`order_matters` naming an array, a gold `null` becomes a placeholder the prediction has to
-keep:
-
-| gold | prediction | accuracy | why |
-| --- | --- | --- | --- |
-| `[a, null, c]` | `[a, null, c]` | 100.0 | `c` is at index 2 on both sides |
-| `[a, null, c]` | `[a, b, c]` | 66.7 | `b` is spurious, but `c` stays at index 2 |
-| `[a, null, c]` | `[a, c]` | 33.3 | closing the gap moves `c` to index 1: spurious *and* missing |
-
-Note the incentive in the last two rows: filling the empty slot with junk scores **higher**
-than omitting it, because the junk preserves the alignment of everything after it. That falls
-out of "the index is the address", which is the whole meaning of the flag, and it is recorded
-here rather than fixed — but it is a reason to name an array in `order_matters` only when its
-order genuinely carries meaning. Order-free arrays have no such trap: `[a, null, c]` and
-`[a, c]` both score 100.0, because the null was never an address to begin with.
-
-## 11. False assertions, split three ways
-
-`1 - precision` is the rate at which a prediction asserts something untrue. That single
-number hides three different bugs, so `grade` reports them separately:
-
-| count | meaning | what it points at |
-| --- | --- | --- |
-| `misread` | the document has a value at this address; the model read it wrongly | OCR, units, sign, date format |
-| `fabricated` | **the schema offered this slot, the document is silent, the model filled it** | schema pressure — the model will not leave a field empty |
-| `invented_item` | an array element that paired with nothing | over-segmentation: a header or subtotal read as data, a row emitted twice |
-| `invented_field` | a name the schema never declared | schema non-adherence: an invented key, or a synonym for a declared one |
-
-Rows and fields are separated because their magnitudes differ. One invented row contributes
-a leaf for every column it has; one invented field contributes one. Lumped together, a single
-hallucinated twelve-column row is indistinguishable from twelve invented field names, and the
-two have different causes and different fixes.
-
-`fabricated` is the sharpest hallucination signal available from this data: the document does
-not say this, and the model said it anyway, in a slot the schema held open.
-
-### The authority is the schema, not gold's `null`s
-
-A gold field written `null` and a gold field left out entirely mean the same thing (§10). So
-classifying by gold's `null`s would sort two semantically identical ground truths into
-different buckets. `_schema_leaves` reads the slots off the schema instead, which is the only
-authority that does not move. Nothing inside an `additionalProperties` object counts as a
-slot, because that subtree is not graded at all — a value nobody asked for cannot be a filled
-slot.
-
-This is why **the schema is required**. Without one, `fabricated` could only be reported as
-zero, which would read as "this model never fabricates" — a false claim rather than a missing
-measurement. A missing schema also silently disables open-map detection (§9), so requiring it
-closes both holes at once.
-
-### The identities
-
-    asserted = matched + misread + fabricated + invented_item + invented_field
-    gold     = matched + misread + unfound
-    total    = matched + misread + unfound + fabricated + invented_item + invented_field
-
-    precision = matched / asserted
-    recall    = matched / gold
-    accuracy  = matched / total
-    f1        = 2·precision·recall / (precision + recall)
-
-Note that `misread` is counted in both `asserted` and `gold`, but only **once** in `total`.
-That is the entire reason `accuracy` and `f1` differ: a value read wrongly is one gold fact
-you failed to recover (charged once), and simultaneously one false thing you asserted plus
-one true thing you missed (charged twice).
-
-These counts are exactly the histogram of the verdicts `explain` returns, so the two surfaces
-cannot drift apart. Both are asserted by `tests/test_false_assertions.py`, over the worked
-example and over 2400 generated gradings.
-
-### A scalar array has no cells to misread
-
-Elements of a scalar array compare as a multiset, so they have no identity. A value read
-wrongly there is therefore **not** a `misread`: it is one gold element nobody produced
-(`unfound`) plus one element the model produced that is not in the document
-(`invented_item`). It is charged on both sides, which costs more than the same error in a
-named field:
-
-| error | verdicts | denominator | accuracy |
-| --- | --- | --- | --- |
-| `name` read wrongly | 1 `misread` | 3 | 66.7 |
-| `q[1]` read wrongly | 1 `unfound` + 1 `invented_item` | 4 | 50.0 |
-
-It follows from the array being order-free. With no cell identity there is nothing for a
-value to be *wrong about*, only content that is present or absent.
-
-That looks like the score depending on how the schema models the data, which §10 rules out
-elsewhere, so it is worth showing what the array gets in exchange. The same three facts, as
-an array of scalars and as three named fields:
-
-| | array | named fields |
-| --- | --- | --- |
-| all three right | 100.0 | 100.0 |
-| all three right, **reordered** | **100.0** | **0.0** |
-| one value read wrongly | **50.0** | **66.7** |
-| one omitted | 66.7 | 66.7 |
-| one extra invented | 75.0 | 75.0 |
-
-**You cannot have both order-freedom and cell identity.** The named-field version can say
-"`t2` is wrong" precisely because it demands that value be in `t2`, and row two is what that
-demand costs. Declaring the array in `order_matters` buys cell identity back — the wrong
-value becomes a `misread` and the score becomes 66.7 — at the price of the second row.
-
-This does not threaten comparability, which is the standard §10 applies. Schema *width* was
-fatal because it moved scores within a comparison: the same documents, differently verbose
-schemas, incomparable numbers. Here the shape is fixed — the harness sends one schema to
-every provider, and no dialect transform turns an array into named fields — so every provider
-faces the same trade on the same arrays. Choosing an array over named fields is choosing
-*what to measure*.
-
-The alternative would be to cap the array's denominator at `max(len(gold), len(pred))`, which
-makes the array agree with named fields. That was the old behaviour and it was removed as a
-defect: it carves out an exception to the rule that a predicted leaf with no gold address is
-spurious, so `["a","b","c"]` against gold `["a","x","c"]` had a denominator of 3 and the
-invented `b` was free.
-
-## 12. What the metric pays for
-
-A benchmark is a set of incentives, so here they are in one place. Every number below is
-asserted by `tests/test_incentives.py`.
-
-### Three rules for anyone building an extractor against this
+A benchmark is a set of incentives. Three rules, for anyone building against this:
 
 1. **Emit a row if you can read any part of it.** A paired row has the same denominator as an
    omitted one, so attempting can only add to the numerator. Never truncate to be safe.
-2. **Leave a field empty rather than guess it.** `null`, `[]` and omitting the key all cost
-   the same, and none of them costs more than a wrong value.
-3. **Do not invent a row you cannot read at all.** A row matching nothing is charged twice —
-   once as gold you missed, once as content you made up.
+2. **Leave a field empty rather than guess it.** `null`, `[]` and omitting the key cost the
+   same, and none costs more than a wrong value.
+3. **Do not invent a row you cannot read at all.** It is charged twice.
 
 Together: **report everything you can read, and nothing you cannot.**
 
-### The numbers behind rule 1
-
-Ten gold rows of four fields; the first five read perfectly; the last five either omitted or
-attempted with *j* of 4 fields right.
+Ten gold rows of four fields, the first five read perfectly, the last five either omitted or
+attempted with *j* of 4 right:
 
 | the last five rows | accuracy | f1 |
 | --- | --- | --- |
@@ -356,37 +215,63 @@ attempted with *j* of 4 fields right.
 | emitted, 2 of 4 right | 75.0 | 75.0 |
 | emitted, 4 of 4 right | 100.0 | 100.0 |
 
-The one regime where omitting genuinely wins is a row whose content is mostly scalar-array
-elements the model cannot read, because each wrong element costs two denominator slots rather
-than one (§11). Even there, emitting the row with only its readable fields beats both omitting
-and guessing — and a strict schema cannot take that option away, since `null` and `[]` score
-exactly as an omitted key does.
+**Where the two headline numbers disagree, deliberately.** At one of four right, `accuracy`
+prefers attempting and `f1` prefers omitting. Both are correct: the model recovered a real
+fact, *and* most of what it said was false. So neither should be quoted alone.
 
-### Where accuracy and f1 disagree, deliberately
+**The one exploit worth naming.** Under `accuracy` alone, filling in fields you cannot read is
+free — a wrong value at a gold address costs exactly what a blank costs, so a model spraying
+priors over unreadable fields beats an honest one by 17 points on identical reading ability.
+`f1` charges it: a guess improves `f1` only if its chance of being right exceeds roughly half
+the current `f1`. That is an abstention threshold arising from the metric rather than bolted
+on. `accuracy` has none — its gradient at a hopeless guess is exactly zero.
 
-At one of four fields right, accuracy prefers attempting and f1 prefers omitting. Both are
-correct: the model recovered a real fact, *and* most of what it said was false.
+**Order-freedom is a trade, not a gift.** A wrong value costs more inside a scalar array
+(50.0) than in a named field (66.7), because array elements have no identity for a value to be
+*wrong about* — a wrong element is a missing item plus an extra one. What the array buys is
+that reordering is free, where reordering three named fields scores 0. You cannot have both;
+`order_matters` chooses. Comparability is untouched, because the shape is fixed across every
+provider — unlike schema width, which varied within a comparison.
 
-- **accuracy** asks how much of the document you recovered. Silence and error are equally
-  unhelpful for that question, so it charges them the same.
-- **f1** asks how much of what you said was true. It charges a wrong value twice — once as a
-  fact you missed, once as a falsehood you asserted.
+Asserted by `tests/test_incentives.py`, including that the figures above are the ones the
+scorer produces.
 
-A model padding rows to 25% correctness climbs on accuracy and sinks on f1. That is the
-reason both are reported, and the reason neither should be quoted alone.
+## 9. Properties
 
-### The one exploit worth naming
+| # | property | statement |
+| --- | --- | --- |
+| P1 | Identity | `score(G, G) = 100` for every `G` |
+| P2 | Permutation invariance | reordering any array in `P` or `G` leaves the score unchanged |
+| P3 | Monotonicity | correcting one wrong value never lowers the score |
+| P4 | No double counting | each gold value contributes exactly 1 to the denominator |
+| P5 | Determinism | identical inputs produce identical output, always |
+| P6 | Coverage honesty | a missing prediction scores 0 and is never dropped from the mean |
+| P7 | Symmetry of comparison | `cmp(p, g) = cmp(g, p)` |
+| P8 | Optimality | no pairing of array rows yields a higher score than the one chosen |
+| P9 | Null neutrality | `null` on both sides adds nothing to numerator or denominator |
+| P10 | Sign fidelity | sign notation is free; a wrong sign is never free |
+| P11 | Nesting invariance | wrapping a document in an extra level changes neither score nor denominator |
+| P12 | Omission is charged | returning a subset of the gold rows never scores 100 |
+| P13 | Scalar arrays are scored | an array of scalars contributes values at every depth |
+| P14 | Pairing/scoring agreement | the pairing that earned the score is the pairing that is committed |
+| P15 | No silent approximation | a grade that used the greedy fallback says so |
+| P16 | Bucket completeness | the six buckets partition every address, and equal `explain`'s verdicts |
+| P17 | Attempting beats omitting | a row paired on any matching value scores above omitting it |
+| P18 | Configuration is checked | an `order_matters` name fitting no array raises, rather than silently applying to nothing |
+| P19 | Schema is required | a grade without one raises, rather than reporting `fabricated: 0` |
 
-Under accuracy alone, **filling in fields you cannot read is free**: a wrong value at a gold
-address costs exactly what leaving it blank costs. A model that sprays priors over unreadable
-fields beats an honest one by 17 points on identical reading ability.
+P11–P15 are regressions, not hypotheticals — each corresponds to a defect that reached a
+leaderboard before it was caught. P11 is the strongest: if depth cannot change the score, no
+depth-dependent scoring path can exist, which is the whole class rather than the instance.
+P16–P19 were added with the false-assertion split; P18 replaced a silent no-op in which a
+mistyped configuration left the array unordered and the run finished looking fine.
 
-`f1` charges it. Adding a guess improves f1 only if its chance of being right exceeds roughly
-half the current f1 — a real abstention threshold, arising from the metric rather than bolted
-on. accuracy has none: its gradient at a hopeless guess is exactly zero.
+## 10. Deliberate non-goals
 
-### What this metric cannot measure
-
-Whether a model abstains *honestly*. `{"b": null}` and `{}` are indistinguishable by design
-(§10), so **"this model declines when it should" is not a claim this benchmark can make.**
-Recovering it would mean carrying the prediction's `null` addresses through alignment.
+- **No LLM judge in scoring.** Measured worth ≈ 0.2 points on one subset; not worth
+  nondeterminism in a benchmark.
+- **No per-subset scoring paths.** One grader, or the comparison is meaningless.
+- **No substring acceptance and no sign flipping** to accommodate ground-truth conventions.
+  Conventions belong in the schema, so vendors are told rather than guessed at.
+- **No credit for declining.** Whether a model abstained honestly is not measurable here
+  (§5), so it is not scored rather than approximated.
