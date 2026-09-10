@@ -665,6 +665,29 @@ report("recall counts leaves, so it is the same flat or wrapped",
 report("a wrong value is charged by precision and recall, as a wrong class would be",
        grade({"a": 1, "b": 99}, {"a": 1, "b": 2})["precision"] == 0.5
        and grade({"a": 1, "b": 99}, {"a": 1, "b": 2})["recall"] == 0.5)
+# F1 exists because accuracy cannot charge a hopeless guess. A wrong value at a gold address
+# costs exactly what leaving the field blank costs, so under accuracy alone, filling in fields
+# the model cannot read is free. That is the one exploit worth naming: it rewards a model that
+# sprays priors over unreadable fields, which is not the model anyone wants to deploy.
+GUESS_G = {"lines": [{"sku": f"S{i}", "code": "ABCDE"[i % 5]} for i in range(50)]}
+abstains = grade({"lines": [{"sku": f"S{i}"} for i in range(50)]}, GUESS_G)
+hopeless = grade({"lines": [{"sku": f"S{i}", "code": "Z"} for i in range(50)]}, GUESS_G)
+report("accuracy cannot tell abstaining from a guess that is never right",
+       abs(abstains["accuracy"] - hopeless["accuracy"]) < 1e-9,
+       f"abstains {abstains['accuracy']:.2f} vs hopeless {hopeless['accuracy']:.2f}")
+report("f1 charges the hopeless guess",
+       abstains["f1"] > hopeless["f1"] + 1e-9,
+       f"abstains {abstains['f1']:.3f} vs hopeless {hopeless['f1']:.3f}")
+report("a guess that is always right beats abstaining on both",
+       (lambda r: r["accuracy"] > abstains["accuracy"] and r["f1"] > abstains["f1"])(
+           grade({"lines": [{"sku": f"S{i}", "code": "ABCDE"[i % 5]} for i in range(50)]},
+                 GUESS_G)))
+report("f1 is the harmonic mean of the reported precision and recall",
+       all(abs(r["f1"] - (2 * r["precision"] * r["recall"] / (r["precision"] + r["recall"])
+                          if r["precision"] + r["recall"] else 0.0)) < 1e-12
+           for r in (abstains, hopeless, grade({}, GUESS_G))))
+note("adding a guess helps f1 only above roughly half the current f1 -- a real abstention bar")
+
 # The bar for keeping a row pair is ONE matching value. Where that bar sits decides the
 # denominator, so it is worth pinning from both sides.
 ONE_G = {"lines": [{"sku": "x", "qty": 2, "price": 1.5}]}
