@@ -34,16 +34,66 @@ def _defrac(s: str) -> str:
 _DATEFMTS = ["%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%B %d, %Y", "%b %d, %Y",
              "%d %B %Y", "%d-%b-%Y", "%d%b%Y", "%m/%d/%y", "%Y/%m/%d", "%d.%m.%Y",
              "%m.%d.%Y", "%b %d %Y", "%B %d %Y"]
+# A timestamp is often just how a vendor spells a date: asked for `filing_date`, a model
+# returns `2024-10-31T00:00:00Z`. That is the same fact and must not score as wrong.
+#
+# But a timestamp is NOT always a date. A field that genuinely carries a time -- when a
+# transaction cleared -- would lose its time-of-day if every timestamp folded to its day,
+# and two different times would start matching. So the fold is conditional: midnight means
+# "this is a date wearing a timestamp's clothes", and any other time is kept.
+#
+# `%z` accepts `Z` as well as `+00:00` from Python 3.7, so both spellings parse. The offset
+# is then dropped rather than converted: extraction reads what is printed on the page, so the
+# wall clock as written is the fact, and shifting it would invent one.
+_DATETIMEFMTS = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S",
+                 "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S%z",
+                 "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S.%f",
+                 "%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%d %H:%M:%S.%f%z",
+                 "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M"]
+
+
 def _asdate(v):
+    """The calendar date this value denotes, or None.
+
+    Returns a plain date for anything date-shaped, including a timestamp at midnight.
+    A timestamp with a real time returns None here and is handled by `_astime`.
+    """
     s = str(v).strip()
-    if not re.search(r"\d", s) or len(s) > 24:
+    if not re.search(r"\d", s) or len(s) > 34:
         return None
     for f in _DATEFMTS:
         try:
             return datetime.strptime(s, f).date().isoformat()
         except ValueError:
             pass
+    dt = _parse_datetime(s)
+    if dt is not None and (dt.hour, dt.minute, dt.second, dt.microsecond) == (0, 0, 0, 0):
+        return dt.date().isoformat()
     return None
+
+
+def _parse_datetime(s: str):
+    for f in _DATETIMEFMTS:
+        try:
+            return datetime.strptime(s, f)
+        except ValueError:
+            pass
+    return None
+
+
+def _astime(v):
+    """The wall-clock instant this value denotes, or None. Midnight belongs to `_asdate`.
+
+    Normalised so that two spellings of one time agree: `09:00:00Z`, `09:00:00+00:00` and
+    `09:00:00.000` are the same instant written three ways.
+    """
+    s = str(v).strip()
+    if not re.search(r"\d", s) or len(s) > 34:
+        return None
+    dt = _parse_datetime(s)
+    if dt is None or (dt.hour, dt.minute, dt.second, dt.microsecond) == (0, 0, 0, 0):
+        return None
+    return dt.replace(tzinfo=None).isoformat(timespec="microseconds")
 
 # Sign NOTATION varies by convention; sign SEMANTICS must not. Accounting parentheses,
 # the unicode minus, and a trailing minus all mean "negative" — those are spellings of the
@@ -109,9 +159,11 @@ def canon_key(v):
       2. numbers    -- rounded to 7 significant digits (matching the previous 1e-6 relative
                        tolerance) and canonicalised, so 5, 5.0 and "5.00" agree. Only decimals
                        parse, so ID-like integers stay exact.
-      3. dates      -- ISO form, so 2024-01-15 and 01/15/2024 agree. `_asdate` is strict:
-                       "1/2", "Q1" and "2-3-13" are not dates, so this cannot swallow values
-                       that mean something else.
+      3. dates      -- ISO form, so 2024-01-15 and 01/15/2024 agree, and so does a
+                       timestamp at midnight. `_asdate` is strict: "1/2", "Q1" and "2-3-13"
+                       are not dates, so this cannot swallow values that mean something else.
+      3b. timestamps -- a real time of day is KEPT, normalised, so two spellings of one
+                       instant agree while two different times still differ.
       4. otherwise  -- unicode fractions expanded, then canonicalised
     """
     if isinstance(v, bool):
@@ -125,6 +177,9 @@ def canon_key(v):
     d = _asdate(v)
     if d:
         return f"#d{d}"
+    t = _astime(v)
+    if t:
+        return f"#t{t}"
     return _canon(_defrac(str(v)))
 
 

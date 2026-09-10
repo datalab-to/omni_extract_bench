@@ -47,13 +47,19 @@ FOLDED = [
     ("ACME CORP", "Acme Corp", "case"),
     ("Acme  Corp.", "Acme Corp", "double space and trailing period"),
     ("TRUE", True, "boolean spelling"),
+    ("2024-10-31T00:00:00Z", "2024-10-31", "ISO timestamp at midnight, against a date"),
+    ("2024-10-31 00:00:00", "2024-10-31", "datetime at midnight, against a date"),
+    ("2024-10-31T00:00:00+00:00", "2024-10-31", "explicit UTC offset at midnight"),
+    ("2024-10-31T00:00:00.000Z", "2024-10-31", "milliseconds at midnight"),
+    ("2024-10-31T09:00:00Z", "2024-10-31 09:00:00", "two spellings of one instant"),
+    ("2024-10-31T09:00:00Z", "2024-10-31T09:00:00+00:00", "Z against an explicit offset"),
 ]
 CHARGED = [
     ("USD 1234.56", 1234.56, "currency code prefix"),
     ("1234.56 USD", 1234.56, "currency code suffix"),
     ("1.234,56", 1234.56, "European decimal notation"),
-    ("2024-10-31T00:00:00Z", "2024-10-31", "ISO timestamp against a date"),
-    ("2024-10-31 00:00:00", "2024-10-31", "datetime against a date"),
+    ("2024-10-31T09:00:00Z", "2024-10-31", "a timestamp with a real time is not a date"),
+    ("2024-10-31T09:00:00Z", "2024-10-31T17:00:00Z", "two different times on one date"),
     ("yes", True, "'yes' as a boolean"),
 ]
 
@@ -66,6 +72,22 @@ for a, b, why in CHARGED:
     report(f"{why}: {a!r} != {b!r}", cmp_leaf(a, b) < 1.0,
            "this now folds -- update METRIC_SPEC section 2, it lists this as charged")
 note("if one of these starts folding, the spec's second list is stale, not this test")
+
+print("\nA TIMESTAMP AT MIDNIGHT IS A DATE; ANY OTHER TIME IS A TIME")
+report("midnight folds to the date, so a vendor spelling a date as a timestamp is not charged",
+       cmp_leaf("2024-10-31T00:00:00Z", "2024-10-31") >= 1.0)
+report("a real time of day is kept, so two different times still differ",
+       cmp_leaf("2024-10-31T09:00:00Z", "2024-10-31T17:00:00Z") < 1.0)
+report("...and a timed value does not match a bare date",
+       cmp_leaf("2024-10-31T09:00:00Z", "2024-10-31") < 1.0)
+report("two spellings of one instant agree",
+       cmp_leaf("2024-10-31T09:00:00Z", "2024-10-31 09:00:00") >= 1.0
+       and cmp_leaf("2024-10-31T09:00:00Z", "2024-10-31T09:00:00.000Z") >= 1.0)
+report("nothing that merely contains digits is swallowed as a date",
+       all(not str(canon_key(x)).startswith(("#d", "#t"))
+           for x in ("Q1", "1/2", "2-3-13", "12:00", "2024", "1.2.3")),
+       str([canon_key(x) for x in ("Q1", "1/2", "2-3-13", "12:00", "2024", "1.2.3")]))
+note("the offset is dropped rather than converted: extraction reads the printed wall clock")
 
 print("\nSEVEN SIGNIFICANT DIGITS IS A BUCKET, NOT A TOLERANCE")
 report("values agreeing to 7 significant digits match",

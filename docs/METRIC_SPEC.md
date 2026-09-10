@@ -41,7 +41,7 @@ rule, used by leaf scoring and by row pairing alike, so the two cannot disagree.
 | boolean | canonical equality |
 | integer / identifier-like | exact after canonicalisation — IDs, phone numbers and account numbers never fuzzy-match |
 | decimal number | rounded to **7 significant digits**; **sign notation** folded (`(98.2)`, `−98.2`, `98.2-` all parse to −98.2) but **sign value preserved** (`−98.2 ≠ +98.2`) |
-| date-like string | equal if both parse to the same calendar date under any supported format |
+| date-like string | equal if both parse to the same calendar date under any supported format. A timestamp at **midnight** counts as its date, because that is how vendors spell a date; any other time of day is kept and compared, so two different times still differ |
 | other string | canonical equality (case, whitespace, punctuation, smart quotes, unicode fractions) |
 
 Canonicalisation is applied identically to `p` and `g`, so comparison is symmetric by
@@ -62,6 +62,8 @@ are tested by `tests/test_comparison_surface.py`:
     5.00 = 5            1.0 = 1                  (1,234.56) = -1234.56
     1234.56- = -1234.56    −1234.56 = -1234.56
     31/10/2024 = 2024-10-31    10/31/24 = 2024-10-31    Oct 31, 2024 = 2024-10-31
+    2024-10-31T00:00:00Z = 2024-10-31        a timestamp at MIDNIGHT is a date
+    2024-10-31T09:00:00Z = 2024-10-31 09:00:00     two spellings of one instant
     ACME CORP = Acme Corp      "Acme  Corp." = "Acme Corp"      TRUE = true
     "N/A" = "-" = "" (all canonicalise to empty)
 
@@ -70,8 +72,8 @@ formatting:
 
     USD 1234.56 ≠ 1234.56        1234.56 USD ≠ 1234.56       currency codes are not stripped
     1.234,56 ≠ 1234.56           European decimal notation
-    2024-10-31T00:00:00Z ≠ 2024-10-31        an ISO timestamp is not read as a date
-    2024-10-31 00:00:00 ≠ 2024-10-31
+    2024-10-31T09:00:00Z ≠ 2024-10-31        a timestamp with a REAL time is not a date
+    2024-10-31T09:00:00Z ≠ 2024-10-31T17:00:00Z    time of day is scored, not discarded
     "yes" ≠ true                 only true/false spellings are booleans
 
 So a disagreement the grader reports is a real one *for the formats above*, and the second
