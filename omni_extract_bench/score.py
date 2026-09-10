@@ -555,6 +555,12 @@ def grade(pred: Any, gt: Any, schema: Any = None,
     both used. An address counts even if the value sitting there is wrong; whether it is
     right is `read_right`.
 
+    `precision`, `recall` and `f1` treat a keypath-and-value as one detection, so a value
+    read wrongly is charged on both sides. Report `f1` next to `accuracy`: accuracy cannot
+    tell a useful guess from a hopeless one, because a wrong value at a gold address costs
+    exactly what leaving it blank costs. `f1` charges the guess, so filling in fields the
+    model cannot read stops being free.
+
     `found` and `read_right` multiply to give the accuracy. `found` is the share of
     addresses that appear in both documents: did the model pick out the right cells?
     `read_right` is the share of those whose values agree: did it read them correctly? A
@@ -593,6 +599,8 @@ def grade(pred: Any, gt: Any, schema: Any = None,
         pred_rows += len(prow)
         paired += len(grow & prow)
 
+    recall = matched / len(gold) if gold else 0.0
+    precision = matched / len(pred_addr) if pred_addr else 0.0
     return {
         "accuracy": (100 * matched / total) if total else 0.0,
         "matched": matched,
@@ -602,8 +610,10 @@ def grade(pred: Any, gt: Any, schema: Any = None,
         "gt_rows": gt_rows,
         "pred_rows": pred_rows,
         "matched_rows": paired,
-        "recall": matched / len(gold) if gold else 0.0,
-        "precision": matched / len(pred_addr) if pred_addr else 0.0,
+        "recall": recall,
+        "precision": precision,
+        "f1": (2 * precision * recall / (precision + recall)
+               if precision + recall else 0.0),
         "matching_exact": not inexact,
         "approximated": sorted(set(inexact), reverse=True),
         "skipped_open_maps": [show(a) for a in skipped],
