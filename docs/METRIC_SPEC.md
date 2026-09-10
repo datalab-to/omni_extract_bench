@@ -158,54 +158,38 @@ key names, and those have different causes and different fixes.
 A detection is a keypath-and-value, so a value found at the right address but read wrongly is
 charged on both sides — as a box with the right location and the wrong class would be.
 
-### `accuracy` is the score; `f1` is the check on it
+### Why `accuracy` and not `f1` or Jaccard
 
-The two divide by different things, and the difference is worth stating exactly, because they
-can rank two predictions oppositely. Write the buckets as `m` matched, `w` misread, `u`
-unfound, `x` everything asserted that gold has no address for. Then
+`accuracy` reads the alignment; the others cannot. `f1` and Jaccard are functions of
+`matched`, `|gold|` and `|asserted|` alone, so these two are identical to them:
 
-    gold      G = m + w + u
-    asserted  P = m + w + x
-    total     T = m + w + u + x
+    gold {a:1, b:2}   pred {a:1, b:99}     found b, misread it
+    gold {a:1, b:2}   pred {a:1, c:99}     missed b, invented c
 
-    accuracy = m / T          = m / (m + w + u + x)
-    f1       = 2m / (G + P)   = 2m / (2m + 2w + u + x)
+Both give `matched = 1`, `|gold| = 2`, `|asserted| = 2`. `f1` scores both 50.00 and Jaccard
+both 33.33. `accuracy` scores them 50.00 and 33.33, because it knows the first pair shares an
+address. **That distinction is kept on purpose:** a misread means the extractor *located* the
+field, which is a different problem from not finding it.
 
-**`f1` is the textbook measure and charges a misread twice.** Under the detection framing,
-`FP = P − m = w + x` and `FN = G − m = w + u`, so `w` is in both: a value at the right address
-with the wrong content is a thing you asserted that is untrue *and* a gold fact you did not
-recover. Object detection does the same with a right-place/wrong-class box. `f1` is exactly
-the Dice coefficient over `(address, value)` pairs.
+`f1` is reported too, and equals `accuracy` exactly when both documents use the same
+addresses. Where they differ they can rank two predictions oppositely (2.1% of contrasting
+pairs), so **`accuracy` decides a ranking** and `f1` is not a tie-breaker.
 
-**`accuracy` deviates, deliberately, and charges a misread once.** Jaccard over those pairs
-would be `m / (m + 2w + u + x)`, because a misread contributes a distinct gold pair and a
-distinct predicted pair. `accuracy` is short by exactly `w`. That deviation *is* **P4** — each
-gold value contributes exactly 1 to the denominator — and it is what makes the headline
-literally interpretable: "you recovered 60% of this document". Charge a misread twice and the
-denominator exceeds the number of facts in the document, and the sentence stops being true.
+### What `accuracy` charges, and the one thing it does not
 
-**The price of the deviation is that the two can disagree about which prediction is better.**
-When no value is misread, `accuracy` is Jaccard and `f1` is `2J/(1+J)`, a strictly increasing
-function of it, so their ordering is identical — measured over 3302 pairs, **zero**
-disagreements. Introduce misreads and the monotone relationship breaks: over 3234 pairs where
-one prediction misreads and the other omits and invents, they rank **2.1%** of them
-oppositely. `accuracy` is systematically kinder to a model that misreads; `f1` is kinder to
-one that omits and invents.
+**It cannot be inflated.** `total = |gold| + invented`, so `accuracy ≤ matched / |gold|` — the
+ceiling rises only by being right more often. And every unpaired row adds all of its values to
+the denominator, so proposing all 27 combinations of a three-key row to guarantee one hit
+scores **3.70**, not 100.
 
-So, to be unambiguous: **`accuracy` is the score and decides any ranking.** `f1` is not a
-tie-breaker for it. The signature of a model filling in fields it cannot read is `accuracy`
-holding up while **`precision`** falls — not `f1`, which nets out when a good guess is mixed
-with a hopeless one (§8). Report `accuracy`, `precision` and `recall` together: they are a
-complete basis, from which `f1`, `found` and `read_right` all follow.
+**It is indifferent in exactly one place: at an address where gold has a value, a wrong value
+costs what a blank costs.** Both recovered nothing there, which is the right answer to *how
+much of this document did you recover*. The other question — *can I trust what it did say* —
+belongs to `precision`, which charges every wrong assertion.
 
-| | `misread` | accuracy | f1 |
-| --- | --- | --- | --- |
-| perfect | 0 | 100.00 | 100.00 |
-| one value misread | 1 | 50.00 | 50.00 |
-| one value missing | 0 | 50.00 | **66.67** |
-| one value invented | 0 | 66.67 | **80.00** |
-
-A misread is where they agree; a one-sided address is what splits them.
+Asserting where the document is **silent** is not in that exemption. It creates an address
+gold does not have, so `accuracy` charges it — and the bucket table above counts it as
+`fabricated`.
 
 **Row counts.** `gt_rows`, `pred_rows` and `matched_rows` count object-valued array elements
 at every depth. They support "returned 44 of 349 rows"; they do not feed precision or recall.

@@ -124,6 +124,56 @@ report("with no misread, accuracy is Jaccard and f1 == 2J/(1+J)",
        bad_dice == 0, f"{bad_dice} violations")
 note("so f1 is the textbook measure; accuracy is Jaccard minus one misread charge (P4)")
 
+print("\naccuracy READS THE ALIGNMENT; f1 AND JACCARD CANNOT")
+# The claim METRIC_SPEC section 4 rests on. These two predictions are indistinguishable to
+# any function of (matched, |gold|, |asserted|) -- so f1 and jaccard MUST score them alike.
+# accuracy does not, because it knows the first pair shares an address.
+AB_S = {"properties": {k: {"type": "string"} for k in "abc"}}
+AB_G = {"a": "1", "b": "2"}
+A = grade({"a": "1", "b": "99"}, AB_G, AB_S)      # found b, misread it
+B = grade({"a": "1", "c": "99"}, AB_G, AB_S)      # missed b, invented c
+def _j(r):
+    m, w, u = r["matched"], r["misread"], r["unfound"]
+    x = r["fabricated"] + r["invented_item"] + r["invented_field"]
+    d = m + 2 * w + u + x
+    return m / d if d else 0.0
+report("the two are identical in claim-set terms",
+       (A["matched"], A["matched"] + A["misread"] + A["unfound"],
+        A["asserted"]) == (B["matched"],
+                           B["matched"] + B["misread"] + B["unfound"], B["asserted"]),
+       f"A m={A['matched']} |G|={A['matched']+A['misread']+A['unfound']} "
+       f"|P|={A['asserted']}; B m={B['matched']} "
+       f"|G|={B['matched']+B['misread']+B['unfound']} |P|={B['asserted']}")
+report("so f1 scores them the same", abs(A["f1"] - B["f1"]) < 1e-12,
+       f"{A['f1']:.4f} vs {B['f1']:.4f}")
+report("and jaccard scores them the same", abs(_j(A) - _j(B)) < 1e-12,
+       f"{_j(A):.4f} vs {_j(B):.4f}")
+report("but accuracy tells them apart", abs(A["accuracy"] - B["accuracy"]) > 1e-9,
+       f"{A['accuracy']:.2f} vs {B['accuracy']:.2f}")
+note("hence accuracy is NOT a set-similarity measure -- it uses strictly more information,")
+note("and f1 is a coarsening of it rather than a generalisation")
+
+print("\nWHERE accuracy IS INDIFFERENT, AND WHERE IT IS NOT")
+IN_S = {"properties": {"a": {"type": "string"}, "b": {"type": "string"},
+                       "blank": {"type": ["string", "null"]}}}
+filled_G = {"a": "1", "b": "2"}
+silent_G = {"a": "1", "blank": None}
+abst_f = grade({"a": "1"}, filled_G, IN_S)
+gues_f = grade({"a": "1", "b": "WRONG"}, filled_G, IN_S)
+abst_s = grade({"a": "1"}, silent_G, IN_S)
+gues_s = grade({"a": "1", "blank": "WRONG"}, silent_G, IN_S)
+report("at an address where gold HAS a value, a wrong value costs what a blank costs",
+       abs(abst_f["accuracy"] - gues_f["accuracy"]) < 1e-9,
+       f"blank {abst_f['accuracy']:.2f}, wrong {gues_f['accuracy']:.2f}")
+report("...and precision is what separates them",
+       gues_f["precision"] < abst_f["precision"] - 1e-9)
+report("where gold is SILENT, asserting is charged -- it creates a new address",
+       gues_s["accuracy"] < abst_s["accuracy"] - 1e-9,
+       f"blank {abst_s['accuracy']:.2f}, asserted {gues_s['accuracy']:.2f}")
+report("...and it is counted as `fabricated`", gues_s["fabricated"] == 1,
+       f"fabricated {gues_s['fabricated']}")
+note("so the hallucination case is charged in the headline, not only in a diagnostic")
+
 print("\nP20 -- WITH NO MISREADS, THEIR RANKING IS IDENTICAL")
 pairs = inv = 0
 for _ in range(4000):
