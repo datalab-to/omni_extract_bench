@@ -212,11 +212,15 @@ A benchmark is a set of incentives. Three rules, for anyone building against thi
 1. **Emit a row if you can read any part of it, carrying only the parts you can read.** Those
    values sit at gold's own addresses, so the row costs exactly what omitting it would have
    cost and earns whatever it got right. Never truncate to be safe.
-2. **Leave a field empty rather than guess it.** `null`, `[]` and omitting the key cost the
-   same, and none costs more than a wrong value.
+2. **Only guess when you are more likely right than wrong.** Leaving a field empty never
+   costs *more* than a wrong value, and inside an array it costs less — and `null`, `[]` and
+   omitting the key are all the same thing. But a value you get right always beats silence,
+   so this is a question about your hit-rate, not about caution. The threshold is below.
 3. **Do not invent a row you cannot read at all.** It is charged twice.
 
-Together: **report everything you can read, and nothing you cannot.**
+Together: **report everything you can read. Beyond that, a guess pays only if it is more
+often right than wrong.** Rule 1 is the floor and is guaranteed; rule 2 is the judgement call
+on top of it.
 
 Ten gold rows of four fields, the first five read perfectly, the last five either omitted or
 attempted with *j* of 4 right:
