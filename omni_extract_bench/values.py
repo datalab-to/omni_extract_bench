@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, localcontext
 
 from . import normalize as N
 
@@ -119,20 +120,114 @@ def _sign_normalize(s: str):
     return s, sign
 
 
-def _asfloat(v):
-    """Parse a float ONLY if it looks decimal (has a '.') — integers/IDs stay exact.
+def _numeric_text(v):
+    """The signed numeric text of `v`, or None if `v` is not a decimal number.
 
-    Sign notation is normalized first, so `(98.2)`, `-98.2` and `\u221298.2` all parse to
-    -98.2 — but the resulting SIGN is preserved and compared.
+    ONLY text containing a '.' is numeric here — that is the whole of the ID protection.
+    Sign notation is normalized first, so `(98.2)`, `-98.2` and `\u221298.2` all become
+    "-98.2" — but the resulting SIGN is preserved and compared.
     """
     body, sign = _sign_normalize(str(v))
     body = body.replace(",", "").replace("$", "").replace("%", "").replace(" ", "")
     if "." not in body:
         return None
+    return ("-" if sign < 0 else "") + body
+
+
+def _asfloat(v):
+    """Parse a float ONLY if it looks decimal (has a '.') — integers/IDs stay exact."""
+    t = _numeric_text(v)
+    if t is None:
+        return None
     try:
-        return sign * float(body)
+        return float(t)
     except ValueError:
         return None
+
+
+def _asdecimal(v):
+    """Same parse as `_asfloat`, exact. Comparison uses this; a float cannot round honestly.
+
+    `123456.78` as a float is 123456.78000000000174623, and rounding THAT is how a rule
+    about decimal places starts disagreeing with the decimal places the document printed.
+    """
+    t = _numeric_text(v)
+    if t is None:
+        return None
+    try:
+        d = Decimal(t)
+    except InvalidOperation:
+        return None
+    # NaN and infinity are not numbers to compare, and an absurd magnitude is not a value a
+    # document printed. Both fall through to text comparison, which is exact and cheap.
+    #
+    # The guard is not cosmetic. `Decimal` has an unbounded exponent where `float` saturates,
+    # so `1.0e1000000000` parses happily and then `int()` of it tries to materialise a
+    # billion digits -- it hangs rather than failing. The float path this replaced had the
+    # matching bug in the other direction: it overflowed to `inf` and `int(inf)` raised
+    # OverflowError out of `canon_key`, so one absurd value in one field crashed the scorer.
+    if not d.is_finite() or not -_MAX_EXPONENT <= d.adjusted() <= _MAX_EXPONENT:
+        return None
+    return d
+
+
+# Precision is a property of the FRACTION, not of the number. An amount and a rate want
+# opposite things from a rounding rule -- cents must survive at any magnitude, while a
+# re-derived rate wants its trailing digits forgiven -- and both are the same field type to
+# a scorer. Rounding to significant digits of the WHOLE number cannot serve both: it spends
+# its budget on the integer part first, so 123456.78 and 123456.79 came out equal while
+# 0.12345678 and 0.12345679 also came out equal. Only the second of those is wanted.
+#
+# So the integer part is never rounded, and the fraction keeps seven significant digits of
+# its own. Cents are then compared at every magnitude, and two rates agreeing to seven
+# figures still agree however small they are.
+#
+# TODO(paul): the rounding is now inert unless a fraction carries MORE than seven significant
+# digits, so whether it is needed at all is an empirical question about the gold corpus, not
+# a judgement call: grep it for values with an eight-digit-or-longer fraction. If there are
+# none, delete `_round_fraction` and compare numbers exactly -- the leniency exists only to
+# forgive ground truth that was re-derived at a different precision than the page printed.
+_FRACTION_DIGITS = 7
+
+# Beyond this many digits either side of the point, a value is not a number a document
+# printed and is compared as text instead. See `_asdecimal` for why the bound must exist.
+_MAX_EXPONENT = 100
+
+
+def _fraction_places(d: Decimal) -> int:
+    """How many decimal places `d` keeps, so that its FRACTION carries seven significant
+    digits — however wide the integer part is, and however many zeros follow the point.
+
+    Read off the digit tuple rather than computed, so there is no arithmetic to lose
+    precision in. `Decimal("0.0025")` is `(2,5)` at exponent -4: two zeros follow the point,
+    so the seven significant digits start after them and the value keeps nine places.
+    `9825.000082185` keeps eleven, because its fraction also opens with zeros — counting
+    decimal places instead would have spent the budget on `9825` and rounded a fraction
+    that was only five significant digits long.
+    """
+    _sign, digits, exp = d.as_tuple()
+    if not isinstance(exp, int) or exp >= 0:
+        return 0                                   # no fractional digits at all
+    width = -exp                                   # digits printed after the point
+    fraction = ((0,) * (width - len(digits)) + digits)[-width:]
+    leading_zeros = 0
+    for digit in fraction:
+        if digit:
+            break
+        leading_zeros += 1
+    if leading_zeros == width:
+        return 0                                   # "5.00" — an integral value
+    return _FRACTION_DIGITS + leading_zeros
+
+
+def _round_fraction(d: Decimal) -> Decimal:
+    """`d` with its fractional part rounded; the integer part is left exactly alone."""
+    places = _fraction_places(d)
+    if not places:
+        return d
+    with localcontext() as ctx:
+        ctx.prec = places + max(d.adjusted(), 0) + 2
+        return d.quantize(Decimal(1).scaleb(-places))
 
 # ── leaf comparators -> 1.0 (match) or 0.0 ───────────────────────────────────────
 def _canon(v):
@@ -162,13 +257,12 @@ def canon_key(v):
                        its integer, so 8303911426.0 agrees with 8303911426 rather than being
                        rounded away from it.
 
-                       A value with a real fractional part is rounded to 7 significant
-                       digits. That is a bucket, not a tolerance -- two values land in the
-                       same bucket or they do not, because a comparison cannot be a key.
-                       It buys agreement on precision: 33.33333333 and 33.3333333 are one
-                       printed rate at two precisions and they match. It costs cents above
-                       six figures, where 123456.78 and 123456.79 key alike. Both halves
-                       of that trade are deliberate; see docs/METRIC_SPEC.md section 2.
+                       The integer part is compared exactly. The FRACTION is rounded to
+                       7 significant digits of its own, so 33.33333333 and 33.3333333 are
+                       one printed rate at two precisions and agree, while 123456.78 and
+                       123456.79 are one cent apart and differ. See `_FRACTION_DIGITS`
+                       for why precision belongs to the fraction and not to the number,
+                       and docs/METRIC_SPEC.md section 2 for what it costs.
       3. dates      -- ISO form, so 2024-01-15 and 01/15/2024 agree, and so does a
                        timestamp at midnight. `_asdate` is strict: "1/2", "Q1" and "2-3-13"
                        are not dates, so this cannot swallow values that mean something else.
@@ -178,25 +272,23 @@ def canon_key(v):
     """
     if isinstance(v, bool):
         return _canon(v)
-    f = _asfloat(v)
-    if f is not None:
-        # An integral float is an integer, and must key as one. Only values containing a "."
-        # are parsed at all, which is what keeps an ID exact -- but a vendor emitting that
-        # same ID as a JSON float would otherwise have it rounded: 8303911426.0 keyed as
-        # 8303911000, so a correct account number scored as wrong, and two IDs differing in
-        # their last three digits scored as equal. Both are spelling, not extraction.
-        if f == int(f):
-            return _canon(int(f))
-        # A value with a real fractional part is rounded to 7 significant digits, matching the
-        # 1e-6 relative tolerance this replaced. It is a bucket, not a tolerance: two values
-        # either land in the same bucket or they do not. The consequence to know is that cents
-        # merge once an amount reaches six figures -- 123456.78 and 123456.79 key alike -- in
-        # exchange for 33.33333333 and 33.3333333 agreeing, which is the case that matters
-        # more often: a printed rate re-derived at a different precision.
-        try:
-            return _canon(float(f"{f:.7g}"))
-        except (ValueError, OverflowError):
-            return _canon(v)
+    d = _asdecimal(v)
+    if d is not None:
+        q = _round_fraction(d)
+        # An integral value is an integer and must key as one, whether it arrived as `5.0`
+        # or rounded up to it. Only text containing a "." is parsed at all, which is what
+        # keeps an ID exact -- but a vendor emitting that same ID as a JSON float used to
+        # have it rounded: 8303911426.0 keyed as 8303911000, so a correct account number
+        # scored as wrong and two IDs differing in their last three digits scored as equal.
+        if q == q.to_integral_value():
+            return _canon(int(q))
+        # Fixed-point text rather than scientific, so the value handed to `canonical` reads
+        # the way the document printed it. `canonical` has its own numeric path and will
+        # re-parse this as a float, which is where the last of the precision goes: two keys
+        # agreeing past the seventeenth significant digit collapse together. That needs an
+        # integer part of ten digits AND a seven-digit fraction to reach, and it is shared
+        # with every other numeric key in the benchmark, not introduced here.
+        return _canon(f"{q.normalize():f}")
     d = _asdate(v)
     if d:
         return f"#d{d}"
