@@ -31,6 +31,7 @@ inside them. Comparing two such lists is the same problem, one level down:
 __all__ = ["grade", "explain", "Verdict",
            "node_key", "show", "format_node", "KEY", "INDEX"]
 
+import collections
 from collections.abc import Hashable, Iterable
 from typing import Any, Literal, NamedTuple
 
@@ -183,6 +184,59 @@ def _document_arrays(node: Any, prefix: Address = ()) -> list[Address]:
         for value in node:
             out += _document_arrays(value, prefix + ((INDEX, None),))
     return out
+
+
+def _schema_leaves(schema: Any, prefix: Address = ()) -> set[Address]:
+    """Every value the schema asks for, as node keys. The slots on offer.
+
+    Needed to tell a value the model made up from one it invented a name for. If the schema
+    offered the slot and the document is silent, filling it in is a fabricated fact. If the
+    schema never mentioned the name, it is an invented field. Those are different bugs.
+
+    Gold's own `null`s cannot answer this. A gold field written `null` and a gold field left
+    out entirely mean the same thing (§10), so keying off gold would sort two identical
+    documents into different buckets. The schema is the only authority that does not move.
+
+    Nothing inside an `additionalProperties` object counts, because that subtree is not
+    graded at all -- a slot nobody was asked for cannot be filled in wrongly.
+
+    >>> [format_node(k) for k in sorted(_schema_leaves(
+    ...     {"properties": {"n": {"type": "string"},
+    ...                     "rows": {"type": "array",
+    ...                              "items": {"properties": {"q": {"type": "number"}}}}}}),
+    ...     key=format_node)]
+    ['n', 'rows[*].q']
+    """
+    schema = _unwrap_schema(schema) if isinstance(schema, dict) else {}
+    if N.is_open_map(schema):
+        return set()
+    props, item = schema.get("properties") or {}, schema.get("items")
+    if not props and item is None:
+        return {prefix}
+    out: set[Address] = set()
+    for key, sub in props.items():
+        out |= _schema_leaves(sub, prefix + ((KEY, key),))
+    if item is not None:
+        out |= _schema_leaves(item, prefix + ((INDEX, None),))
+    return out
+
+
+def _classify_extra(address: Address, slots: set[Address]) -> str:
+    """Why does the prediction have this address when the ground truth does not?
+
+    Order matters. An array element that paired with nothing carries a label like `p2` in
+    place of an index, and every value under it is part of that one extra element rather than
+    a set of separately filled fields -- a hallucinated twelve-column row would otherwise
+    look exactly like twelve invented field names.
+
+    "Item" rather than "row" because it covers both: an extra object in an array of objects,
+    and an extra scalar in an array of scalars.
+    """
+    if any(kind == INDEX and isinstance(value, str) for kind, value in address):
+        return "invented item"
+    if node_key(address) in slots:
+        return "fabricated"
+    return "invented field"
 
 
 def _find_arrays(addresses: Iterable[Address]) -> list[Address]:
@@ -513,6 +567,13 @@ def _both(pred: Any, gt: Any, schema: Any,
             f"structured outputs rejects one outright -- so a document shaped like this was "
             f"never asked for. Wrap it in an object, on both sides."
         )
+    if not isinstance(schema, dict) or not schema:
+        raise TypeError(
+            "a schema is required. Without it an additionalProperties object cannot be "
+            "found, so an ungraded subtree would be graded silently, and the slots the "
+            "model was offered are unknown, so a fabricated value cannot be told from an "
+            "invented one. Pass the schema the prediction was generated against."
+        )
     if _has_ref(schema):
         raise ValueError(
             "schema still contains $ref. Resolve it first with dialects.resolve_refs: an "
@@ -529,7 +590,7 @@ def _both(pred: Any, gt: Any, schema: Any,
     return gold_leaves, pred_leaves, inexact, sorted(set(skipped), key=_reading_order)
 
 
-def grade(pred: Any, gt: Any, schema: Any = None,
+def grade(pred: Any, gt: Any, schema: Any,
           order_matters: Iterable[str] = ()) -> dict:
     """Score one prediction against one ground truth.
 
@@ -567,19 +628,29 @@ def grade(pred: Any, gt: Any, schema: Any = None,
     model that returns half the table perfectly and one that returns the whole table with
     half the values wrong get similar accuracies. These two tell them apart.
 
-    `recall` and `precision` count rows rather than values.
 
     `matching_exact`, `approximated` and `skipped_open_maps` say where the scorer fell short:
     an array too big to match exactly, and anything not graded at all.
 
+    >>> schema = {"properties": {"segments": {"type": "array", "items": {"properties": {
+    ...     "name": {"type": "string"},
+    ...     "q": {"type": "array", "items": {"type": "number"}}}}}}}
     >>> gold = {"segments": [{"name": "Cloud", "q": [10.5, 12.0]}]}
-    >>> grade({"segments": [{"name": "Cloud", "q": [12.0, 10.5]}]}, gold)["accuracy"]
+    >>> grade({"segments": [{"name": "Cloud", "q": [12.0, 10.5]}]}, gold, schema)["accuracy"]
     100.0
-    >>> r = grade({"segments": [{"name": "Cloud", "q": [10.5, 99.9]}]}, gold)
+    >>> r = grade({"segments": [{"name": "Cloud", "q": [10.5, 99.9]}]}, gold, schema)
     >>> r["matched"], r["total"], round(r["accuracy"], 1)
     (2, 4, 50.0)
     >>> round(r["found"] * r["read_right"] * 100, 6)
     50.0
+    >>> r["misread"], r["unfound"], r["invented_item"]
+    (0, 1, 1)
+
+    That last line is worth reading twice. The wrong value is in a scalar array, whose
+    elements have no identity to be wrong about -- they compare as a multiset. So it is not
+    one value misread; it is one gold element nobody produced and one element the model
+    produced that is not there. Charged on both sides, which costs more than the same error
+    in a named field: 50.0 here against 66.7 for a wrong `name`.
     """
     gold, pred_addr, inexact, skipped = _both(pred, gt, schema, order_matters)
     shared = set(gold) & set(pred_addr)
@@ -599,12 +670,28 @@ def grade(pred: Any, gt: Any, schema: Any = None,
         pred_rows += len(prow)
         paired += len(grow & prow)
 
+    # Why the prediction is wrong, split so the three failures have different names.
+    # misread: the document has this value and the model read it wrongly.
+    # fabricated: the schema offered the slot, the document is silent, the model filled it.
+    # invented item / field: structure the schema never asked for.
+    slots = _schema_leaves(schema)
+    misread = len(shared) - matched
+    unfound = len(gold) - len(shared)
+    extra = collections.Counter(_classify_extra(a, slots)
+                                for a in pred_addr if a not in gold)
+
     recall = matched / len(gold) if gold else 0.0
     precision = matched / len(pred_addr) if pred_addr else 0.0
     return {
         "accuracy": (100 * matched / total) if total else 0.0,
         "matched": matched,
         "total": total,
+        "asserted": len(pred_addr),
+        "misread": misread,
+        "unfound": unfound,
+        "fabricated": extra["fabricated"],
+        "invented_item": extra["invented item"],
+        "invented_field": extra["invented field"],
         "found": len(shared) / total if total else 0.0,
         "read_right": matched / len(shared) if shared else 0.0,
         "gt_rows": gt_rows,
@@ -626,21 +713,28 @@ class Verdict(NamedTuple):
     address: Address
     gold: Any
     pred: Any
-    verdict: str        # match | wrong value | missing | spurious | skipped (open map)
+    verdict: str        # match | wrong value | missing | skipped (open map)
+                        # fabricated | invented item | invented field
 
 
-def explain(pred: Any, gt: Any, schema: Any = None,
+def explain(pred: Any, gt: Any, schema: Any,
             order_matters: Iterable[str] = ()) -> list[Verdict]:
     """List what happened at every address, so you can see why a score is what it is.
 
     One `Verdict` per address, in reading order. Anything skipped shows up too, as its own
     line, rather than quietly not appearing.
 
-    >>> for v in explain({"a": 1, "c": 3}, {"a": 2, "b": 9}):
+    A value the prediction has and the ground truth does not is labelled by WHY: `fabricated`
+    if the schema offered that slot, `invented field` if it never declared the name, and
+    `invented item` for an array element that paired with nothing. See section 11 of the spec.
+
+    >>> schema = {"properties": {"a": {"type": "number"}, "b": {"type": "number"},
+    ...                          "c": {"type": "number"}}}
+    >>> for v in explain({"a": 1, "c": 3}, {"a": 2, "b": 9}, schema):
     ...     print(f"{show(v.address):4} {str(v.gold):5} {str(v.pred):5} {v.verdict}")
     a    2     1     wrong value
     b    9     None  missing
-    c    None  3     spurious
+    c    None  3     fabricated
 
     Both documents are reported in ONE address space. A predicted row that arrived in a
     different position has already been renumbered onto the gold row it matched, so
@@ -651,24 +745,29 @@ def explain(pred: Any, gt: Any, schema: Any = None,
     row as correct only when every value under it is correct, group by the address up to the
     last index step:
 
+    >>> sch = {"properties": {"lines": {"type": "array", "items": {"properties": {
+    ...     "sku": {"type": "string"}, "qty": {"type": "number"}}}}}}
     >>> gold = {"lines": [{"sku": "x", "qty": 2}, {"sku": "y", "qty": 7}]}
     >>> pred = {"lines": [{"sku": "y", "qty": 7}, {"sku": "x", "qty": 9}]}
     >>> rows: dict = {}
-    >>> for v in explain(pred, gold):
+    >>> for v in explain(pred, gold, sch):
     ...     cut = max(i for i, (kind, _) in enumerate(v.address) if kind == INDEX)
     ...     rows.setdefault(show(v.address[:cut + 1]), set()).add(v.verdict)
     >>> {row: kinds == {"match"} for row, kinds in sorted(rows.items())}
     {'lines[0]': False, 'lines[1]': True}
-    >>> round(grade(pred, gold)["accuracy"], 1)     # the leaf view is kinder: 3 of 4 values
+    >>> round(grade(pred, gold, sch)["accuracy"], 1)   # the leaf view is kinder: 3 of 4
     75.0
     """
     gold, pred_addr, _inexact, skipped = _both(pred, gt, schema, order_matters)
+    slots = _schema_leaves(schema)
     out = [Verdict(a, None, None, "skipped (open map)") for a in skipped]
     for a in sorted(set(gold) | set(pred_addr), key=_reading_order):
         if a in gold and a in pred_addr:
             verdict = "match" if cmp_leaf(pred_addr[a], gold[a]) >= 1.0 else "wrong value"
+        elif a in gold:
+            verdict = "missing"
         else:
-            verdict = "missing" if a in gold else "spurious"
+            verdict = _classify_extra(a, slots)
         out.append(Verdict(a, gold.get(a), pred_addr.get(a), verdict))
     return out
 
@@ -687,10 +786,14 @@ if __name__ == "__main__":
             "holdings": [{"issuer": "Cygnus", "value": 88.25},
                          {"issuer": "Acme", "value": 999.0},
                          {"issuer": "Delta", "value": 42.0}]}
-    r = grade(PRED, GOLD)
+    SCHEMA = {"properties": {
+        "filing_date": {"type": "string"},
+        "holdings": {"type": "array", "items": {"properties": {
+            "issuer": {"type": "string"}, "value": {"type": "number"}}}}}}
+    r = grade(PRED, GOLD, SCHEMA)
     print(f"\naccuracy {r['accuracy']:.2f}  "
           f"= found {r['found']:.4f} x read_right {r['read_right']:.4f}")
-    for v in explain(PRED, GOLD):
+    for v in explain(PRED, GOLD, SCHEMA):
         print(f"  {show(v.address):24} gold={v.gold!r:12} pred={v.pred!r:12} {v.verdict}")
     assert failures == 0
     print("\nok")

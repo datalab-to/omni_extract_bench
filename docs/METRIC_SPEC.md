@@ -185,6 +185,24 @@ there to find, so failing to find it costs nothing.
 
 This is property **P9**.
 
+**A prediction that says `null` scores exactly as one that omits the key**, and that is a
+comparability guarantee rather than a convenience. `dialects.to_strict_dialect` rewrites
+properties as `["string", "null"]` because strict vendors require every declared property to
+be present and use `null` to mean "no value"; permissive vendors simply omit the key. The
+harness therefore *causes* the two conventions to coexist across providers. If the two scored
+differently, a vendor's score would move with the serialization convention this harness
+imposed on it rather than with how well it read the document.
+
+That is the same argument as schema width, one level down. Absence-agreement cannot count, or
+schema width would move scores; absence-notation cannot matter, or dialect would. Both reduce
+to one rule: **score the facts in the document, and nothing about the shape of the request.**
+
+The price is specific. A `null` may be a considered decline while an absent key may be a
+truncated response, and this decision makes them indistinguishable — so this benchmark cannot
+report whether a model abstains honestly. Recovering that would mean carrying the
+*prediction's* `null` addresses through alignment. Note that the fabrication measure in §11
+is unaffected: it keys off **gold's** nulls, and gold is never renumbered.
+
 **Rows that are entirely null are dropped, on both sides.** A gold row whose payload is all
 `null` asserts no fact, so charging a vendor for omitting it would penalise everyone for an
 unstated convention (§6). The same filter runs over the prediction, which means an *invented*
@@ -208,3 +226,76 @@ out of "the index is the address", which is the whole meaning of the flag, and i
 here rather than fixed — but it is a reason to name an array in `order_matters` only when its
 order genuinely carries meaning. Order-free arrays have no such trap: `[a, null, c]` and
 `[a, c]` both score 100.0, because the null was never an address to begin with.
+
+## 11. False assertions, split three ways
+
+`1 - precision` is the rate at which a prediction asserts something untrue. That single
+number hides three different bugs, so `grade` reports them separately:
+
+| count | meaning | what it points at |
+| --- | --- | --- |
+| `misread` | the document has a value at this address; the model read it wrongly | OCR, units, sign, date format |
+| `fabricated` | **the schema offered this slot, the document is silent, the model filled it** | schema pressure — the model will not leave a field empty |
+| `invented_item` | an array element that paired with nothing | over-segmentation: a header or subtotal read as data, a row emitted twice |
+| `invented_field` | a name the schema never declared | schema non-adherence: an invented key, or a synonym for a declared one |
+
+Rows and fields are separated because their magnitudes differ. One invented row contributes
+a leaf for every column it has; one invented field contributes one. Lumped together, a single
+hallucinated twelve-column row is indistinguishable from twelve invented field names, and the
+two have different causes and different fixes.
+
+`fabricated` is the sharpest hallucination signal available from this data: the document does
+not say this, and the model said it anyway, in a slot the schema held open.
+
+### The authority is the schema, not gold's `null`s
+
+A gold field written `null` and a gold field left out entirely mean the same thing (§10). So
+classifying by gold's `null`s would sort two semantically identical ground truths into
+different buckets. `_schema_leaves` reads the slots off the schema instead, which is the only
+authority that does not move. Nothing inside an `additionalProperties` object counts as a
+slot, because that subtree is not graded at all — a value nobody asked for cannot be a filled
+slot.
+
+This is why **the schema is required**. Without one, `fabricated` could only be reported as
+zero, which would read as "this model never fabricates" — a false claim rather than a missing
+measurement. A missing schema also silently disables open-map detection (§9), so requiring it
+closes both holes at once.
+
+### The identities
+
+    asserted = matched + misread + fabricated + invented_item + invented_field
+    gold     = matched + misread + unfound
+    total    = matched + misread + unfound + fabricated + invented_item + invented_field
+
+    precision = matched / asserted
+    recall    = matched / gold
+    accuracy  = matched / total
+    f1        = 2·precision·recall / (precision + recall)
+
+Note that `misread` is counted in both `asserted` and `gold`, but only **once** in `total`.
+That is the entire reason `accuracy` and `f1` differ: a value read wrongly is one gold fact
+you failed to recover (charged once), and simultaneously one false thing you asserted plus
+one true thing you missed (charged twice).
+
+These counts are exactly the histogram of the verdicts `explain` returns, so the two surfaces
+cannot drift apart. Both are asserted by `tests/test_false_assertions.py`, over the worked
+example and over 2400 generated gradings.
+
+### A scalar array has no cells to misread
+
+Elements of a scalar array compare as a multiset, so they have no identity. A value read
+wrongly there is therefore **not** a `misread`: it is one gold element nobody produced
+(`unfound`) plus one element the model produced that is not in the document
+(`invented_item`). It is charged on both sides, which costs more than the same error in a
+named field:
+
+| error | verdicts | denominator | accuracy |
+| --- | --- | --- | --- |
+| `name` read wrongly | 1 `misread` | 3 | 66.7 |
+| `q[1]` read wrongly | 1 `unfound` + 1 `invented_item` | 4 | 50.0 |
+
+This is not new behaviour — the multiset denominator has always been
+`len(gold) + len(pred) − matches` — but it was undocumented. It follows from the array being
+order-free: with no cell identity there is nothing for a value to be *wrong about*, only
+content that is present or absent. Naming the array in `order_matters` gives its positions
+meaning and restores `misread` for it.

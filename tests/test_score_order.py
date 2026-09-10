@@ -21,6 +21,36 @@ from omni_extract_bench.score import (                             # noqa: E402
     INDEX, KEY, explain, flatten, show, grade, node_key,
     format_node, _find_arrays)
 
+# ── the scorer now requires a schema ──────────────────────────────────────────────────
+# These tests are about scoring, not schema plumbing, so derive one from the ground truth.
+# That is the realistic case anyway: gold conforms to the schema that was sent. Deriving it
+# from gold alone is deliberate -- a key the PREDICTION invented genuinely is not a slot the
+# model was offered, which is what tells `invented field` from `fabricated`.
+from omni_extract_bench.score import grade as _grade_impl          # noqa: E402
+from omni_extract_bench.score import explain as _explain_impl      # noqa: E402
+
+
+def _schema_from(doc):
+    if isinstance(doc, dict):
+        return {"type": "object", "properties": {k: _schema_from(v) for k, v in doc.items()}}
+    if isinstance(doc, list):
+        merged = {}
+        for e in doc:
+            if isinstance(e, dict):
+                merged.update(e)
+        return {"type": "array", "items": _schema_from(merged) if merged else {}}
+    return {}
+
+
+def grade(pred, gt, schema=None, *a, **kw):
+    return _grade_impl(pred, gt, schema or _schema_from(gt), *a, **kw)
+
+
+def explain(pred, gt, schema=None, *a, **kw):
+    return _explain_impl(pred, gt, schema or _schema_from(gt), *a, **kw)
+# ──────────────────────────────────────────────────────────────────────────────────────
+
+
 FAILS = []
 
 
@@ -182,8 +212,8 @@ report("so a node key built by one copy matches a frozenset built by the other",
 CROSS_G = {"books": [{"chapters": ["a", "b"]}]}
 CROSS_P = {"books": [{"chapters": ["b", "a"]}]}
 report("and a name resolved by one copy applies in the other",
-       _copy.grade(copy.deepcopy(CROSS_P), copy.deepcopy(CROSS_G), None,
-                   ["books[*].chapters"])["accuracy"] < 1e-9
+       _copy.grade(copy.deepcopy(CROSS_P), copy.deepcopy(CROSS_G),
+                   _schema_from(CROSS_G), ["books[*].chapters"])["accuracy"] < 1e-9
        and acc(CROSS_P, CROSS_G, ["books[*].chapters"]) < 1e-9)
 note("under the old identity comparison this scored 100.00: the config silently did not apply")
 
