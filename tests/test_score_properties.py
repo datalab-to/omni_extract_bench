@@ -25,6 +25,36 @@ from omni_extract_bench.score import (                          # noqa: E402
     node_key, format_node, _find_arrays, KEY, INDEX,
     grade, flatten, align, explain)
 
+# ── the scorer now requires a schema ──────────────────────────────────────────────────
+# These tests are about scoring, not schema plumbing, so derive one from the ground truth.
+# That is the realistic case anyway: gold conforms to the schema that was sent. Deriving it
+# from gold alone is deliberate -- a key the PREDICTION invented genuinely is not a slot the
+# model was offered, which is what tells `invented field` from `fabricated`.
+from omni_extract_bench.score import grade as _grade_impl          # noqa: E402
+from omni_extract_bench.score import explain as _explain_impl      # noqa: E402
+
+
+def _schema_from(doc):
+    if isinstance(doc, dict):
+        return {"type": "object", "properties": {k: _schema_from(v) for k, v in doc.items()}}
+    if isinstance(doc, list):
+        merged = {}
+        for e in doc:
+            if isinstance(e, dict):
+                merged.update(e)
+        return {"type": "array", "items": _schema_from(merged) if merged else {}}
+    return {}
+
+
+def grade(pred, gt, schema=None, *a, **kw):
+    return _grade_impl(pred, gt, schema or _schema_from(gt), *a, **kw)
+
+
+def explain(pred, gt, schema=None, *a, **kw):
+    return _explain_impl(pred, gt, schema or _schema_from(gt), *a, **kw)
+# ──────────────────────────────────────────────────────────────────────────────────────
+
+
 FAILS = []
 WORDS = ["alpha", "beta", "gamma", "Acme Ltd", "J. Smith", "2024-03-01", "Q2", "USD"]
 
@@ -479,16 +509,16 @@ expected = {
     "['segments'][0]['quarters'][0]": "match",
     "['segments'][0]['quarters'][1]": "match",
     "['segments'][0]['quarters'][2]": "missing",
-    "['segments'][0]['quarters']['p2']": "spurious",
-    # the fabricated row gets a fresh address at the OUTER level
-    "['segments']['p2']['name']": "spurious",
-    "['segments']['p2']['quarters'][0]": "spurious",
+    "['segments'][0]['quarters']['p2']": "invented item",
+    # the invented row gets a fresh address at the OUTER level
+    "['segments']['p2']['name']": "invented item",
+    "['segments']['p2']['quarters'][0]": "invented item",
 }
 report("every address and verdict is exactly as documented", verdicts == expected,
        "differences: " + str({k: (expected.get(k), verdicts.get(k))
                               for k in set(expected) | set(verdicts)
                               if expected.get(k) != verdicts.get(k)}))
-report("a fabricated CELL inside a real row is charged separately from a fabricated ROW",
+report("an extra CELL inside a real row is addressed separately from an extra ROW",
        "['segments'][0]['quarters']['p2']" in verdicts and "['segments']['p2']['name']" in verdicts)
 
 print("\nORDER IS FREE BY DEFAULT, AND CHARGED WHERE DECLARED")
