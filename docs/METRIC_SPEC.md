@@ -171,8 +171,19 @@ asserts no fact, so charging a vendor for omitting it would penalise everyone fo
 convention. The same filter runs over the prediction, so an invented empty row is free —
 consistent with scoring facts, but it does mean output bloat is not measured here.
 
-**The price of all this:** `{"b": null}` and `{}` are indistinguishable, so whether a model
-abstains *honestly* is not a claim this benchmark can make.
+**What this does and does not cost.** `{"b": null}` and `{}` are indistinguishable — but they
+are the same behaviour, so nothing is lost. Abstaining *is* producing no value at an address,
+however it is spelled, and that is measured: a model that declines rather than guesses shows
+higher `precision`, and §8's `f1` threshold prices the choice.
+
+    declines 5 fields with null      acc 87.50   f1 93.33   precision 100.00
+    omits the same 5 fields          acc 87.50   f1 93.33   precision 100.00
+    guesses those 5 fields instead   acc 87.50   f1 87.50   precision  87.50
+
+What is *not* recoverable is the intent behind one absence: whether the model weighed a field
+and declined, or never reached it. Even that is usually legible from the shape of what is
+missing — declining scatters across the fields a model finds hard, truncation leaves a
+contiguous tail across every field of the last rows.
 
 Asserted by `tests/test_spec_null_semantics.py`.
 
@@ -284,5 +295,6 @@ mistyped configuration left the array unordered and the run finished looking fin
 - **No per-subset scoring paths.** One grader, or the comparison is meaningless.
 - **No substring acceptance and no sign flipping** to accommodate ground-truth conventions.
   Conventions belong in the schema, so vendors are told rather than guessed at.
-- **No credit for declining.** Whether a model abstained honestly is not measurable here
-  (§5), so it is not scored rather than approximated.
+- **No separate credit for declining.** It needs none: abstaining is producing no value, and
+  `precision` already distinguishes a model that declines from one that guesses (§5). A
+  bonus for silence would be a second, gameable path to a good score.

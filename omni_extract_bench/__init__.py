@@ -14,16 +14,14 @@ The public surface is deliberately small:
 scoring, row-pair weighting, and blocking alike.
 """
 
-from .grading import canon_key, cmp_leaf
-from .grading import fair_grade_value as grade_value
-from .score import explain, grade
 from .matching import match_rows
+from .score import explain, grade
+from .values import canon_key, cmp_leaf
 from .prediction_io import usable
 
 __all__ = [
     "grade",
     "explain",
-    "grade_value",
     "canon_key",
     "cmp_leaf",
     "match_rows",
