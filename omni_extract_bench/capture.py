@@ -101,9 +101,9 @@ def reset():
     CAPTURE.reset()
 
 
-def record(method, url, status, body, elapsed=None, request=None):
+def record(method, url, status, body, elapsed=None, request=None, headers=None):
     """Append one record by hand (the taps call this for you)."""
-    CAPTURE.record(method, url, status, body, elapsed, request)
+    CAPTURE.record(method, url, status, body, elapsed, request, headers=headers)
 
 
 def note_job_id(body, source=""):
