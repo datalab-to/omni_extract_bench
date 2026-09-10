@@ -326,3 +326,67 @@ makes the array agree with named fields. That was the old behaviour and it was r
 defect: it carves out an exception to the rule that a predicted leaf with no gold address is
 spurious, so `["a","b","c"]` against gold `["a","x","c"]` had a denominator of 3 and the
 invented `b` was free.
+
+## 12. What the metric pays for
+
+A benchmark is a set of incentives, so here they are in one place. Every number below is
+asserted by `tests/test_incentives.py`.
+
+### Three rules for anyone building an extractor against this
+
+1. **Emit a row if you can read any part of it.** A paired row has the same denominator as an
+   omitted one, so attempting can only add to the numerator. Never truncate to be safe.
+2. **Leave a field empty rather than guess it.** `null`, `[]` and omitting the key all cost
+   the same, and none of them costs more than a wrong value.
+3. **Do not invent a row you cannot read at all.** A row matching nothing is charged twice —
+   once as gold you missed, once as content you made up.
+
+Together: **report everything you can read, and nothing you cannot.**
+
+### The numbers behind rule 1
+
+Ten gold rows of four fields; the first five read perfectly; the last five either omitted or
+attempted with *j* of 4 fields right.
+
+| the last five rows | accuracy | f1 |
+| --- | --- | --- |
+| omitted | 50.0 | 66.7 |
+| emitted, 0 of 4 right | 33.3 | 50.0 |
+| emitted, 1 of 4 right | **62.5** | 62.5 |
+| emitted, 2 of 4 right | 75.0 | 75.0 |
+| emitted, 4 of 4 right | 100.0 | 100.0 |
+
+The one regime where omitting genuinely wins is a row whose content is mostly scalar-array
+elements the model cannot read, because each wrong element costs two denominator slots rather
+than one (§11). Even there, emitting the row with only its readable fields beats both omitting
+and guessing — and a strict schema cannot take that option away, since `null` and `[]` score
+exactly as an omitted key does.
+
+### Where accuracy and f1 disagree, deliberately
+
+At one of four fields right, accuracy prefers attempting and f1 prefers omitting. Both are
+correct: the model recovered a real fact, *and* most of what it said was false.
+
+- **accuracy** asks how much of the document you recovered. Silence and error are equally
+  unhelpful for that question, so it charges them the same.
+- **f1** asks how much of what you said was true. It charges a wrong value twice — once as a
+  fact you missed, once as a falsehood you asserted.
+
+A model padding rows to 25% correctness climbs on accuracy and sinks on f1. That is the
+reason both are reported, and the reason neither should be quoted alone.
+
+### The one exploit worth naming
+
+Under accuracy alone, **filling in fields you cannot read is free**: a wrong value at a gold
+address costs exactly what leaving it blank costs. A model that sprays priors over unreadable
+fields beats an honest one by 17 points on identical reading ability.
+
+`f1` charges it. Adding a guess improves f1 only if its chance of being right exceeds roughly
+half the current f1 — a real abstention threshold, arising from the metric rather than bolted
+on. accuracy has none: its gradient at a hopeless guess is exactly zero.
+
+### What this metric cannot measure
+
+Whether a model abstains *honestly*. `{"b": null}` and `{}` are indistinguishable by design
+(§10), so **"this model declines when it should" is not a claim this benchmark can make.**
+Recovering it would mean carrying the prediction's `null` addresses through alignment.
