@@ -89,27 +89,39 @@ report("nothing that merely contains digits is swallowed as a date",
        str([canon_key(x) for x in ("Q1", "1/2", "2-3-13", "12:00", "2024", "1.2.3")]))
 note("the offset is dropped rather than converted: extraction reads the printed wall clock")
 
-print("\nSEVEN SIGNIFICANT DIGITS IS A BUCKET, NOT A TOLERANCE")
-report("the same printed rate at two precisions matches -- the case this is FOR",
-       cmp_leaf(33.33333333, 33.3333333) >= 1.0 and cmp_leaf(1.0, 1.0000001) >= 1.0)
-# What the bucket costs, in both directions. Neither is an oversight: no single rule gets
-# both re-derived precision and cents at seven figures, and precision is the common case.
-report("...paid for by cents merging once an amount reaches six figures",
-       cmp_leaf(123456.78, 123456.79) >= 1.0 and cmp_leaf(1234567.89, 1234567.91) >= 1.0,
-       "a documented cost, not a bug")
-report("...but cents below six figures are compared normally",
-       cmp_leaf(12345.67, 12345.68) < 1.0)
-report("...and two values straddling a bucket boundary differ, however close",
-       cmp_leaf(0.99999994, 1.00000004) < 1.0,
-       "0.99999994 vs 1.00000004 differ by 1e-7")
-report("every FORMATTING difference folds by PARSING, independently of the bucket",
+print("\nPRECISION BELONGS TO THE FRACTION, NOT TO THE WHOLE NUMBER")
+# Rounding the whole number to 7 significant digits spent its budget on the integer part
+# first, so it got these two cases backwards: cents merged once an amount reached six
+# figures, while a small rate got no more leniency than a large one. The integer part is now
+# compared exactly and the FRACTION keeps 7 significant digits of its own.
+report("the same printed rate at two precisions matches -- the case leniency is FOR",
+       cmp_leaf(33.33333333, 33.3333333) >= 1.0)
+report("...and a fraction agreeing to 7 figures matches however small it is",
+       cmp_leaf(0.12345678, 0.12345679) >= 1.0 and cmp_leaf(0.052500001, 0.0525) >= 1.0)
+report("cents are compared at EVERY magnitude",
+       all(cmp_leaf(a, b) < 1.0 for a, b in
+           ((12345.67, 12345.68), (123456.78, 123456.79),
+            (1234567.89, 1234567.91), ("12222222.78", "12222222.79"))),
+       "the last three of these used to be false matches")
+report("...while the fraction stays lenient at those same magnitudes",
+       cmp_leaf("1.7800000001", "1.7800000002") >= 1.0
+       and cmp_leaf("12222222.7800000001", "12222222.7800000002") >= 1.0,
+       "this is the pairing a whole-number rule could not express")
+report("a ten-millionth apart is a difference, not a reformatting a model would make",
+       cmp_leaf(1.0, 1.0000001) < 1.0)
+report("rounding the fraction CAN carry into the integer part -- that is what rounding is",
+       cmp_leaf("1.9999999999", 2) >= 1.0, f"1.9999999999 keys as {canon_key('1.9999999999')!r}")
+report("...but the integer part is never a rounding target, so it cannot be eroded",
+       cmp_leaf("0.99999994", "1.00000004") < 1.0,
+       f"{canon_key('0.99999994')!r} vs {canon_key('1.00000004')!r}")
+report("every FORMATTING difference folds by PARSING, independently of the rounding",
        all(cmp_leaf(a, b) >= 1.0 for a, b in
            ((5, "5.00"), (1, "1.0"), (1234.5, "1234.50"),
             (1234.56, "$1,234.56"), (12.34, "12.34%"), (-1234.56, "(1,234.56)"))))
 report("and no collision is introduced across the decimal point",
        cmp_leaf(1234.5, 12345) < 1.0 and cmp_leaf(0.5, 5) < 1.0,
        f"{canon_key(1234.5)!r} vs {canon_key(12345)!r}")
-note("a tolerance cannot be written as a key, and keys are what make the set arithmetic work")
+note("rounding is a bucket, not a tolerance: a comparison cannot be written as a key")
 
 print("\nSIGN VALUE IS NEVER FREE, HOWEVER THE SIGN IS SPELLED")
 report("every negative spelling folds to the same key",

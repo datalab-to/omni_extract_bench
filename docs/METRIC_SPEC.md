@@ -40,7 +40,7 @@ rule, used by leaf scoring and by row pairing alike, so the two cannot disagree.
 | --- | --- |
 | boolean | canonical equality |
 | integer / identifier-like | exact after canonicalisation — IDs, phone numbers and account numbers never fuzzy-match |
-| decimal number | rounded to **7 significant digits**; **sign notation** folded (`(98.2)`, `−98.2`, `98.2-` all parse to −98.2) but **sign value preserved** (`−98.2 ≠ +98.2`) |
+| decimal number | integer part exact, **fraction rounded to 7 significant digits**; **sign notation** folded (`(98.2)`, `−98.2`, `98.2-` all parse to −98.2) but **sign value preserved** (`−98.2 ≠ +98.2`) |
 | date-like string | equal if both parse to the same calendar date under any supported format. A timestamp at **midnight** counts as its date, because that is how vendors spell a date; any other time of day is kept and compared, so two different times still differ |
 | other string | canonical equality (case, whitespace, punctuation, smart quotes, unicode fractions) |
 
@@ -53,21 +53,35 @@ is what stops an account number fuzzy-matching. `8303911426.0` *is* parsed — a
 integral float keys as its integer, the two agree. A value with an actual fractional part is
 rounded, per the row above.
 
-**Seven significant digits is a bucket, not a tolerance.** Values are compared by turning
-each into a key and testing keys for equality — that is what lets the scorer do set arithmetic
-on addresses instead of comparing pairs. So two values either land in the same bucket or they
-do not; a relative tolerance would be a comparison, and a comparison cannot be a key.
+**Rounding is the one rule here that folds values rather than spellings.** Everything else
+in this section folds two ways of writing one value: `"5.00"` and `5`, `"$1,234.56"` and
+`1234.56`, `(98.2)` and `−98.2`, `01/15/2024` and `2024-01-15`. `33.33333333` and `33.3333333`
+are not one value written twice — they are two values, and only rounding calls them equal.
+It is there for a single case: a number that was **re-derived at a different precision than
+the document printed it**, which is a property of the ground truth, not of the reader.
 
-The bucket buys agreement on precision. `33.33333333` and `33.3333333` are the same printed
-rate at two precisions, and they match. It is paid for in two places, both deliberate:
+**Why rounding, rather than something less blunt.** The rule you would actually want is
+"equal at the precision of the less precise value" — it gives the right answer on both cases
+above. It is not usable: it is not transitive (`1.25` ~ `1.2` ~ `1.24`, but `1.25` ≠ `1.24`),
+so it is not an equivalence relation and cannot be a canonical key. The scorer does set
+arithmetic on addresses, which needs a function from value to key; a pairwise comparison
+cannot be one. So the only key-shaped leniency is a bucket, and a bucket is rounding. The
+choice is round or be exact, with nothing in between.
 
-- **Cents merge once an amount reaches six figures.** `123456.78` and `123456.79` key alike.
-  Below six figures cents are compared normally.
-- **Two values on either side of a bucket boundary differ, however close.** `0.99999994` and
-  `1.00000004` are one part in ten million apart and are scored as a disagreement.
+**The budget belongs to the fraction, not to the number.** Rounding the whole number to
+7 significant digits spends the budget on the integer part first, which gets both cases
+backwards: cents merge once an amount reaches six figures (`123456.78` = `123456.79`), while
+a small rate is granted no more leniency than a large one. So the integer part is compared
+exactly and the fraction keeps 7 significant digits of its own, counted past any leading
+zeros. Consequences worth knowing:
 
-This is a genuine trade, not an oversight: no single rule gets both re-derived precision and
-cents at seven figures, and re-derived precision is the case that comes up.
+- **The rounding is inert for any fraction of 7 significant digits or fewer.** Cents, prices,
+  quantities and tax rates to six places are all compared exactly. It fires only on long
+  fractions, which is where re-derived precision lives.
+- **Cents are compared at every magnitude.** `12222222.78` and `12222222.79` differ.
+- **Rounding a fraction can carry into the integer part.** `1.9999999999` keys as `2`. That
+  is what rounding means; the integer part is never a rounding *target*, so it cannot be
+  eroded — `0.99999994` and `1.00000004` still differ.
 
 **Format differences are free only where the table above says so.** These are folded, and
 are tested by `tests/test_comparison_surface.py`:
