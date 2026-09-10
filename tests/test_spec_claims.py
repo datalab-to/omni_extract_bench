@@ -78,6 +78,51 @@ report("read_right = matched / (matched + misread)",
 report("found * read_right = accuracy / 100",
        abs(R["found"] * R["read_right"] - R["accuracy"] / 100) < 1e-12)
 
+print("\nSECTION 4 -- WHEN accuracy AND f1 AGREE")
+# The section used to say misread appearing twice was "the entire reason accuracy and f1
+# differ". It is not: they AGREE on a misread and diverge with misread = 0. What is counted
+# twice in `gold + asserted` and once in `total` is matched + misread -- every address both
+# documents use -- so they agree exactly when the documents use the same set of addresses.
+AF_S = {"properties": {k: {"type": "number"} for k in "abc"}}
+rows = {
+    "perfect":            ({"a": 1, "b": 2},         {"a": 1, "b": 2}, 100.00, 100.00),
+    "one value misread":  ({"a": 1, "b": 99},        {"a": 1, "b": 2},  50.00,  50.00),
+    "one value missing":  ({"a": 1},                 {"a": 1, "b": 2},  50.00,  66.67),
+    "one value invented": ({"a": 1, "b": 2, "c": 9}, {"a": 1, "b": 2},  66.67,  80.00),
+}
+for lbl, (pred, gold, want_acc, want_f1) in rows.items():
+    r = grade(pred, gold, AF_S)
+    report(f"{lbl}: accuracy {want_acc}, f1 {want_f1}",
+           abs(round(r["accuracy"], 2) - want_acc) < 1e-9
+           and abs(round(r["f1"] * 100, 2) - want_f1) < 1e-9,
+           f"got acc {r['accuracy']:.2f}, f1 {r['f1']*100:.2f}")
+
+agree = []
+for lbl, (pred, gold, _a, _f) in rows.items():
+    r = grade(pred, gold, AF_S)
+    same_addresses = r["unfound"] == 0 and r["fabricated"] == 0 \
+        and r["invented_item"] == 0 and r["invented_field"] == 0
+    matches = abs(r["accuracy"] / 100 - r["f1"]) < 1e-12
+    agree.append((lbl, same_addresses == matches))
+report("they agree exactly when both documents use the same set of addresses",
+       all(ok for _l, ok in agree), str(agree))
+report("...and a misread is NOT what splits them",
+       abs(grade({"a": 1, "b": 99}, {"a": 1, "b": 2}, AF_S)["accuracy"] / 100
+           - grade({"a": 1, "b": 99}, {"a": 1, "b": 2}, AF_S)["f1"]) < 1e-12)
+
+print("\nSECTION 3 -- CLEARING THE PAIRING BAR DOES NOT MAKE A ROW FREE")
+BAR_S = {"properties": {"lines": {"type": "array", "items": {"properties": {
+    "sku": {"type": "string"},
+    "tags": {"type": "array", "items": {"type": "string"}}}}}}}
+BAR_G = {"lines": [{"sku": "a", "tags": ["t1", "t2"]}]}
+omitted = grade({"lines": []}, BAR_G, BAR_S)
+cleared = grade({"lines": [{"sku": "a", "tags": ["X", "Y"]}]}, BAR_G, BAR_S)
+report("a row that clears the bar can still enlarge the denominator",
+       cleared["total"] > omitted["total"],
+       f"omitted {omitted['total']}, cleared {cleared['total']}")
+report("...so 'charged once' would be wrong: it is charged for what it invents too",
+       cleared["invented_item"] > 0, f"invented_item {cleared['invented_item']}")
+
 print("\nSECTION 4 -- THE BUCKETS PARTITION EVERY ADDRESS (P16)")
 verdicts = [v for v in explain(PRED, GT, SCH) if not v.verdict.startswith("skipped")]
 report("every address gets exactly one of the six verdicts",
