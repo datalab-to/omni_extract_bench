@@ -160,6 +160,41 @@ for lbl, gold_doc, omit_pred, honest_pred, sch in (
            and h["accuracy"] > o["accuracy"] + 1e-9,
            f"omit {o['matched']}/{o['total']}, honest {h['matched']}/{h['total']}")
 
+print("\nRULE 2: WHAT ABSTAINING COSTS, IN BOTH DIRECTIONS")
+# The rule used to read "leave a field empty rather than guess it", which tells a model not
+# to make a guess it would get right. Both directions are pinned so the advice cannot drift
+# back to being one-sided.
+R2_S = {"properties": {"a": {"type": "string"}, "note": {"type": "string"},
+                       "tags": {"type": "array", "items": {"type": "string"}}}}
+R2_G = {"a": "keep", "note": "N", "tags": ["t1", "t2"]}
+spellings = [grade(p, R2_G, R2_S) for p in (
+    {"a": "keep", "tags": ["t1", "t2"]},                       # omitted
+    {"a": "keep", "note": None, "tags": ["t1", "t2"]},         # null
+    {"a": "keep", "note": [], "tags": ["t1", "t2"]})]          # []
+report("null, [] and omitting the key cost exactly the same",
+       len({(round(r["accuracy"], 6), round(r["f1"], 6), r["total"]) for r in spellings}) == 1,
+       f"{[round(r['accuracy'], 2) for r in spellings]}")
+
+abstain = spellings[0]
+wrong = grade({"a": "keep", "note": "WRONG", "tags": ["t1", "t2"]}, R2_G, R2_S)
+right = grade({"a": "keep", "note": "N", "tags": ["t1", "t2"]}, R2_G, R2_S)
+arr_abstain = grade({"a": "keep", "note": "N", "tags": ["t1"]}, R2_G, R2_S)
+arr_wrong = grade({"a": "keep", "note": "N", "tags": ["t1", "WRONG"]}, R2_G, R2_S)
+report("abstaining never costs MORE than a wrong value",
+       abstain["accuracy"] >= wrong["accuracy"] - 1e-9
+       and abstain["f1"] >= wrong["f1"] - 1e-9,
+       f"abstain {abstain['accuracy']:.2f}/{abstain['f1']:.3f}, "
+       f"wrong {wrong['accuracy']:.2f}/{wrong['f1']:.3f}")
+report("...and inside an array it costs strictly less",
+       arr_abstain["accuracy"] > arr_wrong["accuracy"] + 1e-9,
+       f"abstain {arr_abstain['accuracy']:.2f} vs wrong {arr_wrong['accuracy']:.2f}")
+report("but a value you get RIGHT always beats silence",
+       right["accuracy"] > abstain["accuracy"] + 1e-9
+       and right["f1"] > abstain["f1"] + 1e-9,
+       f"right {right['accuracy']:.2f}/{right['f1']:.3f} vs "
+       f"abstain {abstain['accuracy']:.2f}/{abstain['f1']:.3f}")
+note("so rule 2 is about the hit-rate, not about caution -- see the f1 threshold below")
+
 print("\nAND A STRICT SCHEMA CANNOT TAKE ABSTENTION AWAY")
 # Strict structured outputs require every declared property to be present, so a model may
 # not omit `tags`. It can still decline: null and [] carry no addresses.
