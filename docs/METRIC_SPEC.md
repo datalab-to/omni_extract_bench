@@ -28,8 +28,8 @@ Scoring is then set arithmetic on two sets of addresses.
 - **Row**: an object element of an array. Arrays of scalars are compared as multisets, so
   their elements are values, not rows.
 - **Node key**: an address with the index numbers blanked, so `books[0].chapters` and
-  `books[7].chapters` share one name. Written `books[*].chapters`. This is how an array is
-  named in `order_matters`.
+  `books[7].chapters` share one name. It is internal; what you pass to `order_matters` is its
+  printed form, `"books[*].chapters"` — the same string `explain` shows you.
 
 ## 2. Comparing one value
 
@@ -47,13 +47,27 @@ rule, used by leaf scoring and by row pairing alike, so the two cannot disagree.
 Canonicalisation is applied identically to `p` and `g`, so comparison is symmetric by
 construction.
 
-**Seven significant digits is a bucket, not a tolerance.** Values are compared by turning each
-into a key and testing the keys for equality — that is what lets the scorer do set arithmetic
-on addresses instead of comparing pairs. The cost is boundary effects: `0.99999994` and
-`1.00000004` differ by one part in ten million and land in different buckets, so they are
-scored as a disagreement. A relative tolerance would call them equal, but a tolerance cannot
-be expressed as a key. Anything agreeing to seven significant digits without straddling a
-boundary matches.
+**What sorts a value into "integer" or "decimal" is whether its text contains a `.`** — that
+and nothing else. `8303911426` is never parsed as a number and so is compared exactly, which
+is what stops an account number fuzzy-matching. `8303911426.0` *is* parsed — and because an
+integral float keys as its integer, the two agree. A value with an actual fractional part is
+rounded, per the row above.
+
+**Seven significant digits is a bucket, not a tolerance.** Values are compared by turning
+each into a key and testing keys for equality — that is what lets the scorer do set arithmetic
+on addresses instead of comparing pairs. So two values either land in the same bucket or they
+do not; a relative tolerance would be a comparison, and a comparison cannot be a key.
+
+The bucket buys agreement on precision. `33.33333333` and `33.3333333` are the same printed
+rate at two precisions, and they match. It is paid for in two places, both deliberate:
+
+- **Cents merge once an amount reaches six figures.** `123456.78` and `123456.79` key alike.
+  Below six figures cents are compared normally.
+- **Two values on either side of a bucket boundary differ, however close.** `0.99999994` and
+  `1.00000004` are one part in ten million apart and are scored as a disagreement.
+
+This is a genuine trade, not an oversight: no single rule gets both re-derived precision and
+cents at seven figures, and re-derived precision is the case that comes up.
 
 **Format differences are free only where the table above says so.** These are folded, and
 are tested by `tests/test_comparison_surface.py`:

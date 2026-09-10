@@ -90,13 +90,25 @@ report("nothing that merely contains digits is swallowed as a date",
 note("the offset is dropped rather than converted: extraction reads the printed wall clock")
 
 print("\nSEVEN SIGNIFICANT DIGITS IS A BUCKET, NOT A TOLERANCE")
-report("values agreeing to 7 significant digits match",
-       cmp_leaf(1.0000001, 1.0) >= 1.0 and cmp_leaf(99999995.0, 100000005.0) >= 1.0)
-report("...but two that straddle a bucket boundary do not, however close",
+report("the same printed rate at two precisions matches -- the case this is FOR",
+       cmp_leaf(33.33333333, 33.3333333) >= 1.0 and cmp_leaf(1.0, 1.0000001) >= 1.0)
+# What the bucket costs, in both directions. Neither is an oversight: no single rule gets
+# both re-derived precision and cents at seven figures, and precision is the common case.
+report("...paid for by cents merging once an amount reaches six figures",
+       cmp_leaf(123456.78, 123456.79) >= 1.0 and cmp_leaf(1234567.89, 1234567.91) >= 1.0,
+       "a documented cost, not a bug")
+report("...but cents below six figures are compared normally",
+       cmp_leaf(12345.67, 12345.68) < 1.0)
+report("...and two values straddling a bucket boundary differ, however close",
        cmp_leaf(0.99999994, 1.00000004) < 1.0,
        "0.99999994 vs 1.00000004 differ by 1e-7")
-report("the spec does NOT claim a relative tolerance, which would disagree here",
-       True)
+report("every FORMATTING difference folds by PARSING, independently of the bucket",
+       all(cmp_leaf(a, b) >= 1.0 for a, b in
+           ((5, "5.00"), (1, "1.0"), (1234.5, "1234.50"),
+            (1234.56, "$1,234.56"), (12.34, "12.34%"), (-1234.56, "(1,234.56)"))))
+report("and no collision is introduced across the decimal point",
+       cmp_leaf(1234.5, 12345) < 1.0 and cmp_leaf(0.5, 5) < 1.0,
+       f"{canon_key(1234.5)!r} vs {canon_key(12345)!r}")
 note("a tolerance cannot be written as a key, and keys are what make the set arithmetic work")
 
 print("\nSIGN VALUE IS NEVER FREE, HOWEVER THE SIGN IS SPELLED")
@@ -104,6 +116,24 @@ report("every negative spelling folds to the same key",
        len({canon_key(x) for x in ("(98.2)", "-98.2", "−98.2", "98.2-")}) == 1)
 report("...and a disagreement about the sign is a mismatch",
        cmp_leaf(98.2, -98.2) < 1.0)
+
+print("\nAN ID KEYS THE SAME WHETHER IT ARRIVES AS AN INTEGER OR A FLOAT")
+# This was a real defect. Only values containing a "." are parsed as numbers, which is what
+# keeps an ID exact -- but a vendor emitting the same ID as a JSON float had it rounded to 7
+# significant digits: 8303911426.0 keyed as 8303911000. So a CORRECT account number scored as
+# wrong, and two IDs differing in their last three digits scored as equal. An integral float
+# now keys as its integer.
+report("the same ID as an int and as a float agree",
+       cmp_leaf(8303911426, 8303911426.0) >= 1.0
+       and cmp_leaf(8303911426, "8303911426.0") >= 1.0,
+       f"keys {canon_key(8303911426)!r} vs {canon_key(8303911426.0)!r}")
+report("two IDs differing only in their last three digits still differ, as floats",
+       cmp_leaf(8303911426.0, 8303911400.0) < 1.0,
+       f"keys {canon_key(8303911426.0)!r} vs {canon_key(8303911400.0)!r}")
+report("...and the integral-float rule does not disturb decimals",
+       cmp_leaf(5, "5.00") >= 1.0 and cmp_leaf(1, "1.0") >= 1.0
+       and cmp_leaf(1234.5, "1234.50") >= 1.0 and cmp_leaf(1234.5, 1234.6) < 1.0)
+note("only values containing a '.' are parsed at all -- that is the whole ID protection")
 
 print("\nID-LIKE INTEGERS STAY EXACT")
 report("one digit different in an account number is a mismatch",

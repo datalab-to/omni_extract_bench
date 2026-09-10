@@ -129,7 +129,7 @@ try:
     print("\nA HARNESS FAILURE IS NOT A VENDOR FAILURE")
     # `empty.json` is a provider returning nothing: scores 0, stays in the mean.
     # `broken`/`noschema` are this harness failing: excluded from the mean, reported.
-    report("an empty prediction scores 0 and stays in the mean",
+    report("P6 coverage honesty: an empty prediction scores 0 and stays in the mean",
            "no output -> 0" in out, out.strip()[:200])
     report("unscorable documents are excluded from the mean and labelled as harness",
            "NOT SCORED" in out and "harness" in out, out.strip()[:300])
