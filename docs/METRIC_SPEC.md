@@ -54,34 +54,23 @@ integral float keys as its integer, the two agree. A value with an actual fracti
 rounded, per the row above.
 
 **Rounding is the one rule here that folds values rather than spellings.** Everything else
-in this section folds two ways of writing one value: `"5.00"` and `5`, `"$1,234.56"` and
-`1234.56`, `(98.2)` and `−98.2`, `01/15/2024` and `2024-01-15`. `33.33333333` and `33.3333333`
-are not one value written twice — they are two values, and only rounding calls them equal.
-It is there for a single case: a number that was **re-derived at a different precision than
-the document printed it**, which is a property of the ground truth, not of the reader.
+in this section folds two ways of writing one value — `"5.00"` and `5`, `(98.2)` and `−98.2`,
+`01/15/2024` and `2024-01-15`. `33.33333333` and `33.3333333` are two *different* values, and
+only rounding calls them equal. It exists for one case: ground truth re-derived at a different
+precision than the page printed. And it has to be rounding, because a scorer doing set
+arithmetic needs a value-to-key function — the rule you would rather have, "equal at the
+precision of the less precise value", is not transitive (`1.25` ~ `1.2` ~ `1.24`, but
+`1.25` ≠ `1.24`), so it cannot be a key. Round or be exact; there is nothing in between.
 
-**Why rounding, rather than something less blunt.** The rule you would actually want is
-"equal at the precision of the less precise value" — it gives the right answer on both cases
-above. It is not usable: it is not transitive (`1.25` ~ `1.2` ~ `1.24`, but `1.25` ≠ `1.24`),
-so it is not an equivalence relation and cannot be a canonical key. The scorer does set
-arithmetic on addresses, which needs a function from value to key; a pairwise comparison
-cannot be one. So the only key-shaped leniency is a bucket, and a bucket is rounding. The
-choice is round or be exact, with nothing in between.
-
-**The budget belongs to the fraction, not to the number.** Rounding the whole number to
-7 significant digits spends the budget on the integer part first, which gets both cases
-backwards: cents merge once an amount reaches six figures (`123456.78` = `123456.79`), while
-a small rate is granted no more leniency than a large one. So the integer part is compared
-exactly and the fraction keeps 7 significant digits of its own, counted past any leading
-zeros. Consequences worth knowing:
-
-- **The rounding is inert for any fraction of 7 significant digits or fewer.** Cents, prices,
-  quantities and tax rates to six places are all compared exactly. It fires only on long
-  fractions, which is where re-derived precision lives.
-- **Cents are compared at every magnitude.** `12222222.78` and `12222222.79` differ.
-- **Rounding a fraction can carry into the integer part.** `1.9999999999` keys as `2`. That
-  is what rounding means; the integer part is never a rounding *target*, so it cannot be
-  eroded — `0.99999994` and `1.00000004` still differ.
+**The budget belongs to the fraction, not to the number.** Rounding the whole number spends
+it on the integer part first, which gets both cases backwards: cents merge once an amount
+reaches six figures, while a small rate is granted no more leniency than a large one. So the
+integer part is exact and the fraction keeps 7 significant digits of its own, counted past any
+leading zeros. That makes the rule **inert for any fraction of 7 significant digits or fewer** —
+cents, prices, quantities and tax rates to six places are compared exactly, at every
+magnitude — so it fires only on long fractions. Rounding a fraction of nines does still carry
+(`1.9999999999` keys as `2`), but the integer part is never a rounding *target*, so
+`0.99999994` and `1.00000004` differ.
 
 **Format differences are free only where the table above says so.** These are folded, and
 are tested by `tests/test_comparison_surface.py`:
