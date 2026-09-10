@@ -1,7 +1,7 @@
 # Metric specification
 
 The complete definition of the benchmark score. Anything the grader does that is not here is
-a bug. Every property in §8 is enforced by a test, and the tests are named where they matter.
+a bug. Every property in §9 is enforced by a test, and the tests are named where they matter.
 
 ## The idea
 
@@ -109,7 +109,7 @@ For an array with predicted rows `P₁…Pₙ` and gold rows `G₁…Gₘ`:
    this corpus is 6881 rows — 47 million cells, 19% of the cap — and solves exactly.
 
 Order is free by default, because the order rows appear in a document is usually an artefact
-of layout. Naming an array in `order_matters` makes its index an address again; see §7 for
+of layout. Naming an array in `order_matters` makes its index an address again; see §8 for
 what that trades away.
 
 *Why exact matching matters:* the previous key-inference heuristic lost 2.6 points on a single
@@ -242,14 +242,21 @@ Applied uniformly, before scoring, to every vendor alike.
 
 - **Placeholder rows dropped** — see §5.
 - **Verified corrections** applied as an overlay only where a human read the source and the
-  evidence is recorded (`GT_LEDGER.md`). Benchmark corpora are never edited in place.
+  evidence was recorded. Benchmark corpora are never edited in place. Both the corrected
+  corpus and its ledger are published with the data rather than with this scorer, which
+  ships no benchmark data — so neither is in this repository.
 
 ## 7. Aggregation
 
     subset_score = mean of accuracy over that subset's documents
-    UNIFIED      = mean of the subset scores
+    UNIFIED       = mean of the subset scores
 
-Equal weight per subset, because subsets differ ~10× in size; leaf- or document-weighting
+> **Not yet implemented.** `cli.py` takes a flat mean over documents, which is the thing this
+> section says must not happen. Doing it properly needs each document's subset, which the run
+> manifest carries. Until then a leaderboard printed by this repository is not UNIFIED.
+
+Equal weight per subset, because the subsets really do differ by about 10× — 329, 207, 47, 42
+and 35 documents in the full sample — so leaf- or document-weighting
 would let the largest subset decide the benchmark and would silently re-weight it whenever a
 subset grew. A document a vendor returned nothing usable for scores **0** — excluding failures
 would reward fragility. Coverage is reported beside the score, never inside it.
