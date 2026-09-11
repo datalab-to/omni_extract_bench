@@ -281,6 +281,7 @@ class Row(NamedTuple):
 
     named: Leaves                                # address -> canonical value
     arrays: dict[Address, dict[Hashable, "Row"]]
+    key: tuple = ()                              # canonical content key; see `_content_key`
 
     def is_object(self) -> bool:
         """True if this element is an object, meaning it has children with names.
@@ -307,10 +308,37 @@ class Row(NamedTuple):
                 named[a] = canon_key(v)
             else:
                 grouped.setdefault(a[:cut], {}).setdefault(a[cut][1], {})[a[cut + 1:]] = v
-        return cls(named, {array_path: {i: cls.at(sub, address + array_path
-                                                  + ((INDEX, i),), ordered)
-                                        for i, sub in rows.items()}
-                           for array_path, rows in grouped.items()})
+        arrays = {array_path: {i: cls.at(sub, address + array_path + ((INDEX, i),), ordered)
+                               for i, sub in rows.items()}
+                  for array_path, rows in grouped.items()}
+        return cls(named, arrays, _content_key(named, arrays))
+
+
+def _content_key(named: Leaves, arrays: dict) -> tuple:
+    """What this row CONTAINS, in a form that sorts.
+
+    Two rows holding the same values get the same key, whatever order anything arrived in.
+    That is the point: it is read off content, never off position, so relabelling rows cannot
+    change it. Nested arrays contribute the sorted keys of their own elements, which makes the
+    key blind to how those elements are numbered -- and an `ordered` array is already in
+    `named` with its indices intact, so there the numbering is content and is kept.
+
+    Values are canonical by the time they get here, so two spellings of one value key alike
+    and sort together.
+
+    Built once per row, from children that already carry theirs, so the whole tree costs one
+    pass rather than one pass per comparison.
+    """
+    def addr(a: Address) -> tuple:
+        # Structure, not `show()`. `show` renders both `{"a.b": 1}` and `{"a": {"b": 1}}` as
+        # "a.b", so rendering would let two different rows key alike and hand the tie back to
+        # arrival order -- the bug this key exists to remove. The step kind separates a field
+        # named "0" from index 0; `str` only makes the names orderable.
+        return tuple((kind, str(name)) for kind, name in a)
+
+    return (tuple(sorted((addr(a), str(v)) for a, v in named.items())),
+            tuple(sorted((addr(path), tuple(sorted(r.key for r in kids.values())))
+                         for path, kids in arrays.items())))
 
 
 def _extract_rows_at(leaves: Leaves, prefix: Address, ordered: frozenset) -> dict[Hashable, Row]:
@@ -403,32 +431,45 @@ def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: i
     every assignment achieving it yields the same accuracy, precision, recall and f1. It does
     not pin down the assignment itself.
 
-    TODO(paul): and that is visible. Two equally optimal assignments can leave DIFFERENT rows
-    unpaired, so `fabricated` and `invented_item` -- and occasionally `matched_rows` -- depend
-    on the order rows arrived in: of 600 random row-documents, 35 report a different split
-    under some permutation of the prediction and 11 under some permutation of the gold. The
-    top-line numbers never move. What is violated is not determinism (the same input scores
-    the same twice, 0/600) but invariance under RELABELLING, which is the property this whole
-    alignment stage exists to provide.
+    It does NOT pin down the assignment itself, and that is visible: two equally optimal
+    assignments can leave DIFFERENT rows unpaired, so the same document reported a different
+    `fabricated`/`invented_item` split depending on the order its rows arrived in -- 35 of 600
+    random row-documents under a permuted prediction, 11 under a permuted gold. Hence the
+    canonical sort above. What was violated was not determinism (the same input always scored
+    the same) but invariance under RELABELLING, which is the property this whole alignment
+    stage exists to provide, so an index-based tie-break would have been exactly wrong: it is
+    deterministic and still moves under permutation.
 
-    The fix follows from the symmetry rather than from taste. The weight depends only on row
-    CONTENT, so permuting rows permutes the argmax set with it, and a selection rule commutes
-    with relabelling iff it is a function of content alone. An index tie-break is therefore
-    exactly wrong -- it would be deterministic and would still move under permutation. Sorting
-    `pi` and `gi` by a canonical content key before `match_rows` is the whole change: the
-    solver then sees the same matrix under any permutation, so its positional tie-breaking
-    becomes a content choice, and `_greedy` is fixed with it. The key must be invariant under
-    the same symmetry one level down or the recursion leaks -- the sorted multiset of
-    (node_key(address), canon_key(value)) over the row's leaves, `ordered` arrays keeping
-    their indices. Rows that still tie are content-identical, so any choice gives the same
-    counts. Sorting both sides moves no top-line number in 600 documents, which is what makes
-    it legal.
+    Not resolved with a third weight term, and the reason is worth keeping. It could not have
+    endangered the score -- (matched, shared) is already pinned, so any third term is
+    score-neutral -- but the total leftover is `|P| - shared` and therefore fixed too. Only
+    its SPLIT between "an invented row" and "invented fields" varies, so a weight term would
+    not be weighing evidence; it would be declaring the answer to the question the split
+    reports. `tests/test_pairing_determinism.py` holds the property at depth 3.
 
-    Not a third semantic term. Not because it would endanger the score -- (matched, shared) is
-    already pinned, so any third term is score-neutral -- but because the obvious candidate,
-    minimising symmetric difference, is `sum(|p_i| + |g_j|) - 2*shared` over KEPT pairs, and an
-    unkept pair contributes nothing. With shared fixed it quietly prefers assignments with
-    fewer pairs, which is one of the things that already moves.
+
+    TODO(paul): scalar arrays pay this matcher's price for a question that is a multiset
+    intersection. A scalar element's `named` is `{(): value}`, so every candidate pair shares
+    that one address -- `shared` is 1 throughout and `matched` is 0 or 1 -- and the matrix is
+    0/(scale+1). Max-weight assignment on a 0/1 matrix is maximum bipartite matching on
+    equality, which is exactly `Counter(gold) & Counter(pred)`. Confirmed equal at n = 200, 800
+    and 2000; the 2000 takes 2.5 seconds, where the `Counter` is microseconds.
+
+    Time is not the worst of it. Past `MAX_EXACT` such an array falls to greedy and the grade
+    reports `matching_exact: false`, so a flag meaning "we could not afford the truth here"
+    fires on the one case where the truth is O(n). P15 stays true and stops being informative.
+
+    The fix is a fast path INSIDE this function: every row on both sides scalar (`named` is
+    `{(): v}`, `arrays` empty), pair by `Counter` and return before `OM.match_rows`. Inside,
+    because `_worth_if_paired` and `align` share this function and a path above it is a path
+    they can drift apart on. Mixed arrays like `[1, {"a": 2}]` fail the test and fall through
+    to the general path. Score-neutral by the argument above, so P2, P8 and P14 are untouched
+    and the existing suite is the check.
+
+    Not read off the schema, which cannot answer it: `items` may be absent or `anyOf`,
+    `dialects.to_strict_dialect` rewrites the schema before the vendor sees it, and a model
+    returning scalars where objects were promised is a finding to be scored rather than a case
+    to branch on. What arrived is the only authority on what arrived.
 
     `_worth_if_paired` and `align` both call this. That is what keeps them in step.
     `_worth_if_paired` uses the numbers to judge a pairing; `align` uses the pairs to renumber
@@ -446,7 +487,13 @@ def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: i
         matched, shared = _worth_if_paired(pred[i], gold[j], scale, inexact)
         return matched * scale + shared if matched else 0
 
-    pi, gi = list(pred), list(gold)
+    # Canonical order, so the solver sees the SAME problem however the rows arrived. Ties in
+    # the objective are real -- several assignments can be equally optimal -- and the solver
+    # has to pick one. Sorting by content means it picks the same one for a document whose
+    # rows were emitted in a different order, instead of letting arrival order decide which
+    # leftovers read as invented rows and which read as invented fields.
+    pi = sorted(pred, key=lambda i: pred[i].key)
+    gi = sorted(gold, key=lambda j: gold[j].key)
     pairs, _up, _ug, exact = OM.match_rows(pi, gi, cost)
     if not exact and inexact is not None:
         inexact.append(max(len(pi), len(gi)))
@@ -764,7 +811,8 @@ def explain(pred: Any, gt: Any, schema: Any,
 
     A value the prediction has and the ground truth does not is labelled by WHY: `fabricated`
     if the schema offered that slot, `invented field` if it never declared the name, and
-    `invented item` for an array element that paired with nothing. See section 11 of the spec.
+    `invented item` for a value under an array element that paired with nothing. See section
+    11 of the spec.
 
     >>> schema = {"properties": {"a": {"type": "number"}, "b": {"type": "number"},
     ...                          "c": {"type": "number"}}}
