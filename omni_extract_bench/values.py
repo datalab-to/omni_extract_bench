@@ -182,6 +182,14 @@ def _asdecimal(v):
 # its own. Cents are then compared at every magnitude, and two rates agreeing to seven
 # figures still agree however small they are.
 #
+# Why round at all, given rounding is the one rule here that folds VALUES rather than
+# spellings? Because nothing gentler can be a key. The rule you would rather have is "equal
+# at the precision of the less precise value" -- it calls 33.33333333 and 33.3333333 equal
+# and 123456.78 and 123456.79 different, which is exactly right. It is also not transitive:
+# 1.25 ~ 1.2 and 1.2 ~ 1.24, but 1.25 != 1.24. A scorer doing set arithmetic on addresses
+# needs a function from value to key, and a pairwise comparison cannot be one. So the choice
+# is round or be exact, with nothing in between.
+#
 # TODO(paul): the rounding is now inert unless a fraction carries MORE than seven significant
 # digits, so whether it is needed at all is an empirical question about the gold corpus, not
 # a judgement call: grep it for values with an eight-digit-or-longer fraction. If there are

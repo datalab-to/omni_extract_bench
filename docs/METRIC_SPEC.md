@@ -50,27 +50,17 @@ construction.
 **What sorts a value into "integer" or "decimal" is whether its text contains a `.`** — that
 and nothing else. `8303911426` is never parsed as a number and so is compared exactly, which
 is what stops an account number fuzzy-matching. `8303911426.0` *is* parsed — and because an
-integral float keys as its integer, the two agree. A value with an actual fractional part is
-rounded, per the row above.
+integral float keys as its integer, the two agree.
 
 **Rounding is the one rule here that folds values rather than spellings.** Everything else
-in this section folds two ways of writing one value — `"5.00"` and `5`, `(98.2)` and `−98.2`,
-`01/15/2024` and `2024-01-15`. `33.33333333` and `33.3333333` are two *different* values, and
-only rounding calls them equal. It exists for one case: ground truth re-derived at a different
-precision than the page printed. And it has to be rounding, because a scorer doing set
-arithmetic needs a value-to-key function — the rule you would rather have, "equal at the
-precision of the less precise value", is not transitive (`1.25` ~ `1.2` ~ `1.24`, but
-`1.25` ≠ `1.24`), so it cannot be a key. Round or be exact; there is nothing in between.
-
-**The budget belongs to the fraction, not to the number.** Rounding the whole number spends
-it on the integer part first, which gets both cases backwards: cents merge once an amount
-reaches six figures, while a small rate is granted no more leniency than a large one. So the
-integer part is exact and the fraction keeps 7 significant digits of its own, counted past any
-leading zeros. That makes the rule **inert for any fraction of 7 significant digits or fewer** —
-cents, prices, quantities and tax rates to six places are compared exactly, at every
-magnitude — so it fires only on long fractions. Rounding a fraction of nines does still carry
-(`1.9999999999` keys as `2`), but the integer part is never a rounding *target*, so
-`0.99999994` and `1.00000004` differ.
+folds two ways of writing one value — `"5.00"` and `5`, `(98.2)` and `−98.2`, `01/15/2024` and
+`2024-01-15`. `33.33333333` and `33.3333333` are two *different* values, and only rounding
+calls them equal; it is there to forgive ground truth re-derived at a different precision than
+the page printed. The integer part is compared exactly and the fraction keeps 7 significant
+digits of its own, so the rule is **inert for any fraction of 7 significant digits or fewer** —
+cents, prices, quantities and rates to six places are compared exactly, at every magnitude.
+`canon_key` in `omni_extract_bench/values.py` carries the rest of the argument, including why
+nothing gentler than rounding can serve as a key.
 
 **Format differences are free only where the table above says so.** These are folded, and
 are tested by `tests/test_comparison_surface.py`:
