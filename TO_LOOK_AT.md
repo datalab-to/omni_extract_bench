@@ -184,21 +184,44 @@ just with the gold.
 
 ## 5. `micro1/m1__Healthcare_facility_quality_measure_public_reporting` -- 46.71
 
-**Known so far:** the immediate cause is clear -- it timed out and returned partial
-output -- so the 46.71 is a fair score for what came back.
+**CORRECTION.** An earlier version of this entry said the document "timed out and dropped
+the 5,711-row `facilities` array". That was wrong, and wrong in a way worth recording: a
+sketch helper printed only the first six keys of the prediction object, `facilities` was
+the seventh, and its absence from a truncated *display* was read as absence from the
+*data*. The array is present with 5,552 of 5,711 rows.
 
-**Next:** low priority for the metric, but worth asking why a 5,711-row extraction
-takes 30 minutes and what `recovered_after_timeout` is meant to guarantee. If the
-timeout is tunable this document may be recoverable rather than lost.
+**Known so far:** the payload is complete and the failure is extraction quality, not
+truncation. Reducto scores **99.73** on the identical document, so the input is
+extractable.
 
 ```
-_secs: 1807.2        recovered_after_timeout: true
+datalab   found 49.9%   read_right 93.7%   rows paired 5,291 / 5,711
+reducto   found 99.7%   read_right 100.0%  rows paired 5,708 / 5,711
 ```
 
-Ran 30 minutes, timed out, returned the scalar fields (`reporting_year`,
-`source_table_label`) and dropped the 5,711-row `facilities` array. The 46.71 is a fair
-score for that. Note this is the one document carrying the `recovered_after_timeout` key,
-so it is also the document that exposed bug 1.
+`read_right` of 93.7% says the values it placed are mostly right; `found` of 49.9% says it
+placed half of them under names the gold does not use. Two separate causes, both
+systematic:
+
+**It skipped the footnote columns.** The missing addresses are overwhelmingly `*_footnote`
+-- 5,587 `asc_11_footnote`, 3,935 `asc_9_footnote`, 3,713 `asc_12_footnote`, and so on
+down every measure. In CMS ASC quality data a footnote is the marker that a value is
+suppressed or not applicable, so these are not decoration.
+
+**It attributed a whole column block to the wrong measure.** It produced 3,475 rows each of
+`asc_11_interval_lower_limit`, `asc_11_interval_upper_limit` and `asc_11_total_cases` --
+names the schema never declares -- while leaving the gold's `asc_12_*` equivalents empty.
+On a row keyed `facility_id=05C0001831` the gold's `asc_12_rshv_rate` of 11.9 appears in
+datalab's `asc_11_rate`. Same number, wrong measure.
+
+17,009 invented/fabricated addresses, and **none** of them are `_citations`/`_meta`
+sidecars -- they are all real column names.
+
+**Next:** this is a genuine quality result, so it does NOT belong on the retry list.
+The open question is whether the ASC-11/ASC-12 block really is mislabelled or whether the
+document carries both and the gold records only one -- the same question as item 3. Worth
+deciding once for both, since the answer changes whether these are model errors or gold
+gaps.
 
 ---
 
@@ -374,3 +397,75 @@ Three guards brought it to ~37% over strict: a length gate (only strings >= 40 c
 eligible), difflib's own cheap upper bounds (`real_quick_ratio` then `quick_ratio`) before
 `ratio()`, and a memo, because the fill prices most pairs twice. Any real implementation
 needs all three.
+
+---
+
+## 13. Two vendors had a timeout-recovery mechanism the other seven did not
+
+**Known so far:** `recovered_after_timeout` appears in the envelopes of **datalab and
+extend only**. Nine datalab documents and four extend documents came back through it, all
+at ~1800s -- past the cap the run describes as uniform:
+
+```
+timeout at the uniform 1800s limit; the vendor was still processing after 546 polls over 1803s
+```
+
+Everyone else hit that wall and was recorded as a failure: azure-cu 42 timeouts, and 58
+azure-cu / 59 claude / 22 mistral runs over 1500s with no recovery available.
+
+Two things are now established and worth not re-deriving:
+
+* The recovered payloads are **complete**, not partial. Row counts against gold:
+  19,486/19,486, 18,493/18,494, 26,350/26,725, 5,552/5,711, 1,152/1,152, 1,083/1,083.
+  An earlier worry that recovery returned truncated output was unfounded.
+* Recovery does **not** explain datalab's lead over reducto. Reducto scored at or above
+  datalab on nearly every recovered document (99.2, 99.6, 99.9, 99.9, 99.9, 99.8) while
+  never needing recovery at all. What recovery bought was documents that claude, gpt,
+  gemini, mistral and azure-cu were recorded as LOSING -- up to five vendors on the same
+  document.
+
+**Next:** find the runner. It is not in `omni_extract_bench`, not in the `datalab`
+monorepo, and not anywhere under `~` -- `recovered_after_timeout` matches nothing. Until
+its policy is known, the coverage column is not a like-for-like comparison. The honest
+fallback, if the policy cannot be recovered, is to re-run every vendor with a strict
+uniform timeout and no recovery, which costs datalab those nine documents but makes the
+comparison sound.
+
+---
+
+## 14. The full nine-vendor run, and the 185-document retry list
+
+**Known so far:** 660 documents x 9 vendors, exact matching, **zero harness failures** --
+every loss is a recorded vendor error, with no empty `{}` and no malformed responses.
+
+```
+datalab       91.75   660/660        claude        83.04   613/660
+reducto       91.67   660/660        gpt           82.15   654/660
+extend        88.08   660/660        llamaextract  79.58   656/660
+gemini        72.21   559/660        mistral       70.19   614/660
+azure-cu      54.14   607/660
+```
+
+Coverage, not quality, drives the bottom half. On documents actually returned, gemini is
+**85.25** -- third -- against 72.21 on the full corpus. Claude loses 6.4 points to zeros,
+mistral 5.3, azure-cu 4.7.
+
+Splitting the losses by whether re-running could change them gives **185 retry / 72 real
+limits** (`retry_list.csv` in the session scratchpad):
+
+```
+  91  200 with an empty body                    42  hit the harness's own 1800s cap
+  40  gateway error envelope, not the vendor's  22  prompt exceeds the context window
+  20  5xx backend error                          7  hard 400 invalid request
+  18  200 with only keep-alive padding
+```
+
+The left column is infrastructure wearing a vendor's name; the right is real capability
+and re-running changes nothing. The blank-200 signature appears for gemini (61), claude
+(25) and gpt (5) -- three unrelated vendors sharing one symptom -- and claude's error
+bodies mention Cloudflare while the 400s carry a `"Provider returned error"` envelope that
+is a proxy's, not Anthropic's or Google's.
+
+**Next:** retry the 185 under whatever policy item 13 settles on, then rebuild the board.
+Gemini stands to move ~13 points and would reorder the middle of the table. Until then
+this is a coverage measurement as much as a quality one, and should be reported as both.
