@@ -36,6 +36,34 @@ PRED = {"n": "INV", "t": 999.0, "d": 5.0, "z": "x",
 R = grade(PRED, GT, SCH)
 
 # ═══════════════════════════════════════════════════════════════════════════════
+print("\nTHE DOCUMENT REFERS TO SECTIONS THAT EXIST")
+# Renumbering during a rewrite left two references pointing at the wrong section: the header
+# sent readers to the wrong place for the properties, and section 3 sent them to Aggregation
+# for the order-freedom trade. Cheap to check, so it is checked.
+import re                                                                   # noqa: E402
+from pathlib import Path as _P                                              # noqa: E402
+
+SPEC = (_P(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+        / "docs" / "METRIC_SPEC.md").read_text().splitlines()
+heads = {int(m.group(1)) for line in SPEC if (m := re.match(r"## (\d+)\. ", line))}
+broken = [(i, int(m.group(1)))
+          for i, line in enumerate(SPEC, 1)
+          for m in re.finditer(r"§(\d+)", line)
+          if int(m.group(1)) not in heads]
+report(f"every cross-reference points at a real section ({len(heads)} sections)",
+       not broken, f"broken: {broken}")
+
+print("\nAND CITES NO FILE THAT IS NOT HERE")
+cited = {m.group(1) for line in SPEC for m in re.finditer(r"`([\w/]+\.(?:py|md))`", line)}
+root = _P(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+missing = sorted(c for c in cited
+                 if not (root / c).exists()
+                 and not (root / "omni_extract_bench" / c).exists()
+                 and not (root / "docs" / c).exists()
+                 and not (root / "tests" / c).exists())
+report("every .py or .md file the spec names in backticks exists",
+       not missing, f"missing: {missing}")
+
 print("\nSECTION 3 -- THE EXACTNESS BUDGET")
 report("MAX_CELLS is 250 million, as the spec states",
        OM.MAX_CELLS == 250 * 10**6, f"got {OM.MAX_CELLS}")
@@ -77,6 +105,51 @@ report("read_right = matched / (matched + misread)",
        abs(R["read_right"] - R["matched"] / (R["matched"] + R["misread"])) < 1e-12)
 report("found * read_right = accuracy / 100",
        abs(R["found"] * R["read_right"] - R["accuracy"] / 100) < 1e-12)
+
+print("\nSECTION 4 -- WHEN accuracy AND f1 AGREE")
+# The section used to say misread appearing twice was "the entire reason accuracy and f1
+# differ". It is not: they AGREE on a misread and diverge with misread = 0. What is counted
+# twice in `gold + asserted` and once in `total` is matched + misread -- every address both
+# documents use -- so they agree exactly when the documents use the same set of addresses.
+AF_S = {"properties": {k: {"type": "number"} for k in "abc"}}
+rows = {
+    "perfect":            ({"a": 1, "b": 2},         {"a": 1, "b": 2}, 100.00, 100.00),
+    "one value misread":  ({"a": 1, "b": 99},        {"a": 1, "b": 2},  50.00,  50.00),
+    "one value missing":  ({"a": 1},                 {"a": 1, "b": 2},  50.00,  66.67),
+    "one value invented": ({"a": 1, "b": 2, "c": 9}, {"a": 1, "b": 2},  66.67,  80.00),
+}
+for lbl, (pred, gold, want_acc, want_f1) in rows.items():
+    r = grade(pred, gold, AF_S)
+    report(f"{lbl}: accuracy {want_acc}, f1 {want_f1}",
+           abs(round(r["accuracy"], 2) - want_acc) < 1e-9
+           and abs(round(r["f1"] * 100, 2) - want_f1) < 1e-9,
+           f"got acc {r['accuracy']:.2f}, f1 {r['f1']*100:.2f}")
+
+agree = []
+for lbl, (pred, gold, _a, _f) in rows.items():
+    r = grade(pred, gold, AF_S)
+    same_addresses = r["unfound"] == 0 and r["fabricated"] == 0 \
+        and r["invented_item"] == 0 and r["invented_field"] == 0
+    matches = abs(r["accuracy"] / 100 - r["f1"]) < 1e-12
+    agree.append((lbl, same_addresses == matches))
+report("they agree exactly when both documents use the same set of addresses",
+       all(ok for _l, ok in agree), str(agree))
+report("...and a misread is NOT what splits them",
+       abs(grade({"a": 1, "b": 99}, {"a": 1, "b": 2}, AF_S)["accuracy"] / 100
+           - grade({"a": 1, "b": 99}, {"a": 1, "b": 2}, AF_S)["f1"]) < 1e-12)
+
+print("\nSECTION 3 -- CLEARING THE PAIRING BAR DOES NOT MAKE A ROW FREE")
+BAR_S = {"properties": {"lines": {"type": "array", "items": {"properties": {
+    "sku": {"type": "string"},
+    "tags": {"type": "array", "items": {"type": "string"}}}}}}}
+BAR_G = {"lines": [{"sku": "a", "tags": ["t1", "t2"]}]}
+omitted = grade({"lines": []}, BAR_G, BAR_S)
+cleared = grade({"lines": [{"sku": "a", "tags": ["X", "Y"]}]}, BAR_G, BAR_S)
+report("a row that clears the bar can still enlarge the denominator",
+       cleared["total"] > omitted["total"],
+       f"omitted {omitted['total']}, cleared {cleared['total']}")
+report("...so 'charged once' would be wrong: it is charged for what it invents too",
+       cleared["invented_item"] > 0, f"invented_item {cleared['invented_item']}")
 
 print("\nSECTION 4 -- THE BUCKETS PARTITION EVERY ADDRESS (P16)")
 verdicts = [v for v in explain(PRED, GT, SCH) if not v.verdict.startswith("skipped")]
