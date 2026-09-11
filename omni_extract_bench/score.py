@@ -392,6 +392,25 @@ def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: i
     we take the one sharing more addresses. `scale` makes that ordering work: it is bigger
     than any possible `shared` total, so a single extra matched value always wins.
 
+    Sharing more addresses is the pairing that scores HIGHER -- the denominator is
+    `|G| + |P| - shared` -- so where agreement cannot decide, the ambiguity is resolved in
+    the model's favour rather than arbitrarily. The order matters and is not symmetric:
+    agreement decides, and the score only breaks ties. Reversed, the matcher would pair rows
+    that merely share field NAMES in order to shrink the denominator, and would call that
+    correspondence.
+
+    Because `scale` bounds `shared`, the maximum pins down the PAIR (matched, shared), so
+    every assignment achieving it yields the same accuracy, precision, recall and f1. It does
+    not pin down the assignment itself.
+
+    TODO(paul): and that is visible. Two equally optimal assignments can leave DIFFERENT rows
+    unpaired, so `fabricated` and `invented_item` -- and occasionally `matched_rows` -- depend
+    on the order the predicted rows arrived in: 99 of 1500 random row-documents report a
+    different split under some permutation. The top-line numbers never move. Fixing it means a
+    third, purely deterministic tie-break (lowest gold index, say) so the solver cannot choose
+    between equal-weight assignments; it must NOT be another semantic term, or it would start
+    deciding correspondence.
+
     `_worth_if_paired` and `align` both call this. That is what keeps them in step.
     `_worth_if_paired` uses the numbers to judge a pairing; `align` uses the pairs to renumber
     rows. If they decided separately they could disagree, and then the score would not be the
