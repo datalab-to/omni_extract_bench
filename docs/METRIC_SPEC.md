@@ -1,7 +1,7 @@
 # Metric specification
 
 The complete definition of the benchmark score. Anything the grader does that is not here is
-a bug. Every property in §8 is enforced by a test, and the tests are named where they matter.
+a bug. Every property in §9 is enforced by a test, and the tests are named where they matter.
 
 ## The idea
 
@@ -28,8 +28,8 @@ Scoring is then set arithmetic on two sets of addresses.
 - **Row**: an object element of an array. Arrays of scalars are compared as multisets, so
   their elements are values, not rows.
 - **Node key**: an address with the index numbers blanked, so `books[0].chapters` and
-  `books[7].chapters` share one name. Written `books[*].chapters`. This is how an array is
-  named in `order_matters`.
+  `books[7].chapters` share one name. It is internal; what you pass to `order_matters` is its
+  printed form, `"books[*].chapters"` — the same string `explain` shows you.
 
 ## 2. Comparing one value
 
@@ -40,13 +40,52 @@ rule, used by leaf scoring and by row pairing alike, so the two cannot disagree.
 | --- | --- |
 | boolean | canonical equality |
 | integer / identifier-like | exact after canonicalisation — IDs, phone numbers and account numbers never fuzzy-match |
-| decimal number | equal within `1e-6 · max(1, |g|)`; **sign notation** folded (`(98.2)`, `−98.2`, `98.2-` all parse to −98.2) but **sign value preserved** (`−98.2 ≠ +98.2`) |
-| date-like string | equal if both parse to the same calendar date under any supported format |
+| decimal number | integer part exact, **fraction rounded to 7 significant digits**; **sign notation** folded (`(98.2)`, `−98.2`, `98.2-` all parse to −98.2) but **sign value preserved** (`−98.2 ≠ +98.2`) |
+| date-like string | equal if both parse to the same calendar date under any supported format. A timestamp at **midnight** counts as its date, because that is how vendors spell a date; any other time of day is kept and compared, so two different times still differ |
 | other string | canonical equality (case, whitespace, punctuation, smart quotes, unicode fractions) |
 
 Canonicalisation is applied identically to `p` and `g`, so comparison is symmetric by
-construction. A consequence worth knowing: format-only differences score 100, so any
-disagreement the grader reports is a real one.
+construction.
+
+**What sorts a value into "integer" or "decimal" is whether its text contains a `.`** — that
+and nothing else. `8303911426` is never parsed as a number and so is compared exactly, which
+is what stops an account number fuzzy-matching. `8303911426.0` *is* parsed — and because an
+integral float keys as its integer, the two agree.
+
+**Rounding is the one rule here that folds values rather than spellings.** Everything else
+folds two ways of writing one value — `"5.00"` and `5`, `(98.2)` and `−98.2`, `01/15/2024` and
+`2024-01-15`. `33.33333333` and `33.3333333` are two *different* values, and only rounding
+calls them equal; it is there to forgive ground truth re-derived at a different precision than
+the page printed. The integer part is compared exactly and the fraction keeps 7 significant
+digits of its own, so the rule is **inert for any fraction of 7 significant digits or fewer** —
+cents, prices, quantities and rates to six places are compared exactly, at every magnitude.
+`canon_key` in `omni_extract_bench/values.py` carries the rest of the argument, including why
+nothing gentler than rounding can serve as a key.
+
+**Format differences are free only where the table above says so.** These are folded, and
+are tested by `tests/test_comparison_surface.py`:
+
+    1,234 = 1234        $1,234.56 = 1234.56      12.34% = 12.34      1 234.56 = 1234.56
+    5.00 = 5            1.0 = 1                  (1,234.56) = -1234.56
+    1234.56- = -1234.56    −1234.56 = -1234.56
+    31/10/2024 = 2024-10-31    10/31/24 = 2024-10-31    Oct 31, 2024 = 2024-10-31
+    2024-10-31T00:00:00Z = 2024-10-31        a timestamp at MIDNIGHT is a date
+    2024-10-31T09:00:00Z = 2024-10-31 09:00:00     two spellings of one instant
+    ACME CORP = Acme Corp      "Acme  Corp." = "Acme Corp"      TRUE = true
+    "N/A" = "-" = "" (all canonicalise to empty)
+
+These are **not**, and will score as disagreements even though a human would call them
+formatting:
+
+    USD 1234.56 ≠ 1234.56        1234.56 USD ≠ 1234.56       currency codes are not stripped
+    1.234,56 ≠ 1234.56           European decimal notation
+    2024-10-31T09:00:00Z ≠ 2024-10-31        a timestamp with a REAL time is not a date
+    2024-10-31T09:00:00Z ≠ 2024-10-31T17:00:00Z    time of day is scored, not discarded
+    "yes" ≠ true                 only true/false spellings are booleans
+
+So a disagreement the grader reports is a real one *for the formats above*, and the second
+list is where to look first if a provider's misses look like formatting. It is a list of
+candidate scorer gaps, not of vendor errors.
 
 ## 3. Aligning arrays
 
@@ -62,9 +101,12 @@ For an array with predicted rows `P₁…Pₙ` and gold rows `G₁…Gₘ`:
    for one input — 50.60 against 51.85 — because the objective maximised matched values while
    the score divided by a union denominator. P2 and P8 are what hold this now.
 3. **Discard any pair worth zero.** The bar is one matching value, and it decides the
-   denominator: a row that clears it is charged once, a row that fails it is charged twice —
-   once as gold nobody found, once as content the model made up. So neither omission nor
-   invention is free.
+   denominator. Clearing it means the row's values are compared against its partner's.
+   Failing it means every gold value in the row is charged as missing *and* everything the
+   prediction put there is charged as invented — so neither omission nor invention is free.
+   Clearing the bar does not make the rest of a row free: anything it asserts that gold does
+   not have still adds to the denominator, which is why a row of one readable field and five
+   wrongly-guessed list items can score below omitting it (§8).
 4. **Renumber** the prediction onto the gold row it paired with. A predicted row that paired
    with nothing keeps an index of its own, written `lines[p2]`, so it can never be mistaken
    for a gold row and cannot be silently dropped.
@@ -74,7 +116,7 @@ For an array with predicted rows `P₁…Pₙ` and gold rows `G₁…Gₘ`:
    this corpus is 6881 rows — 47 million cells, 19% of the cap — and solves exactly.
 
 Order is free by default, because the order rows appear in a document is usually an artefact
-of layout. Naming an array in `order_matters` makes its index an address again; see §7 for
+of layout. Naming an array in `order_matters` makes its index an address again; see §8 for
 what that trades away.
 
 *Why exact matching matters:* the previous key-inference heuristic lost 2.6 points on a single
@@ -121,9 +163,40 @@ key names, and those have different causes and different fixes.
                  found · read_right = accuracy / 100
 
 A detection is a keypath-and-value, so a value found at the right address but read wrongly is
-charged on both sides — as a box with the right location and the wrong class would be. Note
-that `misread` appears in both `asserted` and `gold` but only **once** in `total`. That is the
-entire reason `accuracy` and `f1` differ.
+charged on both sides — as a box with the right location and the wrong class would be.
+
+### Why `accuracy` and not `f1` or Jaccard
+
+`accuracy` reads the alignment; the others cannot. `f1` and Jaccard are functions of
+`matched`, `|gold|` and `|asserted|` alone, so these two are identical to them:
+
+    gold {a:1, b:2}   pred {a:1, b:99}     found b, misread it
+    gold {a:1, b:2}   pred {a:1, c:99}     missed b, invented c
+
+Both give `matched = 1`, `|gold| = 2`, `|asserted| = 2`. `f1` scores both 50.00 and Jaccard
+both 33.33. `accuracy` scores them 50.00 and 33.33, because it knows the first pair shares an
+address. **That distinction is kept on purpose:** a misread means the extractor *located* the
+field, which is a different problem from not finding it.
+
+`f1` is reported too, and equals `accuracy` exactly when both documents use the same
+addresses. Where they differ they can rank two predictions oppositely (2.1% of contrasting
+pairs), so **`accuracy` decides a ranking** and `f1` is not a tie-breaker.
+
+### What `accuracy` charges, and the one thing it does not
+
+**It cannot be inflated.** `total = |gold| + invented`, so `accuracy ≤ matched / |gold|` — the
+ceiling rises only by being right more often. And every unpaired row adds all of its values to
+the denominator, so proposing all 27 combinations of a three-key row to guarantee one hit
+scores **3.70**, not 100.
+
+**It is indifferent in exactly one place: at an address where gold has a value, a wrong value
+costs what a blank costs.** Both recovered nothing there, which is the right answer to *how
+much of this document did you recover*. The other question — *can I trust what it did say* —
+belongs to `precision`, which charges every wrong assertion.
+
+Asserting where the document is **silent** is not in that exemption. It creates an address
+gold does not have, so `accuracy` charges it — and the bucket table above counts it as
+`fabricated`.
 
 **Row counts.** `gt_rows`, `pred_rows` and `matched_rows` count object-valued array elements
 at every depth. They support "returned 44 of 349 rows"; they do not feed precision or recall.
@@ -193,14 +266,21 @@ Applied uniformly, before scoring, to every vendor alike.
 
 - **Placeholder rows dropped** — see §5.
 - **Verified corrections** applied as an overlay only where a human read the source and the
-  evidence is recorded (`GT_LEDGER.md`). Benchmark corpora are never edited in place.
+  evidence was recorded. Benchmark corpora are never edited in place. Both the corrected
+  corpus and its ledger are published with the data rather than with this scorer, which
+  ships no benchmark data — so neither is in this repository.
 
 ## 7. Aggregation
 
     subset_score = mean of accuracy over that subset's documents
-    UNIFIED      = mean of the subset scores
+    UNIFIED       = mean of the subset scores
 
-Equal weight per subset, because subsets differ ~10× in size; leaf- or document-weighting
+> **Not yet implemented.** `cli.py` takes a flat mean over documents, which is the thing this
+> section says must not happen. Doing it properly needs each document's subset, which the run
+> manifest carries. Until then a leaderboard printed by this repository is not UNIFIED.
+
+Equal weight per subset, because the subsets really do differ by about 10× — 329, 207, 47, 42
+and 35 documents in the full sample — so leaf- or document-weighting
 would let the largest subset decide the benchmark and would silently re-weight it whenever a
 subset grew. A document a vendor returned nothing usable for scores **0** — excluding failures
 would reward fragility. Coverage is reported beside the score, never inside it.
@@ -245,12 +325,44 @@ since `null` and `[]` score exactly as an omitted key does.
 prefers attempting and `f1` prefers omitting. Both are correct: the model recovered a real
 fact, *and* most of what it said was false. So neither should be quoted alone.
 
-**The one exploit worth naming.** Under `accuracy` alone, filling in fields you cannot read is
-free — a wrong value at a gold address costs exactly what a blank costs, so a model spraying
-priors over unreadable fields beats an honest one by 17 points on identical reading ability.
-`f1` charges it: a guess improves `f1` only if its chance of being right exceeds roughly half
-the current `f1`. That is an abstention threshold arising from the metric rather than bolted
-on. `accuracy` has none — its gradient at a hopeless guess is exactly zero.
+### `accuracy` is not gameable; it is indifferent
+
+Searched exhaustively over every strategy on a four-field document — each field omitted, filled
+correctly, or filled wrongly — the highest reachable `accuracy` is monotone in the number of
+correct values produced, and **no strategy scores above one that produced more correct
+values**:
+
+| correct values produced | 0 | 1 | 2 | 3 | 4 |
+| --- | --- | --- | --- | --- | --- |
+| best `accuracy` | 0.00 | 25.00 | 50.00 | 75.00 | 100.00 |
+
+So `accuracy` cannot be raised except by being right more often. Guessing well raises it
+because guessing well produces correct values, which is the metric working rather than an
+exploit. A model that outputs `"US"` by reading the page and one that outputs it by knowing
+the column is usually `US` have produced the same output, and `accuracy` — which scores
+output, not process — says so. No measure that looks only at the output can separate them.
+
+Nor does corpus diversity separate them. Measured against a model that abstains, always
+guessing the modal value gains **+43.25** where the base rate is 90%, **+25.25** across a
+mixed corpus averaging 53%, and **+5.00** even where the prior is inverted. Variance does not
+defeat the strategy; it prices the guess at the corpus-average hit rate, which is the right
+price for it.
+
+**What `accuracy` genuinely does not do is distinguish a wrong value from a blank.** Both cost
+the same, because the gold address is in the denominator either way. That is not an
+inflation — nothing is gained — but it matters to whoever consumes the output, who would act
+on a wrong value and would know to ignore a blank.
+
+**`precision` is what resolves that**, and it is why the two travel together:
+
+    accuracy    how much of the document did you recover
+    precision   how much of what you said can I trust
+
+`precision` falls for *every* wrong assertion, monotonically, so unlike `f1` it cannot be
+masked by mixing a good guess with a hopeless one. `f1` answers a third question — *was that
+particular guess worth making* — improving only when a guess is right more often than roughly
+half the current `f1`. That is a real abstention threshold, and `accuracy` has none: its
+gradient at a hopeless guess is exactly zero.
 
 **Order-freedom is a trade, not a gift.** A wrong value costs more inside a scalar array
 (50.0) than in a named field (66.7), because array elements have no identity for a value to be
@@ -285,6 +397,8 @@ scorer produces.
 | P17 | Partial extraction beats omission | a row emitted with only the values read correctly scores above omitting that row |
 | P18 | Configuration is checked | an `order_matters` name fitting no array raises, rather than silently applying to nothing |
 | P19 | Schema is required | a grade without one raises, rather than reporting `fabricated: 0` |
+| P20 | `accuracy` and `f1` agree on ranking when nothing is misread | with `misread = 0` on both sides, `accuracy` is Jaccard and `f1` is `2J/(1+J)`, so their ordering is identical |
+| P21 | `accuracy` is not gameable | no prediction scores above one that produced more correct values; `accuracy` rises only by being right more often |
 
 P11–P15 are regressions, not hypotheticals — each corresponds to a defect that reached a
 leaderboard before it was caught. P11 is the strongest: if depth cannot change the score, no

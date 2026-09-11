@@ -13,3 +13,6 @@ baselines/
 runs/
 *.partial.json
 .score_cache.json
+
+# agent worktrees and session state
+.claude/

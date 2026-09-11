@@ -44,19 +44,45 @@ def note(text):
 
 
 def unfiltered(v):
-    """What `_asdate` did before the prefilter: try every format, in order.
+    """What `_asdate` does with no prefilter: try every format in both lists, in order.
 
     Kept here rather than imported so the comparison survives the day someone deletes the
-    slow path entirely.
+    slow path entirely. It must mirror `_asdate`'s TWO phases -- calendar formats first,
+    then a timestamp, which counts as a date only at midnight -- or the test would pass
+    while the prefilter quietly swallowed every timestamp.
     """
     s = str(v).strip()
-    if not re.search(r"\d", s) or len(s) > 24:
+    if not re.search(r"\d", s) or len(s) > 34:
         return None
     for f in V._DATEFMTS:
         try:
             return datetime.strptime(s, f).date().isoformat()
         except ValueError:
             pass
+    for f in V._DATETIMEFMTS:
+        try:
+            dt = datetime.strptime(s, f)
+        except ValueError:
+            continue
+        if (dt.hour, dt.minute, dt.second, dt.microsecond) == (0, 0, 0, 0):
+            return dt.date().isoformat()
+        return None
+    return None
+
+
+def unfiltered_time(v):
+    """The same mirror for `_astime`, which shares the prefiltered `_parse_datetime`."""
+    s = str(v).strip()
+    if not re.search(r"\d", s) or len(s) > 34:
+        return None
+    for f in V._DATETIMEFMTS:
+        try:
+            dt = datetime.strptime(s, f)
+        except ValueError:
+            continue
+        if (dt.hour, dt.minute, dt.second, dt.microsecond) == (0, 0, 0, 0):
+            return None
+        return dt.replace(tzinfo=None).isoformat(timespec="microseconds")
     return None
 
 
@@ -72,8 +98,35 @@ print("\nASDATE PREFILTER\n")
 # `values` falls back to the plain loop if the stdlib internals move, which keeps the
 # answers right and quietly loses the speed this code exists for. Say so out loud.
 report("the prefilter is installed, not silently fallen back to the slow loop",
-       hasattr(V, "_union_regex") and bool(V._union_regex().match("2024-01-15")),
+       hasattr(V, "_union_regex")
+       and bool(V._union_regex(tuple(V._DATEFMTS)).match("2024-01-15"))
+       and bool(V._union_regex(tuple(V._DATETIMEFMTS)).match("2024-10-31T00:00:00Z")),
        "no _union_regex: _strptime internals moved and values.py fell back")
+
+# ── timestamps ────────────────────────────────────────────────────────────────────────
+# `_asdate` has a second phase: a timestamp is a date, but only at midnight. The prefilter
+# gates that phase too, so it can swallow timestamps if its union is built from the wrong
+# list. These are the cases from the commit that introduced the fold.
+ts_cases = [
+    ("2024-10-31T00:00:00Z", "2024-10-31"),        # midnight: a date in timestamp clothes
+    ("2024-10-31 00:00:00", "2024-10-31"),
+    ("2024-10-31T00:00:00+00:00", "2024-10-31"),   # 25 chars -- past the old length guard
+    ("2024-10-31T00:00:00.000000Z", "2024-10-31"),  # 27 chars
+    ("2024-10-31T09:00:00Z", None),                # a real time is not a date
+]
+bad = [(s, want, V._asdate(s)) for s, want in ts_cases if V._asdate(s) != want]
+report("a timestamp at midnight is still a date, and a real time still is not",
+       not bad, f"{bad!r}")
+
+bad = [s for s, _ in ts_cases if V._asdate(s) != unfiltered(s)]
+report("the timestamp phase agrees with the unfiltered loop",
+       not bad, f"disagreed: {bad!r}")
+
+bad = [s for s in ["2024-10-31T09:00:00Z", "2024-10-31T09:00:00+00:00",
+                   "2024-10-31 17:30:00", "2024-10-31T09:00:00.000"]
+       if V._astime(s) != unfiltered_time(s)]
+report("`_astime` shares the prefiltered parse and still agrees",
+       not bad, f"disagreed: {bad!r}")
 
 # ── whitespace ────────────────────────────────────────────────────────────────────────
 # The case that broke the hand-rolled filter, and its neighbours.
@@ -87,23 +140,28 @@ report("whitespace separators still parse, because strptime matches them with \\
 # Anything a format can render, that same format must still read back.
 checked = 0
 lost = []
-for fmt in V._DATEFMTS:
+for fmt in list(V._DATEFMTS) + list(V._DATETIMEFMTS):
     for dt in DAYS:
-        rendered = dt.strftime(fmt)
-        # strptime accepts unpadded numbers that strftime always pads.
-        for s in {rendered, re.sub(r"\b0(\d)", r"\1", rendered)}:
-            if len(s) > 24 or not re.search(r"\d", s):
-                continue
-            try:
-                datetime.strptime(s, fmt)
-            except ValueError:
-                continue                        # not parseable anyway
-            checked += 1
-            if V._asdate(s) != unfiltered(s):
-                lost.append((fmt, s))
+        # Render at midnight AND at a real time, so the timestamp formats exercise both
+        # sides of the fold rather than only the branch that returns a date.
+        for when in (datetime(dt.year, dt.month, dt.day),
+                     datetime(dt.year, dt.month, dt.day, 9, 30, 15)):
+            rendered = when.strftime(fmt)
+            # strptime accepts unpadded numbers that strftime always pads.
+            for s in {rendered, re.sub(r"\b0(\d)", r"\1", rendered)}:
+                if len(s) > 34 or not re.search(r"\d", s):
+                    continue
+                try:
+                    datetime.strptime(s, fmt)
+                except ValueError:
+                    continue                    # not parseable anyway
+                checked += 1
+                if V._asdate(s) != unfiltered(s) or V._astime(s) != unfiltered_time(s):
+                    lost.append((fmt, s))
 report("every format can still read back everything it can write, padded or not",
        not lost, f"lost {lost[:5]!r}")
-note(f"{checked:,} rendered date strings checked across {len(V._DATEFMTS)} formats")
+note(f"{checked:,} rendered strings checked across "
+     f"{len(V._DATEFMTS)} date and {len(V._DATETIMEFMTS)} timestamp formats")
 
 # ── values the spec says are not dates ────────────────────────────────────────────────
 not_dates = ["1/2", "Q1", "2-3-13", "5", "T", "", "hello", "2024", "-98.2"]
@@ -115,8 +173,10 @@ report("values the spec refuses as dates are refused exactly as before",
 # Random strings and mutated dates: shapes no corpus is guaranteed to contain, which is
 # the whole point.
 rnd = random.Random(0)
-alphabet = "0123456789/-. ,\t\xa0JanFebMarchXQ"
-pool = [d.strftime(f) for f in V._DATEFMTS for d in DAYS[:20]]
+alphabet = "0123456789/-. ,:+TZ\t\xa0JanFebMarchXQ"
+pool = ([d.strftime(f) for f in V._DATEFMTS for d in DAYS[:20]]
+        + [datetime(d.year, d.month, d.day, h, 0, 0).strftime(f)
+           for f in V._DATETIMEFMTS for d in DAYS[:6] for h in (0, 9)])
 positives = 0
 disagreements = []
 N = 50_000
