@@ -405,11 +405,30 @@ def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: i
 
     TODO(paul): and that is visible. Two equally optimal assignments can leave DIFFERENT rows
     unpaired, so `fabricated` and `invented_item` -- and occasionally `matched_rows` -- depend
-    on the order the predicted rows arrived in: 99 of 1500 random row-documents report a
-    different split under some permutation. The top-line numbers never move. Fixing it means a
-    third, purely deterministic tie-break (lowest gold index, say) so the solver cannot choose
-    between equal-weight assignments; it must NOT be another semantic term, or it would start
-    deciding correspondence.
+    on the order rows arrived in: of 600 random row-documents, 35 report a different split
+    under some permutation of the prediction and 11 under some permutation of the gold. The
+    top-line numbers never move. What is violated is not determinism (the same input scores
+    the same twice, 0/600) but invariance under RELABELLING, which is the property this whole
+    alignment stage exists to provide.
+
+    The fix follows from the symmetry rather than from taste. The weight depends only on row
+    CONTENT, so permuting rows permutes the argmax set with it, and a selection rule commutes
+    with relabelling iff it is a function of content alone. An index tie-break is therefore
+    exactly wrong -- it would be deterministic and would still move under permutation. Sorting
+    `pi` and `gi` by a canonical content key before `match_rows` is the whole change: the
+    solver then sees the same matrix under any permutation, so its positional tie-breaking
+    becomes a content choice, and `_greedy` is fixed with it. The key must be invariant under
+    the same symmetry one level down or the recursion leaks -- the sorted multiset of
+    (node_key(address), canon_key(value)) over the row's leaves, `ordered` arrays keeping
+    their indices. Rows that still tie are content-identical, so any choice gives the same
+    counts. Sorting both sides moves no top-line number in 600 documents, which is what makes
+    it legal.
+
+    Not a third semantic term. Not because it would endanger the score -- (matched, shared) is
+    already pinned, so any third term is score-neutral -- but because the obvious candidate,
+    minimising symmetric difference, is `sum(|p_i| + |g_j|) - 2*shared` over KEPT pairs, and an
+    unkept pair contributes nothing. With shared fixed it quietly prefers assignments with
+    fewer pairs, which is one of the things that already moves.
 
     `_worth_if_paired` and `align` both call this. That is what keeps them in step.
     `_worth_if_paired` uses the numbers to judge a pairing; `align` uses the pairs to renumber
