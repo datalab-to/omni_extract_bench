@@ -6,11 +6,11 @@ hides three different bugs, so `grade` splits it:
 
     misread          the document has this value; the model read it wrongly
     fabricated       the schema offered the slot, the document is silent, the model filled it
-    invented item    an array element that paired with nothing
+    invented item    a value under an array element that paired with nothing
     invented field   a name the schema never declared
 
 The split keys off the SCHEMA, not gold's nulls. A gold field written `null` and a gold field
-left out mean the same thing (METRIC_SPEC section 10), so keying off gold would sort two
+left out mean the same thing (METRIC_SPEC section 5), so keying off gold would sort two
 identical documents into different buckets.
 
 Run: python3 tests/test_false_assertions.py
@@ -65,7 +65,7 @@ report("an open map offers no slot, so nothing inside it can be fabricated",
 note("that subtree is not graded at all, so a value there was never asked for")
 
 print("\nGOLD'S NULLS ARE NOT THE AUTHORITY -- THE SCHEMA IS")
-# These two ground truths are semantically identical (section 10). Keying off gold's nulls
+# These two ground truths are semantically identical (section 5). Keying off gold's nulls
 # would call the first `fabricated` and the second `invented`, which is the bug this avoids.
 NULL_GT = {"lines": [{"sku": "a", "note": None}]}
 GONE_GT = {"lines": [{"sku": "a"}]}

@@ -1,4 +1,4 @@
-"""Every number in METRIC_SPEC section 10, checked against the scorer."""
+"""Every number in METRIC_SPEC section 5, checked against the scorer."""
 import sys
 sys.path.insert(0, "/Users/paulscemama/omni_extract_bench")
 from omni_extract_bench.score import grade

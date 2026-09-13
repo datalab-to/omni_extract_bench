@@ -68,7 +68,7 @@ report("...so under accuracy, attempting beats omitting from one field right",
        f"{[round(p['accuracy'], 1) for p in partial[1:]]}")
 note("if this ever reverses, providers are being paid to truncate")
 
-# METRIC_SPEC section 12 prints these exact figures. Assert them, so the spec cannot drift
+# METRIC_SPEC section 8 prints these exact figures. Assert them, so the spec cannot drift
 # away from the scorer without a test failing.
 SPEC_TABLE = {None: (50.0, 66.7), 0: (33.3, 50.0), 1: (62.5, 62.5),
               2: (75.0, 75.0), 4: (100.0, 100.0)}
@@ -79,7 +79,7 @@ for j, (want_acc, want_f1) in SPEC_TABLE.items():
             or abs(round(r["f1"] * 100, 1) - want_f1) > 1e-9):
         drift.append((j, round(r["accuracy"], 1), round(r["f1"] * 100, 1),
                       want_acc, want_f1))
-report("the figures printed in METRIC_SPEC section 12 are the ones the scorer produces",
+report("the figures printed in METRIC_SPEC section 8 are the ones the scorer produces",
        not drift, f"drifted: {drift}")
 
 print("\nA ROW WITH NOTHING RIGHT IS WORSE THAN OMITTING IT")
@@ -205,6 +205,61 @@ report("`tags: null` and `tags: []` score exactly as omitting the key does",
            and s["total"] == a_honest["total"] for s in same),
        f"{[round(s['accuracy'], 1) for s in same]} vs {a_honest['accuracy']:.1f}")
 note("so a vendor forced to emit every property is not forced to fabricate")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+print("\nORDER-FREEDOM IS A TRADE, AND SECTION 8 PRINTS ITS PRICE")
+# Section 8 claims four figures for a five-element scalar array. They are the argument for
+# leaving `order_matters` alone by default, so they are asserted rather than believed.
+TAGS_S = {"properties": {"t": {"type": "array", "items": {"type": "string"}}}}
+five = {"t": [f"v{i}" for i in range(5)]}
+wrong_in_place = {"t": [f"v{i}" for i in range(4)] + ["WRONG"]}
+one_dropped = {"t": [f"v{i}" for i in range(1, 5)]}
+
+got = {
+    ("wrong in place", "free"):    grade(wrong_in_place, five, TAGS_S)["accuracy"],
+    ("wrong in place", "ordered"): grade(wrong_in_place, five, TAGS_S, ("t",))["accuracy"],
+    ("one dropped", "free"):       grade(one_dropped, five, TAGS_S)["accuracy"],
+    ("one dropped", "ordered"):    grade(one_dropped, five, TAGS_S, ("t",))["accuracy"],
+}
+want = {("wrong in place", "free"): 66.7, ("wrong in place", "ordered"): 80.0,
+        ("one dropped", "free"): 80.0, ("one dropped", "ordered"): 0.0}
+drift2 = [(k, round(v, 1), want[k]) for k, v in got.items() if abs(round(v, 1) - want[k]) > 1e-9]
+report("the four order_matters figures in section 8 are the ones the scorer produces",
+       not drift2, f"drifted: {drift2}")
+report("`order_matters` helps a substitution and ruins an omission",
+       got[("wrong in place", "ordered")] > got[("wrong in place", "free")]
+       and got[("one dropped", "ordered")] < got[("one dropped", "free")],
+       f"{got}")
+note("omission is the commoner extraction failure, so the trade usually runs the wrong way")
+
+print("\nWRAPPING A SCALAR IN A ONE-FIELD OBJECT CHANGES NOTHING")
+# Section 8 says so, and it is the non-obvious half: the pairing bar is one matching value,
+# so a one-field row whose only value is wrong prices at zero exactly as a bare scalar does.
+BARE_S = {"properties": {"t": {"type": "array", "items": {"type": "string"}}}}
+WRAP_S = {"properties": {"t": {"type": "array", "items": {"properties":
+          {"tag": {"type": "string"}}}}}}
+bare = grade({"t": ["a", "b", "c", "X"]}, {"t": list("abcd")}, BARE_S)
+wrap = grade({"t": [{"tag": c} for c in ["a", "b", "c", "X"]]},
+             {"t": [{"tag": c} for c in "abcd"]}, WRAP_S)
+report("a bare scalar list and a list of one-field objects score identically",
+       abs(bare["accuracy"] - wrap["accuracy"]) < 1e-9
+       and bare["total"] == wrap["total"]
+       and bare["invented_item"] == wrap["invented_item"],
+       f"bare {bare['accuracy']:.1f}/{bare['total']} vs wrap "
+       f"{wrap['accuracy']:.1f}/{wrap['total']}")
+note("so the fix for a double-charged list is a second field to pair on, not a wrapper")
+
+print("\nINVENTED ROWS ARE CHARGED AT SCALE, NOT JUST IN THE 27-ROW EXAMPLE")
+# Section 4 prints 100.00 and 0.99 for these two.
+ROWS_S = {"properties": {"l": {"type": "array", "items": {"properties":
+          {f"f{k}": {"type": "string"} for k in range(4)}}}}}
+ten = {"l": [{f"f{k}": f"r{i}v{k}" for k in range(4)} for i in range(10)]}
+flood = {"l": ten["l"] + [{f"f{k}": f"J{j}_{k}" for k in range(4)} for j in range(1000)]}
+perfect_acc, flood_acc = grade(ten, ten, ROWS_S)["accuracy"], grade(flood, ten, ROWS_S)["accuracy"]
+report("ten perfect rows score 100.00; the same ten plus a thousand invented score 0.99",
+       abs(perfect_acc - 100.0) < 1e-9 and abs(round(flood_acc, 2) - 0.99) < 1e-9,
+       f"{perfect_acc:.2f} and {flood_acc:.2f}")
+note("accuracy <= matched/|gold|, so inventing can only move a score down")
 
 print(f"\n{'INCENTIVES POINT THE RIGHT WAY' if not FAILS else 'FAILURES:'}")
 for f in FAILS:
