@@ -3,6 +3,10 @@
 The complete definition of the benchmark score. Anything the grader does that is not here is
 a bug. Every property in §9 is enforced by a test, and the tests are named where they matter.
 
+§11 is the practical end of it: what to check before trusting a number, and what the metric
+is measuring that no part of the scorer decides. Observations about the published corpus
+rather than about the scorer are in `CORPUS_NOTES.md`.
+
 ## The idea
 
 Give every value in a document an address, then compare addresses.
@@ -87,6 +91,23 @@ So a disagreement the grader reports is a real one *for the formats above*, and 
 list is where to look first if a provider's misses look like formatting. It is a list of
 candidate scorer gaps, not of vendor errors.
 
+### These rules fold spelling, not wording
+
+Comparison is `canon_key(p) == canon_key(g)`, an equality test, so there is no partial credit
+for a string and one character decides it; §10 rules out the two mechanisms that could soften
+that. For a name, code, date or amount, spelling is the whole job. For prose it is not — the
+realistic disagreements on a long string are edits. **So a prose-valued leaf measures verbatim
+transcription.** On a 1081-entry bibliography list, perfect but for one variance per entry
+(`CORPUS_NOTES.md`):
+
+    smart quotes, whitespace, trailing period, PDF hyphenation     100.00
+    a trailing arXiv or DOI dropped                                 91.42
+    authors elided to "et al."                                       8.35
+    truncated to 120 characters                                      5.73
+
+Fix it in the schema, not the scorer: decompose prose into fields so agreement can be partial.
+§8 covers what that changes, and why it does nothing for a list of bare tags.
+
 ## 3. Aligning arrays
 
 For an array with predicted rows `P₁…Pₙ` and gold rows `G₁…Gₘ`:
@@ -104,9 +125,8 @@ For an array with predicted rows `P₁…Pₙ` and gold rows `G₁…Gₘ`:
    denominator. Clearing it means the row's values are compared against its partner's.
    Failing it means every gold value in the row is charged as missing *and* everything the
    prediction put there is charged as invented — so neither omission nor invention is free.
-   Clearing the bar does not make the rest of a row free: anything it asserts that gold does
-   not have still adds to the denominator, which is why a row of one readable field and five
-   wrongly-guessed list items can score below omitting it (§8).
+   Clearing the bar does not make the rest of the row free either: anything it asserts that
+   gold does not have still adds to the denominator (§8).
 4. **Renumber** the prediction onto the gold row it paired with. A predicted row that paired
    with nothing keeps an index of its own, written `lines[p2]`, so it can never be mistaken
    for a gold row and cannot be silently dropped.
@@ -134,7 +154,7 @@ verdicts `explain()` returns, one per address, and `grade()` reports their count
 | `misread` | address on both sides, values differ — the document has it, the model read it wrongly |
 | `unfound` | gold address the prediction never used |
 | `fabricated` | the schema offered this slot, the document is silent, the model asserted a value |
-| `invented_item` | an array element that paired with nothing |
+| `invented_item` | a value under an array element that paired with nothing |
 | `invented_field` | a name the schema never declared |
 
 `fabricated` is the sharpest hallucination signal available: the document does not say this,
@@ -153,9 +173,9 @@ key names, and those have different causes and different fixes.
     gold      = matched + misread + unfound
     total     = matched + misread + unfound + fabricated + invented_item + invented_field
 
-    accuracy   = 100 · matched / total       how much of the document you recovered
+    accuracy   = 100 · matched / total       how much you recovered, net of inventions
     precision  = matched / asserted          how much of what you said was true
-    recall     = matched / gold
+    recall     = matched / gold              how much you recovered, inventions ignored
     f1         = 2·precision·recall / (precision + recall)
 
     found      = (matched + misread) / total did you look in the right places
@@ -187,7 +207,9 @@ pairs), so **`accuracy` decides a ranking** and `f1` is not a tie-breaker.
 **It cannot be inflated.** `total = |gold| + invented`, so `accuracy ≤ matched / |gold|` — the
 ceiling rises only by being right more often. And every unpaired row adds all of its values to
 the denominator, so proposing all 27 combinations of a three-key row to guarantee one hit
-scores **3.70**, not 100.
+scores **3.70**, not 100. At scale the same arithmetic bites harder: ten gold rows returned
+perfectly score 100.00, and those same ten rows with a thousand invented ones alongside them
+score **0.99**.
 
 **It is indifferent in exactly one place: at an address where gold has a value, a wrong value
 costs what a blank costs.** Both recovered nothing there, which is the right answer to *how
@@ -204,8 +226,15 @@ at every depth. They support "returned 44 of 349 rows"; they do not feed precisi
 year) pairs rows that are otherwise entirely wrong. For row correctness, group `explain()`'s
 verdicts by the address up to the last index step.
 
+**The split is stable; the pairing is not unique.** Several pairings can be equally optimal —
+the objective pins the optimal *value*, not which rows achieved it — and the split reads that
+choice. Rows are therefore sorted by a content key before the solve. Without it, 35 of 600
+documents reported a different split under a permutation, while `accuracy`, `precision`,
+`recall` and `f1` never moved. P22, `tests/test_pairing_determinism.py`.
+
 **Honesty flags.** `matching_exact` and `approximated` say when an array was too large to
-solve exactly. `skipped_open_maps` says which subtrees were not graded at all (§5).
+solve exactly. `skipped_open_maps` says which subtrees were not graded at all (§5); nothing
+else in the output reveals that.
 
 Asserted by `tests/test_false_assertions.py`, over a worked example and 2400 generated
 gradings, including that `grade`'s counts equal `explain`'s verdict histogram.
@@ -285,6 +314,21 @@ would let the largest subset decide the benchmark and would silently re-weight i
 subset grew. A document a vendor returned nothing usable for scores **0** — excluding failures
 would reward fragility. Coverage is reported beside the score, never inside it.
 
+**The two weightings compose.** Every value carries `1/total` inside its document; every
+document carries equal weight across the means above. So a gold value's weight in UNIFIED is
+
+    1 / (values in its document × documents in its subset × number of subsets)
+
+**inversely proportional to the size of the document holding it.** Within a document, the
+largest table decides the score: a 500-row, 4-column table beside a 5-field header leaves the
+header at 0.25% of that document's number. Across documents, on the published corpus (2 to
+410,012 values per document) the heaviest single gold value carries **57,029×** the weight of
+the lightest (`CORPUS_NOTES.md`).
+
+Both follow from decisions argued above — an address per value, equal weight per subset — but
+the composition is not neutral, and it is why document shape is a first-order input to a
+leaderboard. A corpus needing a different trade makes it in how subsets are built.
+
 ## 8. What the metric pays for
 
 A benchmark is a set of incentives. Three rules, for anyone building against this:
@@ -329,14 +373,23 @@ fact, *and* most of what it said was false. So neither should be quoted alone.
 
 Searched exhaustively over every strategy on a four-field document — each field omitted, filled
 correctly, or filled wrongly — the highest reachable `accuracy` is monotone in the number of
-correct values produced, and **no strategy scores above one that produced more correct
-values**:
+correct values produced:
 
 | correct values produced | 0 | 1 | 2 | 3 | 4 |
 | --- | --- | --- | --- | --- | --- |
 | best `accuracy` | 0.00 | 25.00 | 50.00 | 75.00 | 100.00 |
 
-So `accuracy` cannot be raised except by being right more often. Guessing well raises it
+**That search is scoped, and the scope is load-bearing.** A document with no arrays has a fixed
+denominator, so `accuracy` there is simply proportional to the count of correct values. Add an
+array and the denominator moves with the pairing, and the stronger reading — *no prediction
+scores above one that produced more correct values* — is false: a prediction that recovers
+**every** gold value scores 23.08 when it also emits ten invented rows, against 66.67 for one
+that emits three rows with a field wrong in each. That is the metric working, not failing. A
+metric with the stronger property would make spamming rows free, because volume would never
+cost anything. What holds is the pair stated in P21.
+
+So `accuracy` cannot be raised except by being right more *often* — not by being right more
+*times*. Guessing well raises it
 because guessing well produces correct values, which is the metric working rather than an
 exploit. A model that outputs `"US"` by reading the page and one that outputs it by knowing
 the column is usually `US` have produced the same output, and `accuracy` — which scores
@@ -348,14 +401,12 @@ mixed corpus averaging 53%, and **+5.00** even where the prior is inverted. Vari
 defeat the strategy; it prices the guess at the corpus-average hit rate, which is the right
 price for it.
 
-**What `accuracy` genuinely does not do is distinguish a wrong value from a blank.** Both cost
-the same, because the gold address is in the denominator either way. That is not an
-inflation — nothing is gained — but it matters to whoever consumes the output, who would act
-on a wrong value and would know to ignore a blank.
+Indifference is the other half, and §4 states it: a wrong value costs what a blank costs.
+Nothing is gained by that, but it matters to whoever consumes the output, who would act on the
+wrong value and would know to ignore the blank. **`precision` is what resolves it**, and it is
+why the two travel together:
 
-**`precision` is what resolves that**, and it is why the two travel together:
-
-    accuracy    how much of the document did you recover
+    accuracy    how much of the document did you recover, net of what you invented
     precision   how much of what you said can I trust
 
 `precision` falls for *every* wrong assertion, monotonically, so unlike `f1` it cannot be
@@ -371,40 +422,88 @@ that reordering is free, where reordering three named fields scores 0. You canno
 `order_matters` chooses. Comparability is untouched, because the shape is fixed across every
 provider — unlike schema width, which varied within a comparison.
 
+The charge scales with list length, and naming an array trades a substitution penalty for an
+alignment one. On a five-element list, one wrong element *in place* improves 66.7 → 80.0; one
+*dropped* element shifts everything after it, 80.0 → **0.0**. Omission is the commoner
+failure, so the trade usually runs the wrong way. Use `order_matters` only where position is
+content — page numbers, ranked results, time periods.
+
+**Wrapping scalars in objects does not buy it back.** `["a","b"]` and
+`[{"tag":"a"},{"tag":"b"}]` score identically: the bar in §3 is one matching value, and a
+one-field row's only value is the one that is wrong, so the pair prices at zero. It helps only
+when the element carries a *second* field to anchor the pairing — then the row pairs and the
+wrong field is one misread. Hence decomposing prose (§2) works where wrapping a tag list does
+not.
+
 Asserted by `tests/test_incentives.py`, including that the figures above are the ones the
 scorer produces.
 
 ## 9. Properties
 
+Eight, kept under their original ids so the tests and the history still line up. Each is
+either a defect that reached a leaderboard before it was caught, or a guarantee a reader would
+reasonably doubt. Anything that follows from these, or that holds of any metric at all, is
+stated where it belongs instead: comparison rules in §2, aggregation in §7, incentives in §8.
+
 | # | property | statement |
 | --- | --- | --- |
-| P1 | Identity | `score(G, G) = 100` for every `G` |
-| P2 | Permutation invariance | reordering any array in `P` or `G` leaves the score unchanged |
-| P3 | Monotonicity | correcting one wrong value never lowers the score |
-| P4 | No double counting | each gold value contributes exactly 1 to the denominator |
-| P5 | Determinism | identical inputs produce identical output, always |
-| P6 | Coverage honesty | a missing prediction scores 0 and is never dropped from the mean |
-| P7 | Symmetry of comparison | `cmp(p, g) = cmp(g, p)` |
+| P2 | Order never matters | permuting any array in `P` or `G` changes neither the score nor the diagnostics |
 | P8 | Optimality | no pairing of array rows yields a higher score than the one chosen |
-| P9 | Null neutrality | `null` on both sides adds nothing to numerator or denominator |
-| P10 | Sign fidelity | sign notation is free; a wrong sign is never free |
 | P11 | Nesting invariance | wrapping a document in an extra level changes neither score nor denominator |
-| P12 | Omission is charged | returning a subset of the gold rows never scores 100 |
 | P13 | Scalar arrays are scored | an array of scalars contributes values at every depth |
 | P14 | Pairing/scoring agreement | the pairing that earned the score is the pairing that is committed |
-| P15 | No silent approximation | a grade that used the greedy fallback says so |
+| P15 | No silent shortfall | a greedy pairing and a skipped open map are both reported, never dropped (the tests call the second half P23) |
 | P16 | Bucket completeness | the six buckets partition every address, and equal `explain`'s verdicts |
-| P17 | Partial extraction beats omission | a row emitted with only the values read correctly scores above omitting that row |
-| P18 | Configuration is checked | an `order_matters` name fitting no array raises, rather than silently applying to nothing |
-| P19 | Schema is required | a grade without one raises, rather than reporting `fabricated: 0` |
-| P20 | `accuracy` and `f1` agree on ranking when nothing is misread | with `misread = 0` on both sides, `accuracy` is Jaccard and `f1` is `2J/(1+J)`, so their ordering is identical |
-| P21 | `accuracy` is not gameable | no prediction scores above one that produced more correct values; `accuracy` rises only by being right more often |
+| P21 | Right is not punished, volume is not rewarded | correcting one value never lowers the score; output that produces no correct value never raises it, and strictly lowers it whenever the score was above zero |
 
-P11–P15 are regressions, not hypotheticals — each corresponds to a defect that reached a
-leaderboard before it was caught. P11 is the strongest: if depth cannot change the score, no
-depth-dependent scoring path can exist, which is the whole class rather than the instance.
-P16–P19 were added with the false-assertion split; P18 replaced a silent no-op in which a
-mistyped configuration left the array unordered and the run finished looking fine.
+P11, P13, P14 and P15 are regressions, not hypotheticals — each corresponds to a defect that
+reached a leaderboard before it was caught. P11 is the strongest: if depth cannot change the
+score, no depth-dependent scoring path can exist, which is the whole class rather than the
+instance. P2 now carries what P22 stated separately, because two vendors returning identical
+rows in a different order were once given different hallucination numbers while the score
+itself looked fine.
+
+**P21 replaces a claim that was both unproven and undesirable.** It read: *no prediction scores
+above one that produced more correct values.* That is false — a prediction recovering every
+gold value scores **23.08** when it also emits ten invented rows, against **66.67** for one
+emitting three rows with a field wrong in each — and it is false in the direction that matters,
+because a metric with that property would make spamming rows free. The evidence behind it was
+an exhaustive search over a four-field document with no arrays, which is the one setting where
+the denominator cannot move and so the attack cannot exist.
+
+The two clauses are monotonicity in two different arguments, over the two things a prediction
+can do — edit an assertion, or add one:
+
+    hold what you emit fixed, make more of it right    the score cannot fall
+    hold what is right fixed, emit more                the score cannot rise
+
+Neither implies the other, and the first is not free. Correcting one value can re-pair rows and
+move the denominator, which it does in 17% of the generated cases, and the score still never
+falls.
+
+**Where the rest went.** P1 identity and P12 omission follow from P16; P4 is P16 restated. P5
+determinism is P2 in the only case where it could fail, ties. P7 symmetry belongs to the
+comparison surface (§2), as do P9 null neutrality and P10 sign fidelity. P6 coverage honesty is
+an aggregation decision (§7). P17 and P20 are incentives (§8). P18 and P19 are configuration
+hygiene: a name fitting no array raises, and a missing schema raises. Their tests stay. They
+are simply not what distinguishes this metric from any other.
+
+### One example each
+
+Minimal cases, one per property. The scorer produces every figure; the properties themselves
+are enforced over generated documents, not over these.
+
+    P2   gold l:[{k:x},{k:y}]    pred those two rows, reversed     100.00, and one diagnostic split
+    P8   gold l:[{k:x,v:1},{k:y,v:2}]    pred both rows swapped    matched 4 of 4
+    P11  gold {a:1, b:2} and the same document inside {w:{…}}      50.00 and total 2, both ways
+    P13  gold {t:[1,2,3]}    pred {t:[1,2,9]}                      total 4, 50.00
+    P14  explain() renumbers the swap to l[0], l[1]                its 4 matches are grade()'s 4
+    P15  12 rows against a shrunk budget                           matching_exact false, [12]
+         an additionalProperties subtree                           absent from total, listed in skipped
+    P16  gold {a:1, b:2}    pred {a:1, b:9, c:3}                   1 match, 1 wrong, 1 fabricated
+                                                                   — the histogram sums to total
+    P21  one value corrected, over 4000 documents                  never lower; denominator moved in 672
+         rows that share nothing appended, over 3000               never higher; 0.00 stays 0.00
 
 ## 10. Deliberate non-goals
 
@@ -416,3 +515,77 @@ mistyped configuration left the array unordered and the run finished looking fin
 - **No separate credit for declining.** It needs none: abstaining is producing no value, and
   `precision` already distinguishes a model that declines from one that guesses (§5). A
   bonus for silence would be a second, gameable path to a good score.
+
+## 11. Reading a score
+
+**Quote three.** `accuracy` is how much came back, `precision` how much of it can be trusted,
+`f1` whether a guess was worth making. They can rank two predictions oppositely (§8).
+
+**Check four things before comparing providers.**
+
+- **Identical schema on both runs.** `fabricated` keys off the schema (§5), so a wider schema
+  moves the split. The scorer cannot check this for you.
+- **`matching_exact`** — false means an array was paired greedily (§3).
+- **`skipped_open_maps`** — non-empty means part of the document was not scored (§5). A
+  document can report 100.00 with every value inside a skipped subtree wrong.
+- **UNIFIED or not** — §7 specifies a mean of subset means; `cli.py` takes a flat mean over
+  documents, so this repository's output is not UNIFIED.
+
+**What the scorer does not decide.** Document shape sets the weights (§7). Schema leaf
+granularity sets what counts as equal: a paragraph in a leaf is all-or-nothing (§2), a bare
+list is scored without identity at double the cost per error (§8). Both are fixed before the
+grader runs.
+
+## 12. Comparing vendors that fail differently
+
+§8 says what a model should emit. This says what to expect when two of them are wrong equally
+often but in different shapes. One rule produces all of it:
+
+**An error costs one address if its element pairs, and two if it does not.** A paired element
+puts both readings at the same address, so the error is one `misread`. An unpaired element
+shares no address, so gold's leaves are `unfound` *and* the model's are `invented_item`, and
+the union grows by both (§4).
+
+**Same error count, three shapes.** Ten wrong field-values on a ten-row, five-field table;
+only the distribution differs.
+
+| the ten errors | accuracy | recall | precision | f1 | misread | unfound | invented_item | total |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| one wrong field in each of ten rows | 80.00 | 0.800 | 0.800 | 0.800 | 10 | 0 | 0 | 50 |
+| two rows wrong in all five fields | 66.67 | 0.800 | 0.800 | 0.800 | 0 | 10 | 10 | 60 |
+| two rows omitted entirely | 80.00 | 0.800 | 1.000 | 0.889 | 0 | 10 | 0 | 50 |
+
+**`accuracy` is the only one of the three that sees concentration.** Rows one and two have the
+same `matched`, the same gold size and the same asserted size, so every ratio built from those
+is identical; they differ only in `total`, which the ten unpaired addresses inflate. Rank by
+`accuracy` and the spread failure leads by thirteen points; rank by `f1` and they tie.
+`precision` does the opposite job, separating row one from row three where `accuracy` cannot.
+That is the concrete reason §11 says quote three.
+
+**The cost is a step, not a slope.** The same table, varying how much of one row is right:
+
+| of that row's five fields, correct | 0 | 1 | 2 | 3 | 4 | 5 |
+| --- | --- | --- | --- | --- | --- | --- |
+| accuracy | 81.82 | 92.00 | 94.00 | 96.00 | 98.00 | 100.00 |
+| total | 55 | 50 | 50 | 50 | 50 | 50 |
+
+The first correct value in a row is worth ten points and each one after it two, because the
+first is what clears the pairing bar in §3. Row-level pairing failure, not cell-level error,
+is what dominates a bad score.
+
+**A repeated value rescues the pairing.** Identical schema, identical document, the same five
+fields corrupted — the only difference is whether that row still carries the one field that
+repeats down the table:
+
+    last row keeps the shared date  ->  pairs     accuracy 91.67   misread 5            total 60
+    last row also loses the date    ->  no pair   accuracy 81.82   unfound 6, invented 6  total 66
+
+A filing date, fund name or currency code repeated in every row clears the §3 bar on its own,
+halving what a fully wrong row costs. That is a property of the schema, not of the model, and
+it belongs with the pre-comparison checks in §11.
+
+**Magnitudes are shape-dependent.** The directions above are structural. The numbers come from
+a ten-by-five table and will move with table width, row count, and nesting depth.
+
+Not yet asserted. Every figure here is the scorer's, but no property in §9 pins the claim: P22
+covers order-stability of the diagnostics, not distribution-sensitivity of the score.

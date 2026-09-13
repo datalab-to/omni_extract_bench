@@ -812,7 +812,7 @@ def explain(pred: Any, gt: Any, schema: Any,
     A value the prediction has and the ground truth does not is labelled by WHY: `fabricated`
     if the schema offered that slot, `invented field` if it never declared the name, and
     `invented item` for a value under an array element that paired with nothing. See section
-    11 of the spec.
+    4 of the spec.
 
     >>> schema = {"properties": {"a": {"type": "number"}, "b": {"type": "number"},
     ...                          "c": {"type": "number"}}}
