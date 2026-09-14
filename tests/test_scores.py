@@ -5,12 +5,17 @@
 refusing to do damage: never naming a dirty tree after a commit, never rewriting a document
 that has not changed, never calling ordinary curation a bug.
 
-Three that a probe found the hard way, each after the code looked finished:
+The model is versions, not mutation. A score means nothing without knowing which corpus
+produced it, so the corpus version is in the path: adding a document or correcting a ground
+truth makes a different corpus, a different directory, and a fresh run against it. An earlier
+version rescored only what had changed, which made growing the corpus in place cheap -- and a
+benchmark cheap to grow in place is one where a score means "94.2 against whatever the corpus
+was that day".
 
-  * `--force` conflated "what to rescore" with "what to compare against", so the determinism
-    check silently never ran on the one command that most wanted it. It is now two modes.
-  * naming a dirty tree `dirty-<timestamp>` meant every run wrote a new directory, so nothing
-    was ever current and incremental scoring never engaged at all.
+Two things a probe found the hard way, both after the code looked finished:
+
+  * naming a dirty tree `dirty-<timestamp>` meant every run wrote a new directory, so two runs
+    of the same thing never met.
   * the unit of work must be the DOCUMENT. Scoring per prediction while partitioning verdicts
     per document left the journal and the verdict files disagreeing about what was finished.
 
@@ -31,7 +36,8 @@ import pyarrow.parquet as pq
 _ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 _sys.path.insert(0, _ROOT)
 _sys.path.insert(0, _os.path.join(_ROOT, "scripts"))
-from build_scores import KEY, check_dedup, scorer_version, survey       # noqa: E402
+from build_scores import (                                              # noqa: E402
+    KEY, check_dedup, corpus_version, scorer_version, survey)
 
 FAILS = []
 BUILD = _os.path.join(_ROOT, "scripts", "build_scores.py")
@@ -85,7 +91,7 @@ class Bench:
 
     @property
     def dir(self):
-        return self.out / "scores" / "dirty"
+        return next(p for p in (self.out / "scores").glob("*/dirty"))
 
     def summary(self):
         return pq.read_table(self.dir / "summary.parquet").to_pylist()
@@ -126,7 +132,7 @@ try:
 finally:
     shutil.rmtree(tmp)
 
-# ── the incremental contract ──────────────────────────────────────────────────────────
+# ── the corpus is versioned, and a version is answered once ───────────────────────────
 tmp = Path(tempfile.mkdtemp())
 try:
     b = Bench(tmp)
@@ -135,50 +141,64 @@ try:
     b.vendor("brand", {"alpha": {"n": 1, "s": "WRONG"}})
     code, log = b.build()
     report("a first run scores everything", code == 0 and len(b.summary()) == 2, log[-200:])
-    first = b.verdict_files()
+    v1 = b.dir.parent.name
+    report("the corpus version is in the path", len(v1) == 16, v1)
 
     code, log = b.build()
-    report("a second run with nothing changed does nothing",
-           "nothing to do" in log and b.verdict_files() == first, log[-200:])
-    note("the table is a cache of work that cost hours; re-deriving it is the failure")
+    report("the same corpus and scorer are not scored twice",
+           code == 1 and "already have an answer" in log, log[-200:])
+    note("a finished table is the answer; rescoring can only agree or reveal a bug")
 
-    b.doc("beta", {"n": 2, "s": "y"})
-    b.vendor("acme", {"alpha": {"n": 1, "s": "x"}, "beta": {"n": 2, "s": "y"}})
-    b.vendor("brand", {"alpha": {"n": 1, "s": "WRONG"}, "beta": {"n": 2, "s": "y"}})
+    code, log = b.build("--recheck")
+    report("--recheck reproduces it", code == 0 and "0 differ" in log, log[-200:])
+
+    b.doc("beta", {"n": 2, "s": "y"})            # no predictions for it yet
     code, log = b.build()
-    after = b.verdict_files()
-    report("adding a document adds its rows and its verdict file",
-           len(b.summary()) == 3 and "beta.parquet" in after, log[-200:])
-    report("...and does not touch any other document's verdicts",
-           after["alpha.parquet"] == first["alpha.parquet"])
-    note("adding one document must not cost 9.8 CPU-hours of rescoring")
+    v2 = sorted(p.name for p in (b.out / "scores").iterdir())
+    report("adding a document makes a different corpus version",
+           len(v2) == 2 and v1 in v2, str(v2))
+    report("...and the previous version is still there, untouched", (b.out / "scores" / v1).exists())
+    note("versions are comparable within one and visibly incomparable across two")
 
     b.doc("alpha", {"n": 99, "s": "x"})          # the gold was wrong; fix it
     code, log = b.build()
-    third = b.verdict_files()
-    report("correcting a ground truth is not reported as non-determinism",
-           code == 0 and "NON-DETERMINISM" not in log, log[-300:])
-    note("a check that fires on ordinary curation is a check nobody will keep")
-    report("...and rescores only that document",
-           third["alpha.parquet"] != after["alpha.parquet"]
-           and third["beta.parquet"] == after["beta.parquet"])
-    report("the corrected row records the gold it was scored against",
-           len({r["gt_sha256"] for r in b.summary() if r["doc_id"] == "alpha"}) == 1)
+    report("correcting a ground truth makes a different corpus version too",
+           len(list((b.out / "scores").iterdir())) == 3)
+
+    b.doc("alpha", {"n": 1, "s": "x"})           # put it back
+    b.doc("beta", {"n": 2, "s": "y"})
+    code, log = b.build()
+    report("restoring the corpus returns to its own version, already answered",
+           code == 1 and "already have an answer" in log, log[-160:])
+    note("the version is a hash of the contents, so it is a fact rather than a counter")
 
     # ── genuine non-determinism IS caught ─────────────────────────────────────────────
-    rows = b.summary()
-    for r in rows:
-        if r["doc_id"] == "beta":
-            r["accuracy"] = 12.5
-    pq.write_table(pa.Table.from_pylist(rows), b.dir / "summary.parquet")
+    d = b.out / "scores" / v1 / "dirty"
+    rows = pq.read_table(d / "summary.parquet").to_pylist()
+    rows[0]["accuracy"] = 12.5
+    pq.write_table(pa.Table.from_pylist(rows), d / "summary.parquet")
+    b.doc("alpha", {"n": 1, "s": "x"})
+    for extra in (b.corpus / "beta",):
+        shutil.rmtree(extra)
+    b.doc("alpha", {"n": 1, "s": "x"})           # back to exactly v1
     code, log = b.build("--recheck")
     report("--recheck catches a score that changed on identical inputs",
            code == 1 and "NON-DETERMINISM" in log, log[-300:])
     note("this is the check that would have caught the greedy order-sensitivity")
-    report("--recheck writes nothing",
-           any(r["accuracy"] == 12.5 for r in b.summary()))
 finally:
     shutil.rmtree(tmp)
+
+# ── the corpus version is a fact about the corpus ─────────────────────────────────────
+a = {"d1": ("gt1", "s1"), "d2": ("gt2", "s2")}
+report("the same corpus hashes the same, whatever the dict order",
+       corpus_version(a) == corpus_version({"d2": ("gt2", "s2"), "d1": ("gt1", "s1")}))
+report("a changed gold changes the version",
+       corpus_version(a) != corpus_version({**a, "d1": ("gt1-fixed", "s1")}))
+report("a changed schema changes the version",
+       corpus_version(a) != corpus_version({**a, "d1": ("gt1", "s1-fixed")}))
+report("an added document changes the version, even with no predictions for it",
+       corpus_version(a) != corpus_version({**a, "d3": ("gt3", "s3")}))
+note("the version identifies the corpus, not the subset that happened to be covered")
 
 # ── dedup, and the assumption under it ────────────────────────────────────────────────
 tmp = Path(tempfile.mkdtemp())
@@ -188,7 +208,7 @@ try:
     b.doc("small", {"n": 2, "s": "y"})
     for v in ("alpha", "beta"):
         b.vendor(v, {"big": {"n": 1, "s": "x"}, "small": {"n": 9, "s": v}})
-    work, paths, _awaiting = survey(b.corpus, b.vendors)
+    work, paths, _awaiting, _v = survey(b.corpus, b.vendors)
     total = sum(len(p) for p in paths.values())
     distinct = sum(len(w.preds) for w in work)
     report("two vendors emitting identical bytes are scored once",
@@ -200,7 +220,7 @@ try:
            check_dedup(paths) == 0)
 
     (b.vendors / "beta" / "big.json").write_bytes(b'{"n": 1, "s":  "x"}')
-    _w, paths, _a = survey(b.corpus, b.vendors)
+    _w, paths, _a, _v = survey(b.corpus, b.vendors)
     report("a key whose files are NOT identical is caught", check_dedup(paths) == 1)
     note("without this, one vendor's score is attributed to another's prediction")
 

@@ -440,20 +440,40 @@ That number is almost entirely three documents -- 61% of the CPU, and one of the
 single vendor's wall clock, with three workers idle for the last nineteen minutes. Scheduling
 hides this across nine vendors and cannot hide it for one. See `TO_LOOK_AT.md` item 15.
 
-### Incremental, because curation is routine
+### The corpus is versioned, not mutated
 
-A document is the unit of work: scored against every prediction for it, writing one verdict
-file and one batch of summary rows. A document is rescored only when the table does not
-already hold a row for every one of its predictions against exactly this gold and this schema.
+```
+scores/<corpus_version>/<scorer_commit>/summary.parquet
+scores/<corpus_version>/<scorer_commit>/verdicts/<doc_id>.parquet
+```
 
-So adding a document costs one document, and correcting a ground truth costs one document --
-not the 9.8 CPU-hours of re-deriving 5,198 rows nobody touched.
+A score means nothing without knowing which corpus produced it, so the corpus version is in
+the path. It is a sha256 over every document's `(doc_id, gt_sha256, schema_sha256)`, truncated
+to 16 hex characters -- computed from the contents rather than taken from a HuggingFace
+revision, so it works on a corpus that has never been pushed anywhere, which is every corpus
+while it is being built.
 
-**Two modes, and they must stay separate.** The default skips what is current. `--recheck`
-scores everything, compares against the stored table and writes nothing. Skipping identical
-inputs and verifying identical inputs are opposites, and an earlier version folded them into
-one `--force` flag -- which set the comparison baseline to empty and so disabled the
-determinism check on the one command that most wanted it. It passed its own tests.
+Every document counts toward it, including ones no vendor has scored yet: the version
+identifies the corpus, not the subset that happened to be covered.
+
+**Adding a document or correcting a ground truth therefore produces a new corpus, a new
+directory, and a fresh run against it.** Both identifiers are immutable, and a finished table
+is never overwritten -- `--recheck` rescores and compares instead, which is the determinism
+audit and the only way to rescore a completed version.
+
+This replaced an incremental builder that rescored only what had changed, and the reason is
+not that the incremental one was complicated, though it was. It made growing the corpus in
+place cheap, and a benchmark that is cheap to grow in place is one where "scored 94.2" means
+94.2 against whatever the corpus happened to be that day. Versions are the honest model:
+comparable within one, visibly incomparable across two. Growing the benchmark is publishing a
+new version of it.
+
+Rows still carry `gt_sha256` and `schema_sha256`, as evidence rather than as a cache key -- so
+you can check that a table really scored the corpus its path claims.
+
+The cost is real and worth stating: a one-line correction to a single gold rescores the whole
+corpus. That is minutes of fan-out on a cluster and hours on a laptop, so iterate against a
+subset directory -- the corpus contract is just a directory, and a small one is a valid one.
 
 ### The scorer name has to be a real commit
 

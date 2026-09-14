@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Score the benchmark's predictions into one table per scorer version.
 
-    <out>/scores/<scorer_commit>/summary.parquet              one row per scored prediction
-    <out>/scores/<scorer_commit>/verdicts/<doc_id>.parquet    every address, gold and pred
+    <out>/scores/<corpus_version>/<scorer_commit>/summary.parquet
+    <out>/scores/<corpus_version>/<scorer_commit>/verdicts/<doc_id>.parquet
 
 Scores through `omni_extract_bench.bench`, the same path an outside user gets, so there is one
 set of rules whether the predictions came from our run or someone's laptop. This script only
@@ -14,21 +14,22 @@ writes one verdict file, and contributes one batch of summary rows. Scoring per 
 instead means the journal and the verdict files disagree about what is finished, and the parsed
 ground truth -- up to 13 MB -- is re-read once per vendor.
 
-**A row is identified by what determined it:**
+**The corpus is a yardstick, so it does not change underneath a score.** A score means
+nothing unless you know which corpus produced it, so the corpus version is in the path. It is
+a hash over every document's `(doc_id, gt_sha256, schema_sha256)`: adding a document or
+correcting a ground truth produces a different corpus, therefore a different directory,
+therefore a full scoring run against it.
 
-    (doc_id, prediction_id, gt_sha256, schema_sha256)    within a scorer_commit
+That is deliberately not incremental. An earlier version rescored only what had changed, which
+made growing the corpus cheap -- and a benchmark that is cheap to grow in place is one where
+"scored 94.2" means 94.2 against whatever the corpus happened to be that day. Versions are the
+honest model: comparable within one, visibly incomparable across two.
 
-Carrying the gold and schema hashes is what lets a corrected ground truth be a different row
-rather than the same row disagreeing with itself. Without them, ordinary curation reported
-`NON-DETERMINISM` when nothing was non-deterministic, and a check that cries wolf is not a
-check.
+Both identifiers are immutable. A completed table is never overwritten; `--recheck` rescores
+and compares against it instead, which is the determinism audit.
 
-**Two modes, each with one job.** By default a prediction is scored unless the table already
-holds a row for exactly these inputs, so adding a document costs one document. `--recheck`
-scores everything, compares against the stored table and writes nothing -- the determinism
-audit. They are separate because skipping identical inputs and verifying identical inputs are
-opposites: an earlier version folded them into one `--force` flag, which disabled the check on
-the one run that most wanted it.
+Rows still carry `gt_sha256` and `schema_sha256`, as evidence rather than as a cache key: they
+let you check that a table really scored the corpus its path claims.
 
 **One row per distinct prediction, not per vendor.** Two vendors that emitted byte-identical
 extractions have the same score by construction -- 738 of 5,936 (12.4%), 360 of those shared
@@ -136,13 +137,14 @@ def survey(corpus: Path, vendors: Path):
     rows against a largest of 26,725 -- so a pool fed any other way finishes its cheap work
     and waits on one straggler.
 
-    Also returns the documents no vendor has a prediction for. Adding a document to the
+    Also returns the corpus version, and the documents no vendor has a prediction for. Adding a document to the
     benchmark and having it scored are separate events -- the corpus grows first, and the
     vendors run later -- so this is the normal state for a newly added document, not an error.
     It still has to be visible: otherwise a document sits unscored indefinitely and the run
     reports only the documents it happened to cover.
     """
     atlas = {r["doc_id"]: r for r in pq.read_table(corpus / "corpus.parquet").to_pylist()}
+    hashes = {d: (sha(corpus, d, GROUND_TRUTH), sha(corpus, d, SCHEMA)) for d in sorted(atlas)}
     paths = defaultdict(list)
     for vd in sorted(p for p in vendors.iterdir() if p.is_dir()):
         for r in pq.read_table(vd / "predictions.parquet").to_pylist():
@@ -154,14 +156,31 @@ def survey(corpus: Path, vendors: Path):
     for (doc_id, pid), files in paths.items():
         by_doc[doc_id].append((pid, str(files[0])))
 
-    def sha(doc_id, name):
-        return hashlib.sha256((corpus / doc_id / name).read_bytes()).hexdigest()
-
-    work = [Work(doc_id, sha(doc_id, GROUND_TRUTH), sha(doc_id, SCHEMA),
-                 tuple(sorted(preds)), atlas[doc_id]["max_array_rows"])
+    work = [Work(doc_id, *hashes[doc_id], tuple(sorted(preds)),
+                 atlas[doc_id]["max_array_rows"])
             for doc_id, preds in by_doc.items()]
     awaiting = sorted(set(atlas) - set(by_doc))
-    return sorted(work, key=lambda w: -w.cost), paths, awaiting
+    return sorted(work, key=lambda w: -w.cost), paths, awaiting, corpus_version(hashes)
+
+
+def sha(corpus: Path, doc_id: str, name: str) -> str:
+    """Hash one of a document's files. From the bytes, not from parsing them."""
+    return hashlib.sha256((corpus / doc_id / name).read_bytes()).hexdigest()
+
+
+def corpus_version(hashes: dict) -> str:
+    """Identify the corpus by its contents.
+
+    Every document counts, including ones no vendor has scored yet: the version identifies the
+    corpus, not the subset that happened to be covered.
+
+    Computed here rather than taken from a HuggingFace revision so that it works on a corpus
+    that has never been pushed anywhere, which is every corpus while it is being built.
+    """
+    digest = hashlib.sha256()
+    for doc_id, (gt, schema) in sorted(hashes.items()):
+        digest.update(f"{doc_id}\0{gt}\0{schema}\0".encode())
+    return digest.hexdigest()[:16]
 
 
 def stored(out: Path) -> dict:
@@ -259,7 +278,9 @@ def check_dedup(paths) -> int:
 
 
 def recheck(out: Path, work: list, corpus: Path, jobs: int) -> int:
-    """Score everything and compare against the stored table. Writes nothing.
+    """Rescore this corpus with this scorer and compare against the stored answer.
+
+    The only way to rescore a finished table, and it writes nothing.
 
     A row reaching the comparison was produced from identical prediction bytes, gold, schema
     and code, so a different number means the scorer is not a function of its inputs. That is
@@ -296,23 +317,24 @@ def main():
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--recheck", action="store_true",
-                    help="score everything and compare against the stored table; writes nothing")
+                    help="rescore and compare against the stored table; writes nothing")
     ap.add_argument("--no-verdicts", action="store_true")
     ap.add_argument("--check-dedup", action="store_true",
                     help="assert that predictions sharing a key are byte-identical, and stop")
     args = ap.parse_args()
 
     repo = Path(__file__).resolve().parent.parent
-    work, paths, awaiting = survey(args.corpus, args.vendors)
+    work, paths, awaiting, corpus_v = survey(args.corpus, args.vendors)
     if args.check_dedup:
         return 1 if check_dedup(paths) else 0
 
     name, stamp = scorer_version(repo)
-    stamp.update(environment())
-    out = args.out / SCORES_DIR / name
+    stamp.update({"corpus_version": corpus_v, **environment()})
+    out = args.out / SCORES_DIR / corpus_v / name
     total = sum(len(w.preds) for w in work)
+    print(f"  corpus {corpus_v}, scorer {name[:16]}")
     print(f"  {sum(len(v) for v in paths.values())} predictions -> {total} distinct "
-          f"over {len(work)} documents, scorer {name[:16]}")
+          f"over {len(work)} documents")
     if awaiting:
         print(f"  {len(awaiting)} document(s) in the corpus have no prediction from any "
               f"vendor yet: {', '.join(awaiting[:5])}"
@@ -321,22 +343,19 @@ def main():
     if args.recheck:
         return recheck(out, work, args.corpus, args.jobs)
 
-    # A document needs scoring unless the table already holds a row for every one of its
-    # predictions, against exactly this gold and schema.
-    have = stored(out)
-    todo = [w for w in work
-            if not all((w.doc_id, pid, w.gt_sha256, w.schema_sha256) in have
-                       for pid, _path in w.preds)]
-    keep = [r for k, r in have.items()
-            if k[0] not in {w.doc_id for w in todo}]
-    if have:
-        print(f"  {len(keep)} rows still current, {len(todo)} documents to score")
-    if not todo:
-        print("  nothing to do")
-        return 0
+    # A finished table for this corpus and this scorer is the answer, and there is only one.
+    # Rescoring it can only agree or reveal a bug, and `--recheck` is how you ask.
+    if (out / SUMMARY).exists():
+        print(f"  {out / SUMMARY} exists; this corpus and this scorer already have an answer.\n"
+              f"  To verify it reproduces: --recheck", file=sys.stderr)
+        return 1
 
     out.mkdir(parents=True, exist_ok=True)
     (out / VERDICTS).mkdir(exist_ok=True)
+
+    # A run is hours, so a crash must not cost all of it. The journal is within-run only: the
+    # directory already pins the corpus and the scorer, so anything in it was produced by
+    # exactly these inputs.
     journal = out / f"{SUMMARY}.partial.jsonl"
     done = {}
     if journal.exists():
@@ -345,30 +364,30 @@ def main():
                 r = json.loads(line)
                 done.setdefault(r["doc_id"], []).append(r)
         print(f"  resuming: {len(done)} documents already scored")
-        todo = [w for w in todo if w.doc_id not in done]
+    todo = [w for w in work if w.doc_id not in done]
 
-    fresh = [r for rows in done.values() for r in rows]
+    rows = [r for batch in done.values() for r in batch]
     t0 = time.monotonic()
     with journal.open("a") as log:
-        for n, (w, rows, verds) in enumerate(
+        for n, (w, fresh, verds) in enumerate(
                 results(todo, args.corpus, args.jobs, not args.no_verdicts), 1):
             write_verdicts(out, w.doc_id, verds)
-            for r in rows:
+            for r in fresh:
                 log.write(json.dumps(r) + "\n")
             log.flush()
-            fresh.extend(rows)
+            rows.extend(fresh)
             if n % 50 == 0 or n == len(todo):
                 rate = n / (time.monotonic() - t0)
                 print(f"  {n}/{len(todo)} documents  {rate:.2f}/s  "
                       f"eta {(len(todo) - n) / rate / 60:.0f}m", flush=True)
 
-    write_summary(out, keep + fresh, stamp)
+    write_summary(out, rows, stamp)
     journal.unlink(missing_ok=True)
     nverd = len(list((out / VERDICTS).glob("*.parquet")))
     vsize = sum(f.stat().st_size for f in (out / VERDICTS).glob("*.parquet")) / 1e6
     print(f"  {VERDICTS}/: {nverd} files, {vsize:.1f} MB")
 
-    failed = [r for r in fresh if r["kind"] == "failed"]
+    failed = [r for r in rows if r["kind"] == "failed"]
     for r in failed[:10]:
         print(f"  NOT SCORED {r['doc_id'][:46]}: {r['error'][:110]}", file=sys.stderr)
     return 1 if failed else 0
