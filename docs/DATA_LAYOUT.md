@@ -365,8 +365,8 @@ this week came from unwrap rules guessing wrong; this removes the category.
 
 ### `scores/<scorer_commit>.parquet`
 
-Key: `(doc_id, prediction_id, scorer_commit)`. Immutable — one file per scorer version, never
-overwritten. That gives version history for free in a store without versioning, and makes
+Key: `(doc_id, prediction_id)` within a file; `scorer_commit` is the filename. Immutable
+— one file per scorer version, never overwritten. That gives version history for free in a store without versioning, and makes
 "did the scorer change this?" a file listing rather than a query.
 
 The filename is not the whole provenance. Carry it in the file: platform, numpy and scipy
@@ -383,7 +383,83 @@ same prediction_id AND same scorer_commit, different score     non-determinism: 
 
 That last line is a test you get for nothing. It would have caught the greedy
 order-sensitivity automatically, instead of it surfacing as one document quietly recording
-99.2316, then 99.2301, then 99.2328 across a single session with nothing explaining why.
+99.2316, then 99.2301, then 99.2328 across a single session with nothing explaining why. It is
+run deliberately with `--recheck`, which rescores and diffs against a stored table rather than
+replacing it.
+
+### One row per distinct prediction, not per vendor
+
+A score is a function of the prediction's bytes and the scorer's code, so two vendors that
+emitted byte-identical extractions have the same score by construction. **5,936 predictions
+are 5,198 distinct `(doc_id, prediction_id)` pairs — 738 scorings, 12.4%, that would be
+computing a known answer twice.** 360 of those keys are held by more than one vendor.
+
+That is 5,198 rather than the 5,016 distinct `prediction_id` values counted earlier, because
+48 ids recur under different documents and the pair splits them back apart.
+
+Which vendors a row belongs to is not a column. It is recovered by joining the vendor atlases
+on `(doc_id, prediction_id)`, where that fact already lives.
+
+The dedup rests on one assumption: files sharing a key are byte-identical. That is what
+`prediction_id` means, but it is the kind of assumption that rots quietly, so `--check-dedup`
+asserts it across the tree instead of trusting it. Measured: 0 violations.
+
+### What is not in the table
+
+**Predictions that are absent get no row.** The run produced four. They have no file, so no
+bytes, so no `prediction_id` — there is nothing to key them on. Absence is a fact about a
+vendor's coverage and already shows as a missing row in that vendor's atlas. A scores row for
+a prediction that does not exist would put it in the one table meant to describe predictions
+that do.
+
+**Metrics on a non-graded row are null, not zero.** 242 of the 5,919 outcomes in the run were
+unusable output — error payloads, timeouts, empty 200s. The scorer produced no number for
+them and the table does not invent one.
+
+This has a sharp edge worth stating: `mean(accuracy)` without filtering on `kind` silently
+ignores 4.1% of the corpus and overstates every vendor. The alternative — storing 0.0 — would
+bake an interpretation into the table and be just as silent for anyone who disagreed with it.
+`kind` is non-null on every row so a correct aggregation has something to stand on.
+
+### Columns
+
+Every scalar the scorer returns, not the twelve the first run happened to keep: a column is
+about eight bytes and re-running to recover a missing one costs hours, so the asymmetry only
+points one way. The whole table is **~600 KB for 5,198 rows**.
+
+`matching_exact` says *that* the metric approximated; `approximated` and `skipped_open_maps`
+say *where*. Those are the lists you want when a number looks wrong, and they are empty on
+almost every row.
+
+### What it costs
+
+One vendor, 660 documents, four workers: **1,161s wall, 4,484s CPU.** Nine vendors, minus the
+12.4% the dedup avoids, is **~9.8 CPU-hours, ~2.5h wall at `-j4`**.
+
+That number is almost entirely three documents -- 61% of the CPU, and one of them is 97% of a
+single vendor's wall clock, with three workers idle for the last nineteen minutes. Scheduling
+hides this across nine vendors and cannot hide it for one. See `TO_LOOK_AT.md` item 15.
+
+### The scorer name has to be a real commit
+
+A working tree with edits cannot be named by a commit without the name lying, and the lie is
+not cosmetic — the whole value of the key is that `same prediction_id AND same scorer_commit,
+different score` means a bug. Two runs from two different dirty trees under one commit would
+trip that check forever while nothing was wrong.
+
+So a dirty tree is named `dirty-<timestamp>` instead, which cannot be mistaken for a commit
+and does not claim to be reproducible. **Untracked files count as dirty**: a stray module in
+`omni_extract_bench/` changes what gets imported, and `git diff` cannot see it.
+
+### Crash recovery
+
+Hours of compute with the table written only at the end is hours to lose to one crash, and
+`scores` is the one thing here nothing else can reproduce cheaply. Each row is appended to a
+journal as it lands; the parquet is written once the set is complete.
+
+Only a clean tree resumes — a dirty one gets a fresh name each run and starts over. That is
+intended: resuming after an edit would merge rows from two different codebases into one table,
+which is the corruption everything above exists to prevent.
 
 ---
 
@@ -436,3 +512,29 @@ form, which turns a nicety into the reason the id means anything.
 Unchanged by contact: flat filenames (660/660 round-tripped, including the 28 with spaces and
 brackets), and `verify` catching all three drift modes -- a row with no file, a file with no
 row, and a **one-byte edit**, which is the one nothing else would notice.
+
+### What building the scores writer changed
+
+Probed the same way, and it moved three decisions.
+
+**`unwrap` became an assertion.** The plan was to carry the scorer's envelope-peeling across.
+But in this layout both builders store the bare extraction, so an envelope arriving at the
+scorer means the builder that wrote it is wrong -- and unwrapping it silently would hide that
+while producing a score under a `prediction_id` that hashed the wrapper. Two bugs came from
+unwrap rules guessing wrong. A rule that can guess wrong is now a check that cannot.
+
+Measured first, because the assertion is only safe if nothing legitimately trips it: **0 of
+660 schemas declare a top-level `result` property, and 0 ground truths are wrapped.** The one
+case where `result` is a real field therefore has no example in the corpus, which is exactly
+why it is a test rather than an assumption.
+
+**Importing the scorer's `unwrap` pulled in boto3 and huggingface_hub**, because scoring and
+downloading live in one file. The writer scores a local tree and should need neither. The rule
+it follows instead: reading this layout depends on nothing that fetches it.
+
+**Dedup turned out to be worth doing**, and was not in the plan. 738 of 5,936 scorings (12.4%)
+are a second vendor's byte-identical copy, 360 of those keys shared across vendors.
+
+Unchanged by contact: the key, the immutability rule, and the non-determinism check -- which
+reproduced 200 documents exactly across a rerun, and agreed between the serial and pooled
+paths.

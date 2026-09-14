@@ -469,3 +469,30 @@ is a proxy's, not Anthropic's or Google's.
 **Next:** retry the 185 under whatever policy item 13 settles on, then rebuild the board.
 Gemini stands to move ~13 points and would reorder the middle of the table. Until then
 this is a coverage measurement as much as a quality one, and should be reported as both.
+
+---
+
+## 15. Three documents are 61% of the scoring cost, and one is 94% of a vendor's wall clock
+
+**Known so far:** measured building the scores writer. One vendor, all 660 documents,
+four workers: **1,161s wall, 4,484s CPU.** The three largest documents are 61% of that CPU
+and the remaining 657 together are 1,760s.
+
+`hard__Municipal_continuing_disclosure...` alone took **1,126s** -- so a single document is
+97% of the 1,161s wall clock, and for the last 19 minutes three of the four workers sat idle
+with nothing left in the queue.
+
+Extrapolated: nine vendors, minus the 12.4% the dedup avoids, is **~9.8 CPU-hours, ~2.5h wall
+at `-j4`**.
+
+**Next:** this is the same three documents as item 6, now on the exact path rather than
+greedy. Two things follow.
+
+Scheduling hides it at nine vendors and cannot hide it at one: there are nine copies of each
+giant, so a full run keeps the pool busy, but rescoring a single vendor is bounded below by
+one document no matter how many cores are available.
+
+It also sharpens item 7. The pathological-memory case and the pathological-time case are the
+same documents, and the exact path is what they now take. Before optimising `_greedy`'s
+memory, check whether the exact path's *time* on these three is the more pressing half --
+1,126s for one document is a number nobody will tolerate in CI.
