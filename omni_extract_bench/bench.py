@@ -40,8 +40,8 @@ from typing import Iterable, Iterator, NamedTuple
 
 from . import corpus as corpus_atlas
 from .corpus import GROUND_TRUTH, SCHEMA, Stale
-from .dialects import resolve_refs, strip_benchmark_keys
-from .prediction_io import usable
+from .harness.dialects import resolve_refs, strip_benchmark_keys
+from .harness.prediction_io import usable
 from .score import grade, show
 
 class Document(NamedTuple):

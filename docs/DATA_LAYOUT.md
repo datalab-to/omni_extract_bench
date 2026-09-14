@@ -11,11 +11,11 @@ about where the bytes live.
 
 ```
 HuggingFace (private)                 R2  datalab-training-pipelines
-  corpus.parquet                        vendors/<vendor>/predictions.parquet
+  corpus.parquet   <- the atlas         vendors/<vendor>/predictions.parquet
   metadata.parquet                      vendors/<vendor>/<doc_id>.json
-  tags.parquet                          scores/<scorer_commit>.parquet
-  thumbnails.parquet
-  <doc_id>/
+  tags.parquet                          scores/<corpus_version>/<scorer_commit>/
+  thumbnails.parquet                        summary.parquet
+  <doc_id>/                                 verdicts/<doc_id>.parquet
       ground_truth.json
       schema.json
       document.pdf
@@ -33,15 +33,22 @@ This is the distinction worth holding, because it decides how much care each one
 
 | table | relationship to truth | cost to rebuild |
 | --- | --- | --- |
-| `corpus.parquet` | a **view** of the document files | seconds |
-| `<vendor>.parquet` | a **view** of the prediction files | minutes |
-| `scores/*.parquet` | **primary — nothing else holds it** | *hours of compute* |
+| `corpus.parquet` | **the benchmark's definition** | seconds, but it destroys curation |
+| `predictions.parquet` | a **view** of the prediction files | minutes |
+| `scores/.../summary.parquet` | **primary — nothing else holds it** | *hours of compute* |
 
-Corpus and vendor tables are caches. If one is wrong, delete it and rebuild; a builder bug is
-never data loss. **Scores are not.** Nothing else in the system contains them — lose one and
-you re-run the scorer over 5,940 documents.
+**The corpus atlas is not a cache.** It was, once, and this table used to say so. Since it
+became the statement of which documents are in the benchmark, re-deriving it from the tree is
+a destructive act: it resurrects every document curation removed. That is why `build-corpus`
+refuses to overwrite one, and why `--refresh` -- which re-hashes only the rows already listed
+-- is a separate verb.
 
-So: rebuild the first two freely, and never overwrite the third.
+The vendor atlas still is a cache. Delete it and rebuild; a builder bug there is never data
+loss.
+
+**Scores are neither.** Nothing else in the system contains them — lose one and you re-run the
+scorer over the whole corpus. They are never overwritten: a finished table is that corpus and
+that scorer's answer, and `--recheck` compares against it rather than replacing it.
 
 ---
 
@@ -363,7 +370,7 @@ The reason to do it is that a file holding only the extraction has nothing to un
 `prediction_id` is a plain hash with no rule to agree on and no schema to consult. Two bugs
 this week came from unwrap rules guessing wrong; this removes the category.
 
-### `scores/<scorer_commit>.parquet`
+### `scores/<corpus_version>/<scorer_commit>/`
 
 Key: `(doc_id, prediction_id)` within a file; `scorer_commit` is the filename. Immutable
 — one file per scorer version, never overwritten. That gives version history for free in a store without versioning, and makes

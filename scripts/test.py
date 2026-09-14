@@ -18,7 +18,7 @@ from pathlib import Path
 
 from huggingface_hub import snapshot_download
 
-from omni_extract_bench.dialects import resolve_refs
+from omni_extract_bench.harness.dialects import resolve_refs
 from omni_extract_bench.score import grade, explain
 
 REPO = "datalab-to/omni_extract_bench"
