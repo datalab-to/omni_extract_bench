@@ -14,7 +14,7 @@ import sys
 # run from anywhere: `python tests/x.py` puts tests/ on the path, not the repo root
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.dialects import (  # noqa: E402
+from omni_extract_bench.harness.dialects import (  # noqa: E402
     cost_from_response,
     parse_model_json,
     resolve_refs,
