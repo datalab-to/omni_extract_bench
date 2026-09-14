@@ -229,6 +229,30 @@ def main(argv=None):
     d.add_argument("--schema-dir", required=True)
     d.set_defaults(fn=cmd_score_dir)
 
+    # The corpus-level commands. These read the benchmark layout -- a directory per document
+    # holding ground_truth.json and schema.json -- rather than the flat per-type directories
+    # the three commands above take.
+    from . import run as _run
+
+    n = sub.add_parser("bench", help="score a directory of predictions against a corpus")
+    n.add_argument("--predictions", required=True, help="directory of <doc_id>.json")
+    n.add_argument("--corpus", help="default: download the published benchmark")
+    n.add_argument("--out", help="write summary.parquet and verdicts/ here")
+    n.add_argument("--no-verdicts", action="store_true",
+                   help="skip the per-address table; roughly halves the time")
+    n.set_defaults(fn=_run.cmd_bench)
+
+    e = sub.add_parser("explain", help="show every address for one document")
+    e.add_argument("--predictions", required=True)
+    e.add_argument("--doc", required=True)
+    e.add_argument("--corpus")
+    e.add_argument("--all", action="store_true", help="include addresses that matched")
+    e.set_defaults(fn=_run.cmd_explain)
+
+    v = sub.add_parser("verify", help="check a corpus directory against the contract")
+    v.add_argument("--corpus", required=True)
+    v.set_defaults(fn=_run.cmd_verify)
+
     b = sub.add_parser("leaderboard", help="score every provider under a root directory")
     b.add_argument("--pred-root", required=True)
     b.add_argument("--gt-dir", required=True)
