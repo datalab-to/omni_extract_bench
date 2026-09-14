@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """What must be true of the path-based scorer (`score`), stated as properties.
 
-The equivalence harness (`test_paths_equivalence.py`) asks "does this agree with the scorer
-it replaces, and where it disagrees, why". This file asks the independent question: is the
-path scorer correct on its own terms? A rewrite that merely reproduces its predecessor
-inherits its predecessor's bugs -- three denominator defects and an order-sensitivity bug
-were found in that predecessor while this module was being written -- so agreement is
-evidence, not proof.
+This file asks whether the scorer is correct on its own terms, which is the only question
+left now that the predecessor it replaced is gone. There was an equivalence harness beside
+this one, comparing the two implementations; it was deleted with `grading.py`, and it was
+never the load-bearing evidence anyway -- a rewrite that merely reproduces its predecessor
+inherits its predecessor's bugs, and three denominator defects and an order-sensitivity bug
+were found in that predecessor while this module was being written. Agreement was evidence.
+These properties are the proof.
 
-Every check below names the property in words. Run: python3 tests/test_paths_properties.py
+Every check below names the property in words. Run: python3 tests/test_score_properties.py
 """
 import copy
 import itertools
@@ -20,7 +21,7 @@ import tracemalloc
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench import matching as OM                           # noqa: E402
-from omni_extract_bench.grading import cmp_leaf, fair_grade, canon_key            # noqa: E402
+from omni_extract_bench.values import cmp_leaf, canon_key                         # noqa: E402
 from omni_extract_bench.score import (                          # noqa: E402
     node_key, format_node, _find_arrays, KEY, INDEX,
     grade, flatten, align, explain)
@@ -190,17 +191,17 @@ for s in range(200):
 report("reordering every array in a correct answer still scores 100", ok, detail)
 
 # rows whose only distinguishing content is NESTED -- the case the paired walker fails
-bad_path = bad_tree = 0
+bad_path = 0
 for s in range(200):
     rnd = random.Random(9600 + s)
     rows = [{"tag": "same", "d": {f"d{i}": rand_scalar(rnd) for i in range(3)}}
             for _ in range(rnd.randint(2, 4))]
     gold, perm = {"rows": rows}, {"rows": random.Random(s + 1).sample(rows, len(rows))}
     bad_path += ACC(perm, gold)["accuracy"] < 99.99
-    bad_tree += fair_grade(copy.deepcopy(perm), copy.deepcopy(gold), {})["leaf_accuracy"] < 99.99
 report("rows distinguished only by nested content are still order-free", bad_path == 0,
        f"failed {bad_path}/200")
-note(f"for comparison, grading.fair_grade fails this on {bad_tree}/200")
+note("these rows share every top-level value, so only the nested object separates them -- a "
+     "scorer that paired on the shallow fields alone would mis-pair all 200")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 print("\nFIXING A WRONG VALUE NEVER LOWERS THE SCORE")
@@ -483,14 +484,12 @@ NEST_PRED = {"segments": [{"name": "Devices", "quarters": [9.0, 7.5, 8.0]},
                           {"name": "Cloud", "quarters": [10.5, 12.0, 99.9]},
                           {"name": "Other", "quarters": [1.0]}]}
 rn = grade(copy.deepcopy(NEST_PRED), copy.deepcopy(NEST_GOLD), NEST_SCHEMA)
-tn = fair_grade(copy.deepcopy(NEST_PRED), copy.deepcopy(NEST_GOLD), NEST_SCHEMA)
 report("8 gold leaves + 3 spurious = denominator 11, with 7 matched",
        (rn["total"], rn["matched"]) == (11, 7),
        f"got {rn['matched']}/{rn['total']}")
-report("scores 63.64, and the paired walker agrees",
-       abs(rn["accuracy"] - 700 / 11) < 1e-9
-       and abs(rn["accuracy"] - tn["leaf_accuracy"]) < 1e-9,
-       f"path {rn['accuracy']:.4f}, tree {tn['leaf_accuracy']:.4f}")
+report("scores 63.64",
+       abs(rn["accuracy"] - 700 / 11) < 1e-9,
+       f"got {rn['accuracy']:.4f}, want {700 / 11:.4f}")
 report("every address it found, it read correctly: the loss is entirely structural",
        abs(rn["read_right"] - 1.0) < 1e-9
        and abs(rn["found"] * rn["read_right"] - rn["accuracy"] / 100) < 1e-9,
@@ -637,51 +636,10 @@ report("every price the matcher paid is a price the score honours",
        f"{mismatched} of {checked} chosen pairs delivered something other than their price")
 note(f"checked {checked} chosen pairs across 400 documents nested up to three levels")
 
-print("\nROW COUNTS AGREE WITH THE SCORER THIS REPLACES")
-# `fair_grade` finds top-level arrays via `normalize.arrays_of(schema)`, so its row counts are
-# only defined when a schema is supplied. `grade` derives them from the data. Compared
-# here on equal footing: the paired walker is handed a schema naming every array it should see.
-def schema_for(*docs):
-    """Declare every top-level array either side carries, so neither scorer is blindfolded."""
-    props = {}
-    for d in docs:
-        for k, v in d.items():
-            props.setdefault(k, {"type": "array"} if isinstance(v, list) else {})
-            if isinstance(v, list):
-                props[k] = {"type": "array"}
-    return {"properties": props}
-
-
-def drop_some(node, rnd):
-    """A prediction derived from gold: drops rows and corrupts values, keeps the shape."""
-    if isinstance(node, dict):
-        return {k: drop_some(v, rnd) for k, v in node.items()}
-    if isinstance(node, list):
-        return [drop_some(x, rnd) for x in node if rnd.random() > 0.3]
-    return rand_scalar(rnd) if rnd.random() < 0.3 else node
-
-
-diffs = []
-for s_ in range(400):
-    rnd = random.Random(10800 + s_)
-    gold = rand_doc(rnd)
-    for pred in (copy.deepcopy(gold), drop_some(copy.deepcopy(gold), rnd), {}):
-        sch = schema_for(gold, pred)
-        a = fair_grade(copy.deepcopy(pred), copy.deepcopy(gold), sch)
-        b = grade(copy.deepcopy(pred), copy.deepcopy(gold), sch)
-        # The paired walker counts rows in TOP-LEVEL arrays only. This scorer counts them at
-        # every depth, so it can only ever see more, never fewer, and must agree exactly
-        # wherever the document has no array below the top.
-        if (b["gt_rows"] < a["gt_rows"] or b["pred_rows"] < a["pred_rows"]
-                or b["matched_rows"] < a["matched"]):
-            diffs.append((s_, (a["gt_rows"], a["pred_rows"], a["matched"]),
-                          (b["gt_rows"], b["pred_rows"], b["matched_rows"])))
-report("row counts are never lower than the paired walker's top-level-only counts",
-       not diffs, f"{len(diffs)} disagreements, first 3: {diffs[:3]}")
-
-# Counting at every depth is the point: a table one level down is still a table. The paired
-# walker counts the WRAPPER row and reports recall on that, which is why it says a document
-# missing 7 of its 10 rows returned everything.
+print("\nROWS ARE COUNTED AT EVERY DEPTH")
+# A table one level down is still a table. Counting only top-level arrays counts the WRAPPER
+# row and reports recall on that, which would call a document missing 7 of its 10 rows
+# complete.
 deep_g = {"outer": [{"rows": [{"a": i} for i in range(10)]}]}
 deep_p = {"outer": [{"rows": [{"a": i} for i in range(3)]}]}
 deep = grade(deep_p, deep_g)
@@ -758,13 +716,12 @@ report("invented fields are charged even with no array in the document",
 und_g = {"rows": [{"x": 1}]}
 und_p = {"rows": [{"x": 1}], "extra": [{"y": 2}, {"y": 3}]}
 u_sch = {"properties": {"rows": {"type": "array"}}}
-u_tree = fair_grade(copy.deepcopy(und_p), copy.deepcopy(und_g), u_sch)
 u_path = grade(copy.deepcopy(und_p), copy.deepcopy(und_g), u_sch)
 report("rows returned under an undeclared key are counted as predicted rows",
-       u_path["pred_rows"] == 3 and u_tree["pred_rows"] == 1,
-       f"path {u_path['pred_rows']} (want 3), tree {u_tree['pred_rows']} (want 1)")
-note(f"both charge the undeclared leaves in the score (tree {u_tree['leaf_accuracy']:.2f}, "
-     f"path {u_path['accuracy']:.2f}), but only the path scorer counts them as rows")
+       u_path["pred_rows"] == 3,
+       f"got {u_path['pred_rows']}, want 3")
+note(f"their leaves are charged in the score too ({u_path['accuracy']:.2f}); a key the schema "
+     f"never declared is still something the model asserted")
 
 # The paired walker's row counts COLLAPSE TO ZERO without a schema; this scorer's do not,
 # and it now refuses to run without one at all (P19). The footgun this used to describe --
@@ -772,19 +729,14 @@ note(f"both charge the undeclared leaves in the score (tree {u_tree['leaf_accura
 # `--schema-dir` reported recall 0.00 for every document while still printing a score -- is
 # fixed: a missing schema is a reported failure, covered by tests/test_cli.py.
 g_rc, p_rc = {"rows": [{"x": 1}, {"x": 2}]}, {"rows": [{"x": 1}]}
-no_sch = fair_grade(copy.deepcopy(p_rc), copy.deepcopy(g_rc), {})
 report("this scorer's row counts do not depend on what the schema declares",
        ACC(p_rc, g_rc)["recall"] == 0.5,
        f"recall {ACC(p_rc, g_rc)['recall']}")
-note(f"paired walker with no schema reports gt_rows={no_sch['gt_rows']}, "
-     f"recall={no_sch['recall']:.2f} for a document with 2 gold rows")
 
-# the one case they are EXPECTED to differ on: a row with no leaves at all
+# a row with no leaves at all is not a row here: it has no address to be right or wrong at
 er = ACC({"rows": [{}, {"x": 1}]}, {"rows": [{}, {"x": 1}]})
-et = fair_grade({"rows": [{}, {"x": 1}]}, {"rows": [{}, {"x": 1}]},
-                {"properties": {"rows": {"type": "array"}}})
-note(f"an empty row {{}} counts as a row to the paired walker ({et['gt_rows']}) "
-     f"and not to the path scorer ({er['gt_rows']}) -- it has no leaves to address")
+report("an empty row {} is not counted as a row", er["gt_rows"] == 1,
+       f"gt_rows={er['gt_rows']}, want 1")
 
 print("\nAN APPROXIMATE SCORE SAYS SO")
 restore = OM.force_approximate()            # shrink the budget, whichever solver is active
@@ -834,11 +786,9 @@ report("a {value, citations} envelope around a field is stripped",
        abs(ACC(cited, plain)["accuracy"] - 100) < 1e-9,
        f"got {ACC(cited, plain)['accuracy']:.2f}")
 res = {"result": plain}
-report("an outer {\"result\": ...} wrapper is NOT the scorer's job, in either scorer",
-       abs(ACC(res, plain)["accuracy"]
-           - fair_grade(copy.deepcopy(res), copy.deepcopy(plain), {})["leaf_accuracy"]) < 1e-9,
-       f"path {ACC(res, plain)['accuracy']:.2f} vs "
-       f"tree {fair_grade(copy.deepcopy(res), copy.deepcopy(plain), {})['leaf_accuracy']:.2f}")
+report("an outer {\"result\": ...} wrapper is NOT the scorer's job -- it is charged",
+       ACC(res, plain)["accuracy"] < 100.0,
+       f"got {ACC(res, plain)['accuracy']:.2f}; unwrapping envelopes belongs in prediction_io")
 side = {"a": 1, "a_citations": ["p1"], "a_meta": {"conf": 0.9}, "rows": [{"x": 5}]}
 report("per-field _citations/_meta sidecars are not charged as spurious leaves",
        abs(ACC(side, plain)["accuracy"] - 100) < 1e-9,
@@ -864,9 +814,6 @@ report("a predicted key that is not exactly gold's is charged as invented",
        (r_key["matched"], r_key["total"]) == (1, 3),
        f"got {r_key['matched']}/{r_key['total']}, want 1/3 "
        f"(total matches; net missing; Net spurious)")
-report("the path scorer and the paired walker agree on literal key matching",
-       abs(r_key["accuracy"]
-           - fair_grade(copy.deepcopy(KEY_P), copy.deepcopy(KEY_G), {})["leaf_accuracy"]) < 1e-9)
 
 # OPEN MAPS ARE NOT EVALUATED. `additionalProperties` asks the extractor to invent the keys by
 # reading them off the page; the strict dialect drops the keyword before the schema reaches a
@@ -884,16 +831,12 @@ for label, om_p in (("identical", copy.deepcopy(OM_G)),
                     ("map omitted entirely", {"invoice_no": "INV-1"}),
                     ("map fabricated", {"invoice_no": "INV-1", "groups": {"Nonsense": ["x"]}})):
     r_om = grade(om_p, copy.deepcopy(OM_G), OM_SCH)
-    t_om = fair_grade(copy.deepcopy(om_p), copy.deepcopy(OM_G), OM_SCH)
     report(f"open map, {label}: only the declared field is scored",
-           (r_om["total"], r_om["matched"]) == (1, 1)
-           and abs(r_om["accuracy"] - t_om["leaf_accuracy"]) < 1e-9,
-           f"path {r_om['matched']}/{r_om['total']}, tree {t_om['leaf_accuracy']:.2f}")
+           (r_om["total"], r_om["matched"]) == (1, 1),
+           f"got {r_om['matched']}/{r_om['total']}")
 report("the skip is reported, not silent",
-       grade(copy.deepcopy(OM_G), copy.deepcopy(OM_G), OM_SCH)["skipped_open_maps"] == ["groups"]
-       and fair_grade(copy.deepcopy(OM_G), copy.deepcopy(OM_G), OM_SCH)["ignored_open_maps"] == 1,
-       f"path {grade(copy.deepcopy(OM_G), copy.deepcopy(OM_G), OM_SCH)['skipped_open_maps']}, "
-       f"tree {fair_grade(copy.deepcopy(OM_G), copy.deepcopy(OM_G), OM_SCH)['ignored_open_maps']}")
+       grade(copy.deepcopy(OM_G), copy.deepcopy(OM_G), OM_SCH)["skipped_open_maps"] == ["groups"],
+       f"got {grade(copy.deepcopy(OM_G), copy.deepcopy(OM_G), OM_SCH)['skipped_open_maps']}")
 # The walk follows the DATA, so a node is only recorded when that side reaches it. Collecting
 # from gold alone meant a prediction that returned an open map gold omitted had the subtree
 # skipped and never reported -- an ungraded region going unmentioned, which is exactly what the
@@ -915,20 +858,18 @@ report("with no schema nothing is skipped, because nothing can be identified",
 BG = {"rows": [{"v": 1.0}, {"v": 2.0}]}
 BP = {"rows": [{"v": 1.0, "segment_type": "co"}, {"v": 2.0, "segment_type": "co"}]}
 bp_path = ACC(BP, BG)["accuracy"]
-bp_tree = fair_grade(copy.deepcopy(BP), copy.deepcopy(BG), {"properties": {"rows": {"type": "array"}}})["leaf_accuracy"]
 report("a predicted row carrying a dimension field gold lacks is still pairable",
        abs(bp_path - 50.0) < 1e-9,
        f"path {bp_path:.2f}, want 50.00 (2 gold leaves matched, 2 extra charged)")
-note(f"the paired walker scores this {bp_tree:.2f}: it blocks unconditionally, so the rows "
-     f"land in disjoint blocks and every correct value is charged twice")
+note("pairing on content rather than on a key is what keeps these rows together: a scorer "
+     "that blocked on the dimension field would put them in disjoint blocks and charge "
+     "every correct value twice")
 
 DG = {"rows": [{"segment_type": "company", "a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0}]}
 DP = {"rows": [{"segment_type": "region", "a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0}]}
 dp_path = ACC(DP, DG)["accuracy"]
-dp_tree = fair_grade(copy.deepcopy(DP), copy.deepcopy(DG), {"properties": {"rows": {"type": "array"}}})["leaf_accuracy"]
 report("a row wrong only in its dimension field is charged for that field, not for the row",
        abs(dp_path - 80.0) < 1e-9, f"path {dp_path:.2f}, want 80.00 (4 of 5 fields right)")
-note(f"the paired walker scores this {dp_tree:.2f}")
 
 print("\nTHE LARGEST REAL ARRAY IS TRACTABLE")
 rnd = random.Random(1)
@@ -942,14 +883,10 @@ rb = ACC(big_p, big_g)
 dt = time.time() - t0
 _, peak = tracemalloc.get_traced_memory()
 tracemalloc.stop()
-tt0 = time.time()
-rt = fair_grade(copy.deepcopy(big_p), copy.deepcopy(big_g), {})
-tdt = time.time() - tt0
-report(f"{N} rows x 3 fields scores in bounded time and agrees with the paired walker",
-       abs(rb["accuracy"] - rt["leaf_accuracy"]) < 1e-9,
-       f"path {rb['accuracy']:.4f} vs tree {rt['leaf_accuracy']:.4f}")
-note(f"path {dt:.1f}s, peak {peak/1e6:.0f} MB, exact={rb['matching_exact']}  |  "
-     f"tree {tdt:.1f}s, exact={rt['matching_exact']}")
+report(f"{N} rows x 3 fields scores in bounded time, exactly",
+       rb["matching_exact"] and dt < 300,
+       f"{dt:.1f}s, exact={rb['matching_exact']}")
+note(f"{dt:.1f}s, peak {peak/1e6:.0f} MB, exact={rb['matching_exact']}")
 
 print(f"\n{'PATH SCORER PROPERTIES HOLD' if not FAILS else 'FAILURES:'}")
 for f in FAILS:

@@ -14,15 +14,15 @@ ground-truth row. Once that is settled, renumber the predicted rows to match. No
 value has an address that means the same thing in both documents, and scoring is just
 comparing two sets of addresses.
 
-Three functions do that work, and two of them call each other.
+Three functions do that work.
 
     _worth_if_paired   what would this one pair of rows be worth?
     _best_pairing      which predicted row goes with which ground-truth row?
     align              renumber the predicted rows once that is settled
 
 Choosing a pairing needs a price for every candidate pair. Pricing a candidate pair often
-needs a pairing, because two rows can look alike at the top and differ only in a list nested
-inside them. Comparing two such lists is the same problem, one level down:
+needs a "sub"-pairing" when we encounter nested arrays which means we encounter the 
+same problem one level down:
 
     _best_pairing(gold books, predicted books)
         _worth_if_paired(book A, book B)             are these the same book?
@@ -37,7 +37,7 @@ from typing import Any, Literal, NamedTuple
 
 from . import matching as OM
 from . import normalize as N
-from .values import canon_key, cmp_leaf, drop_empty_gt_rows, unwrap_schema
+from .values import canon_key, cmp_leaf, drop_empty_gt_rows, states_nothing, unwrap_schema
 
 # An address is a tuple of steps. Each step is tagged, because a document may contain the key
 # "0" and ("k", "0") must not join ("i", 0).
@@ -110,15 +110,17 @@ def flatten(node: Any, schema: Any = None, prefix: Address = (),
 
     Only one document. This never looks at the other one.
 
-    A `null` gets no address. It states nothing, so it should count neither for nor against
-    anyone.
+    A value that states nothing gets no address, so it counts neither for nor against anyone.
+    `null` and `""` both qualify, and for the same reason -- see `values.states_nothing`,
+    which is where that judgement lives so both documents and both scorers share it.
 
     An `additionalProperties` object is skipped entirely, and its address is added to
     `skipped`. Those objects ask the model to invent the key names by reading headings off
     the page. We do not grade that. The schema we send to strict vendors drops the keyword
     anyway, so the model was never actually asked.
 
-    >>> for a, v in flatten({"date": "2024-03-31", "rows": [{"x": 1}], "note": None}).items():
+    >>> for a, v in flatten({"date": "2024-03-31", "rows": [{"x": 1}],
+    ...                      "note": None, "memo": ""}).items():
     ...     print(f"{show(a):14} = {v!r}")
     date           = '2024-03-31'
     rows[0].x      = 1
@@ -137,7 +139,7 @@ def flatten(node: Any, schema: Any = None, prefix: Address = (),
         item = schema.get("items")
         for i, value in enumerate(node):
             out.update(flatten(value, item, prefix + ((INDEX, i),), skipped))
-    elif node is not None:
+    elif not states_nothing(node):
         out[prefix] = node
     return out
 

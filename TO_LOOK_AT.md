@@ -111,13 +111,17 @@ problem on top.
 
 ## 3. `contextual/10kq__nke_10q_fy2025q2` -- every vendor 48-58
 
-**Known so far:** the extras are identified and they are real balance-sheet line
-items, not noise. Whether the gold or the models are wrong is NOT established.
+**Known so far:** the extras are real balance-sheet line items, and the consensus audit
+(item 19) now says the gold is the incomplete side -- on this document **7 of 8 vendors
+produce an entire `short_term_debt` row with all six of its fields**, values agreeing. It
+is not one document either: `tho_10q` and `dell_10q` have the same shape.
 
-**Next:** open the Nike 10-Q and check whether `short_term_debt` actually has a value
-in the filing. If it does, the gold is incomplete and this document is mis-scoring
-every vendor. That single check decides the item. If the gold is right, the question
-becomes why four vendors invent the same line items.
+**Next:** open the Nike 10-Q and confirm `short_term_debt` is printed, which validates the
+audit's method as well as this document. Then fix the gold for all three 10-Qs and
+re-score -- a gold fix needs no vendor calls, because what the model was asked did not
+change. Note the fixed slots are only 1-6% of each document's addresses while the scores
+sit 30-40 points below these vendors' averages, so something ELSE is also wrong in these
+three and the item does not close when the gold is fixed.
 
 | vendor | accuracy | found |
 |---|---|---|
@@ -138,8 +142,21 @@ So the models are producing balance-sheet line items the ground truth does not r
 `short_term_debt` has a slot in the schema and no value in the gold, and the models fill
 it. Four vendors doing the same thing in the same places is more consistent with a gold
 file that captures a subset of the statement than with four models hallucinating the same
-line items. Worth checking the gold against the filing before treating this as a vendor
-result.
+line items.
+
+The full-corpus audit in item 19 settles the direction. Across all nine vendors this
+document carries **16** slots the schema declares, the gold never fills, and at least
+seven vendors do -- and they agree on the values:
+
+```
+7/8 vendors, 7 agree   balance_sheet.short_term_debt[*].value / unit / scale /
+                       data_period / segment_type / metric_type
+```
+
+Seven independent extractors do not invent a consistent six-tuple. `tho_10q` (12 slots,
+`accounts_receivable = 535137 usd thousands`) and `dell_10q` (6 slots,
+`other_disclosures.notional_swaps_value = 6564`) are the same finding on the same subset,
+which is what one annotation pass with a consistent omission looks like.
 
 Ruled out while looking: none of the 465 extras are `_citations`/`_meta` sidecars. Those
 suffixes appear all over datalab's output and are **not** counted as invented, so they are
@@ -231,9 +248,10 @@ gaps.
 under-crediting) and raising the caps is not worth it. Two comments in `matching.py`
 are provably false and nothing has been changed.
 
-**Next:** fix the two comments -- they are how the next person sizes these constants.
-Optionally surface the greedy count in the run summary so "3 of 660 approximately
-matched" is visible at the top rather than per-document.
+**Next:** surface the greedy count in the run summary so "3 of 660 approximately matched"
+is visible at the top rather than per-document. The two false comments are FIXED -- the
+"unreachable on any realistic input" claim and the 6881 x 6881 figure, which appeared in
+four places and is really 26,725 x 26,725.
 
 **Unmeasured:** the 0.177 figure comes from documents of 532-4,278 rows. Nobody has
 measured what greedy costs at 26,725 rows, which needs an exact solve on the biggest
@@ -253,13 +271,10 @@ only ever under-credits. Across a 660-document mean that is ~0.001 points, so ra
 caps is not worth it -- exact on the largest document costs ~23 minutes and ~6 GB against
 4.6 minutes and 1.86 GB today.
 
-Two comments in `matching.py` are now false and will mislead whoever next sizes these
-constants:
-
-- `force_approximate`: *"The greedy path is unreachable on any realistic input"* -- three
-  corpus documents reach it.
-- `optimal_pairs`: *"the largest real array (6881 x 6881, 47 million cells)"* -- it is
-  26,725 x 26,725, 714 million cells, 15x larger.
+Two comments in `matching.py` were false and have been corrected: `force_approximate`
+claimed *"The greedy path is unreachable on any realistic input"* when three corpus
+documents reach it, and the largest-array figure was given as 6881 x 6881 / 47 million
+cells in four places when it is 26,725 x 26,725 / 714 million, 15x larger.
 
 ---
 
@@ -424,12 +439,45 @@ Two things are now established and worth not re-deriving:
   gemini, mistral and azure-cu were recorded as LOSING -- up to five vendors on the same
   document.
 
-**Next:** find the runner. It is not in `omni_extract_bench`, not in the `datalab`
-monorepo, and not anywhere under `~` -- `recovered_after_timeout` matches nothing. Until
-its policy is known, the coverage column is not a like-for-like comparison. The honest
-fallback, if the policy cannot be recovered, is to re-run every vendor with a strict
-uniform timeout and no recovery, which costs datalab those nine documents but makes the
-comparison sound.
+**FOUND.** The runner is still not on this machine, but it stamped its configuration into
+every `_raw/` record in R2, so the policy did not need it. From
+`baselines/<vendor>/_raw/<suite>/<doc>.json`:
+
+```
+run_manifest.timeout_s      1800          the "uniform 1800s limit" azure-cu's errors quote
+run_manifest.max_output_tokens  64000
+run_manifest.tier           balanced / extraction_performance / gpt-4.1-mini / ...
+cost.wall_s                 the measured time
+recovered_after_timeout     true, on 13 documents, and absent otherwise
+```
+
+`recovered_after_timeout` is a bare boolean, always `true`, never anything else. Twelve of
+the thirteen ran 1801-1812s against the 1800s deadline; the odd one out,
+`short__07021-2016-p0016`, took 105s, so the flag is not purely about the clock.
+
+The `http` array says what recovery actually did, and it is less than the name suggests:
+
+```
+datalab, normal   (92s)    POST /extract  ->  GET /extract/{id}  ->  GET /extract/{id}
+datalab, RECOVERED (1812s) POST /extract  ->  GET /extract/{id}                one poll
+extend,  RECOVERED (1804s) POST /extract_runs  ->  5x GET /extract_runs/{id}
+```
+
+Every request returned 200. There is no retry, no resubmit, no second POST. The deadline
+passed, the harness polled the existing job once more, and the answer was there -- the job
+had finished and the runner had stopped waiting. All four recovered records also carry
+`conventions_applied: false` against `true` on a normal one, so the post-processing step was
+skipped on the late payload.
+
+So the asymmetry is about thirty seconds of patience, and it is worth 9 documents to datalab
+and 4 to extend. The other seven vendors hit 1800s and were recorded as failures.
+
+**Next:** decide whether a document that finished just past the deadline counts. Re-running
+with a strict uniform timeout costs datalab those 9 and extend those 4; re-running with a
+post-deadline poll for everyone would give azure-cu's 42 timeouts the same chance. Either is
+defensible; the current state -- two vendors getting it and seven not -- is not. Note this
+does not need the runner: `timeout_s` and the poll behaviour are both recoverable from
+`_raw/`, which is also the only provenance we have for how any prediction was produced.
 
 ---
 
@@ -472,7 +520,452 @@ this is a coverage measurement as much as a quality one, and should be reported 
 
 ---
 
-## 15. Three documents are 61% of the scoring cost, and one is 94% of a vendor's wall clock
+## 15. `order_matters` is never passed, and 109 documents ask for ordering
+
+**Known so far:** the capability exists and is exercised by the tests; no scoring path
+supplies it. The candidate list is measured but NOT triaged, and it has visible false
+positives.
+
+**Next:** triage the 50 + 56 arrays below by hand -- the regex cannot tell "ordered
+list" from "ordered/requisitioned line item" -- then decide where the surviving names
+live. They are per-document, so they belong beside the corpus rather than in the scorer;
+the schema is the natural home, since it is already what the harness reads.
+
+`grep order_matters` finds it in `score.py` (17), `METRIC_SPEC.md` (4) and five test
+files. It appears in **neither `cli.py` nor `scripts/score_r2.py`**, so every array in
+every published run has been scored order-insensitively, including the ones whose ground
+truth explicitly asks for an order.
+
+Scanning all 660 schemas (refs resolved) for ordering language in an array's own
+`description` or its `items.description`: **151 arrays across 109 documents.** They split
+three ways, and the split is the whole point -- only one group actually needs the flag.
+
+| group | arrays | docs | what it means |
+| --- | --- | --- | --- |
+| object rows, **no positional field** | 50 | 48 | order is unrecoverable from content -- the real candidates |
+| **scalar arrays** | 56 | 45 | order ignored *and* a near-miss double-charged (§8) |
+| object rows **with** a positional field | 45 | 40 | `rank`, `line_no`, `subject_number` already carry it; pairing recovers the order without the flag |
+
+Examples from the first group:
+
+```
+holdings          "one Holding object per row, in the order they appear in the table"
+creditors         "Every creditor row in document order"
+items             "Every genuine catalog line item ... in reading order"
+authors           "Complete, ordered list of authors as printed in the byline"
+tables[*].rows    "One entry per printed data line of the schedule, top to bottom"
+```
+
+The scalar-array group is the more consequential one, because there position is the only
+identity an element has:
+
+```
+tables[*].column_headers        "The ordered list of LEAF data-column labels, left to right"
+creditors[*].mailing_address    "Mailing-address lines in order (street, city/state/zip)"
+risk_management_cycle_stages    "Names of the stages in the council's risk-management cycle diagram, in order"
+section_letters                 "... section headers in the paper body, in their order of appearance"
+```
+
+A model that returns a correct mailing address with the city line first scores it perfect
+today. One that returns the right column headers left-to-right gets no credit for the
+ordering it was asked for.
+
+**Two false positives are already visible in the candidate list**, which is why this is a
+triage job and not a patch: `line_items` matches on "Every **ordered**/requisitioned line
+item", where "ordered" means purchased; and `age_groups` matches on "the **ranked**
+results for that group", which describes its children rather than itself -- the ranking is
+real one level down at `age_groups[*].results`, and that array carries a `rank` field, so
+it is already recoverable and needs nothing.
+
+Full scan, with every path, phrase and description, is in the session scratchpad as
+`order_scan.json`.
+
+**Not a scorer bug.** §5 says the default is order-free deliberately, because the order
+rows appear in a document is usually an accident of layout. The gap is that the escape
+hatch was built, documented, tested -- and then never wired to a run.
+
+---
+
+## 16. What the long-text values actually are, and where item 2 really applies
+
+**Known so far:** the exposure is measured and it is far narrower than item 2 implies.
+Nothing is decided; item 2's three options are still open.
+
+**Next:** item 2 can be scoped to bibliographies before choosing between them. Whatever
+is chosen must NOT touch category 4 below, where exact match is correct.
+
+Threshold first, because item 12's similarity sweep used a 40-char gate and a different
+number would make the two measurements incomparable. **100 characters is the better cut,
+and the corpus says why:** at >=100, 6,448 of 6,478 values (99.5%) are eight words or
+more, so length alone isolates prose; at >=40 only 52% are, and the rest are URLs, codes
+and concatenated identifiers where exact match is entirely fair. Using 40 would double the
+apparent exposure with values that are not the problem.
+
+For scale: 66.8% of gold scalars are strings and their **median length is 8 characters**
+(p90 25, p99 73). Long text is genuinely the tail -- 6,478 values, 0.22% of the corpus.
+
+| suite | gold values | >=100ch | share | in scalar arrays | docs with any |
+| --- | --- | --- | --- | --- | --- |
+| **contextual** | 12,364 | 1,803 | **14.58%** | **1,722 (95.5%)** | 23/35 |
+| internal | 10,473 | 201 | 1.92% | 30 | 44/207 |
+| extractbench | 606,916 | 3,015 | 0.50% | 75 | 62/329 |
+| micro1 | 1,962,615 | 1,395 | 0.07% | 0 | 10/47 |
+| longarray | 293,139 | 64 | 0.02% | 0 | 13/42 |
+
+**Of the 1,827 long values that sit inside scalar arrays -- the double-charge case -- 1,721
+are one field, `citations`, in six `contextual` research papers.** Item 2's "arrays of
+free-text strings are near-unscoreable" is not a corpus-wide property. It is bibliographies,
+in six documents, in the suite §7 weights at a fifth of the headline. That also answers
+item 4's question about `contextual`: five of its 35 documents are 69-93% long-text-in-
+scalar-arrays by value count.
+
+The long values are four different things, and they do not want the same treatment:
+
+1. **Bibliographies.** `citations` (n=1,721, median 201 chars, 100% in scalar arrays),
+   schema: *"List of works cited by this paper."* The only category with the double charge.
+2. **Prose commentary**, named fields, charged once. `facts.text` (406), `directives_comment`
+   (1,238 -- near-identical OFAC boilerplate), `communications.text`, `inspection_notes`.
+3. **Boilerplate and delimited lists.** `standing_offer_description` (491),
+   `trade_agreements` (358, median **502 chars**) -- the latter is a comma-joined list
+   crammed into one scalar, asked for "as printed in the column". A model returning the same
+   agreements in a different order fails outright, and no scoring rule fixes that; the schema
+   is asking for a serialization rather than a fact.
+4. **Long structured identifiers, where exact match is correct.** `holdings.security_name`
+   (326), e.g. `Abry Liquid Credit CLO Ltd., Series 2025-2A, Class C, (3-mo. CME Term SOFR +
+   2.10%), 5.78%, 01/15/39`. Every token is content: two tranches differing in one digit are
+   different securities. Also `aliases.name`, `creditors.creditor_name`, `parties.address`.
+   A similarity threshold here would be actively wrong.
+
+A rule aimed at "long free text" in general would loosen 6,478 values to fix 1,721, and
+would loosen category 4 along the way.
+
+Noticed while measuring, and now item 15: `facts` is described as *"Every numbered fact
+paragraph **in order**"*, and we score that array order-insensitively.
+
+---
+
+## 17. The published board scored two vendors on 660 documents and seven on 657
+
+**Known so far:** the defect is confirmed and the three documents identified. The
+per-vendor effect is measured for the three vendors re-scored so far and is NOT uniform
+in sign, so the published ordering cannot be corrected by arithmetic -- it needs the
+complete run.
+
+**Next:** rebuild the board from a run where every vendor covers the same 660, and make
+`score_r2.py` refuse to write a summary whose document count disagrees with the manifest.
+The summaries claimed `660 / 660` while the file held 657, which is the same class of
+silent-coverage bug as item 1.
+
+`r2_scores/*.jsonl` holds **657** rows for seven of the nine vendors; only `datalab` and
+`reducto` have 660. The missing documents are **the same three in every one of the seven**,
+and they are exactly item 6's three giants:
+
+```
+extractbench/long__real_oklahoma_unclaimed_2024                  26,725 rows
+micro1/06_19_Government_zoning_and_land_use_geospatial_datasets  19,486 rows
+micro1/hard__Municipal_continuing_disclosure_..._efis            18,494 rows
+```
+
+The untracked `r2_reducto.log` and `r2_last2.log` fit the sequence: the nine-vendor run
+stopped short of the giants, then datalab and reducto were re-run to completion and the
+other seven were not. Every `*.summary.txt` nonetheless reports `documents 660`,
+`scored 660` -- the count came from the manifest rather than from the rows actually written.
+
+**The effect is not a uniform inflation, which was the first guess and it was wrong.**
+These documents are easy for the top two and catastrophic for at least one other vendor:
+
+| vendor | with the three | without | effect | scores on the three |
+| --- | --- | --- | --- | --- |
+| datalab | 91.75 | 91.72 | **+0.030** | 98.16, 97.23, 99.87 |
+| reducto | 92.09 | 92.06 | **+0.027** | 94.72, 99.23, 100.00 |
+| extend | 88.09 | 88.17 | **-0.080** | **24.92**, 99.95, 87.02 |
+
+So excluding them *helped* extend and would have *hurt* datalab and reducto. They are
+strongly discriminating documents -- the top two score 94-100 while extend collapses to
+24.92 on the Oklahoma array -- and dropping them removed signal rather than adding a
+constant.
+
+Which means the published item 14 ordering below the top two cannot be repaired by adding
+an offset; each of the remaining six has to be re-scored on the full corpus before the
+board means anything. That is already in flight.
+
+**Watch for this when reading any old-vs-new comparison**: `extend` appears to fall
+88.16 -> 88.09, but 88.16 was its mean over 657 documents. Like-for-like on the 657 it
+shares with the new run, it *rose* by +0.006, and the three giants account for the -0.08.
+
+---
+
+## 18. Four documents are partial responses scored as quality results, and none is on the retry list
+
+**Known so far:** four cases are identified across two vendors, and the evidence points
+vendor-side in each. `retry_list.csv` cannot contain them by construction: it is built
+from empty and error payloads, and these are structurally valid 200s.
+
+**Next:** re-run these four. For the extend one, re-run it twice -- once as configured
+and once with the array strategy unset -- because the mode involved is one WE selected
+(below), and that is the only way to tell a transient chunk failure from a deterministic
+one. Then add a completeness check to `usable()` or beside it, since `retry_list.csv`
+will keep missing this class until something looks at row counts.
+
+| vendor | document | score | read_right | what came back |
+| --- | --- | --- | --- | --- |
+| extend | `extractbench/long__real_oklahoma_unclaimed_2024` | 24.92 | 97.8% | 7,142 of 26,725 rows |
+| llamaextract | `extractbench/short__sec_13f_0009_coatue_management` | 0.55 | 100.0% | 14 addresses; peer median 2,174 |
+| llamaextract | `extractbench/short__sec_13f_0019_soros_fund_management` | 0.79 | 100.0% | 27 addresses; peer median 2,907 |
+| llamaextract | `micro1/f47be8a4__aaq-mntrpt-2005-vic-report-final` | 11.16 | 99.7% | 816 addresses; peer median 6,676 |
+
+The `read_right` column is the tell. In all four, essentially everything returned is
+CORRECT. These are not extraction failures; they are coverage failures wearing a quality
+score, and the mean cannot tell the difference.
+
+**The extend case, because the mechanism is fully visible.** Its 7,142 rows form exactly
+**15 contiguous blocks, one per page, in ascending page order** -- pages 2, 3, 6, 12, 15,
+16, 18-22, 38, 57, 58, 59 -- and every one of those pages is complete (436/441, 445/445,
+459/459, 472/474). The other 43 pages returned zero rows. That is concatenated per-chunk
+output with 43 chunks contributing nothing; a harness-side loss would give partial pages
+or interleaving, not whole-page blocks in sorted order.
+
+Ruled out on our side: `capture.py` has no truncation path; the file is valid JSON that
+parses in full (a truncated write would be malformed); the envelope is a plain
+`{result, _secs}` at 1,083s with no `recovered_after_timeout`, so it is not the 1,800s cap;
+and extend returned the OTHER two giants complete -- 19,486 rows against a gold 19,486, and
+18,493 against 18,494 -- so there is no size ceiling on either side.
+
+**What is ours** is `omni_extract_bench/harness/providers/extend_provider.py:52`:
+
+```python
+ARRAY_STRATEGY = os.environ.get("EXTEND_ARRAY_STRATEGY", "large_array_max_context")
+```
+
+sent as `advancedOptions.arrayStrategy.type`. Per the comment there, this is Extend's MAX
+array mode and the vendor flagged that we were benchmarking without it. So the dropout
+happened in a non-default mode we selected on the vendor's own advice, on the largest array
+in the corpus -- which is precisely the case the mode exists for. Nothing in the stored
+artifacts says whether the default would have done better, and the re-run is the only way
+to find out. If it reproduces, it is a real result and worth telling Extend.
+
+**The gap this exposes.** `usable()` asks whether a payload parses and is non-empty. All
+four pass. `retry_list.csv`'s 258 rows are drawn from empty bodies, gateway errors, 5xx,
+timeouts and 400s -- every category assumes the failure is visible in the envelope. A
+response missing three quarters of its rows is invisible to all of it. Two cheap detectors
+would have caught all four before they reached a board: rows returned against the peer
+median for that document, or pages covered against the document's own page span. Neither
+needs ground truth, so both could run at capture time.
+
+---
+
+## 19. Consensus audit: 63 slots the schema declares, the gold omits, and 7+ vendors fill
+
+**Known so far:** the method works and the omission half is measured -- 63 strong suspects
+across 25 documents, and it confirms item 3 on three documents rather than one. Nothing is
+fixed, and no suspect has been checked against a source document.
+
+**Next:** open ONE of them -- the Nike 10-Q `short_term_debt` is the obvious choice -- and
+confirm the value is printed. That single check validates the method for all 63. Then fix
+the gold and re-score; a gold fix needs no vendor calls, because the question put to the
+model did not change.
+
+**The question.** For every schema slot the ground truth leaves silent, how many independent
+vendors filled it? N vendors agreeing on a field the answer key lacks is far better explained
+by an incomplete answer key than by N identical hallucinations. It needs no new data: the
+predictions are already cached, and comparing SLOTS (`node_key` -- an address with array
+indices blanked) rather than addresses means no row alignment, so it is a `flatten` per
+document per vendor and runs in minutes.
+
+**The distribution is the result.** 12,356 slots are filled by >=4 vendors and never by gold,
+but almost all of that is one model talking to itself:
+
+```
+9 vendors:     7        4 vendors:   136
+8 vendors:    36        3 vendors:   199
+7 vendors:    66        2 vendors:   514
+                        1 vendor:  11,156
+```
+
+Of the 109 at >=7 vendors, **63 are near-unanimous on a specific value**, across **25
+documents**. The other 46 are excluded deliberately: a boolean `false`, an enum default, or
+vendors disagreeing on the value. Nine models agreeing a boolean is false may be nine models
+defaulting; nine agreeing a number is `1027.8` is not. That filter is the whole difference
+between a signal and a list.
+
+**Three 10-Qs dominate**, and they are one finding, not three:
+
+| document | slots | best vendor |
+| --- | --- | --- |
+| `contextual/10kq__nke_10q_fy2025q2` | 16 | 53.0 |
+| `contextual/10kq__tho_10q_fy2025q2` | 12 | 52.9 |
+| `contextual/10kq__dell_10q_fy2025q2` | 6 | 65.8 |
+
+In each, 7 of 8 vendors produce an entire balance-sheet line with all six of its metadata
+fields -- `value`, `unit`, `scale`, `data_period`, `segment_type`, `metric_type` -- for a line
+the gold does not carry. Same shape in all three: one annotation pass with a consistent
+omission.
+
+Two further clusters of the same kind: `comparable_vehicles[*].equipment_adjustments` across
+three vehicle-valuation documents (8/9 vendors, values like `-104.15` and
+`[B92] Body Colored Splash Guards 4 Piece`, 5-10% of those documents), and
+`form_8582.part_vii_allocations` / `part_iv_activities` in `extractbench/medium__cabrera-2023`
+(7/8 agreeing on `58937`, `-28305`, `-30632`).
+
+**What it does NOT say.** The three 10-Qs sit 30-40 points below these vendors' averages while
+the suspect slots are 1-6% of their addresses, so the omission is a component of those scores
+and not the explanation. And the audit sees omissions only -- a gold value that is WRONG is
+invisible to it, which is the mirror query.
+
+Full list: `consensus.json` in the session scratchpad, with the vendor set per slot.
+
+---
+
+## 20. The mirror audit: the gold is wrong more often than it is conventional
+
+**Known so far:** 73 suspects, and **at least 28 are gold errors provable from the schema's
+own text or the page** -- no judgement needed. A first pass called them annotation
+conventions; that was wrong, and the way it was wrong is worth recording (below). Two scorer
+gaps appeared to fall out as well, and both turned out to be false -- see below. Nothing is
+fixed.
+
+**Next:** fix the gold for the 28 settled cases and re-score -- no vendor calls, because the
+question put to the model did not change. Check the remaining 27 containment cases against
+their pages; they follow the same pattern. The 8 disjoint cases need a person with the
+document. Do NOT add the two date formats: one is worth two values, the other would make the
+scorer read section identifiers as dates.
+
+**A method error worth not repeating.** The first pass classified by string containment --
+one value contains the other, therefore a convention -- which silently assumed that where
+gold is shorter, gold chose a normalised form on purpose. The schema says the opposite in
+three of the four biggest clusters and the page says it in the fourth. Extraction is verbatim
+from the page: a shorter gold value is not a convention, it is a value that dropped
+something. Containment is evidence about STRINGS; the schema and the page are the evidence
+about CORRECTNESS, and only the second kind settles anything.
+
+**The question**, mirroring item 19: where the gold HAS a value, do the vendors unanimously
+have a DIFFERENT one? A wrong gold value costs more than a missing one, because it is charged
+twice -- the gold address is unfound and the model's correct reading is a misread.
+
+Alignment-free by construction: it compares only slots occurring EXACTLY ONCE in gold and
+once in each vendor, so the address is unambiguous and no row pairing is involved. That covers
+document-level scalars and single-row arrays and says nothing about repeated rows, which is a
+real limit -- the whole-column cases item 19 found could not appear here.
+
+73 suspects at >=7 vendors near-unanimous, in 68 documents. Classified:
+
+| | |
+| --- | --- |
+| 55 | one value contains the other -- a convention, not an error |
+| 10 | overlapping but different -- needs a human |
+| 8 | disjoint -- one side is simply wrong |
+
+**28 of the 55 are settled against the vendors' reading**, by the schema's own words or the
+printed page:
+
+| field | n | what settles it |
+| --- | --- | --- |
+| `employee_ssn` | 16 | schema: *"if the tail is fully masked, return **exactly** `XXX-XX-XXXX` (canonical 4-X form)"*. Gold has five X's -- it violates its own spec. |
+| `meta.company` | 6 | every 10-Q cover prints the legal name under *"(Exact name of registrant as specified in its charter)"*, and the schema asks for *"the reporting entity or registrant"*. Gold short-names all seven. |
+| `terms.governing_law` | 5 | the schema's own example is `'State of New York'`; the Disney agreement prints *"the laws of the State of New York"*. Gold says `New York` in one document and `the State of New York` in another. |
+| `personalInfo.fullName` | 1 | schema: *"Full name of the candidate, **including any titles** used, such as Dr, Professor"*. Gold stripped `Dr.` |
+
+The seven 10-Q covers, since `meta.company` reaches the worst-scoring documents in
+`contextual`:
+
+```
+AUTOMATIC DATA PROCESSING, INC.   NIKE, Inc.
+CISCO SYSTEMS, INC.               THOR INDUSTRIES, INC.
+Dell Technologies Inc.            WESTERN DIGITAL CORPORATION
+McKESSON CORPORATION
+```
+
+The other 27 containment cases are unchecked but look the same: `statement_number` keeping
+the `Stm #` label, `copyright_holder` dropping the acronym the footer prints,
+`primary_county` dropping the word `County`, `direction_from_nearest_town` keeping the
+trailing `of`.
+
+**The eight disjoint cases** are the only candidates for a straightforward gold correction,
+and each needs a person with the document:
+
+```
+9/9  event_details.length                gold 50m    vendors 200m
+9/9  advisory_board_count                gold 5      vendors 6
+9/9  month_with_largest_overperformance  gold Jun    vendors May
+8/9  audit_signing_lag_months            gold 4      vendors 3
+8/9  earliest_referenced_year            gold 1980   vendors 1951
+7/8  due_unitization / due_subdivision   gold True   vendors False
+```
+
+**Two apparent scorer gaps fell out of it, and BOTH were wrong.** Recorded because the way
+they were wrong is the same mistake twice.
+
+* `6 Apr 2025` does not parse as a date: `_DATEFMTS` has `%d %B %Y` (`6 April 2025`) but not
+  the abbreviated `%d %b %Y`. First measured as **384 gold values**. It is about **two**. 382
+  of the 384 are `entities.features.value` in the OFAC file -- a generic label/value pair
+  (*"label 'Website' value 'www.example.ru'"*), where a date-looking string is a feature's
+  printed text and not a date field. Counting strings by shape instead of asking which field
+  they sat in.
+* `01.01.24` does not parse: `%d.%m.%y` is absent. Adding it would be **actively harmful**.
+  `6.12.13`, `6.12.16` and `10.5.12` parse under it, and they are not dates -- they are
+  `assigned_section_ids` and `edited_section_ids`, *"numbered section identifiers (e.g.
+  '5.2.1.5')"*. The scorer would start folding two different section IDs into one value. The
+  detection that proposed the format produced the counter-example that kills it.
+
+So: add neither. What the exercise did produce is the question in METRIC_SPEC section 5.1 --
+**793 of the corpus's 1,258 date-ish fields say "verbatim" or "as printed"**, and only 12 are
+typed `format: date`, so the vendors could have returned the printed characters and chose not
+to. The fold is a leniency the corpus did not ask for on most of its date fields. It is kept
+anyway, for the reason 5.1 gives: a reformatted date loses nothing recoverable. That is a
+decision now, rather than an accident.
+
+Full list: `gold_errors.json` in the session scratchpad.
+
+---
+
+## 21. Lint the ground truth against its own schema
+
+**Known so far:** the idea is unimplemented, but its yield is already measured: it would have
+caught **16 of the 28** gold errors item 20 confirmed, mechanically and at annotation time,
+with no vendors involved. The keywords it needs are already present in the corpus, just unused
+for this.
+
+**Next:** write the linter. Start with the three checks that need nothing new -- `enum`
+membership, `format: date` parseability, `pattern` match -- and report violations per document.
+Then decide whether to ADD constraints to schemas that lack them, which is where the remaining
+yield is.
+
+The corpus already carries validating keywords, thinly:
+
+```
+enum      279 occurrences in 110 documents
+format     48 in 31        pattern  7 in 7        minimum/maximum  6 each
+```
+
+Nothing checks the ground truth against any of them. `meta.report_period_end_date` is declared
+`format: date` in several schemas and one gold value reads `2025-01-2025`. A `pattern` of
+`^FY\d{4}( (Q[1-4]|H[1-2]|YTD))?$` exists on `data_period` and is never verified.
+
+**Why this is the right home for constraints, and scoring is not.** METRIC_SPEC section 5.2
+now says the scorer enforces nothing the model was not shown, and `pattern`, `format` and
+`minimum` are stripped by `to_strict_dialect` -- a strict vendor never receives them, a
+permissive one may. Scoring against them would penalise vendors in proportion to how strict
+their API is. But the GROUND TRUTH is under no such constraint: it is ours, it is not being
+graded, and checking it against the schema it was written for is free.
+
+So the split is: `description` is the vendor-facing ask, `enum` is the one constraint that
+reaches the vendor AND validates, and everything else is annotation-side machinery for keeping
+the answer key honest.
+
+**The case that pays for it.** `employee_ssn`'s description says *"if the tail is fully
+masked, return exactly `XXX-XX-XXXX` (canonical 4-X form)"*. The gold writes `XXX-XX-XXXXX`,
+five X's, sixteen times across seven W-2 documents -- and every vendor returned the string the
+schema asked for and was marked wrong. A `pattern` of `^XXX-XX-(\d{4}|XXXX)$` on that field
+turns a prose instruction into a check that runs in milliseconds.
+
+**What it does not cover.** A linter checks shape, not truth. It would not have found the 63
+omitted slots in item 19, nor `meta.company` shortening `NIKE, Inc.` to `Nike` -- both are
+well-formed values that are simply wrong. Consensus finds those; a linter finds the ones the
+schema already knows how to describe. The two audits are complements.
+
+---
+
+## 22. Three documents are 61% of the scoring cost, and one is 94% of a vendor's wall clock
 
 **Known so far:** measured building the scores writer. One vendor, all 660 documents,
 four workers: **1,161s wall, 4,484s CPU.** The three largest documents are 61% of that CPU
