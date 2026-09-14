@@ -199,8 +199,15 @@ def extras(root: Path) -> dict:
     return out
 
 
-def write(root: Path, entries: Iterable[Entry], extra: dict | None = None) -> Path:
-    """Write the atlas, preserving any extra columns a caller wants to carry.
+def write(root: Path, entries: Iterable[Entry], extra: dict | None = None,
+          metadata: dict | None = None) -> Path:
+    """Write the atlas. The only thing that does.
+
+    `extra` adds columns per doc_id; `metadata` adds file-level provenance. Both exist so a
+    richer builder -- ours records `suite`, page counts and which HuggingFace snapshot it came
+    from -- can enrich the atlas without writing one itself. Two writers of the same file is
+    how the required columns went missing from the published corpus while the code that
+    defined them was already correct.
 
     Written to a temporary name and renamed: a crash here would otherwise leave a corpus with
     no definition at all.
@@ -216,7 +223,8 @@ def write(root: Path, entries: Iterable[Entry], extra: dict | None = None) -> Pa
     fields = list(dict.fromkeys(k for r in rows for k in r))
     blank = {k: None for k in fields}
     table = pa.Table.from_pylist([{**blank, **r} for r in rows]).replace_schema_metadata(
-        {"corpus_version": version(entries), "documents": str(len(entries))})
+        {"corpus_version": version(entries), "documents": str(len(entries)),
+         **(metadata or {})})
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     tmp = root / (ATLAS + ".tmp")

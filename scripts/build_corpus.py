@@ -241,15 +241,24 @@ def build(root: Path, out: Path, with_pdfs: bool):
 
 
 def write_atlas(rows, out: Path, snapshot: str):
-    table = pa.Table.from_pylist(rows).replace_schema_metadata({
+    """Enrich and hand off. `corpus.write` is the only thing that writes an atlas.
+
+    This builder knows things the contract does not -- which collection a document came from,
+    how big its gold is, whether a PDF exists -- and those go in as extra columns. What it
+    must not do is write the file itself: that is how the two required path columns ended up
+    missing from the published corpus while `corpus.py` already defined them.
+    """
+    entries = [corpus_atlas.Entry(r["doc_id"], r["ground_truth_path"], r["schema_path"],
+                                  r["gt_sha256"], r["schema_sha256"]) for r in rows]
+    extra = {r["doc_id"]: {k: v for k, v in r.items() if k not in corpus_atlas.REQUIRED}
+             for r in rows}
+    path = corpus_atlas.write(out, entries, extra, metadata={
         "corpus_snapshot": snapshot,
         "repo": REPO,
-        "rows": str(len(rows)),
         "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     })
-    path = out / ATLAS
-    pq.write_table(table, path, compression="zstd")
-    print(f"  {ATLAS}: {path.stat().st_size / 1024:.0f} KB, {len(rows)} rows")
+    print(f"  {ATLAS}: {path.stat().st_size / 1024:.0f} KB, {len(rows)} rows, "
+          f"version {corpus_atlas.version(entries)}")
     return path
 
 
