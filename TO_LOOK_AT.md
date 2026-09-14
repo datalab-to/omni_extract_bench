@@ -816,19 +816,25 @@ Full list: `consensus.json` in the session scratchpad, with the vendor set per s
 
 ---
 
-## 20. The mirror audit: mostly unstated conventions and two scorer gaps, not gold errors
+## 20. The mirror audit: the gold is wrong more often than it is conventional
 
-**Known so far:** run, classified, and the headline is that it did NOT find what it went
-looking for. Of 73 suspects only 8 are plausibly a wrong gold value; the rest are annotation
-conventions the schema never states, plus two date formats the scorer cannot parse. Nothing
-is fixed.
+**Known so far:** 73 suspects, and **at least 28 are gold errors provable from the schema's
+own text or the page** -- no judgement needed. A first pass called them annotation
+conventions; that was wrong, and the way it was wrong is worth recording (below). Two scorer
+gaps fell out as well. Nothing is fixed.
 
-**Next:** three separable pieces, in cost order. (a) The two date formats are a scorer fix
-and re-score only -- do them. (b) `employee_ssn` is a gold typo repeated 16 times; fix it.
-(c) The convention cluster is a decision, not a repair: either state the convention in the
-field description or accept the vendors' reading. Section 10 already says which way this
-repo leans -- *"Conventions belong in the schema, so vendors are told rather than guessed
-at."*
+**Next:** fix the gold for the 28 settled cases and re-score -- no vendor calls, because the
+question put to the model did not change. Check the remaining 27 containment cases against
+their pages; they follow the same pattern. The 8 disjoint cases need a person with the
+document. The two date formats are a one-line scorer fix, also re-score only.
+
+**A method error worth not repeating.** The first pass classified by string containment --
+one value contains the other, therefore a convention -- which silently assumed that where
+gold is shorter, gold chose a normalised form on purpose. The schema says the opposite in
+three of the four biggest clusters and the page says it in the fourth. Extraction is verbatim
+from the page: a shorter gold value is not a convention, it is a value that dropped
+something. Containment is evidence about STRINGS; the schema and the page are the evidence
+about CORRECTNESS, and only the second kind settles anything.
 
 **The question**, mirroring item 19: where the gold HAS a value, do the vendors unanimously
 have a DIFFERENT one? A wrong gold value costs more than a missing one, because it is charged
@@ -847,16 +853,30 @@ real limit -- the whole-column cases item 19 found could not appear here.
 | 10 | overlapping but different -- needs a human |
 | 8 | disjoint -- one side is simply wrong |
 
-**Two of the 55 are not conventions at all.** `employee_ssn` appears 16 times with gold
-`XXX-XX-XXXXX` against every vendor's `XXX-XX-XXXX`: an SSN mask has four digits in the last
-group, so the gold has one X too many. That is a typo, repeated across seven W-2 documents.
+**28 of the 55 are settled against the vendors' reading**, by the schema's own words or the
+printed page:
 
-**The real convention cluster** is `meta.company` (6, gold `Nike` against `NIKE, Inc.`) and
-`terms.governing_law` (5, vendors say `State of New York`). The governing-law case is worth
-noting because **the gold is inconsistent with itself**: one document records `New York` and
-another `the State of New York` for the same clause. Whatever is decided, it should be decided
-once. `meta.company` lands on five of the seven 10-Qs, which are already the worst-scoring
-documents in `contextual`.
+| field | n | what settles it |
+| --- | --- | --- |
+| `employee_ssn` | 16 | schema: *"if the tail is fully masked, return **exactly** `XXX-XX-XXXX` (canonical 4-X form)"*. Gold has five X's -- it violates its own spec. |
+| `meta.company` | 6 | every 10-Q cover prints the legal name under *"(Exact name of registrant as specified in its charter)"*, and the schema asks for *"the reporting entity or registrant"*. Gold short-names all seven. |
+| `terms.governing_law` | 5 | the schema's own example is `'State of New York'`; the Disney agreement prints *"the laws of the State of New York"*. Gold says `New York` in one document and `the State of New York` in another. |
+| `personalInfo.fullName` | 1 | schema: *"Full name of the candidate, **including any titles** used, such as Dr, Professor"*. Gold stripped `Dr.` |
+
+The seven 10-Q covers, since `meta.company` reaches the worst-scoring documents in
+`contextual`:
+
+```
+AUTOMATIC DATA PROCESSING, INC.   NIKE, Inc.
+CISCO SYSTEMS, INC.               THOR INDUSTRIES, INC.
+Dell Technologies Inc.            WESTERN DIGITAL CORPORATION
+McKESSON CORPORATION
+```
+
+The other 27 containment cases are unchecked but look the same: `statement_number` keeping
+the `Stm #` label, `copyright_holder` dropping the acronym the footer prints,
+`primary_county` dropping the word `County`, `direction_from_nearest_town` keeping the
+trailing `of`.
 
 **The eight disjoint cases** are the only candidates for a straightforward gold correction,
 and each needs a person with the document:
