@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The scoring path is a closed set of four modules, and `canon_key` has one definition.
+"""The scoring path is a closed set of two modules, and `canon_key` has one definition.
 
 This test used to say "`score.py` must not depend on `grading.py`", so that deleting the old
 paired walker would stay a one-line change rather than an archaeology exercise. That worked:
@@ -8,7 +8,7 @@ kept the path clear enough to remove them in one go.
 
 What it guards now is the state that made the removal possible, so it cannot quietly erode:
 
-  * scoring reaches exactly `matching`, `normalize`, `values` -- no CLI, no capture, no vendor
+  * scoring reaches exactly `matching` and `values` -- no CLI, no capture, no vendor
     tree, nothing that would drag a transport or a provider into a grade;
   * no second grader comes back. Any module whose name says it grades is a second answer to
     "what is the score", and this repo scores through `score.py` alone;
@@ -27,7 +27,7 @@ _ROOT = Path(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 _sys.path.insert(0, str(_ROOT))
 
 PKG = _ROOT / "omni_extract_bench"
-SCORING_PATH = {"matching", "normalize", "values"}
+SCORING_PATH = {"matching", "values"}
 FAILS = []
 
 
@@ -40,7 +40,7 @@ def report(name, ok, detail=""):
 def imports_of(path):
     """Every module inside the package that this file imports, as a path from the package root.
 
-    Careful about two forms that are easy to get wrong: `from . import normalize as N` names a
+    Careful about two forms that are easy to get wrong: `from . import matching as OM` names a
     MODULE in its aliases rather than in `.module`, and a dotted path like
     `from .a.b import c` is a different file from `c.py` -- so the full path matters, not the
     last segment. Anything that does not resolve to a real file under the package is dropped,
@@ -81,7 +81,7 @@ def closure(start):
 print("\nTHE SCORING PATH IS CLOSED")
 direct = imports_of(PKG / "score.py")
 reach = closure(direct)
-report("score.py imports only matching, normalize, values",
+report("score.py imports only matching and values",
        direct == SCORING_PATH, f"imports {sorted(direct)}")
 report("...and nothing they pull in widens that",
        reach == SCORING_PATH, f"closure {sorted(reach)}")
