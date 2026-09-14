@@ -66,8 +66,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from omni_extract_bench import corpus as corpus_atlas                     # noqa: E402
 from omni_extract_bench.bench import (                                   # noqa: E402
-    GROUND_TRUTH, SCHEMA, Case, document, score, summary_row, verdict_rows)
+    Case, document, score, summary_row, verdict_rows)
 from omni_extract_bench.layout import PREDICTION_ID_VERSION              # noqa: E402
 
 SCORES_DIR, SUMMARY, VERDICTS = "scores", "summary.parquet", "verdicts"
@@ -81,11 +82,13 @@ _CFG: dict = {}
 class Work(NamedTuple):
     """One document and every distinct prediction for it."""
 
-    doc_id: str
-    gt_sha256: str
-    schema_sha256: str
+    entry: object          # the atlas row: doc_id, paths, hashes
     preds: tuple           # ((prediction_id, payload path), ...)
     cost: int              # biggest array in the gold, for scheduling
+
+    @property
+    def doc_id(self):
+        return self.entry.doc_id
 
 
 def scorer_version(repo: Path) -> tuple[str, dict]:
@@ -128,59 +131,46 @@ def environment() -> dict:
 
 
 def survey(corpus: Path, vendors: Path):
-    """Every document with its predictions, most expensive first, plus the dedup evidence.
+    """Every document the atlas lists, with its predictions, most expensive first.
 
-    The hashes come from the files, not from parsing them: this decides what to score, and
-    parsing 660 ground truths to find out costs more than the decision is worth.
+    The atlas decides what is in the benchmark -- not the directory listing -- so a document
+    curated out of it is simply not scored, and its predictions are skipped.
 
-    Most expensive first because the cost spread is extreme -- a median document has 6 array
-    rows against a largest of 26,725 -- so a pool fed any other way finishes its cheap work
-    and waits on one straggler.
-
-    Also returns the corpus version, and the documents no vendor has a prediction for. Adding a document to the
-    benchmark and having it scored are separate events -- the corpus grows first, and the
-    vendors run later -- so this is the normal state for a newly added document, not an error.
-    It still has to be visible: otherwise a document sits unscored indefinitely and the run
-    reports only the documents it happened to cover.
+    Most expensive first because the cost spread is extreme: a median document has 6 array rows
+    against a largest of 26,725, so a pool fed any other way finishes its cheap work and waits
+    on one straggler. Cost is computed from the gold rather than read from a column, so this
+    works on any corpus rather than only on ours. It is 0.5s across 660 documents.
     """
-    atlas = {r["doc_id"]: r for r in pq.read_table(corpus / "corpus.parquet").to_pylist()}
-    hashes = {d: (sha(corpus, d, GROUND_TRUTH), sha(corpus, d, SCHEMA)) for d in sorted(atlas)}
+    entries = {e.doc_id: e for e in corpus_atlas.read(corpus)}
     paths = defaultdict(list)
+    skipped = set()
     for vd in sorted(p for p in vendors.iterdir() if p.is_dir()):
         for r in pq.read_table(vd / "predictions.parquet").to_pylist():
-            if r["doc_id"] not in atlas:
-                raise ValueError(f"{vd.name}: {r['doc_id']} is not in the corpus")
+            if r["doc_id"] not in entries:
+                skipped.add(r["doc_id"])
+                continue
             paths[(r["doc_id"], r["prediction_id"])].append(vd / f"{r['doc_id']}.json")
 
     by_doc = defaultdict(list)
     for (doc_id, pid), files in paths.items():
         by_doc[doc_id].append((pid, str(files[0])))
 
-    work = [Work(doc_id, *hashes[doc_id], tuple(sorted(preds)),
-                 atlas[doc_id]["max_array_rows"])
+    work = [Work(entries[doc_id], tuple(sorted(preds)),
+                 biggest_array(json.loads((corpus / entries[doc_id].ground_truth_path)
+                                          .read_bytes())))
             for doc_id, preds in by_doc.items()]
-    awaiting = sorted(set(atlas) - set(by_doc))
-    return sorted(work, key=lambda w: -w.cost), paths, awaiting, corpus_version(hashes)
+    awaiting = sorted(set(entries) - set(by_doc))
+    return (sorted(work, key=lambda w: -w.cost), paths, awaiting,
+            corpus_atlas.version(entries.values()), sorted(skipped))
 
 
-def sha(corpus: Path, doc_id: str, name: str) -> str:
-    """Hash one of a document's files. From the bytes, not from parsing them."""
-    return hashlib.sha256((corpus / doc_id / name).read_bytes()).hexdigest()
-
-
-def corpus_version(hashes: dict) -> str:
-    """Identify the corpus by its contents.
-
-    Every document counts, including ones no vendor has scored yet: the version identifies the
-    corpus, not the subset that happened to be covered.
-
-    Computed here rather than taken from a HuggingFace revision so that it works on a corpus
-    that has never been pushed anywhere, which is every corpus while it is being built.
-    """
-    digest = hashlib.sha256()
-    for doc_id, (gt, schema) in sorted(hashes.items()):
-        digest.update(f"{doc_id}\0{gt}\0{schema}\0".encode())
-    return digest.hexdigest()[:16]
+def biggest_array(node) -> int:
+    """The longest array anywhere in the gold: what drives matching cost."""
+    if isinstance(node, dict):
+        return max((biggest_array(v) for v in node.values()), default=0)
+    if isinstance(node, list):
+        return max(len(node), max((biggest_array(v) for v in node), default=0))
+    return 0
 
 
 def stored(out: Path) -> dict:
@@ -201,7 +191,7 @@ def score_document(work: Work):
     The ground truth and schema are parsed once here and reused across every prediction for
     this document, which is the other reason the document is the unit: there are up to nine.
     """
-    doc = document(_CFG["corpus"], work.doc_id)
+    doc = document(_CFG["corpus"], work.entry)
     rows, verds = [], []
     for pid, payload in work.preds:
         case = Case(doc=doc, prediction_id=pid, raw=Path(payload).read_bytes())
@@ -324,7 +314,7 @@ def main():
     args = ap.parse_args()
 
     repo = Path(__file__).resolve().parent.parent
-    work, paths, awaiting, corpus_v = survey(args.corpus, args.vendors)
+    work, paths, awaiting, corpus_v, skipped = survey(args.corpus, args.vendors)
     if args.check_dedup:
         return 1 if check_dedup(paths) else 0
 
@@ -335,6 +325,10 @@ def main():
     print(f"  corpus {corpus_v}, scorer {name[:16]}")
     print(f"  {sum(len(v) for v in paths.values())} predictions -> {total} distinct "
           f"over {len(work)} documents")
+    if skipped:
+        print(f"  {len(skipped)} prediction(s) skipped; their documents are not in the "
+              f"atlas: {', '.join(skipped[:5])}"
+              + (f" and {len(skipped) - 5} more" if len(skipped) > 5 else ""))
     if awaiting:
         print(f"  {len(awaiting)} document(s) in the corpus have no prediction from any "
               f"vendor yet: {', '.join(awaiting[:5])}"

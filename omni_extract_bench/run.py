@@ -27,8 +27,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from .bench import (GROUND_TRUTH as GROUND_TRUTH_NAME, SCHEMA as SCHEMA_NAME,
-                    cases, documents, predictions, score, summary_row, verdict_rows)
+from . import corpus as corpus_atlas
+from .bench import (cases, documents, predictions, score, summary_row,
+                    verdict_rows)
+from .corpus import Stale
 
 #: The published benchmark. `--corpus` overrides it, which is how you score against your own
 #: ground truth: the loader does not care whose corpus it is.
@@ -62,7 +64,7 @@ def published_corpus() -> Path:
             "pip install 'omni-extract-bench[run]', or pass --corpus to use your own")
     return Path(snapshot_download(
         HF_REPO, repo_type="dataset",
-        allow_patterns=["*/ground_truth.json", "*/schema.json"]))
+        allow_patterns=[corpus_atlas.ATLAS, "*/ground_truth.json", "*/schema.json"]))
 
 
 def write_run(out: Path, summary: list[dict], by_doc: dict[str, list[dict]]) -> None:
@@ -85,26 +87,45 @@ def write_run(out: Path, summary: list[dict], by_doc: dict[str, list[dict]]) -> 
 
 #: What a user can get wrong, as opposed to what a bug looks like. These are reported as a
 #: message; anything else keeps its traceback, because it is ours to fix.
-USER_ERRORS = (FileNotFoundError, NotADirectoryError, ValueError)
+USER_ERRORS = (FileNotFoundError, NotADirectoryError, ValueError, Stale)
 
 
-def cmd_bench(args) -> int:
+def cmd_score(args) -> int:
     """Score a directory of predictions against a corpus."""
     try:
-        return _bench(args)
+        return _score_corpus(args)
     except USER_ERRORS as exc:
         print(f"  {exc}", file=sys.stderr)
         return 1
 
 
-def _bench(args) -> int:
+def _score_corpus(args) -> int:
     corpus = Path(args.corpus) if args.corpus else published_corpus()
     docs = list(documents(corpus))
     want_verdicts = not args.no_verdicts
 
+    # A prediction for a document the atlas does not list is not necessarily a mistake:
+    # curating a document out leaves its predictions behind, and that is the normal state of a
+    # filtered corpus. A prediction naming nothing at all still is a mistake, and usually a
+    # filename convention -- so tell the two apart by whether the document exists on disk.
+    listed = {d.doc_id for d in docs}
+    curated_out = set(corpus_atlas.undeclared(corpus, corpus_atlas.read(corpus)))
+    wanted, skipped = [], []
+    for doc_id, raw in predictions(Path(args.predictions)):
+        if doc_id in listed:
+            wanted.append((doc_id, raw))
+        elif doc_id in curated_out:
+            skipped.append(doc_id)
+        else:
+            wanted.append((doc_id, raw))      # `cases` raises, with near matches
+    if skipped:
+        print(f"  {len(skipped)} prediction(s) skipped; their documents are not in this "
+              f"corpus: {', '.join(sorted(skipped)[:5])}"
+              + (f" and {len(skipped) - 5} more" if len(skipped) > 5 else ""))
+
     summary, by_doc, kinds = [], {}, {}
     seen = 0
-    for case in cases(docs, predictions(Path(args.predictions))):
+    for case in cases(docs, wanted):
         outcome = score(case, verdicts=want_verdicts)
         summary.append(summary_row(case, outcome))
         by_doc[case.doc.doc_id] = verdict_rows(case, outcome)
@@ -184,40 +205,79 @@ def _explain(args) -> int:
     return 0
 
 
-def cmd_verify(args) -> int:
-    """Check that a corpus directory satisfies the contract, and say what is in it.
+def cmd_build_corpus(args) -> int:
+    """Declare what a corpus contains, or re-record files you meant to change.
 
-    Reading every document is the check: a missing or unparseable file raises here rather than
-    an hour into a run.
+    Two verbs, because they answer different questions. Without `--refresh` this discovers
+    every document in the tree, which is how a corpus starts. With it, it re-hashes exactly
+    the rows already listed -- so a corpus you have curated down does not silently regain
+    everything you removed.
     """
     root = Path(args.corpus)
     try:
-        docs = list(documents(root))
+        if args.refresh:
+            entries = corpus_atlas.refresh(root, corpus_atlas.read(root))
+            how = "refreshed"
+        else:
+            if (root / corpus_atlas.ATLAS).exists() and not args.replace:
+                print(f"  {root / corpus_atlas.ATLAS} exists. Re-discovering would undo any "
+                      f"curation.\n"
+                      f"  To re-record files you changed:   --refresh\n"
+                      f"  To start again from the tree:     --replace", file=sys.stderr)
+                return 1
+            entries = corpus_atlas.discover(root)
+            how = "discovered"
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
         print(f"  {exc}", file=sys.stderr)
         return 1
-    if not docs:
-        print(f"  no documents in {root}", file=sys.stderr)
+    if not entries:
+        print(f"  no documents under {root}", file=sys.stderr)
         return 1
 
-    ids = [d.doc_id for d in docs]
-    dupes = {i for i in ids if ids.count(i) > 1}
-    extras = sorted({f.name for d in docs for f in (root / d.doc_id).iterdir()
-                     if f.name not in (GROUND_TRUTH_NAME, SCHEMA_NAME)})
-    print(f"  {len(docs)} documents, all with {GROUND_TRUTH_NAME} and {SCHEMA_NAME}")
-    print(f"  leaf values in the ground truth: "
-          f"{sum(_leaves(d.gt) for d in docs):,}")
-    if extras:
-        print(f"  also present, and ignored: {', '.join(extras[:6])}")
-    if dupes:
-        print(f"  DUPLICATE doc_ids: {sorted(dupes)}", file=sys.stderr)
-    return 1 if dupes else 0
+    before = None
+    if args.refresh:
+        before = corpus_atlas.version(corpus_atlas.read(root))
+    corpus_atlas.write(root, entries)
+    after = corpus_atlas.version(entries)
+    print(f"  {how} {len(entries)} documents -> {corpus_atlas.ATLAS}")
+    print(f"  corpus version {after}"
+          + (f"  (was {before})" if before and before != after else ""))
+    extra = corpus_atlas.undeclared(root, entries)
+    if extra:
+        print(f"  {len(extra)} document(s) on disk are not listed: {', '.join(extra[:5])}"
+              + (f" and {len(extra) - 5} more" if len(extra) > 5 else ""))
+    return 0
 
 
-def _leaves(node) -> int:
-    """Scalar values under a JSON node. A rough size, for telling the user what they have."""
-    if isinstance(node, dict):
-        return sum(_leaves(v) for v in node.values())
-    if isinstance(node, list):
-        return sum(_leaves(v) for v in node)
-    return 1
+def cmd_verify(args) -> int:
+    """Check the corpus against its atlas, and say what has moved.
+
+    The atlas is a snapshot, so this answers the question you actually have while curating:
+    what have I changed since I last declared this corpus?
+    """
+    root = Path(args.corpus)
+    try:
+        entries = corpus_atlas.read(root)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        print(f"  {exc}", file=sys.stderr)
+        return 1
+
+    problems = corpus_atlas.check(root, entries)
+    extra = corpus_atlas.undeclared(root, entries)
+    print(f"  {len(entries)} documents listed, corpus version "
+          f"{corpus_atlas.version(entries)}")
+    if extra:
+        # Not an error: curating a document out is exactly this. It is also what a
+        # half-finished copy looks like, so it is worth seeing either way.
+        print(f"  {len(extra)} on disk but not listed (curated out, or not yet added): "
+              f"{', '.join(extra[:5])}" + (f" and {len(extra) - 5} more" if len(extra) > 5
+                                           else ""))
+    if problems:
+        print(f"  {len(problems)} file(s) no longer match the atlas:", file=sys.stderr)
+        for p in problems[:10]:
+            print(f"      {p}", file=sys.stderr)
+        print(f"  If those changes were intended:  oeb build-corpus --corpus {root} "
+              f"--refresh", file=sys.stderr)
+        return 1
+    print("  every listed file matches the atlas")
+    return 0

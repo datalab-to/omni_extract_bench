@@ -1,23 +1,24 @@
 """Command-line interface.
 
-    omni-extract-bench bench   --predictions preds/ [--corpus DIR] [--out run/]
-    omni-extract-bench explain --predictions preds/ --doc <doc_id>
-    omni-extract-bench verify  --corpus DIR
-    omni-extract-bench score   --pred p.json --gt g.json --schema s.json
+    oeb build-corpus --corpus DIR
+    oeb score        --predictions preds/ [--corpus DIR] [--out run/]
+    oeb explain      --predictions preds/ --doc <doc_id>
+    oeb verify       --corpus DIR
+    oeb score-one    --pred p.json --gt g.json --schema s.json
 
-`bench` is the one to reach for: a corpus is a directory of document directories, each holding
-`ground_truth.json` and `schema.json`, and predictions are `<doc_id>.json`. `--corpus` defaults
-to the published benchmark, and pointing it elsewhere is how you score against your own ground
-truth. See `docs/USING.md`.
+A corpus is a directory of document directories, each holding `ground_truth.json` and
+`schema.json`, plus a `corpus.parquet` atlas that says which of them are in the benchmark.
+`build-corpus` writes the atlas; `score` runs over it. `--corpus` defaults to the published
+benchmark, and pointing it elsewhere is how you score against your own ground truth. See
+`docs/USING.md`.
 
-`score` is the single-pair escape hatch, for when there is no benchmark involved at all.
+`score-one` is the escape hatch for a single pair, when there is no benchmark involved at all.
 
 A schema is required, and is passed through `strip_benchmark_keys` and `resolve_refs` first --
 the scorer refuses a schema it cannot see through.
 
-Two earlier commands, `score-dir` and `leaderboard`, took `--gt-dir` and `--schema-dir` and
-paired files by basename across flat per-type directories. They could not read the benchmark
-layout at all, so they were a second and incompatible way in. `bench` replaces both.
+Two earlier commands, `score-dir` and `leaderboard`, paired files by basename across flat
+per-type directories and could not read the benchmark layout at all. `score` replaces both.
 
 NOTE: aggregation here is a flat mean over documents. METRIC_SPEC section 7 defines the
 published number as an equal-weight mean over SUBSETS, which needs the subset each document
@@ -111,7 +112,7 @@ def main(argv=None):
                                  description="Score document-extraction predictions.")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("score", help="score one prediction")
+    s = sub.add_parser("score-one", help="score a single prediction/gt/schema triple")
     s.add_argument("--pred", required=True)
     s.add_argument("--gt", required=True)
     s.add_argument("--schema", required=True)
@@ -123,13 +124,21 @@ def main(argv=None):
     # the three commands above take.
     from . import run as _run
 
-    n = sub.add_parser("bench", help="score a directory of predictions against a corpus")
+    c = sub.add_parser("build-corpus", help="write the atlas that says what a corpus contains")
+    c.add_argument("--corpus", required=True)
+    c.add_argument("--refresh", action="store_true",
+                   help="re-hash the documents already listed, keeping the selection")
+    c.add_argument("--replace", action="store_true",
+                   help="re-discover from the tree, discarding any curation")
+    c.set_defaults(fn=_run.cmd_build_corpus)
+
+    n = sub.add_parser("score", help="score a directory of predictions against a corpus")
     n.add_argument("--predictions", required=True, help="directory of <doc_id>.json")
     n.add_argument("--corpus", help="default: download the published benchmark")
     n.add_argument("--out", help="write summary.parquet and verdicts/ here")
     n.add_argument("--no-verdicts", action="store_true",
                    help="skip the per-address table; saves memory, not much time")
-    n.set_defaults(fn=_run.cmd_bench)
+    n.set_defaults(fn=_run.cmd_score)
 
     e = sub.add_parser("explain", help="show every address for one document")
     e.add_argument("--predictions", required=True)

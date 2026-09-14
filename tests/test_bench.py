@@ -22,8 +22,10 @@ from pathlib import Path
 
 _ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 _sys.path.insert(0, _ROOT)
+from omni_extract_bench import corpus as corpus_atlas                       # noqa: E402
 from omni_extract_bench.bench import (                                     # noqa: E402
-    Outcome, cases, documents, key_of, predictions, score, summary_row, verdict_rows)
+    cases, document, documents, key_of, predictions, score, summary_row, verdict_rows)
+from omni_extract_bench.corpus import Stale                                # noqa: E402
 
 FAILS = []
 
@@ -46,12 +48,14 @@ GOLD = {"invoice_number": "A-1", "total": 42.0, "lines": [{"sku": "x", "qty": 2}
 
 
 def corpus_with(**docs):
+    """A corpus, declared. The atlas is what makes a directory a benchmark."""
     root = Path(tempfile.mkdtemp())
     for doc_id, gt in docs.items():
         d = root / doc_id
         d.mkdir()
         (d / "ground_truth.json").write_text(json.dumps(gt))
         (d / "schema.json").write_text(json.dumps(SCHEMA))
+    corpus_atlas.write(root, corpus_atlas.discover(root))
     return root
 
 
@@ -98,19 +102,22 @@ try:
     # Everything the published benchmark carries alongside, which no one else should need.
     (corpus / "a" / "source.json").write_text('{"suite": "ours"}')
     (corpus / "a" / "document.pdf").write_bytes(b"%PDF-1.4 not really")
-    (corpus / "corpus.parquet").write_bytes(b"not a parquet either")
     docs = list(documents(corpus))
     report("extra files beside a document are ignored", len(docs) == 1)
     report("a file in the corpus root is not mistaken for a document",
            [d.doc_id for d in docs] == ["a"])
+    note("only ground_truth.json and schema.json are hashed; the rest is ours to carry")
 
     (corpus / "b").mkdir()
     (corpus / "b" / "ground_truth.json").write_text("{}")
+    report("a document not in the atlas is not in the benchmark",
+           [d.doc_id for d in documents(corpus)] == ["a"])
+    note("curation is deleting a row, and the files stay on disk")
     try:
-        list(documents(corpus))
-        report("a document without a schema stops the run", False, "accepted")
+        corpus_atlas.discover(corpus)
+        report("a document without a schema stops a rebuild", False, "accepted")
     except FileNotFoundError as exc:
-        report("a document without a schema stops the run", "schema.json" in str(exc))
+        report("a document without a schema stops a rebuild", "schema.json" in str(exc))
         note("a schema is required and never inferred")
 finally:
     shutil.rmtree(corpus)
@@ -125,9 +132,18 @@ try:
            set(before) == {"doc_id", "prediction_id", "gt_sha256", "schema_sha256"},
            str(sorted(before)))
 
-    # Correcting the gold must change the row's identity, or the corrected score looks like
-    # the same row disagreeing with itself -- a false non-determinism alarm.
+    # Editing the gold must stop the run: data moving underneath a benchmark is exactly what
+    # the atlas exists to catch.
     (corpus / "a" / "ground_truth.json").write_text(json.dumps({**GOLD, "total": 43.0}))
+    try:
+        list(documents(corpus))
+        report("an edited ground truth stops the run", False, "accepted silently")
+    except Stale as exc:
+        report("an edited ground truth stops the run", "--refresh" in str(exc))
+        note("otherwise the numbers look ordinary and mean something else")
+
+    # Recording the change is the deliberate act, and it changes the row's identity.
+    corpus_atlas.write(corpus, corpus_atlas.refresh(corpus, corpus_atlas.read(corpus)))
     after = key_of(next(cases(documents(corpus), predictions(p))))
     report("correcting a ground truth changes the row's identity",
            after["gt_sha256"] != before["gt_sha256"]

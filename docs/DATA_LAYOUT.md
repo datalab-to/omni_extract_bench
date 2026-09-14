@@ -440,6 +440,23 @@ That number is almost entirely three documents -- 61% of the CPU, and one of the
 single vendor's wall clock, with three workers idle for the last nineteen minutes. Scheduling
 hides this across nine vendors and cannot hide it for one. See `TO_LOOK_AT.md` item 15.
 
+### The atlas is the corpus
+
+`corpus.parquet` is not an index of the directory; it is the statement of what the benchmark
+contains. Scoring runs over its rows and nothing else, so a half-copied document or a scratch
+directory cannot join a benchmark by being present, and curating one out is deleting a row
+rather than deleting data.
+
+Each row names its files **relative to the atlas** and records their sha256. Paths are stored
+rather than implied so a row says what it points at, and they are still required to be
+`<doc_id>/ground_truth.json` and `<doc_id>/schema.json` -- a path column that can say anything
+is one that can point outside the corpus, or at another corpus.
+
+The hashes make editing data deliberate: a changed ground truth stops the run instead of
+quietly producing different numbers, and `build-corpus --refresh` is how you record that you
+meant it. `--refresh` re-hashes only the rows already listed, so recording an edit never undoes
+curation.
+
 ### The corpus is versioned, not mutated
 
 ```
@@ -448,13 +465,14 @@ scores/<corpus_version>/<scorer_commit>/verdicts/<doc_id>.parquet
 ```
 
 A score means nothing without knowing which corpus produced it, so the corpus version is in
-the path. It is a sha256 over every document's `(doc_id, gt_sha256, schema_sha256)`, truncated
-to 16 hex characters -- computed from the contents rather than taken from a HuggingFace
-revision, so it works on a corpus that has never been pushed anywhere, which is every corpus
-while it is being built.
+the path. It is a sha256 over the atlas's `(doc_id, gt_sha256, schema_sha256)`, truncated to 16 hex
+characters -- computed from the contents rather than taken from a HuggingFace revision, so it
+works on a corpus that has never been pushed anywhere, which is every corpus while it is being
+built.
 
-Every document counts toward it, including ones no vendor has scored yet: the version
-identifies the corpus, not the subset that happened to be covered.
+Every listed document counts toward it, including ones no vendor has scored yet: the version
+identifies the corpus, not the subset that happened to be covered. Curating a row out changes
+it too, which is correct -- a filtered corpus is a different benchmark.
 
 **Adding a document or correcting a ground truth therefore produces a new corpus, a new
 directory, and a fresh run against it.** Both identifiers are immutable, and a finished table

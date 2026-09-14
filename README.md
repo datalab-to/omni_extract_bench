@@ -24,7 +24,7 @@ Python 3.11+.
 Score a directory of predictions against the published benchmark:
 
 ```bash
-omni-extract-bench bench --predictions preds/ --out run/
+oeb score --predictions preds/ --out run/
 ```
 
 `preds/` holds one `<doc_id>.json` per document, containing the extraction itself. The corpus
@@ -44,19 +44,32 @@ r["matching_exact"]   # False if an array was too large to solve exactly
 
 ## Bring your own ground truth
 
-A corpus is a directory of document directories, each holding exactly two files:
+A corpus is a directory of document directories, plus an atlas that says which of them are in
+the benchmark:
 
 ```
+<corpus>/corpus.parquet            the atlas -- the source of truth
 <corpus>/<doc_id>/ground_truth.json
 <corpus>/<doc_id>/schema.json
 ```
 
-Anything else in the directory is ignored. Point `--corpus` at your own and nothing else
-changes:
+```bash
+oeb build-corpus --corpus my-benchmark/                    # declare what it contains
+oeb score --corpus my-benchmark/ --predictions preds/ --out run/
+```
+
+**The atlas defines the benchmark; the directory merely stores it.** Scoring runs over its rows
+and nothing else, so a half-copied document or a scratch directory cannot silently join. That
+makes curation ordinary: build an atlas over everything you have, delete rows in DuckDB or
+pandas, and the remaining rows are the benchmark. The files stay on disk, so a document comes
+back by re-adding its row.
+
+Each row records the sha256 of the files it names, so editing a ground truth stops the run
+rather than quietly changing your numbers. `oeb build-corpus --refresh` is how you say you
+meant it — it re-hashes the rows already listed, without resurrecting anything you curated out.
 
 ```bash
-omni-extract-bench verify --corpus my-benchmark/
-omni-extract-bench bench  --corpus my-benchmark/ --predictions preds/ --out run/
+oeb verify --corpus my-benchmark/     # what has changed since the atlas was written
 ```
 
 The published benchmark is one instance of that contract, not a special case -- it carries
@@ -87,7 +100,7 @@ where verdict = 'wrong value';
 Or for one document, without SQL:
 
 ```bash
-omni-extract-bench explain --predictions preds/ --doc <doc_id>
+oeb explain --predictions preds/ --doc <doc_id>
 ```
 
 This is worth doing before trusting an accuracy number. On a sample of real vendor output,
@@ -179,6 +192,7 @@ python tests/test_dialects.py                 # per-vendor schema dialects
 python tests/test_capture.py                  # transport capture, including a real subprocess
 python tests/test_bench.py                    # the corpus contract, and graded/unusable/failed
 python tests/test_cli.py                      # the command line, end to end
+python tests/test_scores.py                   # the scores table and corpus versioning
 ```
 
 The structural audit is the strongest of these: if wrapping a document in an extra level cannot

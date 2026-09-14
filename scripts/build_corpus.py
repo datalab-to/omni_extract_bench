@@ -48,6 +48,7 @@ import pyarrow.parquet as pq
 from huggingface_hub import snapshot_download
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from omni_extract_bench import corpus as corpus_atlas                       # noqa: E402
 from omni_extract_bench.layout import check_doc_id, check_unique, verify  # noqa: E402
 
 #: Every payload extension the corpus tree holds. A type missing here is invisible to
@@ -144,10 +145,18 @@ def expected_payloads(rows):
 
 def row_for(doc_id: str, suite: str, source_id, doc_dir: Path, source_bytes: bytes,
             gt_bytes: bytes, schema_bytes: bytes, pdf_sha):
-    """One atlas row. Every column is a fact about a file or about the JSON's shape."""
+    """One atlas row.
+
+    The first five columns are `corpus.REQUIRED` -- what anything reading an atlas depends on.
+    The rest are ours: provenance and shape, additive, and nothing outside this repository
+    needs them.
+    """
     gt = json.loads(gt_bytes)
+    gt_path, schema_path = corpus_atlas.expected_paths(doc_id)
     return {
         "doc_id": doc_id,
+        "ground_truth_path": gt_path,
+        "schema_path": schema_path,
         "suite": suite,
         "source_id": source_id,
         "gt_bytes": len(gt_bytes),

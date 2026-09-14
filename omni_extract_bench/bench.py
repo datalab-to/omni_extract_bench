@@ -5,16 +5,19 @@ one that knows a benchmark is a set of documents, that a prediction may be missi
 an error blob, and that the answer is a table. It knows nothing about parquet, HuggingFace or
 R2, and nothing about where any of its inputs came from.
 
-**The contract is two files per document.**
+**A corpus is its atlas.**
 
+    <corpus>/corpus.parquet          which documents are in the benchmark
     <corpus>/<doc_id>/ground_truth.json
     <corpus>/<doc_id>/schema.json
 
-Anything else in the directory is ignored. `document.pdf`, `source.json`, page images, a
-`corpus.parquet` beside it -- those are the published benchmark's own operational layer, and
-requiring them of someone scoring their own gold would be asking them to invent a "suite" they
-do not have. Our corpus is one instance of this contract, not a special case: the same
-`documents()` reads both.
+Scoring runs over the rows in `corpus.parquet`, and each row's files are checked against the
+hashes it records. See `corpus.py` for why. Anything else in the directory is ignored --
+`document.pdf`, `source.json`, page images -- and a document the atlas does not list is not in
+the benchmark, which is how curation works.
+
+The published corpus is one instance of this, not a special case: the same `documents()` reads
+both, and the extra columns ours carries are additive.
 
 Predictions are `<doc_id>.json`, holding the bare extraction. No envelope, no atlas, nothing
 to unwrap.
@@ -35,14 +38,11 @@ import json
 from pathlib import Path
 from typing import Iterable, Iterator, NamedTuple
 
+from . import corpus as corpus_atlas
+from .corpus import GROUND_TRUTH, SCHEMA, Stale
 from .dialects import resolve_refs, strip_benchmark_keys
 from .prediction_io import usable
 from .score import grade, show
-
-#: The two files a document must have. Named in full because they appear in error messages.
-GROUND_TRUTH = "ground_truth.json"
-SCHEMA = "schema.json"
-
 
 class Document(NamedTuple):
     """One document of a benchmark, before any prediction.
@@ -102,44 +102,54 @@ def prediction_id(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def document(root: Path, doc_id: str) -> Document:
-    """Load one document by id.
+def document(root: Path, entry) -> Document:
+    """Load one document named by an atlas row, checking it is what the atlas says.
 
-    Separate from `documents` so a worker process can load only what it was handed. A parsed
-    ground truth can be tens of megabytes, and shipping one through a pickle to every worker
-    costs more than reading it from disk there.
+    Takes an entry rather than a bare id so a worker can load exactly what it was handed
+    without re-reading the atlas. A parsed ground truth can be tens of megabytes, so it is
+    read here rather than pickled across.
+
+    Raises:
+        Stale: if a file's contents no longer match the atlas. Scoring against data that has
+            moved underneath the benchmark is worse than stopping: the numbers would look
+            ordinary and mean something else.
     """
-    d = Path(root) / doc_id
-    for name in (GROUND_TRUTH, SCHEMA):
-        if not (d / name).exists():
+    root = Path(root)
+    gt_file, schema_file = root / entry.ground_truth_path, root / entry.schema_path
+    for f in (gt_file, schema_file):
+        if not f.exists():
             raise FileNotFoundError(
-                f"{doc_id}: no {name}. A document needs {GROUND_TRUTH} and {SCHEMA}; "
-                f"a schema is required and is never inferred, because without it an "
-                f"additionalProperties subtree would be graded silently.")
-    gt_bytes = (d / GROUND_TRUTH).read_bytes()
-    schema_bytes = (d / SCHEMA).read_bytes()
+                f"{entry.doc_id}: {f.relative_to(root)} is listed in the atlas but missing")
+    gt_bytes, schema_bytes = gt_file.read_bytes(), schema_file.read_bytes()
+    gt_sha = hashlib.sha256(gt_bytes).hexdigest()
+    schema_sha = hashlib.sha256(schema_bytes).hexdigest()
+    for got, want, what in ((gt_sha, entry.gt_sha256, GROUND_TRUTH),
+                            (schema_sha, entry.schema_sha256, SCHEMA)):
+        if got != want:
+            raise Stale(
+                f"{entry.doc_id}: {what} has changed since the atlas was written.\n"
+                f"  If that was intended, record it:  oeb build-corpus --corpus {root} "
+                f"--refresh\n"
+                f"  If it was not, the benchmark's data has drifted underneath it.")
     return Document(
-        doc_id=doc_id,
+        doc_id=entry.doc_id,
         gt=json.loads(gt_bytes),
         schema=resolve_refs(strip_benchmark_keys(json.loads(schema_bytes))),
-        gt_sha256=hashlib.sha256(gt_bytes).hexdigest(),
-        schema_sha256=hashlib.sha256(schema_bytes).hexdigest(),
+        gt_sha256=gt_sha,
+        schema_sha256=schema_sha,
     )
 
 
 def documents(root: Path) -> Iterator[Document]:
-    """Every document in a corpus directory, in sorted order.
+    """Every document the atlas lists, in its order.
 
     Raises:
-        FileNotFoundError: naming the document and the missing file. A schema is required and
-            is never inferred -- `score._both` explains why at length, and guessing one would
-            silently decide which subtrees get graded.
+        FileNotFoundError: if there is no atlas, or a listed file is missing.
+        Stale: if a file no longer matches its recorded hash.
     """
     root = Path(root)
-    if not root.is_dir():
-        raise NotADirectoryError(f"corpus {root} is not a directory")
-    for d in sorted(p for p in root.iterdir() if p.is_dir()):
-        yield document(root, d.name)
+    for entry in corpus_atlas.read(root):
+        yield document(root, entry)
 
 
 def predictions(root: Path) -> Iterator[tuple[str, bytes]]:
@@ -147,6 +157,10 @@ def predictions(root: Path) -> Iterator[tuple[str, bytes]]:
 
     Bytes rather than parsed JSON because `prediction_id` hashes what was stored. Parsing and
     re-dumping would hash our formatting instead of the vendor's.
+
+    Predictions are NOT listed in an atlas. The corpus is a fixed thing that must not drift,
+    which is what the atlas is for; a prediction set is whatever you just produced, and
+    requiring a manifest to score your own output would be ceremony with nothing to protect.
     """
     root = Path(root)
     if not root.is_dir():

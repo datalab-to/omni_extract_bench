@@ -11,7 +11,7 @@ this file is about what you need, which is much less.
 ```bash
 pip install 'omni-extract-bench[run]'
 
-omni-extract-bench bench --predictions preds/ --out run/
+oeb score --predictions preds/ --out run/
 ```
 
 `--predictions` is a directory of `<doc_id>.json`, each holding the extraction itself. The
@@ -23,14 +23,16 @@ That is the entire common case. Everything below is a variation on it.
 
 ## The contract
 
-A corpus is a directory of document directories. Each needs exactly two files:
+A corpus is a directory of document directories, plus an atlas:
 
 ```
+<corpus>/corpus.parquet            which documents are in the benchmark
 <corpus>/<doc_id>/ground_truth.json
 <corpus>/<doc_id>/schema.json
 ```
 
-Anything else in the directory is ignored.
+`oeb build-corpus --corpus DIR` writes the atlas. Anything else in the directory is ignored,
+and a document the atlas does not list is not in the benchmark.
 
 **That is the whole contract.** The published benchmark also carries `document.pdf`,
 `source.json`, a `corpus.parquet` atlas and some metadata tables, but those are our
@@ -60,8 +62,40 @@ that explanation rather than guessing.
 Point `--corpus` at your own directory. There is no other difference:
 
 ```bash
-omni-extract-bench verify --corpus my-benchmark/
-omni-extract-bench bench  --corpus my-benchmark/ --predictions preds/ --out run/
+oeb build-corpus --corpus my-benchmark/
+oeb score        --corpus my-benchmark/ --predictions preds/ --out run/
+```
+
+### Curating
+
+The atlas is the selection, so filtering the benchmark is filtering a table:
+
+```python
+import pyarrow.parquet as pq, pyarrow as pa
+t = pq.read_table("my-benchmark/corpus.parquet")
+keep = [r for r in t.to_pylist() if r["doc_id"] != "the-bad-one"]
+pq.write_table(pa.Table.from_pylist(keep), "my-benchmark/corpus.parquet")
+```
+
+The files stay on disk, so nothing is lost and the document returns by re-adding its row. The
+corpus version changes, because a filtered corpus is a different benchmark.
+
+### Changing data is deliberate
+
+Each row records the sha256 of the files it names, so editing a ground truth stops the next run:
+
+```
+acme-jan: ground_truth.json has changed since the atlas was written.
+  If that was intended, record it:  oeb build-corpus --corpus my-bench --refresh
+  If it was not, the benchmark's data has drifted underneath it.
+```
+
+`--refresh` re-hashes the rows already listed; it will not resurrect documents you curated out.
+Plain `build-corpus` re-discovers from the tree and refuses to overwrite an existing atlas for
+exactly that reason (`--replace` if you mean it).
+
+```bash
+oeb verify --corpus my-benchmark/    # what has changed since the atlas was written
 ```
 
 `verify` reads every document and tells you what it found, so a malformed corpus fails in a
@@ -113,7 +147,7 @@ group by 1, 2 order by acc;
 For one document, without SQL:
 
 ```bash
-omni-extract-bench explain --predictions preds/ --doc <doc_id>
+oeb explain --predictions preds/ --doc <doc_id>
 ```
 
 Verdicts are worth looking at before you trust an accuracy number. On a sample of real

@@ -29,6 +29,8 @@ Homepage = "https://github.com/datalab-to/omni_extract_bench"
 Datalab = "https://datalab.to"
 
 [project.scripts]
+# `oeb` is the one to type; the long name stays so the package and its command match.
+oeb = "omni_extract_bench.cli:main"
 omni-extract-bench = "omni_extract_bench.cli:main"
 
 [build-system]
