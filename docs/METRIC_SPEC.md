@@ -76,9 +76,14 @@ are tested by `tests/test_comparison_surface.py`:
     2024-10-31T00:00:00Z = 2024-10-31        a timestamp at MIDNIGHT is a date
     2024-10-31T09:00:00Z = 2024-10-31 09:00:00     two spellings of one instant
     ACME CORP = Acme Corp      "Acme  Corp." = "Acme Corp"      TRUE = true
-    "N/A" = "-" = "" (all canonicalise to empty)
+    "N/A" = "-" = "none" = "na"    the placeholder WORDS fold into each other
 
-These are **not**, and will score as disagreements even though a human would call them
+`""` is NOT in that list, and the difference is the point: a placeholder word is something
+the page printed, so it has an address and compares like any other value. An empty string is
+what a BLANK cell serialises to, so it has no address at all (§5) -- gold `"N/A"` against a
+predicted `""` is a miss, not a match.
+
+These are **not** folded, and will score as disagreements even though a human would call them
 formatting:
 
     USD 1234.56 ≠ 1234.56        1234.56 USD ≠ 1234.56       currency codes are not stripped
@@ -304,6 +309,64 @@ missing — declining scatters across the fields a model finds hard, truncation 
 contiguous tail across every field of the last rows.
 
 Asserted by `tests/test_spec_null_semantics.py`.
+
+### 5.1 Rendering is folded; content is not
+
+§2 lists which spellings fold. This says what the list is FOR, because the question keeps
+arriving as "the schema said *as printed*, so why is a reformatted date a match?"
+
+`17 APR 2020` and `2020-04-17` compare equal. `NIKE, Inc.` and `Nike` do not. The test is not
+how alike the strings look -- it is whether the fact survives the round trip. A date rewritten
+in another format still names the same day and can be recovered from either spelling. A company
+name with its legal suffix removed has dropped something no rule recovers.
+
+| | fact recoverable? | |
+| --- | --- | --- |
+| `17 APR 2020` vs `2020-04-17` | yes -- same day | folded |
+| `""` vs `null` vs an absent key | yes -- the cell is blank either way | folded (§5) |
+| `NIKE, Inc.` vs `Nike` | no -- the suffix is gone | charged |
+| `null` vs `"n/a"` | no -- a page printing "N/A" is not a page that is silent | charged (§5) |
+
+**A field description asking for a particular rendering does not change this**, and the reason
+matters more than the rule. A `description` is a JSON Schema *annotation*: it constrains
+nothing, no validator checks it, and no vendor is obliged to follow it. Charging a model for
+rewriting a date it demonstrably read correctly would be scoring whether its serializer happens
+to match this corpus's annotation style.
+
+**What it costs, stated plainly.** A few fields want the rendering *as* the fact -- one asks for
+a clerk's date stamp "transcribed verbatim as written", because there the characters are the
+evidence. Those get leniency they explicitly declined, and separating them would take a
+per-field scoring rule. This metric does not take that trade: `canon_key` stays a function of
+two values and never of two values and a field path (see `values.py`). The unfairness is real,
+bounded, and preferred to the alternative.
+
+**It does not run the other way.** Nothing here licenses the GROUND TRUTH to normalise. A gold
+value that drops a legal suffix, a title, or an article is wrong against its own schema, and
+`TO_LOOK_AT.md` items 19 and 20 record 28 such cases found by vendor consensus.
+
+### 5.2 Only what was asked is scored
+
+**The scorer enforces nothing the model was not shown.** `harness/dialects.py` states the delivery half
+of this -- a dialect transform "may change how a constraint is *encoded*, never what is *asked
+for*" -- and this is the scoring half.
+
+It has teeth because dialects are applied PER VENDOR. `STRICT_ALLOWED_KEYS` is
+`type, enum, properties, items, required, description`; a strictly-validating vendor receives
+only those, while a permissive one may receive the whole schema. So `pattern`, `format`,
+`minimum` and `maxLength` reach some vendors and provably not others. Scoring against them
+would penalise vendors in proportion to how strict their API is -- a fact about the harness,
+reported as a fact about the vendor, which is the failure `harness/dialects.py` exists to prevent.
+
+Two consequences worth naming:
+
+* **`enum` is the exception, and it is underused.** It is the one validating keyword on the
+  allowlist: it reaches the vendor, constrains the output, and can be checked against the gold.
+  For a closed set it beats describing the options in prose, which does none of the three.
+* **Constraints belong on the annotation side.** `pattern`, `format` and `minimum` are worth
+  carrying in the schema so the GROUND TRUTH can be linted against them -- a field declaring
+  `XXX-XX-XXXX` and a gold value with five X's is a mechanical catch, and that exact error
+  occurs sixteen times in this corpus. Their value is in checking the answer key, not in
+  scoring the answer.
 
 ## 6. Ground truth adjustments
 
