@@ -70,6 +70,25 @@ from scipy.optimize import linear_sum_assignment as _lsa
 MAX_EXACT = 20000
 MAX_CELLS = 250 * 10**6
 
+#: Absolute ceiling on the exact path, in cells. `MAX_CELLS` is the size below which exact is
+#: taken without further thought; this is the size above which it is refused however sparse the
+#: alternative looks. 500 million cells is ~4 GB as float64.
+MAX_CELLS_DENSE = 500 * 10**6
+
+#: What each path costs per unit, used to compare them between the two ceilings above.
+#:
+#: Exact holds one float64 per CELL, whether or not the pair is worth anything. Greedy holds a
+#: Python 3-tuple per POSITIVE pair -- 64 bytes for the tuple and 8 for the list slot; the
+#: integers inside are shared across pairs and amortise away. So greedy is cheaper only on a
+#: sparse block, and on a dense one it costs ~9x MORE than the matrix it exists to avoid.
+#:
+#: That is the same failure the `MAX_CELLS` note above describes and `_best_pairing` removed:
+#: a per-pair Python object dwarfing the matrix. It was fixed there and missed here, which is
+#: why a fallback taken FOR memory reasons could run the machine out of it. Until `_greedy`
+#: stores pairs compactly, the honest fix is to stop sending dense blocks down it.
+EXACT_BYTES_PER_CELL = 8
+GREEDY_BYTES_PER_PAIR = 72
+
 
 def force_approximate():
     """Test hook: shrink the exactness budget so the greedy fallback engages.
@@ -82,29 +101,51 @@ def force_approximate():
     announces itself would pass without ever exercising the path it describes. Building an
     array big enough instead costs minutes per test for no extra coverage.
     """
-    global MAX_EXACT, MAX_CELLS
-    saved = (MAX_EXACT, MAX_CELLS)
-    MAX_EXACT, MAX_CELLS = 8, 64
+    global MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE
+    saved = (MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE)
+    # MAX_CELLS_DENSE has to come down too, or the density comparison would route the
+    # block back to exact and the hook would stop forcing anything.
+    MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE = 8, 64, 64
 
     def restore():
-        global MAX_EXACT, MAX_CELLS
-        MAX_EXACT, MAX_CELLS = saved
+        global MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE
+        MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE = saved
 
     return restore
 
 
-def _exact_ok(n, m):
-    """True when one block's cost matrix fits the budget and can be solved exactly.
+def _exact_ok(n, m, positives=None):
+    """True when one block should be solved exactly rather than greedily.
 
     Args:
         n, m: the two sides' element counts, in either order.
+        positives: an UPPER bound on the pairs that can carry positive weight, or None if the
+            caller did not compute one. Only consulted between `MAX_CELLS` and
+            `MAX_CELLS_DENSE`, where the two paths have to be compared rather than assumed.
 
     Returns:
         Whether `optimal_pairs` may be called directly. `match_rows` falls back to greedy when
         this is False, and records that the grade is approximate.
+
+    Three bands. Below `MAX_CELLS` exact is taken outright. Above `MAX_CELLS_DENSE` it is
+    refused outright, so the exact path's memory is bounded whatever the data does. Between
+    them the question is which path is actually cheaper, and that depends on density: greedy
+    stores nothing for a pair worth nothing, but ~9x more than a matrix cell for a pair worth
+    something.
+
+    Without `positives` this returns the pre-existing answer, so a caller that cannot estimate
+    density loses nothing. An over-estimate biases towards exact, whose cost is known exactly
+    before it runs; that is the safe direction to err in.
     """
     lo, hi = (n, m) if n <= m else (m, n)
-    return lo <= MAX_EXACT and (lo * hi) <= MAX_CELLS
+    if lo > MAX_EXACT:
+        return False
+    cells = lo * hi
+    if cells <= MAX_CELLS:
+        return True
+    if positives is None or cells > MAX_CELLS_DENSE:
+        return False
+    return cells * EXACT_BYTES_PER_CELL <= positives * GREEDY_BYTES_PER_PAIR
 
 
 def optimal_pairs(pred_rows, gt_rows, weight):
@@ -166,13 +207,17 @@ def _hard_key(row, keys, key_fn):
     return tuple(key_fn(row.get(k)) for k in keys)
 
 
-def match_rows(pred_rows, gt_rows, weight, block_keys=(), key_fn=str):
+def match_rows(pred_rows, gt_rows, weight, block_keys=(), key_fn=str,
+               positives=None):
     """Optimal matching with safe blocking.
 
     block_keys: dimension fields on which rows must agree. Rows disagreeing on a block key can
     never be paired, so per-block optimal == global optimal.
     key_fn: how a block field is compared. Pass the SCORER's equality, or blocking will forbid
     pairings the scorer would accept. Returns (pairs, up, ug, exact_flag).
+    positives: upper bound on pairs that can carry positive weight, for the exact-vs-greedy
+    memory comparison in `_exact_ok`. Ignored when `block_keys` splits the problem, since the
+    bound describes the whole and the decision is then made per block.
     """
     if not pred_rows or not gt_rows:
         return [], list(pred_rows), list(gt_rows), True
@@ -191,7 +236,7 @@ def match_rows(pred_rows, gt_rows, weight, block_keys=(), key_fn=str):
                 p2, u2, g2 = optimal_pairs(ps, gs, weight)
             pairs += p2; up += u2; ug += g2
         return pairs, up, ug, exact
-    if not _exact_ok(len(pred_rows), len(gt_rows)):
+    if not _exact_ok(len(pred_rows), len(gt_rows), positives):
         p2, u2, g2 = _greedy(pred_rows, gt_rows, weight)
         return p2, u2, g2, False
     p2, u2, g2 = optimal_pairs(pred_rows, gt_rows, weight)

@@ -401,6 +401,41 @@ def _worth_if_paired(pred: Row, gold: Row, scale: int,
     return matched, shared
 
 
+def _positive_pair_bound(pred: dict, gold: dict) -> int | None:
+    """Roughly how many row pairs can be worth anything, for the exact-vs-greedy choice.
+
+    Two rows are worth pairing only if they share at least one canonical value, so the pairs
+    that can carry positive weight are exactly those co-occurring in an inverted index over
+    `(address, value)`. Counting them needs only the POSTING LENGTHS -- for each item, the
+    number of predicted rows carrying it times the number of gold rows -- so nothing is
+    enumerated and nothing the size of the answer is allocated. The index itself is one entry
+    per value, the same order as the flattened document: a few megabytes on the largest
+    document in this corpus, against 45 GB for the pair list it is used to avoid building.
+
+    The result OVER-counts, because a pair sharing three items is counted three times, and it
+    ignores the nested-array contribution to `_worth_if_paired`, which can make a pair positive
+    with no named value in common. Neither is a correctness problem for the caller: it is
+    deciding which path is cheaper, an over-estimate sends it to the exact path whose cost is
+    known before it runs, and `MAX_CELLS_DENSE` bounds that path regardless.
+
+    Returns None when the answer cannot change the decision -- the common case by far -- so the
+    index is built only for the handful of blocks big enough to be at risk.
+    """
+    n, m = len(pred), len(gold)
+    if not n or not m:
+        return None
+    if min(n, m) > OM.MAX_EXACT or n * m <= OM.MAX_CELLS or n * m > OM.MAX_CELLS_DENSE:
+        return None                      # decided by the ceilings; density cannot move it
+    counts: dict = {}
+    for row in pred.values():
+        for item in row.named.items():
+            counts.setdefault(item, [0, 0])[0] += 1
+    for row in gold.values():
+        for item in row.named.items():
+            counts.setdefault(item, [0, 0])[1] += 1
+    return min(sum(p * g for p, g in counts.values()), n * m)
+
+
 def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: int,
                 inexact: list | None = None) -> list[tuple[Hashable, Hashable, int, int]]:
     """Decide which predicted rows go with which ground-truth rows.
@@ -487,14 +522,11 @@ def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: i
         matched, shared = _worth_if_paired(pred[i], gold[j], scale, inexact)
         return matched * scale + shared if matched else 0
 
-    # Canonical order, so the solver sees the SAME problem however the rows arrived. Ties in
-    # the objective are real -- several assignments can be equally optimal -- and the solver
-    # has to pick one. Sorting by content means it picks the same one for a document whose
-    # rows were emitted in a different order, instead of letting arrival order decide which
-    # leftovers read as invented rows and which read as invented fields.
+    # Canonical order, so the solver sees the SAME problem however the rows arrived. 
     pi = sorted(pred, key=lambda i: pred[i].key)
     gi = sorted(gold, key=lambda j: gold[j].key)
-    pairs, _up, _ug, exact = OM.match_rows(pi, gi, cost)
+    pairs, _up, _ug, exact = OM.match_rows(pi, gi, cost,
+                                           positives=_positive_pair_bound(pred, gold))
     if not exact and inexact is not None:
         inexact.append(max(len(pi), len(gi)))
     out = []
