@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path, PurePosixPath
-from typing import Iterable, Iterator, NamedTuple
+from typing import Iterable, NamedTuple
 
 #: The atlas, beside the documents it describes.
 ATLAS = "corpus.parquet"
