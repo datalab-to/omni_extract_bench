@@ -49,8 +49,17 @@ _PLACEHOLDERS = {"", "..", "...", "-", "--", "n/a", "na", "none", "null"}
 _DATALAB_SIDECAR_SUFFIXES = ("_citations", "_meta")
 
 
-def _upstream_canonical(v: Json) -> str:
-    """Canonicalize ONE value so only cosmetic noise is folded — never real content.
+def _fold_cosmetic(v: Json) -> str:
+    """Fold cosmetic noise in ONE value -- never real content.
+
+    Started as `canonical` from the upstream grader (MIT, (c) Micro1; see NOTICE) and has
+    since diverged in the two places marked below. The name changed with the body: calling it
+    `_upstream_canonical` while it no longer matches upstream would be the worst of both, a
+    claim of fidelity over code that does not have it.
+
+    Original docstring follows.
+
+    Canonicalize ONE value so only cosmetic noise is folded — never real content.
     1. None -> "" ; lowercase ; strip.
     2. Typography: smart quotes/apostrophes/dashes -> ascii.
     3. Numbers compared numerically (`1,000`==`1000`, `100.0`==`100`, `$5`==`5`).
@@ -172,7 +181,7 @@ def canonical(v):
     upstream `int(float(...))`, which raises rather than returning a value.
     """
     try:
-        s = _upstream_canonical(v)
+        s = _fold_cosmetic(v)
     except (OverflowError, ValueError):
         return str(v)[:64]
     if isinstance(s, str):
