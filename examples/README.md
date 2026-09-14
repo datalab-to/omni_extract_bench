@@ -67,32 +67,3 @@ from '/tmp/run/verdicts/*.parquet'
 where verdict <> 'match';
 ```
 
-## Making it yours
-
-The corpus is a directory of document directories plus an atlas:
-
-```
-corpus/corpus.parquet            what is in the benchmark
-corpus/<doc_id>/ground_truth.json
-corpus/<doc_id>/schema.json
-```
-
-Add or remove a document by changing what is in the directory, then re-run `build-corpus`.
-
-To score a subset, filter the atlas — scoring follows its rows:
-
-```python
-import pyarrow.parquet as pq, pyarrow as pa
-t = pq.read_table("examples/corpus/corpus.parquet")
-pq.write_table(pa.Table.from_pylist([r for r in t.to_pylist() if r["doc_id"] != "invoice-c"]),
-               "examples/corpus/corpus.parquet")
-```
-
-```
-2 predictions, 2 documents in the atlas
-1 prediction(s) skipped; the atlas does not list them: invoice-c
-```
-
-The prediction for a document you filtered out is skipped and counted, not an error. A row
-naming a file that is not there **does** stop the run: the atlas is what the run follows, so it
-has to resolve.

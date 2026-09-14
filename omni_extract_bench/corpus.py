@@ -110,8 +110,20 @@ def discover(root: Path) -> list[Entry]:
     return out
 
 
-def read(root: Path) -> list[Entry]:
-    """The atlas, validated.
+def locate(target: Path) -> tuple[Path, Path]:
+    """The corpus root and the atlas to read, from either a directory or an atlas file.
+
+    A directory means its `corpus.parquet`; a file means that file, with the documents found
+    beside it. Rows name their files relative to the atlas, so a filtered atlas written next to
+    the full one describes the same documents and needs no rewriting -- which is the point:
+    narrowing a corpus should not mean overwriting the record of what it contains.
+    """
+    target = Path(target)
+    return (target, target / ATLAS) if target.is_dir() else (target.parent, target)
+
+
+def read(target: Path) -> list[Entry]:
+    """The atlas, validated. Takes a corpus directory or a specific atlas file.
 
     Raises:
         FileNotFoundError: if there is no atlas. A corpus without one is not a corpus; run
@@ -121,11 +133,10 @@ def read(root: Path) -> list[Entry]:
     """
     import pyarrow.parquet as pq
 
-    root = Path(root)
-    path = root / ATLAS
+    root, path = locate(target)
     if not path.exists():
         raise FileNotFoundError(
-            f"no {ATLAS} in {root}. The atlas is what says which documents are in this "
+            f"no atlas at {path}. The atlas is what says which documents are in this "
             f"benchmark; create one with:  oeb build-corpus --corpus {root}")
     rows = pq.read_table(path).to_pylist()
     if not rows:
@@ -146,7 +157,7 @@ def read(root: Path) -> list[Entry]:
     return out
 
 
-def extras(root: Path) -> dict:
+def extras(target: Path) -> dict:
     """Columns an existing atlas carries that the contract does not define, by doc_id.
 
     A published corpus records `suite`, page counts, sizes and provenance alongside the five
@@ -156,7 +167,7 @@ def extras(root: Path) -> dict:
     """
     import pyarrow.parquet as pq
 
-    path = Path(root) / ATLAS
+    _root, path = locate(Path(target))
     if not path.exists():
         return {}
     out = {}

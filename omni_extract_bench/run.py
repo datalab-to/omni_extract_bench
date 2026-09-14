@@ -221,9 +221,10 @@ def cmd_score(args: Namespace) -> int:
     """Score a directory of predictions against a corpus."""
     from .bench import PREDICTION_META, cost, document, prediction_meta
 
-    corpus = Path(args.corpus) if args.corpus else published_corpus()
+    corpus, atlas = corpus_atlas.locate(Path(args.corpus) if args.corpus
+                                        else published_corpus())
     preds = Path(args.predictions)
-    entries = {e.doc_id: e for e in corpus_atlas.read(corpus)}
+    entries = {e.doc_id: e for e in corpus_atlas.read(atlas)}
     stamp = {"source": args.source or preds.name, **scorer_version(), **environment()}
     out = Path(args.out) if args.out else None
 
@@ -322,8 +323,9 @@ def _scored(ordered: list[str], jobs: dict[str, bytes], corpus: Path,
 
 def cmd_explain(args: Namespace) -> int:
     """Print every address for one document: what the gold had, and what was predicted."""
-    corpus = Path(args.corpus) if args.corpus else published_corpus()
-    docs = [d for d in documents(corpus) if d.doc_id == args.doc]
+    corpus, atlas = corpus_atlas.locate(Path(args.corpus) if args.corpus
+                                        else published_corpus())
+    docs = [d for d in documents(atlas) if d.doc_id == args.doc]
     if not docs:
         print(f"no document {args.doc!r} in {corpus}", file=sys.stderr)
         return 1
@@ -380,8 +382,8 @@ def cmd_verify(args: Namespace) -> int:
     resolve to two files that parse? It is not a check that the data has not changed -- the
     atlas records what a corpus contains, not what its bytes were.
     """
-    root = Path(args.corpus)
-    entries = corpus_atlas.read(root)
+    root, atlas = corpus_atlas.locate(Path(args.corpus))
+    entries = corpus_atlas.read(atlas)
     missing = [f"{e.doc_id}: {rel} is listed but missing"
                for e in entries
                for rel in (e.ground_truth_path, e.schema_path)

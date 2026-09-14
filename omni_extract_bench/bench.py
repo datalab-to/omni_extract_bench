@@ -126,15 +126,15 @@ def document(root: Path, entry: Entry) -> Document:
     )
 
 
-def documents(root: Path) -> Iterator[Document]:
-    """Every document the atlas lists, in its order.
+def documents(target: Path) -> Iterator[Document]:
+    """Every document the atlas lists, in its order. Takes a corpus directory or an atlas file.
 
     Raises:
         FileNotFoundError: if there is no atlas, or a row names a file that is not there. The
             atlas is what the run follows, so a row pointing at nothing is a stop, not a skip.
     """
-    root = Path(root)
-    for entry in corpus_atlas.read(root):
+    root, _atlas = corpus_atlas.locate(Path(target))
+    for entry in corpus_atlas.read(target):
         yield document(root, entry)
 
 

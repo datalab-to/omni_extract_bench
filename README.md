@@ -70,8 +70,17 @@ pq.write_table(pa.Table.from_pylist([r for r in t.to_pylist() if r["suite"] == "
 ```
 
 Predictions for documents the atlas no longer lists are skipped and counted. A row naming a
-file that is not there stops the run — the atlas is what the run follows, so it has to
-resolve.
+file that is not there stops the run — the atlas is what the run follows, so it has to resolve.
+
+`--corpus` also takes a **specific atlas file**, so a subset can live beside the full list
+rather than replacing it:
+
+```bash
+oeb score --corpus my-benchmark/invoices-only.parquet --predictions preds/
+```
+
+Rows name their files relative to the atlas, so a filtered copy written next to
+`corpus.parquet` describes the same documents and needs no rewriting.
 
 ```bash
 oeb verify --corpus my-benchmark/     # what has changed since the atlas was written
