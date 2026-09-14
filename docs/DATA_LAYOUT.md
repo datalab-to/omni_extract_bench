@@ -453,15 +453,15 @@ hides this across nine vendors and cannot hide it for one. See `TO_LOOK_AT.md` i
 contains at the moment it was built. Scoring runs over its rows and nothing else, so a
 half-copied document or a scratch directory cannot join a benchmark by being present.
 
-Each row names its files **relative to the atlas** and records their sha256. Paths are stored
-rather than implied so a row says what it points at, and they are still required to be
-`<doc_id>/ground_truth.json` and `<doc_id>/schema.json` -- a path column that can say anything
-is one that can point outside the corpus, or at another corpus.
+Each row names its files **relative to the atlas**. Paths are stored rather than implied so a
+row says what it points at, and they are still required to be `<doc_id>/ground_truth.json` and
+`<doc_id>/schema.json` -- a path column that can say anything is one that can point outside the
+corpus, or at another corpus.
 
-The hashes make editing data deliberate: a changed ground truth stops the run instead of
-quietly producing different numbers, and re-running `build-corpus` is how you record that you
-meant it. There is one rebuild verb, and it always describes what is on disk -- which documents
-are in the benchmark is decided by which are in the directory, so curating is arranging files.
+The atlas is what a run follows, so filtering its rows is how you choose a subset to score,
+and a row naming a file that is not there stops the run. It is not a record of what the bytes
+were: if you need to know a ground truth was not edited, that is the store's job -- the
+published corpus lives on HuggingFace, whose revisions already pin every byte.
 
 ### The corpus is versioned, not mutated
 

@@ -77,14 +77,22 @@ corpus/<doc_id>/ground_truth.json
 corpus/<doc_id>/schema.json
 ```
 
-Add or remove a document by changing what is in the directory, then re-run `build-corpus`. The
-corpus version changes, because a different set of documents is a different benchmark.
+Add or remove a document by changing what is in the directory, then re-run `build-corpus`.
 
-Edit a ground truth and the next run stops:
+To score a subset, filter the atlas — scoring follows its rows:
+
+```python
+import pyarrow.parquet as pq, pyarrow as pa
+t = pq.read_table("examples/corpus/corpus.parquet")
+pq.write_table(pa.Table.from_pylist([r for r in t.to_pylist() if r["doc_id"] != "invoice-c"]),
+               "examples/corpus/corpus.parquet")
+```
 
 ```
-invoice-a: ground_truth.json has changed since the atlas was written.
-  If that was intended, record it:  oeb build-corpus --corpus examples/corpus
+2 predictions, 2 documents in the atlas
+1 prediction(s) skipped; the atlas does not list them: invoice-c
 ```
 
-That is the point: data cannot move underneath a benchmark by accident.
+The prediction for a document you filtered out is skipped and counted, not an error. A row
+naming a file that is not there **does** stop the run: the atlas is what the run follows, so it
+has to resolve.

@@ -4,18 +4,19 @@
     <corpus>/<doc_id>/ground_truth.json
     <corpus>/<doc_id>/schema.json
 
-**The atlas defines the benchmark; the directory merely stores it.** Scoring runs over the
-rows in `corpus.parquet` and nothing else, so a half-copied document, a leftover directory or
-a scratch file cannot silently join a benchmark by being present.
+**The atlas is what you explore and what you run.** `build` writes a row per document found in
+the tree, and scoring runs over those rows -- so filtering the table is how you choose a subset
+to score, and a half-copied document or a scratch directory cannot join a benchmark by being
+present.
 
-Which documents are in the benchmark is decided by which are in the directory: `build`
-describes what is on disk, and curating is arranging files rather than editing a table. A
-corpus of a different set of documents gets a different `version`, which is correct -- it is a
-different benchmark.
+It is a plain parquet, meant to be queried. Beyond the three columns below it carries whatever
+higher-level metadata you have -- which collection a document came from, its page count, how
+big its ground truth is -- and those are what make "score only the long-table documents" or
+"how much of this corpus is invoices" a `where` clause rather than a script.
 
-The atlas makes editing data deliberate. Each row carries the sha256 of the files it names, and
-loading a document checks them, so an edited ground truth stops the run instead of quietly
-producing different numbers. Rebuilding the atlas is how you say you meant it.
+It is not a guarantee that the data has not changed. Scoring reads the files the atlas names,
+as they are. If you need to know a ground truth was not edited, that is your store's job -- the
+published corpus lives on HuggingFace, whose revisions already pin every byte.
 
 **Paths are stored, and constrained.** Each row names its files relative to the atlas, so a
 corpus is relocatable as a unit and you can see what a row points at without knowing a
@@ -41,28 +42,17 @@ ATLAS = "corpus.parquet"
 GROUND_TRUTH = "ground_truth.json"
 SCHEMA = "schema.json"
 
-#: What every atlas must have. A published corpus carries more -- suite, page counts, sizes --
-#: and those are additive: anything that reads an atlas depends only on these.
-REQUIRED = ("doc_id", "ground_truth_path", "schema_path", "gt_sha256", "schema_sha256")
+#: What every atlas must have: which documents, and where their two files are. Everything else
+#: is metadata a corpus chooses to carry, and anything reading an atlas depends only on these.
+REQUIRED = ("doc_id", "ground_truth_path", "schema_path")
 
 
 class Entry(NamedTuple):
-    """One row of the atlas: a document, where its files are, and what they hashed to."""
+    """One row of the atlas: a document, and where its two files are."""
 
     doc_id: str
     ground_truth_path: str
     schema_path: str
-    gt_sha256: str
-    schema_sha256: str
-
-
-class Stale(Exception):
-    """A file on disk does not match what the atlas says it is.
-
-    Its own exception because it is the one error with a specific, correct response: if the
-    change was intended, rebuild the atlas; if it was not, you have just caught data drifting
-    underneath a benchmark.
-    """
 
 
 def expected_paths(doc_id: str) -> tuple[str, str]:
@@ -91,7 +81,7 @@ def sha256(path: Path) -> str:
 
 
 def entry_for(root: Path, doc_id: str) -> Entry:
-    """Hash a document's files as they are now."""
+    """One document's row, checking that the files it names are there."""
     gt_path, schema_path = expected_paths(doc_id)
     for rel in (gt_path, schema_path):
         if not (root / rel).exists():
@@ -99,8 +89,7 @@ def entry_for(root: Path, doc_id: str) -> Entry:
                 f"{doc_id}: no {Path(rel).name}. A document is {GROUND_TRUTH} and {SCHEMA}; "
                 f"a schema is required and is never inferred, because without it an "
                 f"additionalProperties subtree would be graded silently.")
-    return Entry(doc_id, gt_path, schema_path,
-                 sha256(root / gt_path), sha256(root / schema_path))
+    return Entry(doc_id, gt_path, schema_path)
 
 
 def discover(root: Path) -> list[Entry]:
@@ -119,18 +108,6 @@ def discover(root: Path) -> list[Entry]:
         if (d / GROUND_TRUTH).exists() or (d / SCHEMA).exists():
             out.append(entry_for(root, d.name))
     return out
-
-
-def version(entries: Iterable[Entry]) -> str:
-    """Identify the corpus by what it selects and what those files contain.
-
-    Curating a row out changes it, because a filtered corpus is a different benchmark.
-    Editing a ground truth changes it, because so is a corrected one.
-    """
-    digest = hashlib.sha256()
-    for e in sorted(entries):
-        digest.update(f"{e.doc_id}\0{e.gt_sha256}\0{e.schema_sha256}\0".encode())
-    return digest.hexdigest()[:16]
 
 
 def read(root: Path) -> list[Entry]:
@@ -165,8 +142,7 @@ def read(root: Path) -> list[Entry]:
         seen.add(doc_id)
         check_path(doc_id, r["ground_truth_path"], GROUND_TRUTH)
         check_path(doc_id, r["schema_path"], SCHEMA)
-        out.append(Entry(doc_id, r["ground_truth_path"], r["schema_path"],
-                         r["gt_sha256"], r["schema_sha256"]))
+        out.append(Entry(doc_id, r["ground_truth_path"], r["schema_path"]))
     return out
 
 
@@ -215,8 +191,7 @@ def write(root: Path, entries: Iterable[Entry], extra: dict | None = None,
     fields = list(dict.fromkeys(k for r in rows for k in r))
     blank = {k: None for k in fields}
     table = pa.Table.from_pylist([{**blank, **r} for r in rows]).replace_schema_metadata(
-        {"corpus_version": version(entries), "documents": str(len(entries)),
-         **(metadata or {})})
+        {"documents": str(len(entries)), **(metadata or {})})
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     tmp = root / (ATLAS + ".tmp")
@@ -297,24 +272,3 @@ def verify(expected: Iterable[tuple[str, str]], root: Path,
             problems.append(f"hash mismatch: {shared} "
                             f"(atlas {expected[shared][:12]}..., file {actual[:12]}...)")
     return problems
-
-
-def check(root: Path, entries: Iterable[Entry]) -> list[str]:
-    """What no longer matches the atlas. Empty when the corpus is as declared.
-
-    `verify` does the work, so there is one implementation of "does this tree match these
-    hashes" rather than two that have to agree.
-
-    The globs are exactly what `check_path` allows a row to name, so nothing else in the tree
-    is treated as a payload -- a corpus may hold PDFs, page images and provenance beside the
-    documents, and those are not drift. A file matching the globs that no row names is dropped
-    rather than reported: it means the atlas predates it, which `build` fixes and which is not
-    the data-moving-underneath-you problem this exists to catch.
-    """
-    expected = [(e.ground_truth_path, e.gt_sha256) for e in entries]
-    expected += [(e.schema_path, e.schema_sha256) for e in entries]
-    problems = verify(expected, Path(root),
-                      patterns=(f"*/{GROUND_TRUTH}", f"*/{SCHEMA}"))
-    return [p for p in problems if not p.startswith("file with no row")]
-
-

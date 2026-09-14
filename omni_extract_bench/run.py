@@ -47,7 +47,7 @@ from typing import Iterator
 
 from . import corpus as corpus_atlas
 from .bench import cases, documents, predictions, score, verdict_rows
-from .corpus import Entry, Stale
+from .corpus import Entry
 
 #: The published benchmark. `--corpus` overrides it, which is how you score against your own
 #: ground truth: the loader does not care whose corpus it is.
@@ -158,29 +158,37 @@ def write_run(out: Path, rows: list[dict], by_doc: dict[str, list[dict]],
 #: What a user can get wrong, as opposed to what a bug looks like. `cli.main` reports these as
 #: a message; anything else keeps its traceback, because it is ours to fix. One boundary rather
 #: than a try/except per command, which is four chances to forget one.
-USER_ERRORS = (FileNotFoundError, NotADirectoryError, ValueError, Stale)
+USER_ERRORS = (FileNotFoundError, NotADirectoryError, ValueError)
 
 
-def _jobs(preds: Path, entries: dict[str, Entry]) -> dict[str, bytes]:
-    """Every prediction to score, by document.
+def _jobs(preds: Path, corpus: Path,
+          entries: dict[str, Entry]) -> tuple[dict[str, bytes], list[str]]:
+    """Every prediction to score, by document, and the ones the atlas does not ask for.
+
+    Filtering the atlas is how you choose a subset to run, so a prediction for a document that
+    is no longer listed is the normal result of that -- skipped, and counted. A prediction
+    naming nothing at all is still a mistake, usually a filename convention
+    (`invoice-003.pdf.json`), and the two are told apart by whether the document is on disk.
 
     Raises:
-        ValueError: for a prediction naming no document in the corpus, suggesting near
-            matches. The usual cause is a filename convention (`invoice-003.pdf.json`), and
-            the fix is almost always visible once you are shown what was close.
+        ValueError: for a prediction matching neither the atlas nor the tree, suggesting near
+            matches -- the fix is almost always visible once you are shown what was close.
     """
     import difflib
 
-    out = {}
+    out, skipped = {}, []
     for doc_id, raw in predictions(preds):
-        if doc_id not in entries:
+        if doc_id in entries:
+            out[doc_id] = raw
+        elif (Path(corpus) / doc_id).is_dir():
+            skipped.append(doc_id)
+        else:
             close = difflib.get_close_matches(doc_id, entries, n=3, cutoff=0.6)
             raise ValueError(
                 f"prediction {doc_id!r} matches no document in the corpus."
                 + (f" Did you mean: {', '.join(close)}?" if close else "")
                 + " A prediction file must be named <doc_id>.json.")
-        out[doc_id] = raw
-    return out
+    return out, skipped
 
 
 def _report(rows: list[dict]) -> int:
@@ -216,8 +224,7 @@ def cmd_score(args: Namespace) -> int:
     corpus = Path(args.corpus) if args.corpus else published_corpus()
     preds = Path(args.predictions)
     entries = {e.doc_id: e for e in corpus_atlas.read(corpus)}
-    stamp = {"corpus_version": corpus_atlas.version(entries.values()),
-             "source": args.source or preds.name, **scorer_version(), **environment()}
+    stamp = {"source": args.source or preds.name, **scorer_version(), **environment()}
     out = Path(args.out) if args.out else None
 
     carried, collided = prediction_meta(preds)
@@ -225,13 +232,16 @@ def cmd_score(args: Namespace) -> int:
         print(f"  {PREDICTION_META} columns dropped, they collide with the scorer's own: "
               f"{', '.join(collided)}", file=sys.stderr)
 
-    jobs = _jobs(preds, entries)
+    jobs, skipped = _jobs(preds, corpus, entries)
     if not jobs:
         print("no predictions found; expected <doc_id>.json files", file=sys.stderr)
         return 1
-    print(f"  corpus {stamp['corpus_version']}, scorer {stamp['scorer_version']}, "
-          f"source {stamp['source']}")
-    print(f"  {len(jobs)} predictions, {len(entries)} documents in the corpus")
+    print(f"  scorer {stamp['scorer_version']}, source {stamp['source']}")
+    print(f"  {len(jobs)} predictions, {len(entries)} documents in the atlas")
+    if skipped:
+        print(f"  {len(skipped)} prediction(s) skipped; the atlas does not list them: "
+              f"{', '.join(sorted(skipped)[:5])}"
+              + (f" and {len(skipped) - 5} more" if len(skipped) > 5 else ""))
 
     # A finished run is that corpus, scorer and source's answer, and there is only one.
     if out is not None and (out / SUMMARY).exists():
@@ -341,9 +351,8 @@ def cmd_build_corpus(args: Namespace) -> int:
     benchmark is decided by which are in the directory -- so curating is arranging files, and
     this records the result rather than being the place you do it.
 
-    Re-run it whenever the files change. That is the deliberate act that a changed ground truth
-    demands: scoring stops until the atlas agrees with the data again, so a corrected gold
-    cannot quietly become a different score.
+    Re-run it whenever documents are added or removed. The atlas is then what a run follows, so
+    filtering the table afterwards is how you choose a subset to score.
 
     Columns the contract does not define are carried over. A published corpus records `suite`,
     page counts and provenance beside the five required ones, and `suite` decides the subsets
@@ -355,15 +364,9 @@ def cmd_build_corpus(args: Namespace) -> int:
         print(f"  no documents under {root}", file=sys.stderr)
         return 1
 
-    before = corpus_atlas.version(corpus_atlas.read(root)) if \
-        (root / corpus_atlas.ATLAS).exists() else None
     carried = corpus_atlas.extras(root)
     corpus_atlas.write(root, entries, carried)
-    after = corpus_atlas.version(entries)
-
     print(f"  {len(entries)} documents -> {corpus_atlas.ATLAS}")
-    print(f"  corpus version {after}" + (f"  (was {before})" if before and before != after
-                                         else ""))
     kept = sorted({k for v in carried.values() for k in v})
     if kept:
         print(f"  carried {len(kept)} extra column(s) through: {', '.join(kept[:8])}")
@@ -371,22 +374,37 @@ def cmd_build_corpus(args: Namespace) -> int:
 
 
 def cmd_verify(args: Namespace) -> int:
-    """Check the corpus against its atlas, and say what has moved.
+    """Check that every document the atlas lists is there and readable.
 
-    The atlas is a snapshot, so this answers the question you actually have while curating:
-    what have I changed since I last declared this corpus?
+    The atlas is what a run follows, so this asks the question a run will ask: does each row
+    resolve to two files that parse? It is not a check that the data has not changed -- the
+    atlas records what a corpus contains, not what its bytes were.
     """
     root = Path(args.corpus)
     entries = corpus_atlas.read(root)
-    problems = corpus_atlas.check(root, entries)
-    print(f"  {len(entries)} documents listed, corpus version "
-          f"{corpus_atlas.version(entries)}")
-    if problems:
-        print(f"  {len(problems)} file(s) no longer match the atlas:", file=sys.stderr)
-        for p in problems[:10]:
-            print(f"      {p}", file=sys.stderr)
-        print(f"  If those changes were intended:  oeb build-corpus --corpus {root}",
-              file=sys.stderr)
+    missing = [f"{e.doc_id}: {rel} is listed but missing"
+               for e in entries
+               for rel in (e.ground_truth_path, e.schema_path)
+               if not (root / rel).is_file()]
+    print(f"  {len(entries)} documents listed")
+    if missing:
+        print(f"  {len(missing)} listed file(s) are not there:", file=sys.stderr)
+        for m in missing[:10]:
+            print(f"      {m}", file=sys.stderr)
         return 1
-    print("  every listed file matches the atlas")
+
+    unreadable = []
+    for e in entries:
+        try:
+            documents_one = json.loads((root / e.ground_truth_path).read_bytes())
+            json.loads((root / e.schema_path).read_bytes())
+            del documents_one
+        except ValueError as exc:
+            unreadable.append(f"{e.doc_id}: {exc}")
+    if unreadable:
+        print(f"  {len(unreadable)} document(s) will not parse:", file=sys.stderr)
+        for u in unreadable[:10]:
+            print(f"      {u}", file=sys.stderr)
+        return 1
+    print("  every listed document is present and parses")
     return 0

@@ -25,7 +25,6 @@ _sys.path.insert(0, _ROOT)
 from omni_extract_bench import corpus as corpus_atlas                       # noqa: E402
 from omni_extract_bench.bench import (                                     # noqa: E402
     cases, document, documents, key_of, predictions, score, summary_row, verdict_rows)
-from omni_extract_bench.corpus import Stale                                # noqa: E402
 
 FAILS = []
 
@@ -127,28 +126,18 @@ corpus = corpus_with(a=GOLD)
 p = preds_with(a=GOLD)
 try:
     case = next(cases(documents(corpus), predictions(p)))
-    before = key_of(case)
-    report("a case is keyed by prediction bytes, ground truth and schema",
-           set(before) == {"doc_id", "prediction_id", "gt_sha256", "schema_sha256"},
-           str(sorted(before)))
+    report("a case is keyed by the document and the prediction's bytes",
+           set(key_of(case)) == {"doc_id", "prediction_id"}, str(sorted(key_of(case))))
 
-    # Editing the gold must stop the run: data moving underneath a benchmark is exactly what
-    # the atlas exists to catch.
-    (corpus / "a" / "ground_truth.json").write_text(json.dumps({**GOLD, "total": 43.0}))
+    # A row naming a file that is not there is a stop: the run follows the atlas, and a row
+    # pointing at nothing is not something to quietly skip.
+    (corpus / "a" / "ground_truth.json").unlink()
     try:
         list(documents(corpus))
-        report("an edited ground truth stops the run", False, "accepted silently")
-    except Stale as exc:
-        report("an edited ground truth stops the run", "build-corpus" in str(exc))
-        note("otherwise the numbers look ordinary and mean something else")
-
-    # Recording the change is the deliberate act, and it changes the row's identity.
-    corpus_atlas.write(corpus, corpus_atlas.discover(corpus))
-    after = key_of(next(cases(documents(corpus), predictions(p))))
-    report("correcting a ground truth changes the row's identity",
-           after["gt_sha256"] != before["gt_sha256"]
-           and after["prediction_id"] == before["prediction_id"])
-    note("otherwise a curation fix reads as the scorer contradicting itself")
+        report("a row naming a missing file stops the run", False, "accepted silently")
+    except FileNotFoundError as exc:
+        report("a row naming a missing file stops the run", "missing" in str(exc))
+        note("the atlas is what the run follows, so it has to resolve")
 finally:
     shutil.rmtree(corpus); shutil.rmtree(p)
 

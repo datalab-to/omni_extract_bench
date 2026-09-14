@@ -58,13 +58,20 @@ oeb build-corpus --corpus my-benchmark/                    # declare what it con
 oeb score --corpus my-benchmark/ --predictions preds/ --out run/
 ```
 
-**Scoring runs over the atlas, not a directory listing**, so a half-copied document or a
-scratch directory cannot silently join a benchmark by being present. Which documents are in it
-is decided by which are in the directory when you build it.
+**The atlas is what you explore and what you run.** It is a plain parquet — `doc_id`, where the
+two files are, and whatever higher-level metadata you have alongside. Scoring follows its rows,
+so filtering the table is how you choose a subset:
 
-Each row records the sha256 of the files it names, so editing a ground truth stops the next run
-rather than quietly changing your numbers. Re-running `build-corpus` is how you say you meant
-it.
+```python
+import pyarrow.parquet as pq, pyarrow as pa
+t = pq.read_table("my-benchmark/corpus.parquet")
+pq.write_table(pa.Table.from_pylist([r for r in t.to_pylist() if r["suite"] == "invoices"]),
+               "my-benchmark/corpus.parquet")
+```
+
+Predictions for documents the atlas no longer lists are skipped and counted. A row naming a
+file that is not there stops the run — the atlas is what the run follows, so it has to
+resolve.
 
 ```bash
 oeb verify --corpus my-benchmark/     # what has changed since the atlas was written
