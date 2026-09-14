@@ -1,0 +1,169 @@
+# Scoring your own predictions
+
+How to run this benchmark against your own extractions, and how to bring your own ground
+truth. Companion to `DATA_LAYOUT.md`, which is about how *we* store the published data;
+this file is about what you need, which is much less.
+
+---
+
+## The whole thing
+
+```bash
+pip install 'omni-extract-bench[run]'
+
+omni-extract-bench bench --predictions preds/ --out run/
+```
+
+`--predictions` is a directory of `<doc_id>.json`, each holding the extraction itself. The
+corpus is downloaded for you. `--out` writes a run you can query.
+
+That is the entire common case. Everything below is a variation on it.
+
+---
+
+## The contract
+
+A corpus is a directory of document directories. Each needs exactly two files:
+
+```
+<corpus>/<doc_id>/ground_truth.json
+<corpus>/<doc_id>/schema.json
+```
+
+Anything else in the directory is ignored.
+
+**That is the whole contract.** The published benchmark also carries `document.pdf`,
+`source.json`, a `corpus.parquet` atlas and some metadata tables, but those are our
+operational layer -- caching, provenance and curation. None of them are required of your
+corpus, and the same loader reads both. If they were required, scoring your own gold would
+mean inventing a "suite" you do not have.
+
+Predictions mirror it, flat:
+
+```
+<preds>/<doc_id>.json
+```
+
+holding the bare extraction -- no `{"result": ...}` wrapper, no metadata keys.
+
+### The schema is required
+
+It is never inferred, and there is no flag to make it optional. Without a schema an
+`additionalProperties` subtree would be graded silently, and a value the model made up cannot
+be told from one the schema offered it a slot for. `score.py` refuses a missing schema with
+that explanation rather than guessing.
+
+---
+
+## Bring your own ground truth
+
+Point `--corpus` at your own directory. There is no other difference:
+
+```bash
+omni-extract-bench verify --corpus my-benchmark/
+omni-extract-bench bench  --corpus my-benchmark/ --predictions preds/ --out run/
+```
+
+`verify` reads every document and tells you what it found, so a malformed corpus fails in a
+second rather than an hour into a run.
+
+---
+
+## What a run looks like
+
+```
+run/
+  summary.parquet              one row per (doc_id, prediction_id)
+  verdicts/<doc_id>.parquet    every address, with gold and pred
+```
+
+Two tables, because they are read on opposite schedules: a leaderboard wants every summary
+row and no verdicts, an audit wants one document's verdicts and no summary. The verdict table
+is two orders of magnitude larger, so keeping them together would make every leaderboard query
+pay for the audit trail.
+
+Partitioned per document so that rescoring one corrected document rewrites one small file.
+`doc_id` is both the filename and a column, so a glob query never has to parse filenames.
+
+Sizes, measured: a 660-document run is about **20 MB** of verdicts, roughly 6.4 compressed
+bytes per address.
+
+### Exploring it
+
+No library and no API -- these are ordinary parquet files:
+
+```sql
+-- every value the model got wrong, across the whole run
+select doc_id, address, gold, pred
+from 'run/verdicts/*.parquet'
+where verdict = 'wrong value';
+
+-- what kind of failure dominates
+select verdict, count(*) from 'run/verdicts/*.parquet' group by 1 order by 2 desc;
+
+-- worst documents, with a count of bad addresses
+select s.doc_id, round(s.accuracy, 1) acc,
+       count(*) filter (where v.verdict <> 'match') bad
+from 'run/summary.parquet' s
+join 'run/verdicts/*.parquet' v
+  on s.doc_id = v.doc_id and s.prediction_id = v.prediction_id
+group by 1, 2 order by acc;
+```
+
+For one document, without SQL:
+
+```bash
+omni-extract-bench explain --predictions preds/ --doc <doc_id>
+```
+
+Verdicts are worth looking at before you trust an accuracy number. On a sample of real
+predictions every wrong value was a boundary disagreement rather than a misreading --
+`"Glenmere Robotics"` against `"Glenmere Robotics Inc."`, `"14 March 2026"` against
+`"Updated 14 March 2026"`. That is invisible in a score and obvious per address.
+
+Verdicts roughly double the run time, because `grade` and `explain` each repeat the shared
+matching work. `--no-verdicts` skips them.
+
+---
+
+## Reading the summary
+
+`kind` is `graded` or `unusable`, and it is not decoration.
+
+An **unusable** prediction is one that could not be scored on its merits: an error payload, an
+empty object, something that is not an object at all. It records no metrics -- null, not zero.
+
+This matters more than it looks. Zero would be an interpretation, and `mean(accuracy)` without
+filtering on `kind` would quietly adopt it. Worse, grading an error blob as though the model
+tried and missed every field makes a rate-limited run look like a bad model. An earlier version
+of this scorer had two different answers to that question, and a provider read as 100% coverage
+while 37 of its 45 outputs were empty.
+
+So: **filter on `kind` before you average.** The CLI reports the mean over graded predictions
+and says how many were excluded.
+
+---
+
+## Using the pieces directly
+
+`omni_extract_bench.bench` is the pipeline, and every stage is an iterable of plain data, so
+any of them can be replaced without the others noticing:
+
+```python
+from omni_extract_bench.bench import cases, documents, predictions, score
+
+for case in cases(documents("corpus/"), predictions("preds/")):
+    outcome = score(case)
+    print(case.doc.doc_id, outcome.kind, outcome.summary and outcome.summary["accuracy"])
+```
+
+Swap `documents` for a loader that reads your database, `predictions` for one that streams
+from a bucket, or write the rows as JSONL instead of parquet. The only part that is not
+replaceable is the metric.
+
+For a single pair with no benchmark at all:
+
+```python
+from omni_extract_bench import grade
+grade(prediction, ground_truth, schema)["accuracy"]
+```
