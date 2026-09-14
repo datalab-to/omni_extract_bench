@@ -36,8 +36,8 @@ from collections.abc import Hashable, Iterable
 from typing import Any, Literal, NamedTuple
 
 from . import matching as OM
-from . import normalize as N
-from .values import canon_key, cmp_leaf, drop_empty_gt_rows, states_nothing, unwrap_schema
+from .values import (canon_key, cmp_leaf, drop_empty_gt_rows, is_open_map,
+                     prep_ground_truth, prep_prediction, states_nothing, unwrap_schema)
 
 # An address is a tuple of steps. Each step is tagged, because a document may contain the key
 # "0" and ("k", "0") must not join ("i", 0).
@@ -126,7 +126,7 @@ def flatten(node: Any, schema: Any = None, prefix: Address = (),
     rows[0].x      = 1
     """
     schema = unwrap_schema(schema) if isinstance(schema, dict) else {}
-    if N.is_open_map(schema):
+    if is_open_map(schema):
         if skipped is not None:
             skipped.append(prefix)
         return {}
@@ -210,7 +210,7 @@ def _schema_leaves(schema: Any, prefix: Address = ()) -> set[Address]:
     ['n', 'rows[*].q']
     """
     schema = unwrap_schema(schema) if isinstance(schema, dict) else {}
-    if N.is_open_map(schema):
+    if is_open_map(schema):
         return set()
     props, item = schema.get("properties") or {}, schema.get("items")
     if not props and item is None:
@@ -700,8 +700,8 @@ def _both(pred: Any, gt: Any, schema: Any,
             "written inline is skipped."
         )
     raw_gt, raw_pred = gt or {}, pred or {}
-    gt = drop_empty_gt_rows(N.prep_ground_truth(raw_gt))
-    pred = drop_empty_gt_rows(N.prep_prediction(raw_pred))
+    gt = drop_empty_gt_rows(prep_ground_truth(raw_gt))
+    pred = drop_empty_gt_rows(prep_prediction(raw_pred))
     ordered = _resolve_order(order_matters, schema, (raw_gt, raw_pred, gt, pred))
     skipped: list[Address] = []
     gold_leaves = flatten(gt, schema, skipped=skipped)
