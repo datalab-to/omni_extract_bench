@@ -183,6 +183,17 @@ finally:
 
 note("drift is checked in both directions, and by content, not just by listing")
 
+# ── one definition of identity, not two ───────────────────────────────────────────────
+# Four leaderboard bugs came from several implementations of "are these two equal?" that had
+# to agree and did not. `prediction_id` is what `scores` joins on, so a second copy of it is
+# the same mistake in the same place.
+import omni_extract_bench.bench as _bench                                 # noqa: E402
+import omni_extract_bench.layout as _layout                               # noqa: E402
+
+report("bench and layout share one prediction_id, not a copy each",
+       _bench.prediction_id is _layout.prediction_id)
+note("a join key with two definitions is a disagreement waiting to be written down")
+
 print(f"\n{'STORAGE LAYOUT HOLDS' if not FAILS else 'FAILURES:'}")
 for f in FAILS:
     print(f"   {f}")

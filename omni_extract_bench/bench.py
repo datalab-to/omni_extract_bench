@@ -40,6 +40,7 @@ from typing import Iterable, Iterator, NamedTuple
 
 from . import corpus as corpus_atlas
 from .corpus import GROUND_TRUTH, SCHEMA, Stale
+from .layout import prediction_id
 from .dialects import resolve_refs, strip_benchmark_keys
 from .prediction_io import usable
 from .score import grade, show
@@ -95,11 +96,6 @@ class Outcome(NamedTuple):
     error: str | None
     summary: dict | None
     verdicts: list | None
-
-
-def prediction_id(raw: bytes) -> str:
-    """Identify a prediction by the bytes as stored. See `layout.PREDICTION_ID_VERSION`."""
-    return hashlib.sha256(raw).hexdigest()
 
 
 def document(root: Path, entry) -> Document:
