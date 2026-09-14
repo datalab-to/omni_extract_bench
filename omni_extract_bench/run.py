@@ -143,9 +143,12 @@ def _bench(args) -> int:
 
     if args.out:
         write_run(Path(args.out), summary, by_doc)
-        n = sum(len(v) for v in by_doc.values())
+        # Documents with nothing graded have no verdict file, so count what was written
+        # rather than what was considered.
+        written = {d: v for d, v in by_doc.items() if v}
+        n = sum(len(v) for v in written.values())
         print(f"  wrote {args.out}/{SUMMARY}"
-              + (f" and {len(by_doc)} verdict files ({n:,} rows)" if want_verdicts else ""))
+              + (f" and {len(written)} verdict files ({n:,} rows)" if want_verdicts else ""))
     return 1 if failed else 0
 
 
