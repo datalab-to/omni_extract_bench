@@ -10,44 +10,122 @@ tested rather than asserted.
 It grades a predicted JSON object against a ground-truth object and a JSON Schema. It does not
 run extractors, and it ships no benchmark data.
 
-## Data
-
-The frozen 169-document evaluation set, with verified ground-truth corrections already applied,
-is published separately:
-[`datalab-to/omni_extract_bench`](https://huggingface.co/datasets/datalab-to/omni_extract_bench).
-
-This repository holds the scorer only; it ships no benchmark data and no benchmark results.
-
 ## Install
 
 ```bash
-pip install -e .
+pip install omni-extract-bench            # the scorer; one dependency, scipy
+pip install 'omni-extract-bench[run]'     # plus running a whole benchmark
 ```
 
-Python 3.11+. One dependency: `scipy`, for the assignment solver
-(`linear_sum_assignment`).
+Python 3.11+.
 
-## Use
+## Quick start
+
+Score a directory of predictions against the published benchmark:
+
+```bash
+omni-extract-bench bench --predictions preds/ --out run/
+```
+
+`preds/` holds one `<doc_id>.json` per document, containing the extraction itself. The corpus
+is downloaded for you.
+
+To score one pair with no benchmark involved:
 
 ```python
 from omni_extract_bench import grade
 
-result = grade(prediction, ground_truth, schema)
-result["leaf_accuracy"]   # 0-100, the headline number
-result["recall"]          # gold rows matched / gold rows
-result["precision"]       # gold rows matched / predicted rows
-result["matching_exact"]  # False if an array was too large to solve exactly
+r = grade(prediction, ground_truth, schema)
+r["accuracy"]         # 0-100, the headline number
+r["recall"]           # gold rows matched / gold rows
+r["precision"]        # gold rows matched / predicted rows
+r["matching_exact"]   # False if an array was too large to solve exactly
 ```
 
-From the command line:
+## Bring your own ground truth
+
+A corpus is a directory of document directories, each holding exactly two files:
+
+```
+<corpus>/<doc_id>/ground_truth.json
+<corpus>/<doc_id>/schema.json
+```
+
+Anything else in the directory is ignored. Point `--corpus` at your own and nothing else
+changes:
 
 ```bash
-omni-extract-bench score      --pred p.json --gt g.json --schema s.json
-omni-extract-bench score-dir  --pred-dir preds/ --gt-dir gt/ --schema-dir schemas/
-omni-extract-bench leaderboard --pred-root baselines/ --gt-dir gt/ --schema-dir schemas/
+omni-extract-bench verify --corpus my-benchmark/
+omni-extract-bench bench  --corpus my-benchmark/ --predictions preds/ --out run/
 ```
 
-`leaderboard` scores every provider directory under `--pred-root` over the same document list.
+The published benchmark is one instance of that contract, not a special case -- it carries
+PDFs, provenance and a parquet atlas alongside, and none of that is required of yours.
+
+A schema is required and is never inferred. Without one, an `additionalProperties` subtree
+would be graded silently, and a value the model invented could not be told from one the schema
+offered it a slot for.
+
+## Seeing why a score is what it is
+
+A run records every address, not just the total:
+
+```
+run/
+  summary.parquet              one row per (doc_id, prediction_id)
+  verdicts/<doc_id>.parquet    every address, with gold and pred
+```
+
+They are ordinary parquet files, so exploring them needs no library:
+
+```sql
+select doc_id, address, gold, pred
+from 'run/verdicts/*.parquet'
+where verdict = 'wrong value';
+```
+
+Or for one document, without SQL:
+
+```bash
+omni-extract-bench explain --predictions preds/ --doc <doc_id>
+```
+
+This is worth doing before trusting an accuracy number. On a sample of real vendor output,
+every wrong value was a boundary disagreement rather than a misreading -- `"Glenmere Robotics"`
+against `"Glenmere Robotics Inc."`, `"14 March 2026"` against `"Updated 14 March 2026"`. That is
+invisible in a score and obvious per address.
+
+Verdicts come back from the pass that computes the score, so they cost time you have already
+spent: 43.8s against 41.4s on an 89,000-leaf document, where asking for both separately took
+90.9s. They do cost memory -- one record per address, and the largest document in the corpus
+has 410,012 -- so `--no-verdicts` turns them off.
+
+Full guide: [`docs/USING.md`](docs/USING.md).
+
+## Three outcomes, kept apart
+
+Every row records a `kind`, and the distinctions are the point:
+
+| kind | meaning |
+| --- | --- |
+| `graded` | scored on its merits |
+| `unusable` | the provider returned nothing scoreable: an error payload, an empty object, bytes that are not JSON |
+| `failed` | **this harness** could not score it |
+
+Metrics on the last two are null, never zero. Zero is an interpretation, and `mean(accuracy)`
+without filtering on `kind` adopts it silently -- which makes a rate-limited run look like a bad
+model. Keeping `failed` apart matters for the same reason in reverse: a broken schema in your
+corpus must not read as a vendor scoring badly.
+
+An earlier version of this scorer had two different answers to the `graded`/`unusable`
+question, and a provider read as 100% coverage while 37 of its 45 outputs were empty.
+
+## The benchmark data
+
+The frozen evaluation set, with verified ground-truth corrections applied, is published
+separately: [`datalab-to/omni_extract_bench`](https://huggingface.co/datasets/datalab-to/omni_extract_bench).
+
+This repository holds the scorer. It ships no benchmark data and no benchmark results.
 
 ## What the metric does
 
@@ -99,6 +177,8 @@ python tests/test_metric_structural_audit.py  # wrapping invariance over 300 gen
 python tests/test_grader_invariants.py        # identity, determinism, traps
 python tests/test_dialects.py                 # per-vendor schema dialects
 python tests/test_capture.py                  # transport capture, including a real subprocess
+python tests/test_bench.py                    # the corpus contract, and graded/unusable/failed
+python tests/test_cli.py                      # the command line, end to end
 ```
 
 The structural audit is the strongest of these: if wrapping a document in an extra level cannot

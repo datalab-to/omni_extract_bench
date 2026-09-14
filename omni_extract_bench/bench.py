@@ -60,23 +60,38 @@ class Document(NamedTuple):
 
 
 class Case(NamedTuple):
-    """One scoreable unit: a document and a prediction for it."""
+    """One scoreable unit: a document and a prediction for it.
+
+    The prediction is carried as bytes, not as parsed JSON, for two reasons. `prediction_id`
+    hashes what was stored, so the bytes are the identity. And a file that will not parse has
+    to become an outcome rather than an exception -- otherwise one malformed prediction takes
+    the whole run with it, which is the opposite of what a benchmark should do.
+    """
 
     doc: Document
     prediction_id: str
-    pred: object
+    raw: bytes
 
 
 class Outcome(NamedTuple):
     """What came of scoring one case.
 
-    `kind` is the distinction between *wrong* and *absent*, and it is not decoration.
-    `prediction_io.usable` exists because that distinction was once made two different ways,
-    and gemini read as 100% coverage on longarray while 37 of its 45 outputs were empty. A
-    caller that averages `accuracy` without looking at `kind` will make that mistake again.
+    Three kinds, and the distinctions are the point:
+
+        graded      scored on its merits
+        unusable    the provider returned nothing scoreable -- an error payload, an empty
+                    object, bytes that are not JSON. Its fault, and it counts against it.
+        failed      THIS harness could not score it. Our fault, and it must not be read as
+                    the provider doing badly.
+
+    `prediction_io.usable` exists because the first two were once told apart two different
+    ways, and a provider read as 100% coverage while 37 of its 45 outputs were empty. Merging
+    the third in would let a broken schema in our corpus read as a poor vendor.
+
+    A caller that averages `accuracy` without looking at `kind` reproduces both mistakes.
     """
 
-    kind: str                 # graded | unusable
+    kind: str                 # graded | unusable | failed
     error: str | None
     summary: dict | None
     verdicts: list | None
@@ -149,23 +164,34 @@ def cases(docs: Iterable[Document], preds: Iterable[tuple[str, bytes]]) -> Itera
             raise ValueError(
                 f"prediction {doc_id!r} matches no document in the corpus.{hint} "
                 f"A prediction file must be named <doc_id>.json.")
-        yield Case(doc=doc, prediction_id=prediction_id(raw), pred=json.loads(raw))
+        yield Case(doc=doc, prediction_id=prediction_id(raw), raw=raw)
 
 
 def score(case: Case, verdicts: bool = True) -> Outcome:
-    """Grade one case.
+    """Grade one case. Never raises.
 
     An unusable prediction is not graded. An error blob scores as though the model tried and
     missed every field, which reads identically to a genuine total failure and is not the same
     thing at all.
 
+    Nothing here raises, because a benchmark that stops on its first bad document is a
+    benchmark you cannot run. What went wrong is recorded on the row and reported at the end.
+
     Verdicts come back from the same pass, so asking for them costs the memory of one
     `Verdict` per address and no extra matching.
     """
-    if not usable(case.pred):
-        error = case.pred.get("__error__") if isinstance(case.pred, dict) else None
+    try:
+        pred = json.loads(case.raw)
+    except ValueError as exc:
+        return Outcome("unusable", f"not JSON: {exc}", None, None)
+    if not usable(pred):
+        error = pred.get("__error__") if isinstance(pred, dict) else None
         return Outcome("unusable", str(error) if error is not None else None, None, None)
-    result = grade(case.pred, case.doc.gt, case.doc.schema, verdicts=verdicts)
+    try:
+        result = grade(pred, case.doc.gt, case.doc.schema, verdicts=verdicts)
+    except Exception as exc:                                            # noqa: BLE001
+        # Ours, not theirs: a schema this scorer cannot see through, or a bug here.
+        return Outcome("failed", f"{type(exc).__name__}: {exc}", None, None)
     return Outcome("graded", None, result, result.pop("verdicts", None))
 
 
