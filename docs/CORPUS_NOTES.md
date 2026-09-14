@@ -72,6 +72,47 @@ PDF text-extraction damage survives into gold. Two kinds, with opposite outcomes
 **25 of 1793 `contextual` citations (1.4%)** carry the second kind. Candidates for the §6
 corrections overlay, which is the right channel — the corpus is never edited in place.
 
+## Placeholder words in the gold are printed, not shorthand
+
+**24,980 gold values are a placeholder word** -- `n/a` 13,874, `none` 4,904, `na` 2,546,
+`not applicable` 2,335, `--` 1,090, `-` 218, plus a handful of `nil` and `—`. They sit in 80
+documents across all five subsets.
+
+They are transcriptions of what the page prints, not an annotation convention for "blank".
+Two independent checks, because the answer decides whether the scorer should fold them:
+
+**Counts.** For the fourteen documents holding twenty or more, the count of the word in the
+PDF text against the count in the gold:
+
+| document | gold | in PDF |
+| --- | --- | --- |
+| `micro1/06_10_26_Mortality_statistics_and_preventable_mortality` | 2,016 | **2,016** |
+| `micro1/m1__Infectious_disease_surveillance_report` | 1,120 | **1,120** |
+| `extractbench/medium__nport__dunham_funds` | 298 | **298** |
+| `micro1/m1__Mortality_statistics_and_preventable_mortality` | 280 | **280** |
+| `micro1/Energy_consumption___efficiency_report` | 1,248 | 1,262 |
+| `micro1/06_10_26_Federal_Reserve_Z_1_Financial_Accounts` | 1,002 | 1,004 |
+
+Four exact matches is not a coincidence a convention produces.
+
+**Inspection.** Four documents came in at a ratio near 0.5 and looked suspect --
+`longarray/cae_v2_{10,11,12}` and `extractbench/long__real_sm0801_ae_full`, all of them the
+word `none`. In `cae_v2_11_n967` all 228 sit in ONE field, `adverse_events.action_taken`, and
+the page prints `None` in that column: in an adverse-event table it is a controlled-vocabulary
+value meaning no action was taken, not an empty cell. The low ratio was `pdftotext` failing to
+recover every table cell, not gold inventing values.
+
+**Consequence for the scorer.** The placeholder words must NOT fold to `null`: a page printing
+`N/A` is a different fact from a page that is silent, and 67 documents carry both spellings in
+the same file. They DO fold into each other -- `N/A`, `-`, `none` and `na` all canonicalise to
+the same key -- so a model writing `-` where the gold says `N/A` scores a match. They are
+distinct from silence, not from one another. `METRIC_SPEC.md` §2 and §5 carry the rule; this
+is the evidence behind it.
+
+The empty string is the exception and goes the other way: it is what a blank cell serialises
+to, so it is an absence (§5). All 1,369 gold empty strings in the corpus are blank cells, 1,196
+of them one empty `type_code` column in a check register.
+
 ## Reproducing
 
 All figures come from flattening `ground_truth.json` with `score.flatten` and walking
