@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "vendor":       {"type": "string"},
+    "invoice_date": {"type": "string"},
+    "total":        {"type": "number"},
+    "lines": {"type": "array", "items": {"type": "object", "properties": {
+      "sku":   {"type": "string"},
+      "qty":   {"type": "number"},
+      "price": {"type": "number"}}}}
+  }
+}

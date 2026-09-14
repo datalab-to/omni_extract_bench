@@ -1,7 +1,7 @@
 """Command-line interface.
 
     oeb build-corpus --corpus DIR
-    oeb score        --predictions preds/ [--corpus DIR] [--out run/]
+    oeb score        --predictions preds/ [--corpus DIR] [--out DIR] [--jobs N]
     oeb explain      --predictions preds/ --doc <doc_id>
     oeb verify       --corpus DIR
     oeb score-one    --pred p.json --gt g.json --schema s.json
@@ -135,7 +135,10 @@ def main(argv=None):
     n = sub.add_parser("score", help="score a directory of predictions against a corpus")
     n.add_argument("--predictions", required=True, help="directory of <doc_id>.json")
     n.add_argument("--corpus", help="default: download the published benchmark")
-    n.add_argument("--out", help="write summary.parquet and verdicts/ here")
+    n.add_argument("--out", help="the run directory: summary.parquet and verdicts/ land here")
+    n.add_argument("--source", help="what to call these predictions; default: the directory name")
+    n.add_argument("--jobs", type=int, default=1,
+                   help="worker processes, one document each")
     n.add_argument("--no-verdicts", action="store_true",
                    help="skip the per-address table; saves memory, not much time")
     n.set_defaults(fn=_run.cmd_score)
@@ -153,7 +156,14 @@ def main(argv=None):
 
 
     args = ap.parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except _run.USER_ERRORS as exc:
+        # One boundary for everything a user can get wrong -- a missing atlas, a corpus that
+        # has drifted, a prediction naming no document. Anything else keeps its traceback,
+        # because it is ours to fix.
+        print(f"  {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
