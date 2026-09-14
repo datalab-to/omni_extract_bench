@@ -57,60 +57,17 @@ SUMMARY = "summary.parquet"
 VERDICTS = "verdicts"
 
 
-def _is_artifact(status_line: str) -> bool:
-    """Is this `git status` line a build artifact rather than source?
+def scorer_version() -> dict[str, str]:
+    """Which scorer produced a score.
 
-    Importing the package writes `__pycache__`, and a project that has not ignored it would
-    otherwise report the scorer as modified the moment it was used. A `.pyc` is derived from
-    the `.py` beside it and cannot change behaviour on its own.
+    The installed version, and nothing else. This used to shell out to git for a commit and a
+    dirty flag, which cost a subprocess, a rule for ignoring `__pycache__`, and another for
+    vendored installs where the surrounding repository is not ours -- all to record a field
+    nothing reads. A commit also only means something inside this repository; anyone who pip
+    installs the package never had one.
     """
-    path = status_line[3:].strip().strip('"')
-    return "__pycache__" in path or path.endswith((".pyc", ".pyo"))
-
-
-def scorer_version(repo: Path | None = None) -> dict[str, str]:
-    """Which code produced a score.
-
-    The commit, and whether the tree had uncommitted changes when it ran. Both, because a
-    commit alone would be a claim the working tree cannot support: the point of recording it is
-    that the same inputs under the same scorer give the same number, and an edited tree cannot
-    promise that. `scorer_dirty` says so rather than inventing a name that hides it.
-
-    Untracked files count -- a stray module changes what gets imported and `git diff` cannot
-    see it.
-
-    **Dirtiness is asked about this package's source only**, not the whole repository and not
-    its build artifacts. Someone who
-    vendors this into their own project, or whose virtualenv is committed, would otherwise have
-    every edit anywhere in their tree reported as a change to the scorer -- and the one field
-    whose job is to say "the commit does not describe what ran" would be true all the time,
-    which is the same as being useless.
-
-    The commit stays repository-wide, because for a vendored copy their commit really does pin
-    our files' contents.
-
-    Outside a checkout there is no commit, so the installed version stands in. That is weaker,
-    since a release covers many working trees, and it is labelled differently for that reason.
-    """
-    import subprocess
-
-    here = Path(__file__).resolve().parent
-    repo = repo or here.parent
-    try:
-        def git(*a: str) -> str:
-            return subprocess.run(["git", "-C", str(repo), *a], capture_output=True,
-                                  text=True, check=True).stdout.strip()
-
-        scope = [str(here)] if repo == here.parent else []
-        changed = [line for line in
-                   git("status", "--porcelain", "--untracked-files=all", "--",
-                       *scope).splitlines()
-                   if not _is_artifact(line)]
-        return {"scorer_commit": git("rev-parse", "HEAD"),
-                "scorer_dirty": str(bool(changed))}
-    except Exception:                                       # not a checkout
-        from . import __version__ as v
-        return {"scorer_version": str(v), "scorer_commit": ""}
+    from . import __version__
+    return {"scorer_version": str(__version__)}
 
 
 def environment() -> dict[str, str]:
@@ -272,9 +229,7 @@ def cmd_score(args: Namespace) -> int:
     if not jobs:
         print("no predictions found; expected <doc_id>.json files", file=sys.stderr)
         return 1
-    scorer = stamp.get("scorer_commit") or stamp.get("scorer_version", "?")
-    print(f"  corpus {stamp['corpus_version']}, scorer {scorer[:12]}"
-          f"{' (uncommitted changes)' if stamp.get('scorer_dirty') == 'True' else ''}, "
+    print(f"  corpus {stamp['corpus_version']}, scorer {stamp['scorer_version']}, "
           f"source {stamp['source']}")
     print(f"  {len(jobs)} predictions, {len(entries)} documents in the corpus")
 

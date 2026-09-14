@@ -13,7 +13,7 @@ about where the bytes live.
 HuggingFace (private)                 R2  datalab-training-pipelines
   corpus.parquet   <- the atlas         vendors/<vendor>/predictions.parquet
   metadata.parquet                      vendors/<vendor>/<doc_id>.json
-  tags.parquet                          scores/<corpus_version>/<scorer_commit>/
+  tags.parquet                          scores/<corpus_version>/<scorer_version>/
   thumbnails.parquet                        summary.parquet
   <doc_id>/                                 verdicts/<doc_id>.parquet
       ground_truth.json
@@ -370,9 +370,9 @@ The reason to do it is that a file holding only the extraction has nothing to un
 `prediction_id` is a plain hash with no rule to agree on and no schema to consult. Two bugs
 this week came from unwrap rules guessing wrong; this removes the category.
 
-### `scores/<corpus_version>/<scorer_commit>/`
+### `scores/<corpus_version>/<scorer_version>/`
 
-Key: `(doc_id, prediction_id)` within a file; `scorer_commit` is the filename. Immutable
+Key: `(doc_id, prediction_id)` within a file; `scorer_version` is the filename. Immutable
 — one file per scorer version, never overwritten. That gives version history for free in a store without versioning, and makes
 "did the scorer change this?" a file listing rather than a query.
 
@@ -383,9 +383,9 @@ unverified — see `REMOTE_RUNS.md`.
 **The key is what makes the table worth having:**
 
 ```
-same prediction_id, different scorer_commit, different score   the scorer changed it
+same prediction_id, different scorer_version, different score   the scorer changed it
 different prediction_id                                        the vendor re-ran
-same prediction_id AND same scorer_commit, different score     non-determinism: a bug
+same prediction_id AND same scorer_version, different score     non-determinism: a bug
 ```
 
 That last line is a test you get for nothing. It would have caught the greedy
@@ -466,8 +466,8 @@ are in the benchmark is decided by which are in the directory, so curating is ar
 ### The corpus is versioned, not mutated
 
 ```
-scores/<corpus_version>/<scorer_commit>/summary.parquet
-scores/<corpus_version>/<scorer_commit>/verdicts/<doc_id>.parquet
+scores/<corpus_version>/<scorer_version>/summary.parquet
+scores/<corpus_version>/<scorer_version>/verdicts/<doc_id>.parquet
 ```
 
 A score means nothing without knowing which corpus produced it, so the corpus version is in
@@ -502,7 +502,7 @@ subset directory -- the corpus contract is just a directory, and a small one is 
 ### The scorer name has to be a real commit
 
 A working tree with edits cannot be named by a commit without the name lying, and the lie is
-not cosmetic — the whole value of the key is that `same prediction_id AND same scorer_commit,
+not cosmetic — the whole value of the key is that `same prediction_id AND same scorer_version,
 different score` means a bug. Two runs from two different dirty trees under one commit would
 trip that check forever while nothing was wrong.
 
