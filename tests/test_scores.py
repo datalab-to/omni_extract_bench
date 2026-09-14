@@ -107,45 +107,10 @@ class Bench:
 
 print("\nSCORES TABLE\n")
 
-# ── the scorer name ───────────────────────────────────────────────────────────────────
-tmp = Path(tempfile.mkdtemp())
-try:
-    def git(*a):
-        return subprocess.run(["git", "-C", str(tmp), *a], capture_output=True,
-                              check=True, text=True)
-
-    git("init", "-q"); git("config", "user.email", "t@t"); git("config", "user.name", "t")
-    (tmp / "a.py").write_text("x = 1\n")
-    git("add", "."); git("commit", "-qm", "one")
-    stamp = scorer_version(tmp)
-    report("a clean tree records its commit", len(stamp["scorer_commit"]) == 40)
-
-    report("a clean tree is recorded as clean", stamp["scorer_dirty"] == "False")
-
-    (tmp / "a.py").write_text("x = 2\n")
-    report("an edited tree is recorded as dirty, not given a different name",
-           scorer_version(tmp)["scorer_dirty"] == "True")
-    note("a commit alone would be a claim the working tree cannot support")
-
-    git("checkout", "--", "a.py")
-    (tmp / "b.py").write_text("shadow = True\n")
-    report("an untracked file counts as dirty",
-           scorer_version(tmp)["scorer_dirty"] == "True")
-    note("git diff cannot see it, but a stray module changes what gets imported")
-
-    # Someone who vendors this into their own project, or commits their virtualenv, must not
-    # have every edit anywhere in their tree reported as a change to the scorer -- nor have
-    # merely importing it, which writes __pycache__, do the same.
-    from omni_extract_bench.run import _is_artifact
-    report("a .pyc is not a source change",
-           _is_artifact("?? vendor/omni_extract_bench/__pycache__/x.cpython-311.pyc")
-           and _is_artifact("?? pkg/x.pyc"))
-    report("...but a real file is",
-           not _is_artifact(" M vendor/omni_extract_bench/values.py"))
-    note("importing the package would otherwise mark it modified in any project "
-         "that has not ignored __pycache__")
-finally:
-    shutil.rmtree(tmp)
+# ── the scorer records which version ran ──────────────────────────────────────────────
+report("the scorer records its version", "scorer_version" in scorer_version())
+report("...and nothing about git", not {"scorer_commit", "scorer_dirty"} & set(scorer_version()))
+note("a commit only means something inside this repository; a pip install never had one")
 
 # ── the corpus is versioned, and a version is answered once ───────────────────────────
 tmp = Path(tempfile.mkdtemp())
