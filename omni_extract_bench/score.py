@@ -14,15 +14,15 @@ ground-truth row. Once that is settled, renumber the predicted rows to match. No
 value has an address that means the same thing in both documents, and scoring is just
 comparing two sets of addresses.
 
-Three functions do that work, and two of them call each other.
+Three functions do that work.
 
     _worth_if_paired   what would this one pair of rows be worth?
     _best_pairing      which predicted row goes with which ground-truth row?
     align              renumber the predicted rows once that is settled
 
 Choosing a pairing needs a price for every candidate pair. Pricing a candidate pair often
-needs a pairing, because two rows can look alike at the top and differ only in a list nested
-inside them. Comparing two such lists is the same problem, one level down:
+needs a "sub"-pairing" when we encounter nested arrays which means we encounter the 
+same problem one level down:
 
     _best_pairing(gold books, predicted books)
         _worth_if_paired(book A, book B)             are these the same book?
