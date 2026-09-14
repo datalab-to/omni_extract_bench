@@ -424,12 +424,45 @@ Two things are now established and worth not re-deriving:
   gemini, mistral and azure-cu were recorded as LOSING -- up to five vendors on the same
   document.
 
-**Next:** find the runner. It is not in `omni_extract_bench`, not in the `datalab`
-monorepo, and not anywhere under `~` -- `recovered_after_timeout` matches nothing. Until
-its policy is known, the coverage column is not a like-for-like comparison. The honest
-fallback, if the policy cannot be recovered, is to re-run every vendor with a strict
-uniform timeout and no recovery, which costs datalab those nine documents but makes the
-comparison sound.
+**FOUND.** The runner is still not on this machine, but it stamped its configuration into
+every `_raw/` record in R2, so the policy did not need it. From
+`baselines/<vendor>/_raw/<suite>/<doc>.json`:
+
+```
+run_manifest.timeout_s      1800          the "uniform 1800s limit" azure-cu's errors quote
+run_manifest.max_output_tokens  64000
+run_manifest.tier           balanced / extraction_performance / gpt-4.1-mini / ...
+cost.wall_s                 the measured time
+recovered_after_timeout     true, on 13 documents, and absent otherwise
+```
+
+`recovered_after_timeout` is a bare boolean, always `true`, never anything else. Twelve of
+the thirteen ran 1801-1812s against the 1800s deadline; the odd one out,
+`short__07021-2016-p0016`, took 105s, so the flag is not purely about the clock.
+
+The `http` array says what recovery actually did, and it is less than the name suggests:
+
+```
+datalab, normal   (92s)    POST /extract  ->  GET /extract/{id}  ->  GET /extract/{id}
+datalab, RECOVERED (1812s) POST /extract  ->  GET /extract/{id}                one poll
+extend,  RECOVERED (1804s) POST /extract_runs  ->  5x GET /extract_runs/{id}
+```
+
+Every request returned 200. There is no retry, no resubmit, no second POST. The deadline
+passed, the harness polled the existing job once more, and the answer was there -- the job
+had finished and the runner had stopped waiting. All four recovered records also carry
+`conventions_applied: false` against `true` on a normal one, so the post-processing step was
+skipped on the late payload.
+
+So the asymmetry is about thirty seconds of patience, and it is worth 9 documents to datalab
+and 4 to extend. The other seven vendors hit 1800s and were recorded as failures.
+
+**Next:** decide whether a document that finished just past the deadline counts. Re-running
+with a strict uniform timeout costs datalab those 9 and extend those 4; re-running with a
+post-deadline poll for everyone would give azure-cu's 42 timeouts the same chance. Either is
+defensible; the current state -- two vendors getting it and seven not -- is not. Note this
+does not need the runner: `timeout_s` and the poll behaviour are both recoverable from
+`_raw/`, which is also the only provenance we have for how any prediction was produced.
 
 ---
 
