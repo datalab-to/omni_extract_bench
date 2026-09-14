@@ -19,6 +19,7 @@ HuggingFace (private)                 R2  datalab-training-pipelines
       ground_truth.json
       schema.json
       document.pdf
+      source.json
 ```
 
 **One rule: parquet holds metadata, files hold payloads.** `scores` and `thumbnails` are
@@ -181,6 +182,32 @@ approximates flattening cost. Both are JSON walks, no scorer import.
 **The schema is stored raw.** `strip_benchmark_keys` then `resolve_refs` are the scorer's
 business, they change with it, and applying them here would bake one version's opinion into
 the corpus. Consumers apply them; 243 of the 660 schemas differ if you forget, silently.
+
+### `source.json`, and why suite is declared
+
+```json
+{"suite": "micro1", "source_id": "m1/Manufacturing_Industry_Datasets"}
+```
+
+Which collection contributed a document cannot be recovered from the document. Not from the
+payloads, which say nothing about it; not from the path, since the suite level is gone; and
+**not from the `doc_id` prefix**, which 394 of 660 carry and 266 do not, and which lies as
+soon as a document is reclassified. A builder inferring from it would succeed for most and
+quietly mislabel the rest -- a plausible wrong answer, which is worse than a stopped build.
+
+So `suite` is **declared, never inferred**, and a document without a `source.json` is a build
+error rather than a guess.
+
+Keeping it beside the document rather than in a central manifest buys two things. The atlas
+stays derivable from the tree alone -- `--rebuild-atlas` regenerates `corpus.parquet` with no
+access to the original dataset, and it reproduces the migrated table exactly, all 660 rows,
+every column. And adding a document is one directory rather than an edit to a shared file
+that two contributors will conflict over.
+
+It is also where provenance grows. Licence, origin URL, when and by whom a document was
+added, whether its ground truth was hand-authored or derived -- none of that is in the
+payloads, and `gt_provenance.json` already exists in the current dataset as evidence it is
+wanted.
 
 ### Metadata tiers, and what decides them
 

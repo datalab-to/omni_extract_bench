@@ -8,10 +8,21 @@ the shape `docs/DATA_LAYOUT.md` settles on:
     <out>/<doc_id>/ground_truth.json
     <out>/<doc_id>/schema.json
     <out>/<doc_id>/document.pdf
+    <out>/<doc_id>/source.json        where this document came from
 
 Every atlas column is a fact about a file or about the JSON's shape, computed without
 importing the scorer. That is what lets the table stay valid across scorer versions: nothing
 in it has an opinion that a scoring change could invalidate.
+
+`source.json` holds what cannot be derived from the payloads: which collection contributed
+the document. `suite` is **declared, never inferred** -- not from the `doc_id` prefix, which
+394 of 660 documents carry and 266 do not, and which lies as soon as a document is
+reclassified. A builder guessing from it would work for most and quietly mislabel the rest,
+which is worse than failing.
+
+Keeping it beside the document rather than in a central manifest is what lets
+`corpus.parquet` be rebuilt from the tree alone, and makes adding a document one directory
+rather than an edit to a shared file that two people will conflict over.
 
 The schema is copied raw. `strip_benchmark_keys` then `resolve_refs` are the scorer's
 business and change with it; applying them here would bake one version into the corpus.
@@ -20,6 +31,7 @@ Usage:
     uv run --with pyarrow --with huggingface_hub python scripts/build_corpus.py --out build/
     uv run ... python scripts/build_corpus.py --out build/ --no-pdfs     # 812 MB lighter
     uv run ... python scripts/build_corpus.py --out build/ --verify-only
+    uv run ... python scripts/build_corpus.py --out build/ --rebuild-atlas
 """
 from __future__ import annotations
 
@@ -42,6 +54,10 @@ from omni_extract_bench.layout import check_doc_id, check_unique, verify  # noqa
 #: `verify` -- the same mechanism that correctly ignores `corpus.parquet` would silently
 #: ignore real PDFs, and every row claiming one would read as a missing file.
 PAYLOAD_PATTERNS = ("**/*.json", "**/*.pdf")
+
+#: Declared provenance, written beside each document. Everything in it is a fact about where
+#: the document came from, which no amount of reading the payloads could recover.
+SOURCE = "source.json"
 
 REPO = "datalab-to/omni_extract_bench"
 ATLAS = "corpus.parquet"
@@ -81,15 +97,35 @@ def leaf_values(node) -> int:
 
 
 def source_documents(root: Path):
-    """(suite, manifest entry) for every document, in manifest order.
+    """(suite, manifest entry) for every document in the ORIGINAL dataset, in manifest order.
 
-    `manifest.json`'s 660 are already the scored set -- the excluded and defective documents
-    are absent from it -- so nothing here filters.
+    Migration only. `manifest.json` is the old layout's declaration of which collection a
+    document belongs to, and this is where that fact crosses over into `source.json`.
+
+    Its 660 are already the scored set -- the excluded and defective documents are absent --
+    so nothing here filters.
     """
     manifest = json.loads((root / "manifest.json").read_text())
     for suite in sorted(manifest):
         for entry in manifest[suite]:
             yield suite, entry
+
+
+def read_source(doc_dir: Path) -> dict:
+    """The declared provenance for one document.
+
+    Raises:
+        ValueError: if `source.json` is missing or declares no suite. Guessing from the
+            `doc_id` prefix would succeed for 394 of 660 and mislabel the rest, and a
+            plausible wrong answer is worse than a stopped build.
+    """
+    path = doc_dir / SOURCE
+    if not path.exists():
+        raise ValueError(f"{doc_dir.name}: no {SOURCE}; suite must be declared, not inferred")
+    declared = json.loads(path.read_text())
+    if not declared.get("suite"):
+        raise ValueError(f"{doc_dir.name}: {SOURCE} declares no suite")
+    return declared
 
 
 def expected_payloads(rows):
@@ -101,8 +137,52 @@ def expected_payloads(rows):
     for r in rows:
         yield f"{r['doc_id']}/ground_truth.json", r["gt_sha256"]
         yield f"{r['doc_id']}/schema.json", r["schema_sha256"]
+        yield f"{r['doc_id']}/{SOURCE}", r["source_sha256"]
         if r["pdf_sha256"]:
             yield f"{r['doc_id']}/document.pdf", r["pdf_sha256"]
+
+
+def row_for(doc_id: str, suite: str, source_id, doc_dir: Path, source_bytes: bytes,
+            gt_bytes: bytes, schema_bytes: bytes, pdf_sha):
+    """One atlas row. Every column is a fact about a file or about the JSON's shape."""
+    gt = json.loads(gt_bytes)
+    return {
+        "doc_id": doc_id,
+        "suite": suite,
+        "source_id": source_id,
+        "gt_bytes": len(gt_bytes),
+        "schema_bytes": len(schema_bytes),
+        "gt_sha256": hashlib.sha256(gt_bytes).hexdigest(),
+        "schema_sha256": hashlib.sha256(schema_bytes).hexdigest(),
+        "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "pdf_sha256": pdf_sha,
+        "has_pdf": pdf_sha is not None,
+        "max_array_rows": biggest_array(gt),
+        "leaf_values": leaf_values(gt),
+    }
+
+
+def rebuild_atlas(out: Path):
+    """Regenerate `corpus.parquet` from the document tree, reading declared provenance.
+
+    This is the property `source.json` exists for: the atlas is derivable from the tree alone,
+    so it can be deleted and rebuilt without the original dataset, and a document added by
+    hand appears without anyone editing a central file.
+    """
+    docs = sorted(d for d in out.iterdir() if d.is_dir())
+    check_unique([d.name for d in docs])
+    rows = []
+    for d in docs:
+        check_doc_id(d.name)
+        declared = read_source(d)
+        pdf = d / "document.pdf"
+        rows.append(row_for(
+            d.name, declared["suite"], declared.get("source_id"), d,
+            (d / SOURCE).read_bytes(),
+            (d / "ground_truth.json").read_bytes(),
+            (d / "schema.json").read_bytes(),
+            hashlib.sha256(pdf.read_bytes()).hexdigest() if pdf.exists() else None))
+    return rows
 
 
 def build(root: Path, out: Path, with_pdfs: bool):
@@ -134,20 +214,14 @@ def build(root: Path, out: Path, with_pdfs: bool):
             pdf_sha = hashlib.sha256(body).hexdigest()
             pdf_bytes += len(body)
 
-        gt = json.loads(gt_bytes)
-        rows.append({
-            "doc_id": doc_id,
-            "suite": suite,
-            "source_id": entry.get("source_id"),
-            "gt_bytes": len(gt_bytes),
-            "schema_bytes": len(schema_bytes),
-            "gt_sha256": hashlib.sha256(gt_bytes).hexdigest(),
-            "schema_sha256": hashlib.sha256(schema_bytes).hexdigest(),
-            "pdf_sha256": pdf_sha,
-            "has_pdf": bool(entry.get("has_pdf")),
-            "max_array_rows": biggest_array(gt),
-            "leaf_values": leaf_values(gt),
-        })
+        # The one fact the payloads cannot carry: which collection this came from.
+        source_bytes = json.dumps({"suite": suite,
+                                   "source_id": entry.get("source_id")},
+                                  indent=2).encode()
+        (dst / SOURCE).write_bytes(source_bytes)
+
+        rows.append(row_for(doc_id, suite, entry.get("source_id"), dst,
+                            source_bytes, gt_bytes, schema_bytes, pdf_sha))
     elapsed = time.monotonic() - t0
     print(f"  {len(rows)} documents in {elapsed:.1f}s"
           + (f", including {pdf_bytes / 1e6:.0f} MB of PDFs" if with_pdfs else ", no PDFs"))
@@ -178,6 +252,8 @@ def main():
                     help="skip document.pdf; 812 MB lighter, and the scorer never reads them")
     ap.add_argument("--verify-only", action="store_true",
                     help="check an existing tree against its atlas and stop")
+    ap.add_argument("--rebuild-atlas", action="store_true",
+                    help="regenerate corpus.parquet from an existing tree, reading source.json")
     args = ap.parse_args()
 
     if args.verify_only:
@@ -186,6 +262,15 @@ def main():
         print(f"verify: {len(rows)} rows, {len(problems)} problems")
         for p in problems[:20]:
             print(f"  {p}")
+        return 1 if problems else 0
+
+    if args.rebuild_atlas:
+        rows = rebuild_atlas(args.out)
+        write_atlas(rows, args.out, "(rebuilt from tree)")
+        problems = verify(expected_payloads(rows), args.out, PAYLOAD_PATTERNS)
+        print(f"  verify: {len(problems)} problems")
+        for p in problems[:10]:
+            print(f"    {p}")
         return 1 if problems else 0
 
     root = Path(snapshot_download(REPO, repo_type="dataset"))
