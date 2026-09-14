@@ -8,7 +8,9 @@
 
 A corpus is a directory of document directories, each holding `ground_truth.json` and
 `schema.json`, plus a `corpus.parquet` atlas that says which of them are in the benchmark.
-`build-corpus` writes the atlas; `score` runs over it. `--corpus` defaults to the published
+`build-corpus` writes the atlas; `score` runs over it. `--corpus` also takes a specific atlas
+file, so a filtered one written beside `corpus.parquet` is a subset you can score without
+disturbing the full list. `--corpus` defaults to the published
 benchmark, and pointing it elsewhere is how you score against your own ground truth. See
 `docs/USING.md`.
 
@@ -125,12 +127,13 @@ def main(argv=None):
     from . import run as _run
 
     c = sub.add_parser("build-corpus", help="write the atlas that says what a corpus contains")
-    c.add_argument("--corpus", required=True)
+    c.add_argument("--corpus", required=True, help="the corpus directory")
     c.set_defaults(fn=_run.cmd_build_corpus)
 
     n = sub.add_parser("score", help="score a directory of predictions against a corpus")
     n.add_argument("--predictions", required=True, help="directory of <doc_id>.json")
-    n.add_argument("--corpus", help="default: download the published benchmark")
+    n.add_argument("--corpus", help="corpus directory, or a specific atlas parquet in it; "
+                                    "default: download the published benchmark")
     n.add_argument("--out", help="the run directory: summary.parquet and verdicts/ land here")
     n.add_argument("--source", help="what to call these predictions; default: the directory name")
     n.add_argument("--jobs", type=int, default=1,
@@ -147,7 +150,8 @@ def main(argv=None):
     e.set_defaults(fn=_run.cmd_explain)
 
     v = sub.add_parser("verify", help="check a corpus directory against the contract")
-    v.add_argument("--corpus", required=True)
+    v.add_argument("--corpus", required=True,
+                   help="corpus directory, or a specific atlas parquet in it")
     v.set_defaults(fn=_run.cmd_verify)
 
 

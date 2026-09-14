@@ -89,6 +89,20 @@ A row naming a file that is **not there** stops the run instead — the atlas is
 follows, so it has to resolve. `build-corpus` re-derives it from the tree whenever documents
 are added or removed.
 
+Better than overwriting: write the subset to its own file and point at it.
+
+```python
+pq.write_table(pa.Table.from_pylist(keep), "my-benchmark/invoices-only.parquet")
+```
+
+```bash
+oeb score --corpus my-benchmark/invoices-only.parquet --predictions preds/
+```
+
+`--corpus` takes a directory (meaning its `corpus.parquet`) or an atlas file (meaning that
+file, with the documents beside it). Rows name their files relative to the atlas, so both
+describe the same documents.
+
 ```bash
 oeb verify --corpus my-benchmark/    # what has changed since the atlas was written
 ```

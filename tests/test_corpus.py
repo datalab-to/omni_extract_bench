@@ -248,6 +248,38 @@ _row = row_for("doc-a", "micro1", None, Path("."), b"{}", b'{"a": 1}',
 report("scripts/build_corpus.py emits every required column",
        set(_corpus_mod.REQUIRED) <= set(_row), str(sorted(set(_corpus_mod.REQUIRED) - set(_row))))
 
+# ── an atlas can be named, so a subset need not overwrite the full list ───────────────
+tmp = Path(tempfile.mkdtemp())
+try:
+    for name in ("alpha", "beta"):
+        d = tmp / name
+        d.mkdir()
+        (d / "ground_truth.json").write_text('{"a": 1}')
+        (d / "schema.json").write_text('{"type": "object"}')
+    _corpus_mod.write(tmp, _corpus_mod.discover(tmp))
+
+    root, atlas = _corpus_mod.locate(tmp)
+    report("a directory means its corpus.parquet",
+           (root, atlas.name) == (tmp, "corpus.parquet"))
+
+    # A filtered atlas beside the full one: same documents, narrower list.
+    t = _pq.read_table(tmp / "corpus.parquet")
+    _pq.write_table(_pa.Table.from_pylist([r for r in t.to_pylist() if r["doc_id"] == "alpha"]),
+                    tmp / "just-alpha.parquet")
+    root, atlas = _corpus_mod.locate(tmp / "just-alpha.parquet")
+    report("an atlas file means that file, with the documents beside it",
+           root == tmp and atlas.name == "just-alpha.parquet")
+    report("the narrower atlas lists only what it kept",
+           [e.doc_id for e in _corpus_mod.read(tmp / "just-alpha.parquet")] == ["alpha"])
+    report("...and the full one is untouched",
+           [e.doc_id for e in _corpus_mod.read(tmp)] == ["alpha", "beta"])
+    note("narrowing a corpus should not mean overwriting the record of what it contains")
+
+    report("rebuilding does not mistake a second atlas for a document",
+           [e.doc_id for e in _corpus_mod.discover(tmp)] == ["alpha", "beta"])
+finally:
+    shutil.rmtree(tmp)
+
 print(f"\n{'CORPUS AND IDENTITY HOLDS' if not FAILS else 'FAILURES:'}")
 for f in FAILS:
     print(f"   {f}")
