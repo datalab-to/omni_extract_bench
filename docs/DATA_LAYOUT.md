@@ -440,6 +440,21 @@ That number is almost entirely three documents -- 61% of the CPU, and one of the
 single vendor's wall clock, with three workers idle for the last nineteen minutes. Scheduling
 hides this across nine vendors and cannot hide it for one. See `TO_LOOK_AT.md` item 15.
 
+### Incremental, because curation is routine
+
+A document is the unit of work: scored against every prediction for it, writing one verdict
+file and one batch of summary rows. A document is rescored only when the table does not
+already hold a row for every one of its predictions against exactly this gold and this schema.
+
+So adding a document costs one document, and correcting a ground truth costs one document --
+not the 9.8 CPU-hours of re-deriving 5,198 rows nobody touched.
+
+**Two modes, and they must stay separate.** The default skips what is current. `--recheck`
+scores everything, compares against the stored table and writes nothing. Skipping identical
+inputs and verifying identical inputs are opposites, and an earlier version folded them into
+one `--force` flag -- which set the comparison baseline to empty and so disabled the
+determinism check on the one command that most wanted it. It passed its own tests.
+
 ### The scorer name has to be a real commit
 
 A working tree with edits cannot be named by a commit without the name lying, and the lie is
@@ -447,8 +462,12 @@ not cosmetic — the whole value of the key is that `same prediction_id AND same
 different score` means a bug. Two runs from two different dirty trees under one commit would
 trip that check forever while nothing was wrong.
 
-So a dirty tree is named `dirty-<timestamp>` instead, which cannot be mistaken for a commit
-and does not claim to be reproducible. **Untracked files count as dirty**: a stray module in
+So a dirty tree is named `dirty` instead, which cannot be mistaken for a commit.
+`scores/dirty/` is scratch: freely overwritten, never published.
+
+Just `dirty`, not `dirty-<timestamp>`. The timestamp looked stricter, and made the whole
+feature inert -- every run wrote a new directory, so nothing was ever current and incremental
+scoring never engaged once while iterating. **Untracked files count as dirty**: a stray module in
 `omni_extract_bench/` changes what gets imported, and `git diff` cannot see it.
 
 ### Crash recovery

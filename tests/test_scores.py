@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """What must be true of the scores table, stated as properties.
 
-`scores` is the one table nothing else can reproduce cheaply -- lose a file and it is hours of
-compute back -- so the properties here are mostly about refusing to do damage: never
-overwriting a stored table, never naming a dirty tree after a commit, never inventing a row
-for a prediction that does not exist.
+`scores` is the one table nothing else can reproduce cheaply, so most of these are about
+refusing to do damage: never naming a dirty tree after a commit, never rewriting a document
+that has not changed, never calling ordinary curation a bug.
 
-The three that a probe found the hard way:
+Three that a probe found the hard way, each after the code looked finished:
 
-  * a payload that still has its envelope must stop the run, not be unwrapped. Unwrap rules
-    guessing wrong caused two bugs; this replaces the rule with a check.
-  * the metrics on a non-graded row must be null, not zero. Zero is an interpretation, and one
-    that a later `mean()` would silently adopt.
-  * scoring is deduplicated by `(doc_id, prediction_id)`, which is only sound because files
-    sharing that key are byte-identical.
+  * `--force` conflated "what to rescore" with "what to compare against", so the determinism
+    check silently never ran on the one command that most wanted it. It is now two modes.
+  * naming a dirty tree `dirty-<timestamp>` meant every run wrote a new directory, so nothing
+    was ever current and incremental scoring never engaged at all.
+  * the unit of work must be the DOCUMENT. Scoring per prediction while partitioning verdicts
+    per document left the journal and the verdict files disagreeing about what was finished.
 
 Run: python3 tests/test_scores.py
 """
+import hashlib
 import json
 import os as _os
 import shutil
@@ -31,10 +31,11 @@ import pyarrow.parquet as pq
 _ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 _sys.path.insert(0, _ROOT)
 _sys.path.insert(0, _os.path.join(_ROOT, "scripts"))
-from build_scores import (                                               # noqa: E402
-    METRICS, check_dedup, no_envelope, run, schema_for, scorer_version, tasks, write_table)
+from build_scores import KEY, check_dedup, scorer_version, survey       # noqa: E402
 
 FAILS = []
+BUILD = _os.path.join(_ROOT, "scripts", "build_scores.py")
+SCHEMA = {"type": "object", "properties": {"n": {"type": "number"}, "s": {"type": "string"}}}
 
 
 def report(name, ok, detail=""):
@@ -47,176 +48,176 @@ def note(text):
     print(f"          {text}")
 
 
+class Bench:
+    """A tiny corpus and vendor tree, driven through the real script."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.corpus, self.vendors, self.out = root / "c", root / "v", root / "o"
+
+    def doc(self, doc_id, gt):
+        d = self.corpus / doc_id
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "ground_truth.json").write_text(json.dumps(gt))
+        (d / "schema.json").write_text(json.dumps(SCHEMA))
+        pq.write_table(pa.Table.from_pylist(
+            [{"doc_id": p.name, "max_array_rows": 1}
+             for p in sorted(self.corpus.iterdir()) if p.is_dir()]),
+            self.corpus / "corpus.parquet")
+
+    def vendor(self, name, preds):
+        vd = self.vendors / name
+        vd.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for doc_id, body in preds.items():
+            raw = json.dumps(body).encode()
+            (vd / f"{doc_id}.json").write_bytes(raw)
+            rows.append({"doc_id": doc_id,
+                         "prediction_id": hashlib.sha256(raw).hexdigest(), "usable": True})
+        pq.write_table(pa.Table.from_pylist(rows), vd / "predictions.parquet")
+
+    def build(self, *extra):
+        r = subprocess.run(
+            [_sys.executable, BUILD, "--corpus", str(self.corpus), "--vendors",
+             str(self.vendors), "--out", str(self.out), "--jobs", "1", *extra],
+            capture_output=True, text=True)
+        return r.returncode, r.stdout + r.stderr
+
+    @property
+    def dir(self):
+        return self.out / "scores" / "dirty"
+
+    def summary(self):
+        return pq.read_table(self.dir / "summary.parquet").to_pylist()
+
+    def verdict_files(self):
+        return {f.name: f.stat().st_mtime_ns
+                for f in (self.dir / "verdicts").glob("*.parquet")}
+
+
 print("\nSCORES TABLE\n")
 
-# ── a stored payload must be bare ─────────────────────────────────────────────────────
-# The old scorer unwrapped {"result": ...} here. In this layout the builders store the bare
-# extraction, so an envelope arriving means a builder is wrong -- and unwrapping it would hide
-# that while scoring under a prediction_id that hashed the wrapper.
-try:
-    no_envelope({"result": {"a": 1}, "_secs": 3.0}, {}, "somewhere.json")
-    report("an enveloped payload stops the run", False, "it was accepted")
-except ValueError as exc:
-    report("an enveloped payload stops the run", "envelope" in str(exc))
-
-report("a bare payload passes through unchanged",
-       no_envelope({"a": 1}, {}, "x") == {"a": 1})
-
-# The one case where "result" is not an envelope: a schema that declares it. No corpus schema
-# does today, which is exactly why the case needs a test rather than an assumption.
-report("a schema that declares 'result' makes it a real field, not an envelope",
-       no_envelope({"result": 1}, {"result": {"type": "integer"}}, "x") == {"result": 1})
-
-# ── non-graded rows carry nulls, not zeros ────────────────────────────────────────────
+# ── the scorer name ───────────────────────────────────────────────────────────────────
 tmp = Path(tempfile.mkdtemp())
 try:
-    rows = [{"doc_id": "a", "prediction_id": "h" * 64, "kind": "unusable"},
-            {"doc_id": "b", "prediction_id": "g" * 64, "kind": "graded", "secs": 0.1,
-             **{m: (99.5 if m in ("accuracy",) else 1) for m in METRICS},
-             "matching_exact": True, "approximated": [], "skipped_open_maps": []}]
-    path = write_table(rows, tmp, "deadbeef", {"scorer_commit": "deadbeef"})
-    back = pq.read_table(path).to_pylist()
-    unusable = next(r for r in back if r["kind"] == "unusable")
-    report("an unusable prediction records null metrics, never 0.0",
-           all(unusable[m] is None for m in METRICS),
-           f"accuracy={unusable['accuracy']!r}")
-    note("0.0 would be an interpretation; a later mean() over the column would adopt it")
+    def git(*a):
+        return subprocess.run(["git", "-C", str(tmp), *a], capture_output=True,
+                              check=True, text=True)
 
-    # ── the table is immutable ────────────────────────────────────────────────────────
-    # A file named for a commit is that commit's answer. If it can be rewritten, the directory
-    # listing stops being a version history.
-    try:
-        write_table(rows, tmp, "deadbeef", {"scorer_commit": "deadbeef"})
-        report("writing over a stored table is refused", False, "it was overwritten")
-    except SystemExit as exc:
-        report("writing over a stored table is refused", "immutable" in str(exc))
-
-    # ── the schema does not depend on which rows were scored ──────────────────────────
-    only_unusable = write_table([rows[0]], tmp, "cafe", {})
-    report("a run that graded nothing still types accuracy as a float",
-           pq.read_schema(only_unusable).field("accuracy").type == pa.float64())
-
-    meta = pq.read_schema(path).metadata
-    report("the table stamps what ran, not just what the filename says",
-           b"scorer_commit" in meta and b"kinds" in meta,
-           str(sorted(meta)))
-finally:
-    shutil.rmtree(tmp)
-
-# ── the journal resumes rather than rescoring ─────────────────────────────────────────
-# Hours of compute behind one crash. The journal is the only thing between a crash and
-# starting over.
-tmp = Path(tempfile.mkdtemp())
-try:
-    corpus = tmp / "corpus"
-    (corpus / "d").mkdir(parents=True)
-    (corpus / "d" / "ground_truth.json").write_text('{"a": 1}')
-    (corpus / "d" / "schema.json").write_text('{"type": "object", "properties": {"a": {}}}')
-    (tmp / "d.json").write_text('{"a": 1}')
-    todo = [("d", "p" * 64, str(tmp / "d.json"), True)]
-
-    journal = tmp / "j.jsonl"
-    first = run(todo, corpus, 1, journal)
-    report("a scored row is journalled as it lands, not at the end",
-           journal.exists() and len(journal.read_text().strip().splitlines()) == 1)
-
-    # Make rescoring impossible. If the second run produces a row anyway, it came from the
-    # journal -- which is the property.
-    (corpus / "d" / "ground_truth.json").unlink()
-    second = run(todo, corpus, 1, journal)
-    report("a second run reuses the journal instead of rescoring",
-           len(second) == 1 and second[0]["kind"] == "graded"
-           and second[0]["accuracy"] == first[0]["accuracy"])
-finally:
-    shutil.rmtree(tmp)
-
-# ── the dirty-tree rule ───────────────────────────────────────────────────────────────
-# A working tree with edits cannot be named by a commit without the name lying, and the lie
-# breaks the non-determinism check: two runs from two different dirty trees would look like
-# the same scorer disagreeing with itself.
-tmp = Path(tempfile.mkdtemp())
-try:
-    run = lambda *a: subprocess.run(["git", "-C", str(tmp), *a], capture_output=True,
-                                    check=True, text=True)
-    run("init", "-q")
-    run("config", "user.email", "t@t"); run("config", "user.name", "t")
+    git("init", "-q"); git("config", "user.email", "t@t"); git("config", "user.name", "t")
     (tmp / "a.py").write_text("x = 1\n")
-    run("add", "."); run("commit", "-qm", "one")
-    clean_name, clean_stamp = scorer_version(tmp)
+    git("add", "."); git("commit", "-qm", "one")
+    name, stamp = scorer_version(tmp)
     report("a clean tree is named by its commit",
-           clean_name == clean_stamp["scorer_commit"] and len(clean_name) == 40)
-    report("a clean tree is stamped not-dirty", clean_stamp["scorer_dirty"] == "False")
+           name == stamp["scorer_commit"] and len(name) == 40)
 
     (tmp / "a.py").write_text("x = 2\n")
-    dirty_name, dirty_stamp = scorer_version(tmp)
-    report("a modified tree is not named by a commit",
-           dirty_name.startswith("dirty-") and dirty_name != dirty_stamp["scorer_commit"])
+    dirty_name, _ = scorer_version(tmp)
+    report("a modified tree is named `dirty`, not a commit", dirty_name == "dirty")
 
-    run("checkout", "--", "a.py")
+    git("checkout", "--", "a.py")
     (tmp / "b.py").write_text("shadow = True\n")
-    untracked_name, _ = scorer_version(tmp)
-    report("an untracked file counts as dirty",
-           untracked_name.startswith("dirty-"),
-           f"got {untracked_name[:12]}")
+    report("an untracked file counts as dirty", scorer_version(tmp)[0] == "dirty")
     note("git diff cannot see it, but a stray module changes what gets imported")
+
+    again, _ = scorer_version(tmp)
+    report("the dirty name is stable across runs", again == "dirty")
+    note("a timestamp here meant nothing was ever current and incremental never engaged")
+finally:
+    shutil.rmtree(tmp)
+
+# ── the incremental contract ──────────────────────────────────────────────────────────
+tmp = Path(tempfile.mkdtemp())
+try:
+    b = Bench(tmp)
+    b.doc("alpha", {"n": 1, "s": "x"})
+    b.vendor("acme", {"alpha": {"n": 1, "s": "x"}})
+    b.vendor("brand", {"alpha": {"n": 1, "s": "WRONG"}})
+    code, log = b.build()
+    report("a first run scores everything", code == 0 and len(b.summary()) == 2, log[-200:])
+    first = b.verdict_files()
+
+    code, log = b.build()
+    report("a second run with nothing changed does nothing",
+           "nothing to do" in log and b.verdict_files() == first, log[-200:])
+    note("the table is a cache of work that cost hours; re-deriving it is the failure")
+
+    b.doc("beta", {"n": 2, "s": "y"})
+    b.vendor("acme", {"alpha": {"n": 1, "s": "x"}, "beta": {"n": 2, "s": "y"}})
+    b.vendor("brand", {"alpha": {"n": 1, "s": "WRONG"}, "beta": {"n": 2, "s": "y"}})
+    code, log = b.build()
+    after = b.verdict_files()
+    report("adding a document adds its rows and its verdict file",
+           len(b.summary()) == 3 and "beta.parquet" in after, log[-200:])
+    report("...and does not touch any other document's verdicts",
+           after["alpha.parquet"] == first["alpha.parquet"])
+    note("adding one document must not cost 9.8 CPU-hours of rescoring")
+
+    b.doc("alpha", {"n": 99, "s": "x"})          # the gold was wrong; fix it
+    code, log = b.build()
+    third = b.verdict_files()
+    report("correcting a ground truth is not reported as non-determinism",
+           code == 0 and "NON-DETERMINISM" not in log, log[-300:])
+    note("a check that fires on ordinary curation is a check nobody will keep")
+    report("...and rescores only that document",
+           third["alpha.parquet"] != after["alpha.parquet"]
+           and third["beta.parquet"] == after["beta.parquet"])
+    report("the corrected row records the gold it was scored against",
+           len({r["gt_sha256"] for r in b.summary() if r["doc_id"] == "alpha"}) == 1)
+
+    # ── genuine non-determinism IS caught ─────────────────────────────────────────────
+    rows = b.summary()
+    for r in rows:
+        if r["doc_id"] == "beta":
+            r["accuracy"] = 12.5
+    pq.write_table(pa.Table.from_pylist(rows), b.dir / "summary.parquet")
+    code, log = b.build("--recheck")
+    report("--recheck catches a score that changed on identical inputs",
+           code == 1 and "NON-DETERMINISM" in log, log[-300:])
+    note("this is the check that would have caught the greedy order-sensitivity")
+    report("--recheck writes nothing",
+           any(r["accuracy"] == 12.5 for r in b.summary()))
 finally:
     shutil.rmtree(tmp)
 
 # ── dedup, and the assumption under it ────────────────────────────────────────────────
 tmp = Path(tempfile.mkdtemp())
 try:
-    corpus, vendors = tmp / "corpus", tmp / "vendors"
-    corpus.mkdir()
-    for doc, rowcount in (("big", 900), ("small", 2)):
-        (corpus / doc).mkdir()
-        (corpus / doc / "ground_truth.json").write_text('{"a": 1}')
-        (corpus / doc / "schema.json").write_text('{"type": "object"}')
-    pq.write_table(pa.Table.from_pylist(
-        [{"doc_id": "big", "max_array_rows": 900},
-         {"doc_id": "small", "max_array_rows": 2}]), corpus / "corpus.parquet")
-
-    shared_body = b'{"same": 1}'
-    shared_id = "s" * 64
-    for vendor in ("alpha", "beta"):
-        vd = vendors / vendor
-        vd.mkdir(parents=True)
-        (vd / "big.json").write_bytes(shared_body)
-        (vd / "small.json").write_bytes(f'{{"{vendor}": 1}}'.encode())
-        pq.write_table(pa.Table.from_pylist([
-            {"doc_id": "big", "prediction_id": shared_id, "usable": True},
-            {"doc_id": "small", "prediction_id": vendor * 16, "usable": True},
-        ]), vd / "predictions.parquet")
-
-    todo, paths = tasks(corpus, vendors)
+    b = Bench(tmp)
+    b.doc("big", {"n": 1, "s": "x"})
+    b.doc("small", {"n": 2, "s": "y"})
+    for v in ("alpha", "beta"):
+        b.vendor(v, {"big": {"n": 1, "s": "x"}, "small": {"n": 9, "s": v}})
+    work, paths = survey(b.corpus, b.vendors)
+    total = sum(len(p) for p in paths.values())
+    distinct = sum(len(w.preds) for w in work)
     report("two vendors emitting identical bytes are scored once",
-           len(todo) == 3 and sum(len(v) for v in paths.values()) == 4,
-           f"{len(todo)} tasks from {sum(len(v) for v in paths.values())} predictions")
-    report("the most expensive document is scheduled first",
-           todo[0][0] == "big")
-    note("the cost spread is p50 = 6 array rows against a p100 of 26,725")
-
+           total == 4 and distinct == 3, f"{distinct} of {total}")
+    report("work is grouped by document, not by prediction",
+           len(work) == 2 and all(isinstance(w.preds, tuple) for w in work))
+    note("the document is the unit: one parse of the gold, one verdict file, one journal batch")
     report("byte-identical predictions under one key pass the dedup check",
            check_dedup(paths) == 0)
 
-    # Break the assumption the dedup rests on and the check must see it.
-    (vendors / "beta" / "big.json").write_bytes(b'{"same":  1}')
-    _, paths = tasks(corpus, vendors)
-    report("a key whose files are NOT identical is caught",
-           check_dedup(paths) == 1)
-    note("without this, one vendor's score would be attributed to another's prediction")
+    (b.vendors / "beta" / "big.json").write_bytes(b'{"n": 1, "s":  "x"}')
+    _w, paths = survey(b.corpus, b.vendors)
+    report("a key whose files are NOT identical is caught", check_dedup(paths) == 1)
+    note("without this, one vendor's score is attributed to another's prediction")
 
-    # A prediction for a document the corpus does not have is a build error, not a null row.
     pq.write_table(pa.Table.from_pylist([
         {"doc_id": "ghost", "prediction_id": "z" * 64, "usable": True}]),
-        vendors / "alpha" / "predictions.parquet")
+        b.vendors / "alpha" / "predictions.parquet")
     try:
-        tasks(corpus, vendors)
+        survey(b.corpus, b.vendors)
         report("a prediction for an unknown document stops the build", False, "accepted")
     except ValueError as exc:
         report("a prediction for an unknown document stops the build",
                "not in the corpus" in str(exc))
 finally:
     shutil.rmtree(tmp)
+
+report("the row key carries the gold and the schema, not just the prediction",
+       KEY == ("doc_id", "prediction_id", "gt_sha256", "schema_sha256"), str(KEY))
 
 print(f"\n{'SCORES TABLE HOLDS' if not FAILS else 'FAILURES:'}")
 for f in FAILS:

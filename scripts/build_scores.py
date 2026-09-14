@@ -1,42 +1,55 @@
 #!/usr/bin/env python3
-"""Score every distinct prediction against the corpus, into one immutable table per scorer.
+"""Score the benchmark's predictions into one table per scorer version.
 
-    <out>/scores/<scorer_commit>.parquet
+    <out>/scores/<scorer_commit>/summary.parquet              one row per scored prediction
+    <out>/scores/<scorer_commit>/verdicts/<doc_id>.parquet    every address, gold and pred
 
-Reads the two trees the other builders produce -- `corpus.parquet` beside the document
-directories, `vendors/<vendor>/predictions.parquet` beside the payloads -- and writes one row
-per distinct `(doc_id, prediction_id)`.
+Scores through `omni_extract_bench.bench`, the same path an outside user gets, so there is one
+set of rules whether the predictions came from our run or someone's laptop. This script only
+adds what is specific to the published benchmark: where the predictions live, which of them are
+duplicates, and how to avoid re-deriving work that has not changed.
 
-**Not one row per (vendor, doc_id, prediction_id).** A score is a function of the prediction's
-bytes and the scorer's code, so two vendors that emitted byte-identical extractions have the
-same score by construction, and scoring both would be computing a known answer twice. In the
-current run that is 738 of 5,936 (12.4%), 360 of them shared across vendors rather than within
-one. Which vendors a row belongs to is recovered by joining the vendor atlases on
-`(doc_id, prediction_id)`, where that fact already lives.
+**A document is the unit of work.** One document is scored against every prediction for it,
+writes one verdict file, and contributes one batch of summary rows. Scoring per prediction
+instead means the journal and the verdict files disagree about what is finished, and the parsed
+ground truth -- up to 13 MB -- is re-read once per vendor.
 
-The dedup rests on an assumption worth stating, because it is the kind that rots quietly:
-every file sharing a `(doc_id, prediction_id)` is byte-identical. That is what
-`prediction_id` means, and `--check-dedup` asserts it rather than trusting it.
+**A row is identified by what determined it:**
 
-`prediction_id` alone is *not* the key: 48 ids appear under more than one document, because a
-vendor's error payloads are identical whatever the input.
+    (doc_id, prediction_id, gt_sha256, schema_sha256)    within a scorer_commit
 
-**Predictions that are absent get no row.** The run produced four, and they have no file, so
-no bytes, so no `prediction_id` -- there is nothing to key them on. Absence is a fact about a
-vendor's coverage and it already shows as a missing row in that vendor's atlas. Inventing a
-scores row for a prediction that does not exist would put it in the one table that is supposed
-to describe predictions that do.
+Carrying the gold and schema hashes is what lets a corrected ground truth be a different row
+rather than the same row disagreeing with itself. Without them, ordinary curation reported
+`NON-DETERMINISM` when nothing was non-deterministic, and a check that cries wolf is not a
+check.
+
+**Two modes, each with one job.** By default a prediction is scored unless the table already
+holds a row for exactly these inputs, so adding a document costs one document. `--recheck`
+scores everything, compares against the stored table and writes nothing -- the determinism
+audit. They are separate because skipping identical inputs and verifying identical inputs are
+opposites: an earlier version folded them into one `--force` flag, which disabled the check on
+the one run that most wanted it.
+
+**One row per distinct prediction, not per vendor.** Two vendors that emitted byte-identical
+extractions have the same score by construction -- 738 of 5,936 (12.4%), 360 of those shared
+across vendors. Which vendors a row belongs to is recovered by joining the vendor atlases on
+`(doc_id, prediction_id)`. `--check-dedup` asserts the assumption underneath.
+
+`prediction_id` alone is not a key: 48 ids appear under more than one document, because a
+vendor's error payloads are identical whatever the input. Predictions that are absent get no
+row -- no file, no bytes, nothing to key them on.
 
 Usage:
     uv run --with pyarrow --with scipy --with numpy python scripts/build_scores.py \
         --corpus build/ --vendors build/vendors --out build/
-    uv run ... python scripts/build_scores.py ... --jobs 4
-    uv run ... python scripts/build_scores.py ... --recheck build/scores/<commit>.parquet
+    uv run ... python scripts/build_scores.py ... --jobs 8
+    uv run ... python scripts/build_scores.py ... --recheck
     uv run ... python scripts/build_scores.py ... --check-dedup
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -46,47 +59,50 @@ import time
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+from typing import NamedTuple
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from omni_extract_bench.layout import PREDICTION_ID_VERSION          # noqa: E402
+from omni_extract_bench.bench import (                                   # noqa: E402
+    GROUND_TRUTH, SCHEMA, Case, document, score, summary_row, verdict_rows)
+from omni_extract_bench.layout import PREDICTION_ID_VERSION              # noqa: E402
 
-#: One file per scorer version, never overwritten. The directory listing is then the version
-#: history, in a store that has none.
-SCORES_DIR = "scores"
+SCORES_DIR, SUMMARY, VERDICTS = "scores", "summary.parquet", "verdicts"
 
-#: The scorer's scalar outputs, in the table in this order. All of them, not the twelve the
-#: first run happened to keep: a column costs about eight bytes and re-running to recover one
-#: costs hours, so the asymmetry only points one way.
-METRICS = ("accuracy", "f1", "precision", "recall", "found", "read_right",
-           "matched", "total", "asserted", "misread", "unfound",
-           "fabricated", "invented_item", "invented_field",
-           "gt_rows", "pred_rows", "matched_rows")
-
-#: Where the metric stopped being exact. `matching_exact` says *that* it happened;
-#: `approximated` and `skipped_open_maps` say *where*, which is what you need when a number
-#: looks wrong. Both are empty on almost every row and cost nothing when they are.
-WITNESSES = ("matching_exact", "approximated", "skipped_open_maps")
+#: What identifies a row. Everything else on it is a measurement.
+KEY = ("doc_id", "prediction_id", "gt_sha256", "schema_sha256")
 
 _CFG: dict = {}
 
 
+class Work(NamedTuple):
+    """One document and every distinct prediction for it."""
+
+    doc_id: str
+    gt_sha256: str
+    schema_sha256: str
+    preds: tuple           # ((prediction_id, payload path), ...)
+    cost: int              # biggest array in the gold, for scheduling
+
+
 def scorer_version(repo: Path) -> tuple[str, dict]:
-    """The name for this table, and the provenance that the name does not carry.
+    """The name for this table, and the provenance the name does not carry.
 
-    The filename is a commit, so it has to *be* one. A working tree with edits in it cannot be
-    named by a commit without the name lying, and the lie is not cosmetic: the whole value of
-    the key is that `same prediction_id AND same scorer_commit, different score` means a bug.
-    Two runs from two different dirty trees under one commit would trip that check forever
-    while nothing was wrong.
+    A working tree with edits cannot be named by a commit without the name lying, and the lie
+    is not cosmetic: the table's whole value is that the same inputs under the same name must
+    give the same number. So a dirty tree is named `dirty`, which cannot be mistaken for a
+    commit.
 
-    So a dirty tree gets a timestamp instead, which cannot be mistaken for a commit and does
-    not claim to be reproducible.
+    Just `dirty`, not `dirty-<timestamp>`. The timestamp looked safer -- two different working
+    trees could not collide -- but it meant every run wrote a new directory, so nothing was
+    ever current, incremental scoring never engaged while iterating, and the run accumulated a
+    directory per invocation. `scores/dirty/` is scratch: freely overwritten, never published,
+    and whatever you last had in the tree.
 
-    Untracked files count as dirty. A stray module in `omni_extract_bench/` changes what gets
-    imported, and `git diff` does not see it.
+    Untracked files count as dirty -- a stray module changes what gets imported, and
+    `git diff` cannot see it.
     """
     def git(*args):
         return subprocess.run(["git", "-C", str(repo), *args],
@@ -94,241 +110,175 @@ def scorer_version(repo: Path) -> tuple[str, dict]:
 
     commit = git("rev-parse", "HEAD")
     dirty = bool(git("status", "--porcelain", "--untracked-files=all"))
-    name = (f"dirty-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}" if dirty else commit)
+    name = "dirty" if dirty else commit
     return name, {"scorer_commit": commit, "scorer_dirty": str(dirty)}
 
 
 def environment() -> dict:
-    """What ran, beyond the code. Same commit on x86 and ARM may not agree, and nobody has
-    checked -- so record enough to tell those runs apart after the fact instead of assuming.
+    """What ran, beyond the code. The same commit on x86 and ARM may not agree, and nobody has
+    checked -- so record enough to tell those runs apart afterwards rather than assuming.
     """
     import numpy
     import scipy
-    return {
-        "python": platform.python_version(),
-        "platform": f"{platform.system()}-{platform.machine()}",
-        "numpy": numpy.__version__,
-        "scipy": scipy.__version__,
-        "prediction_id_version": PREDICTION_ID_VERSION,
-    }
+    return {"python": platform.python_version(),
+            "platform": f"{platform.system()}-{platform.machine()}",
+            "numpy": numpy.__version__, "scipy": scipy.__version__,
+            "prediction_id_version": PREDICTION_ID_VERSION}
 
 
-def tasks(corpus: Path, vendors: Path):
-    """Every distinct `(doc_id, prediction_id)`, most expensive first.
+def survey(corpus: Path, vendors: Path):
+    """Every document with its predictions, most expensive first, plus the dedup evidence.
 
-    Longest-first because the cost distribution is extreme -- the median document has 6 array
-    rows and the largest has 26,725 -- so a pool fed in any other order finishes its cheap work
-    early and then waits on one straggler.
+    The hashes come from the files, not from parsing them: this decides what to score, and
+    parsing 660 ground truths to find out costs more than the decision is worth.
 
-    Returns the tasks and, for `--check-dedup`, every payload path behind each key.
+    Most expensive first because the cost spread is extreme -- a median document has 6 array
+    rows against a largest of 26,725 -- so a pool fed any other way finishes its cheap work
+    and waits on one straggler.
     """
     atlas = {r["doc_id"]: r for r in pq.read_table(corpus / "corpus.parquet").to_pylist()}
     paths = defaultdict(list)
-    usable = {}
     for vd in sorted(p for p in vendors.iterdir() if p.is_dir()):
         for r in pq.read_table(vd / "predictions.parquet").to_pylist():
-            key = (r["doc_id"], r["prediction_id"])
-            if key[0] not in atlas:
-                raise ValueError(f"{vd.name}: {key[0]} is not in the corpus")
-            paths[key].append(vd / f"{r['doc_id']}.json")
-            usable[key] = r["usable"]
-    ordered = sorted(paths, key=lambda k: -atlas[k[0]]["max_array_rows"])
-    return [(d, p, str(paths[(d, p)][0]), usable[(d, p)]) for d, p in ordered], paths
+            if r["doc_id"] not in atlas:
+                raise ValueError(f"{vd.name}: {r['doc_id']} is not in the corpus")
+            paths[(r["doc_id"], r["prediction_id"])].append(vd / f"{r['doc_id']}.json")
+
+    by_doc = defaultdict(list)
+    for (doc_id, pid), files in paths.items():
+        by_doc[doc_id].append((pid, str(files[0])))
+
+    def sha(doc_id, name):
+        return hashlib.sha256((corpus / doc_id / name).read_bytes()).hexdigest()
+
+    work = [Work(doc_id, sha(doc_id, GROUND_TRUTH), sha(doc_id, SCHEMA),
+                 tuple(sorted(preds)), atlas[doc_id]["max_array_rows"])
+            for doc_id, preds in by_doc.items()]
+    return sorted(work, key=lambda w: -w.cost), paths
 
 
-def _init(corpus: str):
-    _CFG["corpus"] = Path(corpus)
+def stored(out: Path) -> dict:
+    """Rows already written for this scorer, keyed by identity."""
+    path = out / SUMMARY
+    if not path.exists():
+        return {}
+    return {tuple(r[k] for k in KEY): r for r in pq.read_table(path).to_pylist()}
 
 
-def score_one(task):
-    """Grade one prediction. Returns a row; never raises out of the worker."""
-    from omni_extract_bench.dialects import resolve_refs, strip_benchmark_keys
-    from omni_extract_bench.score import grade
-
-    doc_id, pid, payload, usable = task
-    row = {"doc_id": doc_id, "prediction_id": pid}
-    if not usable:
-        return {**row, "kind": "unusable"}
-
-    d = _CFG["corpus"] / doc_id
-    t0 = time.monotonic()
-    try:
-        schema = resolve_refs(strip_benchmark_keys(
-            json.loads((d / "schema.json").read_text())))
-        props = schema.get("properties", {}) if isinstance(schema, dict) else {}
-        gt = no_envelope(json.loads((d / "ground_truth.json").read_text()), props,
-                         f"{doc_id}/ground_truth.json")
-        pred = no_envelope(json.loads(Path(payload).read_text()), props, payload)
-        r = grade(pred, gt, schema)
-    except Exception as exc:
-        return {**row, "kind": "error", "error": f"{type(exc).__name__}: {exc}"[:500]}
-    return {**row, "kind": "graded", "secs": round(time.monotonic() - t0, 3),
-            **{k: r[k] for k in METRICS},
-            "matching_exact": r["matching_exact"],
-            "approximated": [str(a) for a in r["approximated"]],
-            "skipped_open_maps": [str(a) for a in r["skipped_open_maps"]]}
+def _init(corpus: str, verdicts: bool):
+    _CFG.update(corpus=Path(corpus), verdicts=verdicts)
 
 
-def no_envelope(obj, schema_props, where: str):
-    """Assert that a stored payload is bare, instead of unwrapping it.
+def score_document(work: Work):
+    """Score one document against all of its predictions. Returns (summary rows, verdicts).
 
-    The old scorer peeled a `{"result": ...}` envelope here, guided by the schema. In this
-    layout both builders store the bare extraction, so an envelope reaching this point is a
-    bug in the builder that wrote it -- and unwrapping it silently would hide that while
-    producing a score under a `prediction_id` that hashed the wrapper.
-
-    Two bugs came from unwrap rules guessing wrong. A rule that can guess wrong is replaced
-    here by a check that cannot.
+    The ground truth and schema are parsed once here and reused across every prediction for
+    this document, which is the other reason the document is the unit: there are up to nine.
     """
-    if isinstance(obj, dict) and "result" in obj and "result" not in schema_props:
-        raise ValueError(f"{where}: still wrapped in a 'result' envelope; "
-                         "the builder should have stored the bare extraction")
-    return obj
+    doc = document(_CFG["corpus"], work.doc_id)
+    rows, verds = [], []
+    for pid, payload in work.preds:
+        case = Case(doc=doc, prediction_id=pid, raw=Path(payload).read_bytes())
+        outcome = score(case, verdicts=_CFG["verdicts"])
+        rows.append(summary_row(case, outcome))
+        verds.extend(verdict_rows(case, outcome))
+    return rows, verds
 
 
-def run(todo, corpus: Path, jobs: int, journal: Path):
-    """Score, appending each row to a journal as it lands.
+def results(work: list, corpus: Path, jobs: int, verdicts: bool):
+    """Scored documents, from a pool or from this process.
 
-    Hours of compute with the table written only at the end is hours to lose to one crash, and
-    `scores` is the one thing in this system nothing else can reproduce cheaply. The journal is
-    the crash log; the parquet is the deliverable, written once the set is complete.
-
-    The journal is named for the scorer, so only a clean tree resumes: a dirty one gets a fresh
-    timestamp each run and starts over. That is the intended behaviour rather than a gap --
-    resuming a dirty run after an edit would merge rows produced by two different codebases
-    into a single table, which is the exact corruption the rest of this file exists to prevent.
-    It does mean an abandoned dirty run leaves its journal behind to be deleted by hand.
-    """
-    done = {}
-    if journal.exists():
-        for line in journal.read_text().splitlines():
-            if line.strip():
-                r = json.loads(line)
-                done[(r["doc_id"], r["prediction_id"])] = r
-        print(f"  resuming: {len(done)} already scored")
-    todo = [t for t in todo if (t[0], t[1]) not in done]
-
-    rows = list(done.values())
-    t0 = time.monotonic()
-    with journal.open("a") as log:
-        for i, row in enumerate(_results(todo, corpus, jobs), 1):
-            log.write(json.dumps(row) + "\n")
-            log.flush()
-            rows.append(row)
-            if i % 100 == 0 or i == len(todo):
-                rate = i / (time.monotonic() - t0)
-                print(f"  {i}/{len(todo)}  {rate:.1f}/s  "
-                      f"eta {(len(todo) - i) / rate / 60:.0f}m", flush=True)
-    return rows
-
-
-def _results(todo, corpus: Path, jobs: int):
-    """Rows in order, from a pool or from this process.
-
-    One worker runs inline rather than spawning a pool of one. That is not a micro-optimisation
-    -- a spawned worker re-imports the main module, so a caller that is not guarded by
-    `if __name__ == "__main__"` re-runs itself, and any traceback arrives from another process
-    with its frames flattened. `--jobs 1` is what you reach for when something is wrong, which
-    is exactly when both of those matter.
+    One worker runs inline rather than spawning a pool of one: a spawned worker re-imports the
+    main module, and tracebacks arrive from another process with their frames flattened.
+    `--jobs 1` is what you reach for when something is wrong.
     """
     if jobs == 1:
-        _init(str(corpus))
-        yield from (score_one(t) for t in todo)
+        _init(str(corpus), verdicts)
+        yield from ((w, *score_document(w)) for w in work)
         return
-    pool = ProcessPoolExecutor(max_workers=jobs, initializer=_init, initargs=(str(corpus),))
-    with pool:
-        yield from pool.map(score_one, todo, chunksize=1)
+    with ProcessPoolExecutor(max_workers=jobs, initializer=_init,
+                             initargs=(str(corpus), verdicts)) as pool:
+        for w, (rows, verds) in zip(work, pool.map(score_document, work, chunksize=1)):
+            yield w, rows, verds
 
 
-def schema_for(rows):
-    """An explicit schema, so a column's type does not depend on which rows were scored.
+def write_verdicts(out: Path, doc_id: str, verds: list) -> None:
+    """One document's verdict file, replaced whole.
 
-    Inferring from the data would give `accuracy` a different type in a run that graded
-    nothing, and would make the nulls on unusable rows unrepresentable at all.
+    Written to a temporary name and renamed, so a crash leaves the previous file rather than a
+    truncated one. Writing it BEFORE the document is journalled is deliberate: a crash in
+    between rescores the document next time and overwrites this, which is harmless. The other
+    order would leave a journalled document with no verdicts.
     """
-    f = [pa.field("doc_id", pa.string()), pa.field("prediction_id", pa.string()),
-         pa.field("kind", pa.string()), pa.field("error", pa.string()),
-         pa.field("secs", pa.float64())]
-    ints = {"matched", "total", "asserted", "misread", "unfound", "fabricated",
-            "invented_item", "invented_field", "gt_rows", "pred_rows", "matched_rows"}
-    f += [pa.field(m, pa.int64() if m in ints else pa.float64()) for m in METRICS]
-    f += [pa.field("matching_exact", pa.bool_()),
-          pa.field("approximated", pa.list_(pa.string())),
-          pa.field("skipped_open_maps", pa.list_(pa.string()))]
-    return pa.schema(f)
+    target = out / VERDICTS / f"{doc_id}.parquet"
+    if not verds:
+        target.unlink(missing_ok=True)
+        return
+    tmp = target.with_suffix(".tmp")
+    pq.write_table(pa.Table.from_pylist(verds), tmp, compression="zstd")
+    os.replace(tmp, target)
 
 
-def write_table(rows, out: Path, name: str, stamp: dict) -> Path:
-    """Write the table, refusing to overwrite one that exists.
-
-    Immutability is the point: a file named for a commit is that commit's answer, and if it can
-    be rewritten then the version history the directory listing gives you is worthless. Use
-    `--recheck` to compare a rerun against a stored table rather than replacing it.
+def write_summary(out: Path, rows: list, stamp: dict) -> None:
+    """The summary table, whole. Small enough that rewriting it is free, and parquet has no
+    append, so there is no other option.
     """
-    path = out / SCORES_DIR / f"{name}.parquet"
-    if path.exists():
-        raise SystemExit(f"{path} exists; scores are immutable. "
-                         f"To compare a rerun against it: --recheck {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    schema = schema_for(rows)
-    blank = {f.name: None for f in schema}
-    table = pa.Table.from_pylist([{**blank, **r} for r in rows], schema=schema)
+    fields = list(dict.fromkeys(k for r in rows for k in r))
+    blank = {k: None for k in fields}
     kinds = defaultdict(int)
     for r in rows:
         kinds[r["kind"]] += 1
     meta = {**stamp, "rows": str(len(rows)),
             "kinds": json.dumps(dict(sorted(kinds.items()))),
             "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-    pq.write_table(table.replace_schema_metadata(meta), path, compression="zstd")
-    print(f"  {path.name}: {path.stat().st_size / 1024:.0f} KB, {len(rows)} rows, "
+    table = pa.Table.from_pylist([{**blank, **r} for r in rows]).replace_schema_metadata(meta)
+    tmp = out / (SUMMARY + ".tmp")
+    pq.write_table(table, tmp, compression="zstd")
+    os.replace(tmp, out / SUMMARY)
+    print(f"  {SUMMARY}: {(out / SUMMARY).stat().st_size / 1024:.0f} KB, {len(rows)} rows, "
           f"{dict(sorted(kinds.items()))}")
-    return path
-
-
-def recheck(stored: Path, rows):
-    """Compare a rerun against a stored table: the non-determinism test, run deliberately.
-
-    Same prediction and same scorer must give the same number. When they do not, the scorer is
-    not a function of its inputs -- which is how the greedy row-pairing order-sensitivity
-    behaved, one document quietly recording 99.2316, then 99.2301, then 99.2328 in a single
-    session with nothing to point at.
-    """
-    old = {(r["doc_id"], r["prediction_id"]): r
-           for r in pq.read_table(stored).to_pylist()}
-    differ = absent = 0
-    for r in rows:
-        k = (r["doc_id"], r["prediction_id"])
-        if k not in old:
-            absent += 1
-            continue
-        if old[k]["kind"] != r["kind"] or (
-                r["kind"] == "graded"
-                and abs((old[k]["accuracy"] or 0) - (r["accuracy"] or 0)) > 1e-12):
-            differ += 1
-            print(f"  NON-DETERMINISM {r['doc_id'][:46]} {r['prediction_id'][:12]}: "
-                  f"{old[k].get('accuracy')} -> {r.get('accuracy')}")
-    print(f"  recheck: {len(rows) - differ - absent} identical, {differ} differ, "
-          f"{absent} not in the stored table")
-    return differ
 
 
 def check_dedup(paths) -> int:
-    """Assert what the dedup rests on: one key, one set of bytes.
-
-    Cheap, and the alternative to checking is finding out by attributing one vendor's score to
-    another's prediction.
-    """
+    """Assert what the dedup rests on: one key, one set of bytes."""
     bad = 0
     for (doc_id, pid), files in paths.items():
-        if len(files) == 1:
-            continue
-        if len({f.read_bytes() for f in files}) != 1:
+        if len(files) > 1 and len({f.read_bytes() for f in files}) != 1:
             bad += 1
-            print(f"  DIFFER {doc_id[:46]} {pid[:12]}: "
-                  f"{[f.parent.name for f in files]}")
+            print(f"  DIFFER {doc_id[:46]} {pid[:12]}: {[f.parent.name for f in files]}")
     shared = sum(1 for v in paths.values() if len(v) > 1)
     print(f"  check-dedup: {shared} keys held by more than one vendor, {bad} not identical")
     return bad
+
+
+def recheck(out: Path, work: list, corpus: Path, jobs: int) -> int:
+    """Score everything and compare against the stored table. Writes nothing.
+
+    A row reaching the comparison was produced from identical prediction bytes, gold, schema
+    and code, so a different number means the scorer is not a function of its inputs. That is
+    how the greedy row-pairing behaved: one document recording 99.2316, then 99.2301, then
+    99.2328 in a single session with nothing to point at.
+    """
+    old = stored(out)
+    if not old:
+        print(f"  nothing stored at {out / SUMMARY} to check against", file=sys.stderr)
+        return 1
+    same = differ = absent = 0
+    for _w, rows, _v in results(work, corpus, jobs, verdicts=False):
+        for row in rows:
+            was = old.get(tuple(row[k] for k in KEY))
+            if was is None:
+                absent += 1
+            elif was.get("kind") != row.get("kind") or (
+                    row.get("kind") == "graded"
+                    and abs((was.get("accuracy") or 0) - (row.get("accuracy") or 0)) > 1e-12):
+                differ += 1
+                print(f"  NON-DETERMINISM {row['doc_id'][:46]}: "
+                      f"{was.get('accuracy')} -> {row.get('accuracy')}", file=sys.stderr)
+            else:
+                same += 1
+    print(f"  recheck: {same} identical, {differ} differ, {absent} not in the stored table")
+    return 1 if differ else 0
 
 
 def main():
@@ -338,38 +288,78 @@ def main():
     ap.add_argument("--vendors", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--jobs", type=int, default=4)
-    ap.add_argument("--recheck", type=Path,
-                    help="rescore and compare against this table instead of writing one")
+    ap.add_argument("--recheck", action="store_true",
+                    help="score everything and compare against the stored table; writes nothing")
+    ap.add_argument("--no-verdicts", action="store_true")
     ap.add_argument("--check-dedup", action="store_true",
                     help="assert that predictions sharing a key are byte-identical, and stop")
-    ap.add_argument("--limit", type=int,
-                    help="score only the N cheapest documents, for a smoke test")
     args = ap.parse_args()
 
     repo = Path(__file__).resolve().parent.parent
-    todo, paths = tasks(args.corpus, args.vendors)
+    work, paths = survey(args.corpus, args.vendors)
     if args.check_dedup:
         return 1 if check_dedup(paths) else 0
 
     name, stamp = scorer_version(repo)
     stamp.update(environment())
-    if args.limit:
-        todo = todo[-args.limit:]        # `tasks` orders most expensive first
-    print(f"  {sum(len(v) for v in paths.values())} predictions -> {len(todo)} to score, "
-          f"{args.jobs} workers, scorer {name}")
-
-    journal = args.out / SCORES_DIR / f"{name}.partial.jsonl"
-    journal.parent.mkdir(parents=True, exist_ok=True)
-    rows = run(todo, args.corpus, args.jobs, journal)
-
-    failed = [r for r in rows if r["kind"] == "error"]
-    for r in failed[:10]:
-        print(f"  ERROR {r['doc_id'][:46]}: {r['error'][:120]}")
+    out = args.out / SCORES_DIR / name
+    total = sum(len(w.preds) for w in work)
+    print(f"  {sum(len(v) for v in paths.values())} predictions -> {total} distinct "
+          f"over {len(work)} documents, scorer {name[:16]}")
 
     if args.recheck:
-        return 1 if recheck(args.recheck, rows) else 0
-    write_table(rows, args.out, name, stamp)
-    journal.unlink()
+        return recheck(out, work, args.corpus, args.jobs)
+
+    # A document needs scoring unless the table already holds a row for every one of its
+    # predictions, against exactly this gold and schema.
+    have = stored(out)
+    todo = [w for w in work
+            if not all((w.doc_id, pid, w.gt_sha256, w.schema_sha256) in have
+                       for pid, _path in w.preds)]
+    keep = [r for k, r in have.items()
+            if k[0] not in {w.doc_id for w in todo}]
+    if have:
+        print(f"  {len(keep)} rows still current, {len(todo)} documents to score")
+    if not todo:
+        print("  nothing to do")
+        return 0
+
+    out.mkdir(parents=True, exist_ok=True)
+    (out / VERDICTS).mkdir(exist_ok=True)
+    journal = out / f"{SUMMARY}.partial.jsonl"
+    done = {}
+    if journal.exists():
+        for line in journal.read_text().splitlines():
+            if line.strip():
+                r = json.loads(line)
+                done.setdefault(r["doc_id"], []).append(r)
+        print(f"  resuming: {len(done)} documents already scored")
+        todo = [w for w in todo if w.doc_id not in done]
+
+    fresh = [r for rows in done.values() for r in rows]
+    t0 = time.monotonic()
+    with journal.open("a") as log:
+        for n, (w, rows, verds) in enumerate(
+                results(todo, args.corpus, args.jobs, not args.no_verdicts), 1):
+            write_verdicts(out, w.doc_id, verds)
+            for r in rows:
+                log.write(json.dumps(r) + "\n")
+            log.flush()
+            fresh.extend(rows)
+            if n % 50 == 0 or n == len(todo):
+                rate = n / (time.monotonic() - t0)
+                print(f"  {n}/{len(todo)} documents  {rate:.2f}/s  "
+                      f"eta {(len(todo) - n) / rate / 60:.0f}m", flush=True)
+
+    write_summary(out, keep + fresh, stamp)
+    journal.unlink(missing_ok=True)
+    nverd = len(list((out / VERDICTS).glob("*.parquet")))
+    vsize = sum(f.stat().st_size for f in (out / VERDICTS).glob("*.parquet")) / 1e6
+    print(f"  {VERDICTS}/: {nverd} files, {vsize:.1f} MB")
+
+    failed = [r for r in fresh if r["kind"] == "failed"]
+    for r in failed[:10]:
+        print(f"  NOT SCORED {r['doc_id'][:46]}: {r['error'][:110]}", file=sys.stderr)
     return 1 if failed else 0
 
 
