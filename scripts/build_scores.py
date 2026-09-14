@@ -67,8 +67,8 @@ import pyarrow.parquet as pq
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from omni_extract_bench import corpus as corpus_atlas                     # noqa: E402
 from omni_extract_bench.bench import (                                   # noqa: E402
-    Case, document, score, summary_row, verdict_rows)
-from omni_extract_bench.layout import PREDICTION_ID_VERSION              # noqa: E402
+    PREDICTION_ID_VERSION, Case, document, score, summary_row, verdict_rows)
+
 
 SCORES_DIR, SUMMARY, VERDICTS = "scores", "summary.parquet", "verdicts"
 

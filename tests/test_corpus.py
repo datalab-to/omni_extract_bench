@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""What must be true of the storage layout, stated as properties.
+"""What must be true of the corpus and of prediction identity, stated as properties.
 
 `prediction_id` is a contract that `scores` joins on, so these are not unit tests of an
 implementation detail -- a change that makes one of them fail orphans every historical score.
@@ -8,7 +8,7 @@ The checks that matter most are the ones a probe found the hard way: that a stor
 is the vendor's bytes rather than ours, and that `verify` sees a one-byte edit, which nothing
 else would.
 
-Run: python3 tests/test_layout.py
+Run: python3 tests/test_corpus.py
 """
 import hashlib
 import json
@@ -18,10 +18,14 @@ import sys as _sys
 import tempfile
 from pathlib import Path
 
-_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.layout import (                                   # noqa: E402
-    PREDICTION_ID_VERSION, check_doc_id, check_unique, extract_result,
-    prediction_id, verify)
+_ROOT_DIR = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path.insert(0, _ROOT_DIR)
+_sys.path.insert(0, _os.path.join(_ROOT_DIR, "scripts"))
+from omni_extract_bench.bench import PREDICTION_ID_VERSION, prediction_id  # noqa: E402
+from omni_extract_bench.corpus import check_doc_id, check_unique, verify   # noqa: E402
+
+_sys.path.insert(0, _os.path.join(_ROOT_DIR, "scripts")) if False else None
+from build_vendors import extract_result                                   # noqa: E402
 
 FAILS = []
 
@@ -36,7 +40,7 @@ def note(text):
     print(f"          {text}")
 
 
-print("\nSTORAGE LAYOUT\n")
+print("\nCORPUS AND IDENTITY\n")
 
 # ── the extraction is the vendor's bytes, not ours ────────────────────────────────────
 # The whole reason extract_result exists. Vendors write `", "`; json.dumps writes `","`.
@@ -188,13 +192,14 @@ note("drift is checked in both directions, and by content, not just by listing")
 # to agree and did not. `prediction_id` is what `scores` joins on, so a second copy of it is
 # the same mistake in the same place.
 import omni_extract_bench.bench as _bench                                 # noqa: E402
-import omni_extract_bench.layout as _layout                               # noqa: E402
+import omni_extract_bench.corpus as _corpus                               # noqa: E402
 
-report("bench and layout share one prediction_id, not a copy each",
-       _bench.prediction_id is _layout.prediction_id)
+report("prediction identity is defined exactly once",
+       _bench.prediction_id is prediction_id
+       and not hasattr(_corpus, "prediction_id"))
 note("a join key with two definitions is a disagreement waiting to be written down")
 
-print(f"\n{'STORAGE LAYOUT HOLDS' if not FAILS else 'FAILURES:'}")
+print(f"\n{'CORPUS AND IDENTITY HOLDS' if not FAILS else 'FAILURES:'}")
 for f in FAILS:
     print(f"   {f}")
 _sys.exit(1 if FAILS else 0)

@@ -49,7 +49,7 @@ from huggingface_hub import snapshot_download
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from omni_extract_bench import corpus as corpus_atlas                       # noqa: E402
-from omni_extract_bench.layout import check_doc_id, check_unique, verify  # noqa: E402
+from omni_extract_bench.corpus import check_doc_id, check_unique, verify  # noqa: E402
 
 #: Every payload extension the corpus tree holds. A type missing here is invisible to
 #: `verify` -- the same mechanism that correctly ignores `corpus.parquet` would silently

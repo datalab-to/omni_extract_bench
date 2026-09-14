@@ -215,7 +215,7 @@ estimated cost — the expensive twenty end up alone, the long tail batches.
 shard = [(vendor, doc_id), ...]           ~40-60 shards total
 ```
 
-Longest-first within a shard, as `score_r2.py` already does, so a shard's makespan is not set
+Longest-first within a shard, as `build_scores.py` does, so a shard's makespan is not set
 by scheduling luck.
 
 ### Memory: request it, do not guess

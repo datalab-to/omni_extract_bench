@@ -54,8 +54,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from omni_extract_bench.layout import (                                   # noqa: E402
-    PREDICTION_ID_VERSION, extract_result, prediction_id, verify)
+from omni_extract_bench.bench import (                                    # noqa: E402
+    PREDICTION_ID_VERSION, prediction_id)
+from omni_extract_bench.corpus import verify                              # noqa: E402
 
 BUCKET = "datalab-training-pipelines"
 R2_ROOT = "omni-extract-bench/runs/full/baselines"
@@ -72,9 +73,36 @@ ATLAS = "predictions.parquet"
 #: suite level. A second run wants `vendors/<vendor>/<run>/` or a column, not a suffix.
 RUN_SUFFIX = "_full"
 
-#: Where the run's predictions are mirrored locally. This is what `scripts/score_r2.py`
-#: populates, and it holds `<vendor>/<suite>/<doc_id>.json` exactly as R2 does.
+#: Where the run's predictions are mirrored locally, holding `<vendor>/<suite>/<doc_id>.json`
+#: exactly as R2 does. Populated by whatever fetched the run; this script only reads it.
 DEFAULT_SOURCE = Path.home() / ".cache" / "omni_extract_bench_preds"
+
+
+def extract_result(text: str) -> str:
+    """The `result` value of a prediction envelope, exactly as the vendor wrote it.
+
+    `json.loads` discards byte offsets, so parsing and re-dumping yields *our* formatting
+    rather than theirs. Every one of the 5,936 predictions in the current run differs from
+    its reserialised form -- vendors write `", "` where `json.dumps` writes `","` -- so this
+    is not a corner to guard against but the normal case, and hashing a reserialised form
+    would make `prediction_id` describe us instead of them.
+
+    Decoding from the value's start index returns what the decoder consumed, which is the
+    original span.
+
+    Raises:
+        ValueError: if there is no `result` key, or its value will not decode. An unexpected
+            payload shape should stop a build rather than acquire a plausible-looking id.
+    """
+    key = '"result"'
+    start = text.find(key)
+    if start < 0:
+        raise ValueError("prediction envelope has no 'result' key")
+    colon = text.index(":", start + len(key)) + 1
+    while colon < len(text) and text[colon] in " \t\r\n":
+        colon += 1
+    _value, end = json.JSONDecoder().raw_decode(text, colon)
+    return text[colon:end]
 
 
 def r2_client():
