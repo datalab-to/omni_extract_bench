@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""What `canon_key` must and must not fold, stated as properties.
+
+Normalisation exists for one purpose: to absorb the difference between two faithful
+transcriptions of the same ink, and nothing else. A model reads a value off a page; a human
+wrote the ground truth from the same page; the two spell it differently. Everything
+`canon_key` folds should be that difference, and nothing it folds should be more.
+
+Four properties follow, and this file is each of them written down.
+
+P1  NO FALSE MERGES.  If a document could plausibly contain both values IN THE SAME FIELD
+    MEANING DIFFERENT THINGS, their keys must differ. That phrasing is the operational test
+    and it settles cases quickly: no document distinguishes `1,000` from `1000` as different
+    amounts, so fold; a document absolutely can carry `INV-007` and `INV-7` as different
+    invoices, so do not.
+
+P2  NO FALSE SPLITS.  If both values are faithful transcriptions of the same ink, the keys
+    must be equal. `ACME CORP` and `Acme Corp`; `Inst itutional` and `Institutional`.
+
+P1 and P2 pull against each other and that tension IS the design. A table that only checked
+one direction would be satisfied by a function that folds everything, or nothing.
+
+P3  THE FALLBACK IS THE FLOOR.  `canon_key` tries number, then date, then timestamp, then
+    falls through to the string path. The fallback receives every value no recogniser claimed
+    -- INCLUDING malformed ones -- so it must be the most conservative transform available.
+    Today it is the most aggressive, which is backwards: failing to parse as a date currently
+    earns a value the heaviest mangling in the system. Every collision in KNOWN_COLLISIONS
+    reached it that way.
+
+P4  THE KEY IS A FUNCTION OF THE VALUE ALONE.  Not of the field, the document, or a config.
+    This is what per-field scoring rules were rejected to preserve; see METRIC_SPEC 5.2.
+
+KNOWN_COLLISIONS is the debt. Those pairs violate P1 today. The test asserts the set has not
+GROWN, and tells you when one is fixed so it can be promoted into MUST_DIFFER. Keeping them
+listed rather than absent is the point: a silent merge is invisible in a score, and the whole
+reason 140 of these went unnoticed in the corpus is that nothing was looking.
+
+Run: python3 tests/test_canon_properties.py
+"""
+import os as _os
+import random
+import sys as _sys
+
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+from omni_extract_bench.values import canon_key                        # noqa: E402
+
+FAILS = []
+
+
+def report(name, ok, detail=""):
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"\n          {detail}" if not ok else ""))
+    if not ok:
+        FAILS.append(name)
+
+
+def note(text):
+    print(f"          {text}")
+
+
+# ── P2: two spellings of one fact must agree ────────────────────────────────────────────
+MUST_MATCH = [
+    ("case",                  "ACME CORP",              "Acme Corp"),
+    ("doubled whitespace",    "Acme  Corp",             "Acme Corp"),
+    ("OCR mid-word space",    "Inst itutional",         "Institutional"),
+    ("trailing period",       "Table B-1.",             "Table B-1"),
+    ("company suffix punct",  "101 SECOND STREET INC.", "101 SECOND STREET, INC."),
+    ("smart quote",           "don’t",             "don't"),
+    ("thousands separator",   "1,000",                  "1000"),
+    ("currency symbol",       "$5",                     "5"),
+    ("percent symbol",        "50%",                    "50"),
+    ("accounting negative",   "(98.2)",                 "-98.2"),
+    ("trailing minus",        "98.2-",                  "-98.2"),
+    ("number precision",      "5",                      "5.0"),
+    ("number precision 2",    "12.9",                   "12.90"),
+    ("date formats",          "01/15/2024",             "2024-01-15"),
+    ("timestamp at midnight", "2024-10-31T00:00:00Z",   "2024-10-31"),
+    ("integral float ID",     "8303911426.0",           "8303911426"),
+    ("footnote marker",       "229 [1]",                "229"),
+]
+
+# ── P1: values a document could hold as DIFFERENT facts must not agree ──────────────────
+MUST_DIFFER = [
+    ("arXiv id",              "arXiv:2405.06211v3",     "arXiv:2405.6211v3"),
+    ("controlled vocab",      "None",                   "Not applicable"),
+]
+
+#: P1 violations that exist TODAY. Each was found in the corpus or derived from a fold whose
+#: mechanism produces it. Every one reached the string fallback (P3). Fix a fold, move the
+#: pair up into MUST_DIFFER, and this list shrinks.
+KNOWN_COLLISIONS = [
+    # leading zeros stripped inside any digit run
+    ("zero-padded identifier", "INV-007",               "INV-7"),
+    ("zero-padded postal",     "02000",                 "2000"),
+    ("zero-padded state",      "06",                    "6"),
+    ("zip, all zeros",         "0",                     "00000"),
+    ("email local part",       "wenqifan03@gmail.com",  "wenqifan3@gmail.com"),
+    # internal hyphens stripped
+    ("part number",            "A-01",                  "A1"),
+    ("address unit",           "#30-2",                 "#302"),
+    # internal periods stripped
+    ("section identifier",     "5.2.1.5",               "5215"),
+    ("swim time",              "1:00.50",               "1:50"),
+    ("swim time, precision",   "1:03.28",               "1:3.28"),
+    ("drug concentration",     "0.11%w/w",              "11%w/w"),
+    ("drug concentration 2",   "1.1%w/w",               "11%w/w"),
+    ("share class",            "COM PAR $.001",         "COM PAR $.01"),
+    # version numbers taken as quantities
+    ("version number",         "1.1",                   "1.10"),
+    # combining marks dropped: these are different LETTERS, not decorated ones
+    ("German umlaut",          "Müller",           "Muller"),
+    ("Nordic ring",            "Åse",              "Ase"),
+    ("Turkish dotted I",       "İstanbul",         "Istanbul"),
+    # every placeholder word keys as empty, so they all equal each other
+    ("controlled vocab N/A",   "None",                  "N/A"),
+    # slash stripped, so an expanded fraction becomes an integer
+    ("vulgar fraction",        "½",                "12"),
+    ("written fraction",       "1/2",                   "12"),
+    # P3 itself: a date that fails to parse falls into the fallback and is milled down
+    # until it shares a key with an unrelated string. The trapdoor, demonstrated.
+    ("malformed date",         "2025-01-2025",          "20250120 25"),
+]
+
+print("\nP2  TWO SPELLINGS OF ONE FACT AGREE")
+split = [(n, a, b) for n, a, b in MUST_MATCH if canon_key(a) != canon_key(b)]
+report(f"all {len(MUST_MATCH)} fold as they should", not split,
+       "; ".join(f"{n}: {a!r} != {b!r}" for n, a, b, in split))
+
+print("\nP1  VALUES A DOCUMENT COULD TELL APART DO NOT AGREE")
+merged = [(n, a, b) for n, a, b in MUST_DIFFER if canon_key(a) == canon_key(b)]
+report(f"all {len(MUST_DIFFER)} stay distinct", not merged,
+       "; ".join(f"{n}: {a!r} == {b!r}" for n, a, b in merged))
+
+print("\n    ...and the known violations have not grown")
+still_broken = [(n, a, b) for n, a, b in KNOWN_COLLISIONS if canon_key(a) == canon_key(b)]
+fixed = [(n, a, b) for n, a, b in KNOWN_COLLISIONS if canon_key(a) != canon_key(b)]
+report(f"no new collisions beyond the {len(KNOWN_COLLISIONS)} recorded",
+       len(still_broken) <= len(KNOWN_COLLISIONS))
+if fixed:
+    print(f"  ---   {len(fixed)} KNOWN COLLISION(S) NOW FIXED — promote to MUST_DIFFER:")
+    for n, a, b in fixed:
+        print(f"          {n}: {a!r} vs {b!r}")
+note(f"{len(still_broken)} of {len(KNOWN_COLLISIONS)} still collide; "
+     f"every one reaches the string fallback (P3)")
+
+print("\nP3  THE FALLBACK IS THE FLOOR")
+# A value that fails its recogniser lands in the string path. That must not be a trapdoor:
+# a malformed date should keep its identity, not be milled into something else's key.
+report("a recognised date never reaches the string path",
+       str(canon_key("2025-01-25")).startswith("#d"), f"{canon_key('2025-01-25')!r}")
+report("a malformed date does not become a valid one",
+       canon_key("2025-01-2025") != canon_key("2025-01-25"))
+note("recognition, not type, is what protects a value: anything date-SHAPED that fails to")
+note("parse gets the full string treatment. `2025-01-2025` is milled to '2025012025', which")
+note("is also what the unrelated string `20250120 25` becomes -- see KNOWN_COLLISIONS.")
+
+print("\nP4  THE KEY IS A FUNCTION OF THE VALUE ALONE")
+import inspect                                                          # noqa: E402
+sig = inspect.signature(canon_key)
+report("canon_key takes exactly one argument", len(sig.parameters) == 1,
+       f"signature is {sig}")
+report("...and is deterministic across calls",
+       all(canon_key(v) == canon_key(v)
+           for v in ("Acme", 5.0, "2024-01-15", None, "", "INV-007")))
+
+print("\nGENERATED: DISTINCT IDENTIFIERS KEEP DISTINCT KEYS")
+rnd = random.Random(11)
+for label, mint in (
+    # Uniform width on purpose: within one document identifiers are padded alike, so this
+    # guards the realistic case. The MIXED-width failure is in KNOWN_COLLISIONS above.
+    ("zero-padded ids",  lambda i: f"INV-{i:05d}"),
+    ("dotted versions",  lambda i: f"{i // 100}.{i // 10 % 10}.{i % 10}"),
+    ("timed results",    lambda i: f"{i // 6000}:{i // 100 % 60:02d}.{i % 100:02d}"),
+):
+    vals = [mint(rnd.randrange(1, 99999)) for _ in range(300)]
+    keys = {canon_key(v) for v in vals}
+    uniq = len(set(vals))
+    report(f"{label}: {uniq} distinct values -> {len(keys)} distinct keys",
+           len(keys) == uniq, f"{uniq - len(keys)} collided, e.g. "
+           f"{[v for v in vals if sum(1 for w in vals if canon_key(w) == canon_key(v)) > 1][:4]}")
+
+print(f"\n{'CANON PROPERTIES HOLD' if not FAILS else 'FAILURES:'}")
+for f in FAILS:
+    print(f"   {f}")
+_sys.exit(1 if FAILS else 0)
