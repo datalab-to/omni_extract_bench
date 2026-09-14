@@ -113,27 +113,40 @@ def _bench(args) -> int:
         if args.out is None and outcome.kind == "graded":
             print(f"  {case.doc.doc_id:<44}{outcome.summary['accuracy']:>7.2f}")
         elif args.out is None:
-            print(f"  {case.doc.doc_id:<44}{'unusable':>7}  {outcome.error or ''}")
+            print(f"  {case.doc.doc_id:<44}{outcome.kind:>9}  {outcome.error or ''}")
 
     if not seen:
         print("no predictions found; expected <doc_id>.json files", file=sys.stderr)
         return 1
 
     graded = [r for r in summary if r["kind"] == "graded"]
+    unusable = [r for r in summary if r["kind"] == "unusable"]
+    failed = [r for r in summary if r["kind"] == "failed"]
     mean = sum(r["accuracy"] for r in graded) / len(graded) if graded else 0.0
-    # Reported over the documents that produced something, and said so. The unusable ones are
-    # a different failure and averaging them in as zeros hides which one a provider has.
-    print(f"\n  {seen} predictions, {len(docs)} documents in the corpus, {kinds}")
+
+    print(f"\n  {seen} predictions over {len(docs)} documents in the corpus")
     print(f"  mean accuracy over the {len(graded)} graded: {mean:.2f}")
-    if len(summary) - len(graded):
-        print(f"  {len(summary) - len(graded)} unusable and excluded from that mean")
+    if unusable:
+        # The provider's failure. It returned nothing scoreable, and that counts against it --
+        # but as coverage, not as a zero averaged into the accuracy above.
+        print(f"  {len(unusable)} unusable (the provider returned nothing scoreable), "
+              f"excluded from that mean")
+        for r in unusable[:5]:
+            print(f"      {r['doc_id']}: {r['error'] or 'empty'}")
+    if failed:
+        # Ours. Reported separately and loudly, because a broken corpus reading as a poor
+        # vendor is the one mistake here that looks like a result.
+        print(f"  {len(failed)} NOT SCORED -- this harness could not score them:",
+              file=sys.stderr)
+        for r in failed[:10]:
+            print(f"      {r['doc_id']}: {r['error']}", file=sys.stderr)
 
     if args.out:
         write_run(Path(args.out), summary, by_doc)
         n = sum(len(v) for v in by_doc.values())
         print(f"  wrote {args.out}/{SUMMARY}"
               + (f" and {len(by_doc)} verdict files ({n:,} rows)" if want_verdicts else ""))
-    return 0
+    return 1 if failed else 0
 
 
 def cmd_explain(args) -> int:
