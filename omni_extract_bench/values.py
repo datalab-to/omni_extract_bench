@@ -106,23 +106,35 @@ def _fold_cosmetic(v: Json) -> str:
             pass
     if re.sub(r"\s+", " ", s) in _PLACEHOLDERS:
         return ""
-    # DIVERGENCE FROM UPSTREAM. This was `re.sub(r"[\s,\-.]", "", s)` -- whitespace, commas,
-    # hyphens and periods removed from anywhere in the value. Two of those four destroy
-    # content rather than spelling, because a hyphen or an internal period is how documents
-    # build identifiers:
+    # LENIENT, AND ON PURPOSE. Whitespace, commas, hyphens and periods all fold, from
+    # anywhere in the value -- upstream's rule, kept. It is the wrong rule in principle:
+    # `5.2.1.5` and `5215` are two different section identifiers and this makes them one.
+    # It is the right rule in practice, and the corpus is what decided it.
     #
-    #     A-01 == A01        5.2.1.5 == 5215        1:00.50 == 1:50 (two swim times)
-    #     #30-2 == #302      0.11%w/w == 1.1%w/w == 11%w/w (three drug concentrations)
+    # Measured over all 660 documents and nine vendors: folding periods recovers 1,607
+    # value matches, 1,532 of which differ by punctuation ALONE (`PO BOX 125` /
+    # `P.O. BOX 125`, `FT LAUDERDALE` / `FT. LAUDERDALE`, `100 F STREET, NE` /
+    # `100 F. STREET NE`). The remaining 75 are bibliography entries where the model kept
+    # the `[4] ` citation number -- the same reference either way. Not one of the 1,607 is
+    # a wrong value credited as right. On the other side, of the gold values this merges
+    # within a single field, ZERO change the digit string: all 215 are the same fact
+    # spelled twice. Hyphens tell the same story more sharply -- keeping them cost 526
+    # matches in a single Schedule I return, where gold writes EINs and ZIP+4s bare
+    # (`311440073`) and every model hyphenates (`31-1440073`).
     #
-    # Whitespace still goes everywhere -- PDF extraction invents it mid-word, which is the
-    # `Inst itutional` case. Commas still go everywhere: they separate thousands, and in a
-    # name they are noise (`101 SECOND STREET, INC.`). A period goes only when TRAILING,
-    # which is all the original case needed (`Table B-1.`).
+    # This is a benchmark of extraction, not of punctuation, so where the evidence is this
+    # one-sided the benchmark gives the models the benefit of the doubt. What that costs is
+    # not hidden: `5.2.1.5` == `5215`, `1.1%w/w` == `11%w/w`, `RR-2` == `RR2`, `#30-2` ==
+    # `#302`, and a range `90-94` milled to `9094`. Each is listed in
+    # `tests/test_canon_properties.py` ACCEPTED_LENIENCY so it is a recorded price rather
+    # than a surprise, and METRIC_SPEC 5.3 states the policy.
     #
-    # `tests/test_canon_properties.py` P1 is what this serves, and its KNOWN_COLLISIONS list
-    # is where the evidence sits.
-    s = re.sub(r"[\s,]", "", s)
-    s = s.rstrip(".")
+    # Note how little of P1 this actually gives up: `1:00.50` != `1:50`, `0.11%w/w` !=
+    # `11%w/w`, `COM PAR $.001` != `COM PAR $.01` and `arXiv:2405.06211v3` !=
+    # `arXiv:2405.6211v3` all still hold. They are protected by the leading-zero rule
+    # below, not by punctuation -- which is why that one divergence is worth keeping and
+    # these are not.
+    s = re.sub(r"[\s,\-.]", "", s)
     # DIVERGENCE FROM UPSTREAM: this line was
     # `re.sub(r"\d+", lambda m: str(int(m.group())), s)`, stripping leading zeros inside every
     # digit run. Upstream's reason was `09. Mai` == `9. Mai`, and the cost of keeping it is

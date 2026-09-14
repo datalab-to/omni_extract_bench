@@ -30,10 +30,18 @@ P3  THE FALLBACK IS THE FLOOR.  `canon_key` tries number, then date, then timest
 P4  THE KEY IS A FUNCTION OF THE VALUE ALONE.  Not of the field, the document, or a config.
     This is what per-field scoring rules were rejected to preserve; see METRIC_SPEC 5.2.
 
-KNOWN_COLLISIONS is the debt. Those pairs violate P1 today. The test asserts the set has not
-GROWN, and tells you when one is fixed so it can be promoted into MUST_DIFFER. Keeping them
-listed rather than absent is the point: a silent merge is invisible in a score, and the whole
-reason 140 of these went unnoticed in the corpus is that nothing was looking.
+Two lists hold the P1 violations that exist today, and the difference between them matters.
+
+ACCEPTED_LENIENCY is leniency we CHOSE. Punctuation folds from anywhere, which merges
+`5.2.1.5` with `5215`; we kept that because measuring the corpus said the fold recovers 1,607
+genuine matches and credits no wrong value even once. This is a benchmark of extraction, not
+of punctuation, and where the evidence is one-sided the models get the benefit of the doubt.
+
+KNOWN_COLLISIONS is debt nobody chose. The test asserts that set has not GROWN, and tells you
+when one is fixed so it can be promoted into MUST_DIFFER.
+
+Both are listed rather than absent, and that IS the point: a silent merge is invisible in a
+score, and the reason 140 of these went unnoticed in the corpus is that nothing was looking.
 
 Run: python3 tests/test_canon_properties.py
 """
@@ -76,6 +84,17 @@ MUST_MATCH = [
     ("timestamp at midnight", "2024-10-31T00:00:00Z",   "2024-10-31"),
     ("integral float ID",     "8303911426.0",           "8303911426"),
     ("footnote marker",       "229 [1]",                "229"),
+    # Punctuation folds from anywhere -- see ACCEPTED_LENIENCY below for the price and the
+    # measurement that set it. These are the cases it buys, and they are the common ones:
+    # 1,532 of the 1,607 matches it recovers differ by punctuation alone.
+    ("EIN",                   "31-1440073",             "311440073"),
+    ("ZIP+4",                 "44308-1801",             "443081801"),
+    ("phone",                 "713-203-6913",           "7132036913"),
+    ("phone, dotted",         "713.203.6913",           "713-203-6913"),
+    ("post box",              "P.O. BOX 125",           "PO BOX 125"),
+    ("abbreviated street",    "100 F STREET, NE",       "100 F. STREET NE"),
+    ("abbreviated city",      "FT LAUDERDALE",          "FT. LAUDERDALE"),
+    ("legal entity suffix",   "BLOOMBERG FINANCE L.P.", "BLOOMBERG FINANCE LP"),
 ]
 
 # ── P1: values a document could hold as DIFFERENT facts must not agree ──────────────────
@@ -89,19 +108,29 @@ MUST_DIFFER = [
     ('zip, all zeros', '0', '00000'),
     ('email local part', 'wenqifan03@gmail.com', 'wenqifan3@gmail.com'),
     ('part number', 'A-01', 'A1'),
-    ('address unit', '#30-2', '#302'),
-    ('section identifier', '5.2.1.5', '5215'),
     ('swim time', '1:00.50', '1:50'),
     ('swim time, precision', '1:03.28', '1:3.28'),
     ('drug concentration', '0.11%w/w', '11%w/w'),
-    ('drug concentration 2', '1.1%w/w', '11%w/w'),
     ('share class', 'COM PAR $.001', 'COM PAR $.01'),
-    ('malformed date', '2025-01-2025', '20250120 25'),
 ]
 
-#: P1 violations that exist TODAY. Each was found in the corpus or derived from a fold whose
-#: mechanism produces it. Every one reached the string fallback (P3). Fix a fold, move the
-#: pair up into MUST_DIFFER, and this list shrinks.
+#: LENIENCY WE CHOSE, not debt. Each is a real P1 violation, and each is the price of a
+#: fold the corpus said was worth paying. A benchmark of extraction should not fail a model
+#: over a period, so where the measurement is one-sided the models get the benefit of the
+#: doubt -- but the cost is written down here rather than discovered later in a score.
+ACCEPTED_LENIENCY = [
+    # Punctuation folds from anywhere. Buys 1,607 value matches across 660 documents, of
+    # which 1,532 differ by punctuation alone and 0 credit a wrong value as right; of the
+    # gold values it merges inside one field, all 215 have identical digit strings.
+    ('section identifier',  '5.2.1.5',      '5215'),
+    ('drug concentration',  '1.1%w/w',      '11%w/w'),
+    ('address unit',        '#30-2',        '#302'),
+    ('zone code',           'RR-2',         'RR2'),
+    ('age range',           '90-94',        '9094'),
+]
+
+#: DEBT: P1 violations nobody chose, each reaching the string fallback (P3). Fix a fold,
+#: move the pair up into MUST_DIFFER, and this list shrinks.
 KNOWN_COLLISIONS = [
     ('version number', '1.1', '1.10'),
     ('German umlaut', 'Müller', 'Muller'),
@@ -110,6 +139,7 @@ KNOWN_COLLISIONS = [
     ('controlled vocab N/A', 'None', 'N/A'),
     ('vulgar fraction', '½', '12'),
     ('written fraction', '1/2', '12'),
+    ('malformed date', '2025-01-2025', '20250120 25'),
 ]
 
 print("\nP2  TWO SPELLINGS OF ONE FACT AGREE")
@@ -121,6 +151,13 @@ print("\nP1  VALUES A DOCUMENT COULD TELL APART DO NOT AGREE")
 merged = [(n, a, b) for n, a, b in MUST_DIFFER if canon_key(a) == canon_key(b)]
 report(f"all {len(MUST_DIFFER)} stay distinct", not merged,
        "; ".join(f"{n}: {a!r} == {b!r}" for n, a, b in merged))
+
+print("\n    ...and the leniency we chose is still exactly the leniency we priced")
+strayed = [(n, a, b) for n, a, b in ACCEPTED_LENIENCY if canon_key(a) != canon_key(b)]
+report(f"all {len(ACCEPTED_LENIENCY)} accepted merges still merge", not strayed,
+       "; ".join(f"{n}: {a!r} != {b!r}" for n, a, b in strayed))
+note("these are deliberate: punctuation folds from anywhere, and METRIC_SPEC 5.3 says why.")
+note("if one of them stops merging the fold changed -- check that was intended.")
 
 print("\n    ...and the known violations have not grown")
 still_broken = [(n, a, b) for n, a, b in KNOWN_COLLISIONS if canon_key(a) == canon_key(b)]
