@@ -82,42 +82,34 @@ MUST_MATCH = [
 MUST_DIFFER = [
     ("arXiv id",              "arXiv:2405.06211v3",     "arXiv:2405.6211v3"),
     ("controlled vocab",      "None",                   "Not applicable"),
+    # promoted from KNOWN_COLLISIONS once the fold that merged them was narrowed
+    ('zero-padded identifier', 'INV-007', 'INV-7'),
+    ('zero-padded postal', '02000', '2000'),
+    ('zero-padded state', '06', '6'),
+    ('zip, all zeros', '0', '00000'),
+    ('email local part', 'wenqifan03@gmail.com', 'wenqifan3@gmail.com'),
+    ('part number', 'A-01', 'A1'),
+    ('address unit', '#30-2', '#302'),
+    ('section identifier', '5.2.1.5', '5215'),
+    ('swim time', '1:00.50', '1:50'),
+    ('swim time, precision', '1:03.28', '1:3.28'),
+    ('drug concentration', '0.11%w/w', '11%w/w'),
+    ('drug concentration 2', '1.1%w/w', '11%w/w'),
+    ('share class', 'COM PAR $.001', 'COM PAR $.01'),
+    ('malformed date', '2025-01-2025', '20250120 25'),
 ]
 
 #: P1 violations that exist TODAY. Each was found in the corpus or derived from a fold whose
 #: mechanism produces it. Every one reached the string fallback (P3). Fix a fold, move the
 #: pair up into MUST_DIFFER, and this list shrinks.
 KNOWN_COLLISIONS = [
-    # leading zeros stripped inside any digit run
-    ("zero-padded identifier", "INV-007",               "INV-7"),
-    ("zero-padded postal",     "02000",                 "2000"),
-    ("zero-padded state",      "06",                    "6"),
-    ("zip, all zeros",         "0",                     "00000"),
-    ("email local part",       "wenqifan03@gmail.com",  "wenqifan3@gmail.com"),
-    # internal hyphens stripped
-    ("part number",            "A-01",                  "A1"),
-    ("address unit",           "#30-2",                 "#302"),
-    # internal periods stripped
-    ("section identifier",     "5.2.1.5",               "5215"),
-    ("swim time",              "1:00.50",               "1:50"),
-    ("swim time, precision",   "1:03.28",               "1:3.28"),
-    ("drug concentration",     "0.11%w/w",              "11%w/w"),
-    ("drug concentration 2",   "1.1%w/w",               "11%w/w"),
-    ("share class",            "COM PAR $.001",         "COM PAR $.01"),
-    # version numbers taken as quantities
-    ("version number",         "1.1",                   "1.10"),
-    # combining marks dropped: these are different LETTERS, not decorated ones
-    ("German umlaut",          "Müller",           "Muller"),
-    ("Nordic ring",            "Åse",              "Ase"),
-    ("Turkish dotted I",       "İstanbul",         "Istanbul"),
-    # every placeholder word keys as empty, so they all equal each other
-    ("controlled vocab N/A",   "None",                  "N/A"),
-    # slash stripped, so an expanded fraction becomes an integer
-    ("vulgar fraction",        "½",                "12"),
-    ("written fraction",       "1/2",                   "12"),
-    # P3 itself: a date that fails to parse falls into the fallback and is milled down
-    # until it shares a key with an unrelated string. The trapdoor, demonstrated.
-    ("malformed date",         "2025-01-2025",          "20250120 25"),
+    ('version number', '1.1', '1.10'),
+    ('German umlaut', 'Müller', 'Muller'),
+    ('Nordic ring', 'Åse', 'Ase'),
+    ('Turkish dotted I', 'İstanbul', 'Istanbul'),
+    ('controlled vocab N/A', 'None', 'N/A'),
+    ('vulgar fraction', '½', '12'),
+    ('written fraction', '1/2', '12'),
 ]
 
 print("\nP2  TWO SPELLINGS OF ONE FACT AGREE")
