@@ -12,15 +12,17 @@ about where the bytes live.
 ```
 HuggingFace (private)                 R2  datalab-training-pipelines
   corpus.parquet                        vendors/<vendor>.parquet
-  tags.parquet                          baselines/<vendor>/<suite>/<doc_id>.json
-  <doc_id>/                             scores/<scorer_commit>.parquet
+  metadata.parquet                      baselines/<vendor>/<suite>/<doc_id>.json
+  tags.parquet                          scores/<scorer_commit>.parquet
+  thumbnails.parquet
+  <doc_id>/
       ground_truth.json
       schema.json
       document.pdf
 ```
 
-**One rule: parquet holds metadata, files hold payloads.** `scores` is the single exception,
-and the next section says why.
+**One rule: parquet holds metadata, files hold payloads.** `scores` and `thumbnails` are
+the two deliberate exceptions, and each section says why.
 
 ---
 
@@ -180,14 +182,88 @@ approximates flattening cost. Both are JSON walks, no scorer import.
 business, they change with it, and applying them here would bake one version's opinion into
 the corpus. Consumers apply them; 243 of the 660 schemas differ if you forget, silently.
 
+### Metadata tiers, and what decides them
+
+Not everything known about a document belongs in the same table. The line is not cost -- it
+is **what you need in order to reproduce it**, because that decides whether a table can be
+deleted and rebuilt without thought.
+
+| tier | needs | stamped with | table |
+| --- | --- | --- | --- |
+| structural | the bytes, and the standard library | nothing -- any Python gives the same answer | `corpus.parquet` |
+| measured | a tool that reads the format | the tool and its version | `metadata.parquet` |
+| judged | a model | the model and when it ran | `tags.parquet` |
+| rendered | a renderer, and real bytes out | the renderer and when | `thumbnails.parquet` |
+
+All keyed on `doc_id`, all joinable, all independently rebuildable.
+
+`corpus.parquet` stays in the first tier on purpose. Its value is that it can be regenerated
+from the files with nothing but the standard library, so it is never stale in a way that
+matters and never needs a dependency pinned. The moment a column needs a parser, that
+property is gone.
+
+### `metadata.parquet`
+
+Measurements that need a tool to read the format, but are otherwise deterministic -- the
+same PDF gives the same answer, given the same library.
+
+```
+doc_id            page_count
+page_width        page_height        (of the first page, in points)
+```
+
+`page_count` is the first and the reason the tier exists. It is a fact everyone wants, but
+getting it means opening the PDF with a parser: not stdlib, and not perfectly stable either,
+since the corpus contains PDFs that make `pypdf` emit `Ignoring wrong pointing object`
+warnings and a malformed file can read differently across versions. So it is stamped with the
+library that produced it rather than presented as ground truth.
+
+Measured on the corpus: **22,223 pages across 660 documents**, median 22, mean 34, p90 66,
+and one document of **878 pages**. 103 documents are over 50 pages and 14 over 200 -- worth
+knowing before anything proposes to process per page.
+
 ### `tags.parquet`
 
-Separate from `corpus.parquet`, keyed by `doc_id`, stamped with model and date.
+Judgements from a model -- "form", "large table", "handwritten" -- keyed on `doc_id` and
+stamped with the model and date.
 
-VLM-derived tags — "form", "large table", "handwritten" — are model-dependent, dated and not
-reproducible. Putting them in `corpus.parquet` would break the property that makes that table
-safe: deterministic and cheap to rebuild from the files. A separate table joins just as
-easily and keeps the corpus something you can delete without thinking.
+Separate from `metadata.parquet` because the provenance differs in kind. A page count is a
+measurement anyone with the same library reproduces; a tag is one model's opinion on one day,
+and re-running a better model should replace the table rather than appear to correct a fact.
+Separate tables make that a swap instead of a merge.
+
+### `thumbnails.parquet`
+
+One rendered image per document, plus `rendered_by` and `rendered_at`.
+
+**This is the one place the rule bends, deliberately.** Payloads live in files, but HF's
+dataset viewer only renders images that are *in* the parquet with an `Image()` feature -- a
+file in the repo will not preview. The rule exists because cell size is unbounded for ground
+truth; a thumbnail is bounded **by construction**, since the resolution is chosen, so the
+hazard cannot occur.
+
+Measured before deciding, over 30 documents spread across the corpus:
+
+```
+width  format   median   p90     660 documents
+  512    WEBP     21 KB   68 KB        13 MB
+ 1024    WEBP     57 KB  188 KB        36 MB
+ 1024    JPEG    120 KB  301 KB        77 MB
+ 1024     PNG    204 KB  658 KB       132 MB
+```
+
+WebP at 1024px, ~36 MB, is 4% of the 812 MB of PDFs and legible enough to tell a form from a
+table from a filing. PNG is **3.6x larger for identical content** and buys nothing that the
+HF viewer or a modern IDE cannot already read.
+
+Rendering costs 13 ms a page: ten seconds for 660 first pages, five minutes for all 22,223.
+
+**One image per document, not per page.** Every page would be 1.2 GB even at the cheapest
+setting -- larger than everything else combined, for derived data that regenerates in five
+minutes. When VLM tagging needs page images, it should render them in that job rather than
+the dataset carrying them forever.
+
+Not built yet. The measurements are recorded so the decision does not have to be made twice.
 
 ### `vendors/<vendor>.parquet`
 
