@@ -41,8 +41,8 @@ import boto3
 from botocore.config import Config
 from huggingface_hub import snapshot_download
 
-from omni_extract_bench.dialects import resolve_refs, strip_benchmark_keys
-from omni_extract_bench.prediction_io import usable
+from omni_extract_bench.harness.dialects import resolve_refs, strip_benchmark_keys
+from omni_extract_bench.harness.prediction_io import usable
 from omni_extract_bench.score import grade
 
 BUCKET = "datalab-training-pipelines"

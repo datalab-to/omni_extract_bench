@@ -88,6 +88,12 @@ report("...and nothing they pull in widens that",
 report("values.py, the shared layer, stays below the scorer",
        "score" not in imports_of(PKG / "values.py"),
        f"values imports {sorted(imports_of(PKG / 'values.py'))}")
+# Implied by the closure above, but named so the directory's purpose survives a reader who
+# does not derive it from a set equality: a grade must not come to depend on a transport, a
+# vendor dialect, or an envelope convention.
+report("nothing the scorer reaches lives under harness/",
+       not any(m.startswith("harness") for m in reach),
+       f"closure {sorted(reach)}")
 
 print("\nTHERE IS EXACTLY ONE GRADER")
 graders = sorted(p.relative_to(PKG).as_posix() for p in PKG.rglob("*.py")

@@ -22,7 +22,7 @@ scoring, row-pair weighting, and blocking alike.
 from .matching import match_rows
 from .score import explain, grade
 from .values import canon_key, cmp_leaf
-from .prediction_io import usable
+from .harness.prediction_io import usable
 
 __all__ = [
     "grade",

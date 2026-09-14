@@ -26,8 +26,8 @@ import json
 import sys
 from pathlib import Path
 
-from .dialects import resolve_refs, strip_benchmark_keys
-from .prediction_io import usable
+from .harness.dialects import resolve_refs, strip_benchmark_keys
+from .harness.prediction_io import usable
 from .score import grade
 
 

@@ -714,7 +714,7 @@ parses in full (a truncated write would be malformed); the envelope is a plain
 and extend returned the OTHER two giants complete -- 19,486 rows against a gold 19,486, and
 18,493 against 18,494 -- so there is no size ceiling on either side.
 
-**What is ours** is `providers/extend_provider.py:52`:
+**What is ours** is `omni_extract_bench/harness/providers/extend_provider.py:52`:
 
 ```python
 ARRAY_STRATEGY = os.environ.get("EXTEND_ARRAY_STRATEGY", "large_array_max_context")

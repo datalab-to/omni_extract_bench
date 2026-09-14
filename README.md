@@ -108,11 +108,11 @@ change its score, no depth-dependent scoring path can exist.
 
 Benchmarking extraction vendors costs real money on calls that are slow, often async, and
 sometimes nondeterministic. What you keep from each call decides whether a failure costs you an
-explanation or another invoice — so `omni_extract_bench.capture` records responses at the
-**transport layer**, before anything parses them.
+explanation or another invoice — so `omni_extract_bench.harness.capture` records responses at
+the **transport layer**, before anything parses them.
 
 ```python
-from omni_extract_bench import capture
+from omni_extract_bench.harness import capture
 
 capture.install_taps()                 # in-process SDK calls (httpx + requests)
 capture.reset()                        # per document; records are thread-local
@@ -151,7 +151,8 @@ supposedly fixed capture, because they all look identical from the outside: the 
 key is present, the list is empty. The last one was a provider adapter that used no SDK at all
 and called the REST API with the standard library.
 
-They live in one module (`_tap/oeb_capture.py`) for the same reason: maintained as near-copies,
+They live in one module (`harness/_tap/oeb_capture.py`) for the same reason: maintained as
+near-copies,
 each gap has to be found and fixed once per copy, which is how the fourth one survived the
 first three fixes.
 
@@ -206,7 +207,8 @@ In one run these took a provider from 8th place with 19 of 40 documents failed t
 none — the extraction quality never changed. Treat a vendor's low coverage as a harness bug
 until proven otherwise.
 
-`providers/extend_provider.py` is a reference adapter showing the shape an integration takes.
+`harness/providers/extend_provider.py` is a reference adapter showing the shape an integration
+takes.
 Provider APIs change; treat it as an example rather than a maintained client.
 
 ## Licence and attribution
