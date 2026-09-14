@@ -102,6 +102,31 @@ def prediction_id(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def document(root: Path, doc_id: str) -> Document:
+    """Load one document by id.
+
+    Separate from `documents` so a worker process can load only what it was handed. A parsed
+    ground truth can be tens of megabytes, and shipping one through a pickle to every worker
+    costs more than reading it from disk there.
+    """
+    d = Path(root) / doc_id
+    for name in (GROUND_TRUTH, SCHEMA):
+        if not (d / name).exists():
+            raise FileNotFoundError(
+                f"{doc_id}: no {name}. A document needs {GROUND_TRUTH} and {SCHEMA}; "
+                f"a schema is required and is never inferred, because without it an "
+                f"additionalProperties subtree would be graded silently.")
+    gt_bytes = (d / GROUND_TRUTH).read_bytes()
+    schema_bytes = (d / SCHEMA).read_bytes()
+    return Document(
+        doc_id=doc_id,
+        gt=json.loads(gt_bytes),
+        schema=resolve_refs(strip_benchmark_keys(json.loads(schema_bytes))),
+        gt_sha256=hashlib.sha256(gt_bytes).hexdigest(),
+        schema_sha256=hashlib.sha256(schema_bytes).hexdigest(),
+    )
+
+
 def documents(root: Path) -> Iterator[Document]:
     """Every document in a corpus directory, in sorted order.
 
@@ -114,21 +139,7 @@ def documents(root: Path) -> Iterator[Document]:
     if not root.is_dir():
         raise NotADirectoryError(f"corpus {root} is not a directory")
     for d in sorted(p for p in root.iterdir() if p.is_dir()):
-        for name in (GROUND_TRUTH, SCHEMA):
-            if not (d / name).exists():
-                raise FileNotFoundError(
-                    f"{d.name}: no {name}. A document needs {GROUND_TRUTH} and {SCHEMA}; "
-                    f"a schema is required and is never inferred, because without it an "
-                    f"additionalProperties subtree would be graded silently.")
-        gt_bytes = (d / GROUND_TRUTH).read_bytes()
-        schema_bytes = (d / SCHEMA).read_bytes()
-        yield Document(
-            doc_id=d.name,
-            gt=json.loads(gt_bytes),
-            schema=resolve_refs(strip_benchmark_keys(json.loads(schema_bytes))),
-            gt_sha256=hashlib.sha256(gt_bytes).hexdigest(),
-            schema_sha256=hashlib.sha256(schema_bytes).hexdigest(),
-        )
+        yield document(root, d.name)
 
 
 def predictions(root: Path) -> Iterator[tuple[str, bytes]]:
