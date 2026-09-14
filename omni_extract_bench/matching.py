@@ -22,12 +22,24 @@ algorithm for rectangular cost matrices. It returns a minimum-cost perfect match
 smaller side, which (negating weights) is the maximum-weight matching. No heuristic can
 score higher: the returned assignment maximises total matched leaves by construction.
 
-EFFICIENCY
-----------
-O(n^3) is fine for typical arrays but not for micro1's giant tables (thousands of rows).
-`match_rows()` therefore BLOCKS first: rows are partitioned by an exact-match "hard key"
-(dimension fields whose values are directly comparable). Two rows in different blocks can
-never be paired anyway, so solving each block optimally is *globally* optimal.
+EFFICIENCY, AND WHY ROWS ARE NEVER BUCKETED FIRST
+------------------------------------------------
+O(n^3) is fine for typical arrays but not for micro1's giant tables (thousands of rows). The
+obvious remedy is to partition rows on an exact-match key first and solve each part -- and
+this module used to offer it, for a caller that no longer exists. It is gone, deliberately.
+
+Partitioning is sound only if rows disagreeing on the key genuinely cannot pair, and nothing
+can establish that. The key would have to be supplied by a caller with no basis for choosing
+one, or inferred from the data -- and inferring it is what the metric this benchmark was
+measured against does, at a cost documented in METRIC_SPEC section 5: a rounded amount takes a
+correct extraction to precision 0.000 and recall 0.000, because its rows land in partitions
+the gold rows are not in and are then charged twice, once as unfound and once as invented.
+
+The size problem is handled instead by `_exact_ok` and `_greedy`, and the difference that
+matters is that they SAY SO. Greedy sets `exact=False`, which surfaces as `matching_exact`
+and `approximated` in the grade. A partition is an approximation that stays silent: it
+forbids pairings and the score still reports itself as exact. P15 is the rule it would
+break.
 
 SOLVER
 ------
@@ -48,9 +60,9 @@ same score -- and the fix is asserted where it belongs, in the scorers' own prop
 WHAT STILL BOUNDS EXACTNESS
 ---------------------------
 Not the solve. The COST MATRIX, which is O(n*m) whatever solves it: the largest gold array
-here is 6881 rows, 47 million cells, 0.38 GB as float64. Past the ceiling below the choice is
-greedy or an out-of-memory, so greedy stays -- and reports itself (`exact=False`) rather than
-pretending optimality.
+here is 26,725 rows, 714 million cells, 5.7 GB as float64. Past the ceiling below the choice
+is greedy or an out-of-memory, so greedy stays -- and reports itself (`exact=False`) rather
+than pretending optimality. Three documents in this corpus take that path.
 """
 from __future__ import annotations
 
@@ -64,9 +76,11 @@ from scipy.optimize import linear_sum_assignment as _lsa
 #: The cell cap was 60 million while the scorer also held a Python dict of every priced pair,
 #: which cost ~200 bytes a pair against the matrix's 8 -- so the matrix was never what ran the
 #: machine out of memory, and a ceiling set for it was really a ceiling for the dict. That
-#: dict is gone. The largest gold array in this corpus is 6881 x 6881, 47 million cells, which
-#: sat at 79% of the old cap: one table half again as large would have dropped a whole
-#: document to greedy. At 250 million the same cliff is past 15,000 rows.
+#: dict is gone. The largest gold array in this corpus is 26,725 x 26,725 -- 714 million
+#: cells, 5.7 GB as float64 -- so it is past this cap and takes the greedy path, as do two
+#: further documents at ~19,000 rows. The cap is not what excludes them: `MAX_EXACT` is, and
+#: raising either to reach them costs ~23 minutes and ~6 GB on the largest against 4.6 minutes
+#: and 1.86 GB today, for a measured difference of at most 0.177 accuracy points.
 MAX_EXACT = 20000
 MAX_CELLS = 250 * 10**6
 
@@ -96,10 +110,10 @@ def force_approximate():
     Returns:
         A callable that restores the real budget.
 
-    The greedy path is unreachable on any realistic input -- the ceilings sit above the largest
-    array this corpus contains -- so without a hook the property that an approximate score
-    announces itself would pass without ever exercising the path it describes. Building an
-    array big enough instead costs minutes per test for no extra coverage.
+    The greedy path IS reachable -- three documents in this corpus take it, the largest at
+    26,725 rows -- but building an array that size in a test costs minutes for no extra
+    coverage, and the two smaller ones still need a document each. The hook exercises the
+    property that an approximate score announces itself without paying for the array.
     """
     global MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE
     saved = (MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE)
@@ -162,10 +176,9 @@ def optimal_pairs(pred_rows, gt_rows, weight):
     A, B = (gt_rows, pred_rows) if transposed else (pred_rows, gt_rows)
     # cost = -weight, because both solvers minimise
     # The matrix is filled IN a numpy array rather than built as a Python list and converted:
-    # at the largest real array (6881 x 6881, 47 million cells) a list of lists costs ~1.5 GB
-    # of float objects and list slots before scipy sees any of it, against 0.38 GB for the
-    # array itself. The O(n*m) matrix is what bounds exactness once the solve is compiled, so
-    # it is worth not doubling it.
+    # a list of lists costs ~4x the array in float objects and list slots before scipy sees any
+    # of it. The O(n*m) matrix is what bounds exactness once the solve is compiled, so it is
+    # worth not doubling it.
     cost = _np.empty((len(A), len(B)), dtype=float)
     for ia, a in enumerate(A):
         row = cost[ia]
@@ -194,48 +207,19 @@ def optimal_pairs(pred_rows, gt_rows, weight):
     return pairs, up, ug
 
 
-def _hard_key(row, keys, key_fn):
-    """Block identity for a row.
+def match_rows(pred_rows, gt_rows, weight, positives=None):
+    """Optimal matching over every candidate pair. Returns (pairs, up, ug, exact_flag).
 
-    `key_fn` MUST be the same equality the scorer uses. Blocking asserts "these rows can never
-    pair", so a stricter notion here silently forbids pairings the scorer would have accepted.
-    This used to be bare `str()`, which meant rows differing only in the CASING of the blocking
-    field landed in different blocks and could never match -- scoring 0.0 with recall 0.00 on
-    content the comparator considers identical. Blocking is active on ~46% of the benchmark's
-    arrays, so that was not a corner case.
-    """
-    return tuple(key_fn(row.get(k)) for k in keys)
+    Every predicted row is priced against every gold row: no partitioning, no key, no
+    pre-filter. See the module docstring for why -- in short, a partition can only remove
+    pairings the scorer would have accepted, and unlike the greedy fallback it cannot report
+    that it did.
 
-
-def match_rows(pred_rows, gt_rows, weight, block_keys=(), key_fn=str,
-               positives=None):
-    """Optimal matching with safe blocking.
-
-    block_keys: dimension fields on which rows must agree. Rows disagreeing on a block key can
-    never be paired, so per-block optimal == global optimal.
-    key_fn: how a block field is compared. Pass the SCORER's equality, or blocking will forbid
-    pairings the scorer would accept. Returns (pairs, up, ug, exact_flag).
     positives: upper bound on pairs that can carry positive weight, for the exact-vs-greedy
-    memory comparison in `_exact_ok`. Ignored when `block_keys` splits the problem, since the
-    bound describes the whole and the decision is then made per block.
+    memory comparison in `_exact_ok`.
     """
     if not pred_rows or not gt_rows:
         return [], list(pred_rows), list(gt_rows), True
-    if block_keys:
-        blocks = {}
-        for r in pred_rows:
-            blocks.setdefault(_hard_key(r, block_keys, key_fn), ([], []))[0].append(r)
-        for r in gt_rows:
-            blocks.setdefault(_hard_key(r, block_keys, key_fn), ([], []))[1].append(r)
-        pairs, up, ug, exact = [], [], [], True
-        for k, (ps, gs) in blocks.items():
-            if not _exact_ok(len(ps), len(gs)):
-                p2, u2, g2 = _greedy(ps, gs, weight)
-                exact = False
-            else:
-                p2, u2, g2 = optimal_pairs(ps, gs, weight)
-            pairs += p2; up += u2; ug += g2
-        return pairs, up, ug, exact
     if not _exact_ok(len(pred_rows), len(gt_rows), positives):
         p2, u2, g2 = _greedy(pred_rows, gt_rows, weight)
         return p2, u2, g2, False
@@ -272,10 +256,9 @@ if __name__ == "__main__":
     total = sum(w(p, g) for p, g in pairs)
     print(f"optimal total weight = {total} (max possible 4), exact={exact}, pairs={len(pairs)}")
     assert total == 4, "must find the crossing assignment"
-    # blocking equals global optimum
-    P2 = P + [{"k": "b", "v": 9}]; G2 = G + [{"k": "b", "v": 9}]
-    pb, _, _, ex2 = match_rows(P2, G2, w, block_keys=("k",))
-    pg, _, _, _ = match_rows(P2, G2, w)
-    print(f"blocked total {sum(w(p,g) for p,g in pb)} == global {sum(w(p,g) for p,g in pg)}")
-    assert sum(w(p, g) for p, g in pb) == sum(w(p, g) for p, g in pg)
+    # a row that shares nothing with any gold row is left unpaired rather than forced
+    P2 = P + [{"k": "b", "v": 9}]
+    pairs2, up2, ug2, _ = match_rows(P2, G, w)
+    print(f"extra predicted row -> {len(pairs2)} pairs, {len(up2)} unmatched")
+    assert len(up2) == 1 and sum(w(p, g) for p, g in pairs2) == 4
     print("optimal_match self-tests pass")

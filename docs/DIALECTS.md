@@ -4,10 +4,10 @@ Every vendor accepts a different subset of JSON Schema, and the strict ones reje
 permissive ones ignore. Send one shape to everyone and the strict vendors score zero on
 documents they could have handled — a fact about your harness, reported as a fact about them.
 
-`omni_extract_bench.dialects` holds the transforms, split by intent:
+`omni_extract_bench.harness.dialects` holds the transforms, split by intent:
 
 ```python
-from omni_extract_bench.dialects import (
+from omni_extract_bench.harness.dialects import (
     strip_benchmark_keys,    # remove YOUR grader metadata — every vendor
     resolve_refs,            # inline $ref so the schema is self-describing
     to_strict_dialect,       # allowlisted keys; nullable properties, bare array items
@@ -32,6 +32,6 @@ In one run these took a provider from 8th place with 19 of 40 documents failed t
 none — the extraction quality never changed. Treat a vendor's low coverage as a harness bug
 until proven otherwise.
 
-`providers/extend_provider.py` is a reference adapter showing the shape an integration takes.
+`harness/providers/extend_provider.py` is a reference adapter showing the shape an integration takes.
 Provider APIs change; treat it as an example rather than a maintained client.
 

@@ -200,7 +200,7 @@ change its score, no depth-dependent scoring path can exist.
 
 ## Capturing runs so you pay for them once
 
-Vendor calls are slow, async, and billed. `omni_extract_bench.capture` records responses at the
+Vendor calls are slow, async, and billed. `omni_extract_bench.harness.capture` records responses at the
 **transport layer**, before anything parses them, so a parsing bug costs a re-parse rather than
 another invoice — and job ids are kept, because usage can usually be recovered from job history
 for free.
@@ -218,7 +218,7 @@ Every vendor accepts a different subset of JSON Schema, and the strict ones reje
 permissive ones ignore. Send one shape to everyone and the strict vendors score zero on
 documents they could have handled — a fact about your harness, reported as a fact about them.
 
-`omni_extract_bench.dialects` holds the per-vendor transforms, each one written for a measured
+`omni_extract_bench.harness.dialects` holds the per-vendor transforms, each one written for a measured
 failure. In one run they took a provider from 8th place with 19 of 40 documents failed to 4th
 with none, and the extraction quality never changed. **Treat a vendor's low coverage as a
 harness bug until proven otherwise.**
