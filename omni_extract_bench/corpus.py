@@ -31,6 +31,10 @@ import hashlib
 from pathlib import Path, PurePosixPath
 from typing import Iterable, NamedTuple
 
+#: Characters that make a doc_id unusable as a directory name. The layout has no suite level,
+#: so uniqueness and filename-safety stop being free and have to be asserted.
+_UNSAFE = ("/", "\\", "\0")
+
 #: The atlas, beside the documents it describes.
 ATLAS = "corpus.parquet"
 
@@ -200,19 +204,96 @@ def write(root: Path, entries: Iterable[Entry], extra: dict | None = None) -> Pa
     return root / ATLAS
 
 
-def check(root: Path, entries: Iterable[Entry]) -> list[str]:
-    """What no longer matches the atlas. Empty when the corpus is as declared."""
-    root = Path(root)
-    problems = []
-    for e in entries:
-        for rel, want, what in ((e.ground_truth_path, e.gt_sha256, "ground truth"),
-                                (e.schema_path, e.schema_sha256, "schema")):
-            f = root / rel
-            if not f.exists():
-                problems.append(f"{e.doc_id}: {rel} is listed but missing")
-            elif sha256(f) != want:
-                problems.append(f"{e.doc_id}: {what} changed since the atlas was written")
+def check_doc_id(doc_id: str) -> None:
+    """Fail loudly on a doc_id the flat layout cannot hold.
+
+    Raises:
+        ValueError: if the id would collide with a path, hide as a dotfile, or be empty.
+    """
+    if not doc_id:
+        raise ValueError("empty doc_id")
+    if doc_id.startswith("."):
+        raise ValueError(f"doc_id starts with a dot, which hides the directory: {doc_id!r}")
+    for ch in _UNSAFE:
+        if ch in doc_id:
+            raise ValueError(f"doc_id contains {ch!r}, unusable as a filename: {doc_id!r}")
+
+
+def check_unique(doc_ids) -> None:
+    """Fail loudly on duplicates.
+
+    With the suite directory gone, two documents sharing an id would silently overwrite each
+    other. This turns that into a build error.
+
+    Raises:
+        ValueError: listing the ids that appear more than once.
+    """
+    seen, dupes = set(), []
+    for d in doc_ids:
+        if d in seen:
+            dupes.append(d)
+        seen.add(d)
+    if dupes:
+        raise ValueError(f"{len(dupes)} duplicate doc_id(s): {sorted(set(dupes))[:5]}")
+
+
+def verify(expected, root: Path, patterns=("**/*.json",)) -> list[str]:
+    """Check an atlas against the files it describes, in both directions.
+
+    An atlas and its payloads can drift with nothing noticing: a row pointing at a deleted
+    file, a file no row mentions, or a payload edited in place. The first two are findable by
+    listing; the third is invisible without hashes, which is why the atlas carries them.
+
+    Args:
+        expected: pairs of (path relative to `root`, expected sha256). Deriving these from the
+            atlas rows is the caller's job, because the two layouts differ -- the corpus keeps
+            several payloads per document in a directory, predictions keep one flat file each.
+            An earlier version guessed `<row_id>.json` and was therefore useless for the
+            corpus tree; passing the paths in is what makes one function serve both.
+        root: the tree the paths are relative to.
+        patterns: which files under `root` are payloads, for finding orphans. Anything not
+            matching is ignored, so an atlas sitting inside its own tree is not an orphan --
+            but a payload type left out of this list is invisible the same way, and every row
+            claiming one then reads as a missing file. Pass every extension the tree holds.
+
+    Returns:
+        Complaints, empty when consistent. Returned rather than raised so a caller can report
+        all of them at once instead of one per run.
+    """
+    expected = {str(p): h for p, h in expected}
+    on_disk = {str(p.relative_to(root))
+               for pat in patterns for p in root.glob(pat) if p.is_file()}
+
+    problems: list[str] = []
+    for missing in sorted(set(expected) - on_disk):
+        problems.append(f"row with no file: {missing}")
+    for orphan in sorted(on_disk - set(expected)):
+        problems.append(f"file with no row: {orphan}")
+    for shared in sorted(set(expected) & on_disk):
+        actual = hashlib.sha256((root / shared).read_bytes()).hexdigest()
+        if actual != expected[shared]:
+            problems.append(f"hash mismatch: {shared} "
+                            f"(atlas {expected[shared][:12]}..., file {actual[:12]}...)")
     return problems
+
+
+def check(root: Path, entries: Iterable[Entry]) -> list[str]:
+    """What no longer matches the atlas. Empty when the corpus is as declared.
+
+    `verify` does the work, so there is one implementation of "does this tree match these
+    hashes" rather than two that have to agree.
+
+    The globs are exactly what `check_path` allows a row to name, so nothing else in the tree
+    is treated as a payload -- a corpus may hold PDFs, page images and provenance beside the
+    documents, and those are not drift. Files matching the globs that no row names ARE found,
+    and then dropped here: a document curated out of the atlas is the normal case, and
+    `undeclared` reports it as information rather than as a problem.
+    """
+    expected = [(e.ground_truth_path, e.gt_sha256) for e in entries]
+    expected += [(e.schema_path, e.schema_sha256) for e in entries]
+    problems = verify(expected, Path(root),
+                      patterns=(f"*/{GROUND_TRUTH}", f"*/{SCHEMA}"))
+    return [p for p in problems if not p.startswith("file with no row")]
 
 
 def undeclared(root: Path, entries: Iterable[Entry]) -> list[str]:

@@ -40,7 +40,6 @@ from typing import Iterable, Iterator, NamedTuple
 
 from . import corpus as corpus_atlas
 from .corpus import GROUND_TRUTH, SCHEMA, Stale
-from .layout import prediction_id
 from .dialects import resolve_refs, strip_benchmark_keys
 from .prediction_io import usable
 from .score import grade, show
@@ -96,6 +95,22 @@ class Outcome(NamedTuple):
     error: str | None
     summary: dict | None
     verdicts: list | None
+
+
+#: Bumping this orphans every score that joined on the old ids. `scores` keys on
+#: `prediction_id`, so a change here is a migration, not a refactor. The version travels with
+#: the data rather than living only in this constant.
+PREDICTION_ID_VERSION = "v1"
+
+
+def prediction_id(result_bytes: bytes) -> str:
+    """Identify an extraction by its stored bytes.
+
+    There is no envelope to see through: a stored prediction is the bare extraction, so this
+    is a plain hash of the file. That is what keeps it reproducible in any language, with no
+    unwrap rule, no schema dependency and no canonicalisation spec to agree on.
+    """
+    return hashlib.sha256(result_bytes).hexdigest()
 
 
 def document(root: Path, entry) -> Document:
