@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Iterator
 
 from . import corpus as corpus_atlas
-from .bench import cases, documents, predictions, score, verdict_rows
+from .bench import predictions
 from .corpus import Entry
 
 #: The published benchmark. `--corpus` overrides it, which is how you score against your own
@@ -226,7 +226,7 @@ def cmd_score(args: Namespace) -> int:
     preds = Path(args.predictions)
     entries = {e.doc_id: e for e in corpus_atlas.read(atlas)}
     stamp = {"source": args.source or preds.name, **scorer_version(), **environment()}
-    out = Path(args.out) if args.out else None
+    out = Path(args.out)
 
     carried, collided = prediction_meta(preds)
     if collided:
@@ -245,7 +245,7 @@ def cmd_score(args: Namespace) -> int:
               + (f" and {len(skipped) - 5} more" if len(skipped) > 5 else ""))
 
     # A finished run is that corpus, scorer and source's answer, and there is only one.
-    if out is not None and (out / SUMMARY).exists():
+    if (out / SUMMARY).exists():
         print(f"  {out / SUMMARY} exists; this corpus, scorer and source already have an "
               f"answer.\n  To score it again, name a different --out; comparing two runs "
               f"is a join on (doc_id, prediction_id).", file=sys.stderr)
@@ -261,13 +261,11 @@ def cmd_score(args: Namespace) -> int:
         row.update(carried.get(doc_id, {}))
         rows.append(row)
         by_doc[doc_id] = verds
-        if out is None:
-            shown = f"{row['accuracy']:>7.2f}" if kind == "graded" else f"{kind:>9}"
-            print(f"  {doc_id:<52}{shown}  {row.get('error') or ''}".rstrip())
+        shown = f"{row['accuracy']:>7.2f}" if kind == "graded" else f"{kind:>9}"
+        print(f"  {doc_id:<52}{shown}  {row.get('error') or ''}".rstrip(), flush=True)
 
     code = _report(rows)
-    if out is not None:
-        write_run(out, rows, by_doc, stamp)
+    write_run(out, rows, by_doc, stamp)
     return code
 
 
@@ -322,27 +320,39 @@ def _scored(ordered: list[str], jobs: dict[str, bytes], corpus: Path,
 
 
 def cmd_explain(args: Namespace) -> int:
-    """Print every address for one document: what the gold had, and what was predicted."""
-    corpus, atlas = corpus_atlas.locate(Path(args.corpus) if args.corpus
-                                        else published_corpus())
-    docs = [d for d in documents(atlas) if d.doc_id == args.doc]
-    if not docs:
-        print(f"no document {args.doc!r} in {corpus}", file=sys.stderr)
-        return 1
-    pred_file = Path(args.predictions) / f"{args.doc}.json"
-    if not pred_file.exists():
-        print(f"no prediction at {pred_file}", file=sys.stderr)
-        return 1
-    case = next(cases(docs, [(args.doc, pred_file.read_bytes())]))
-    outcome = score(case)
-    if outcome.kind != "graded":
-        print(f"{args.doc}: {outcome.kind} ({outcome.error})")
+    """Show every address of one document in a run: what the gold had, and what was predicted.
+
+    Reads the run rather than scoring again. The verdicts are already on disk -- re-deriving
+    them would repeat minutes of work for the expensive documents, and could disagree with the
+    table if the scorer changed in between.
+
+    It needs no corpus, no predictions and no scorer for the same reason.
+    """
+    import pyarrow.parquet as pq
+
+    run = Path(args.run)
+    summary = run / SUMMARY
+    if not summary.exists():
+        raise FileNotFoundError(
+            f"no run at {summary}. Produce one with:  oeb score --out {run} ...")
+    row = next((r for r in pq.read_table(summary).to_pylist()
+                if r["doc_id"] == args.doc), None)
+    if row is None:
+        raise ValueError(f"{args.doc!r} is not in {summary}")
+    if row["kind"] != "graded":
+        print(f"  {args.doc}: {row['kind']}" + (f" ({row['error']})" if row.get("error") else ""))
         return 0
-    for row in verdict_rows(case, outcome):
-        if args.all or row["verdict"] != "match":
-            print(f"  {row['address']:<44}{row['verdict']:<16}"
-                  f"gold={row['gold']}  pred={row['pred']}")
-    print(f"\n  accuracy {outcome.summary['accuracy']:.2f}")
+
+    verdicts = run / VERDICTS / f"{args.doc}.parquet"
+    if not verdicts.exists():
+        raise FileNotFoundError(
+            f"{args.doc} was graded but has no verdicts at {verdicts}; "
+            f"the run was made with --no-verdicts")
+    for v in pq.read_table(verdicts).to_pylist():
+        if args.all or v["verdict"] != "match":
+            print(f"  {v['address']:<44}{v['verdict']:<16}"
+                  f"gold={v['gold']}  pred={v['pred']}")
+    print(f"\n  accuracy {row['accuracy']:.2f}")
     return 0
 
 

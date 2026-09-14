@@ -1,13 +1,13 @@
-"""The corpus atlas: what a benchmark contains, stated rather than discovered.
+"""The corpus atlas: the table that says what a benchmark contains.
 
-    <corpus>/corpus.parquet          the atlas -- the source of truth
+    <corpus>/corpus.parquet          the atlas
     <corpus>/<doc_id>/ground_truth.json
     <corpus>/<doc_id>/schema.json
 
-**The atlas is what you explore and what you run.** `build` writes a row per document found in
-the tree, and scoring runs over those rows -- so filtering the table is how you choose a subset
-to score, and a half-copied document or a scratch directory cannot join a benchmark by being
-present.
+**The atlas is what you explore and what you run.** `discover` reads the tree and `write`
+records what it found; from then on everything follows the atlas, so filtering the table is how
+you choose a subset to score, and a half-copied document cannot join a benchmark by being
+present after the fact.
 
 It is a plain parquet, meant to be queried. Beyond the three columns below it carries whatever
 higher-level metadata you have -- which collection a document came from, its page count, how
@@ -74,10 +74,6 @@ def check_path(doc_id: str, path: str, filename: str) -> None:
         raise ValueError(f"{doc_id}: path {path!r} escapes the corpus; must be {want!r}")
     if path != want:
         raise ValueError(f"{doc_id}: path {path!r} does not follow the layout; must be {want!r}")
-
-
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def entry_for(root: Path, doc_id: str) -> Entry:
@@ -214,6 +210,10 @@ def write(root: Path, entries: Iterable[Entry], extra: dict | None = None,
 def check_doc_id(doc_id: str) -> None:
     """Fail loudly on a doc_id the flat layout cannot hold.
 
+    For ids that come from somewhere other than a directory listing -- a manifest being
+    migrated, say. `discover` cannot produce a bad one, because a filesystem will not hold a
+    directory named with a slash.
+
     Raises:
         ValueError: if the id would collide with a path, hide as a dotfile, or be empty.
     """
@@ -246,7 +246,10 @@ def check_unique(doc_ids: Iterable[str]) -> None:
 
 def verify(expected: Iterable[tuple[str, str]], root: Path,
            patterns: Sequence[str] = ("**/*.json",)) -> list[str]:
-    """Check an atlas against the files it describes, in both directions.
+    """Check a set of files against expected hashes, in both directions.
+
+    Not used by the scoring path, which reads the files an atlas names as they are. This is for
+    a builder that has just written a tree and wants to know it wrote what it meant to.
 
     An atlas and its payloads can drift with nothing noticing: a row pointing at a deleted
     file, a file no row mentions, or a payload edited in place. The first two are findable by

@@ -1,8 +1,8 @@
 """Command-line interface.
 
     oeb build-corpus --corpus DIR
-    oeb score        --predictions preds/ [--corpus DIR] [--out DIR] [--jobs N]
-    oeb explain      --predictions preds/ --doc <doc_id>
+    oeb score        --predictions preds/ --out run/ [--corpus DIR] [--jobs N]
+    oeb explain      --run run/ --doc <doc_id>
     oeb verify       --corpus DIR
     oeb score-one    --pred p.json --gt g.json --schema s.json
 
@@ -134,7 +134,8 @@ def main(argv=None):
     n.add_argument("--predictions", required=True, help="directory of <doc_id>.json")
     n.add_argument("--corpus", help="corpus directory, or a specific atlas parquet in it; "
                                     "default: download the published benchmark")
-    n.add_argument("--out", help="the run directory: summary.parquet and verdicts/ land here")
+    n.add_argument("--out", required=True,
+                   help="the run directory: summary.parquet and verdicts/ land here")
     n.add_argument("--source", help="what to call these predictions; default: the directory name")
     n.add_argument("--jobs", type=int, default=1,
                    help="worker processes, one document each")
@@ -142,10 +143,9 @@ def main(argv=None):
                    help="skip the per-address table; saves memory, not much time")
     n.set_defaults(fn=_run.cmd_score)
 
-    e = sub.add_parser("explain", help="show every address for one document")
-    e.add_argument("--predictions", required=True)
+    e = sub.add_parser("explain", help="show every address for one document of a run")
+    e.add_argument("--run", required=True, help="a run directory written by `score --out`")
     e.add_argument("--doc", required=True)
-    e.add_argument("--corpus")
     e.add_argument("--all", action="store_true", help="include addresses that matched")
     e.set_defaults(fn=_run.cmd_explain)
 

@@ -156,7 +156,7 @@ group by 1, 2 order by acc;
 For one document, without SQL:
 
 ```bash
-oeb explain --predictions preds/ --doc <doc_id>
+oeb explain --run run/ --doc <doc_id>
 ```
 
 Verdicts are worth looking at before you trust an accuracy number. On a sample of real

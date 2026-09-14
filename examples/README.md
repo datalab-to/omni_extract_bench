@@ -6,7 +6,7 @@ there is nothing to install first.
 
 ```bash
 uv run oeb build-corpus --corpus examples/corpus
-uv run oeb score --corpus examples/corpus --predictions examples/predictions
+uv run oeb score --corpus examples/corpus --predictions examples/predictions --out /tmp/run
 ```
 
 ```
@@ -31,7 +31,7 @@ position — a vendor that emits a table bottom-to-top has not made a mistake.
 ## invoice-b scores 55.56, and `explain` says why
 
 ```bash
-uv run oeb explain --corpus examples/corpus --predictions examples/predictions --doc invoice-b
+uv run oeb explain --run /tmp/run --doc invoice-b
 ```
 
 ```
@@ -53,16 +53,17 @@ The model returned an error, so there is nothing to score on its merits. It reco
 and stays out of the mean — averaging it in as a zero would make a rate-limited run look like a
 bad model. **Filter on `kind` before you average.**
 
-# Keeping the results
+# The run
 
-```bash
-uv run oeb score --corpus examples/corpus --predictions examples/predictions --out /tmp/run
-```
+Every score writes one, which is why `--out` is required:
 
 ```
 /tmp/run/summary.parquet              one row per prediction
 /tmp/run/verdicts/<doc_id>.parquet    every address, with gold and pred
 ```
+
+`explain` reads it rather than scoring again — so it needs no corpus, no predictions, and no
+waiting for the expensive documents a second time.
 
 Ordinary parquet, so exploring needs no library:
 
@@ -106,7 +107,8 @@ pq.write_table(pa.Table.from_pylist(keep), "examples/corpus/graded-only.parquet"
 ```
 
 ```bash
-uv run oeb score --corpus examples/corpus/graded-only.parquet --predictions examples/predictions
+uv run oeb score --corpus examples/corpus/graded-only.parquet --predictions examples/predictions \
+  --out /tmp/run-subset
 ```
 
 ```
