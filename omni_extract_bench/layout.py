@@ -3,8 +3,9 @@
 One rule governs the shape: **parquet holds metadata, files hold payloads.** See
 `docs/DATA_LAYOUT.md` for why, and for the reasoning behind everything here.
 
-This module is deliberately small and has no scorer imports. The tables it describes are
-valid for any scorer version, and keeping this file independent is what makes that true.
+This module is deliberately small and imports nothing from the scorer. The tables it
+describes are valid for any scorer version, and keeping this file independent is what makes
+that true.
 """
 from __future__ import annotations
 
@@ -17,8 +18,8 @@ from pathlib import Path
 #: the data rather than living only in this constant.
 PREDICTION_ID_VERSION = "v1"
 
-#: Characters that make a doc_id unusable as a flat filename. The layout drops the suite
-#: directory, so uniqueness and filename-safety stop being free and have to be asserted.
+#: Characters that make a doc_id unusable as a directory name. The layout drops the suite
+#: level, so uniqueness and filename-safety stop being free and have to be asserted.
 _UNSAFE = ("/", "\\", "\0")
 
 
@@ -36,12 +37,12 @@ def extract_result(text: str) -> str:
     """The `result` value of a prediction envelope, exactly as the vendor wrote it.
 
     `json.loads` discards byte offsets, so parsing and re-dumping yields *our* formatting
-    rather than theirs. Every one of the 5,936 predictions in the current run differs from its
-    reserialised form -- vendors write `", "` where `json.dumps` writes `","` -- so this is
-    not a corner to guard against but the normal case, and hashing a reserialised form would
-    make `prediction_id` describe us instead of them.
+    rather than theirs. Every one of the 5,936 predictions in the current run differs from
+    its reserialised form -- vendors write `", "` where `json.dumps` writes `","` -- so this
+    is not a corner to guard against but the normal case, and hashing a reserialised form
+    would make `prediction_id` describe us instead of them.
 
-    Decoding from the value's start index gives back what the decoder consumed, which is the
+    Decoding from the value's start index returns what the decoder consumed, which is the
     original span.
 
     Raises:
@@ -81,7 +82,7 @@ def check_unique(doc_ids) -> None:
     other. This turns that into a build error.
 
     Raises:
-        ValueError: listing every id that appears more than once.
+        ValueError: listing the ids that appear more than once.
     """
     seen, dupes = set(), []
     for d in doc_ids:
@@ -92,7 +93,7 @@ def check_unique(doc_ids) -> None:
         raise ValueError(f"{len(dupes)} duplicate doc_id(s): {sorted(set(dupes))[:5]}")
 
 
-def verify(rows, payload_dir: Path, id_column: str, name_of) -> list[str]:
+def verify(expected, root: Path, patterns=("**/*.json",)) -> list[str]:
     """Check an atlas against the files it describes, in both directions.
 
     An atlas and its payloads can drift with nothing noticing: a row pointing at a deleted
@@ -100,27 +101,33 @@ def verify(rows, payload_dir: Path, id_column: str, name_of) -> list[str]:
     listing; the third is invisible without hashes, which is why the atlas carries them.
 
     Args:
-        rows: atlas rows, as mappings.
-        payload_dir: where the payload files live.
-        id_column: the atlas column holding each payload's sha256.
-        name_of: row -> the payload's filename stem.
+        expected: pairs of (path relative to `root`, expected sha256). Deriving these from the
+            atlas rows is the caller's job, because the two layouts differ -- the corpus keeps
+            several payloads per document in a directory, predictions keep one flat file each.
+            An earlier version guessed `<row_id>.json` and was therefore useless for the
+            corpus tree; passing the paths in is what makes one function serve both.
+        root: the tree the paths are relative to.
+        patterns: which files under `root` are payloads, for finding orphans. Anything not
+            matching is ignored, so an atlas sitting inside its own tree is not an orphan --
+            but a payload type left out of this list is invisible the same way, and every row
+            claiming one then reads as a missing file. Pass every extension the tree holds.
 
     Returns:
-        A list of complaints, empty when the tree is consistent. Returned rather than raised
-        so a caller can report all of them at once.
+        Complaints, empty when consistent. Returned rather than raised so a caller can report
+        all of them at once instead of one per run.
     """
-    problems: list[str] = []
-    on_disk = {p.stem: p for p in payload_dir.glob("*.json")}
-    in_atlas = {name_of(r): r for r in rows}
+    expected = {str(p): h for p, h in expected}
+    on_disk = {str(p.relative_to(root))
+               for pat in patterns for p in root.glob(pat) if p.is_file()}
 
-    for missing in sorted(set(in_atlas) - set(on_disk)):
+    problems: list[str] = []
+    for missing in sorted(set(expected) - on_disk):
         problems.append(f"row with no file: {missing}")
-    for orphan in sorted(set(on_disk) - set(in_atlas)):
+    for orphan in sorted(on_disk - set(expected)):
         problems.append(f"file with no row: {orphan}")
-    for stem in sorted(set(in_atlas) & set(on_disk)):
-        expected = in_atlas[stem][id_column]
-        actual = hashlib.sha256(on_disk[stem].read_bytes()).hexdigest()
-        if actual != expected:
-            problems.append(f"hash mismatch: {stem} "
-                            f"(atlas {expected[:12]}..., file {actual[:12]}...)")
+    for shared in sorted(set(expected) & on_disk):
+        actual = hashlib.sha256((root / shared).read_bytes()).hexdigest()
+        if actual != expected[shared]:
+            problems.append(f"hash mismatch: {shared} "
+                            f"(atlas {expected[shared][:12]}..., file {actual[:12]}...)")
     return problems
