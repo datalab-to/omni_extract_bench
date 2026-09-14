@@ -8,15 +8,18 @@ Third-party components
 --------------------------------------------------------------------------------
 
 longextract_bench
-  Vendored at: omni_extract_bench/vendor/longextract_bench/
   Copyright (c) 2026 Micro1
-  Licensed under the MIT License; the full licence text is retained alongside the
-  vendored source at omni_extract_bench/vendor/longextract_bench/LICENSE.
+  Licensed under the MIT License; the full licence text is retained at
+  LICENSE-longextract_bench.
 
-  Used for value canonicalisation and structural helpers. It is vendored rather than
-  reimplemented so that scores produced here remain identical to the upstream metric on
-  the same inputs -- reimplementing string normalisation risks silent divergence.
+  Three functions are included, copied verbatim into omni_extract_bench/normalize.py and
+  marked there: `canonical` (as `_upstream_canonical`), `unwrap`, and
+  `_drop_datalab_sidecars`. They are copied rather than reimplemented so that scores
+  produced here remain identical to the upstream metric on the same inputs --
+  reimplementing string normalisation risks silent divergence.
 
-  Local modifications are applied at import time in omni_extract_bench/normalize.py
+  The full grader was vendored at omni_extract_bench/vendor/longextract_bench/ until these
+  three were the only parts still reachable from the scoring path. Nothing else from it is
+  used: this repo scores through omni_extract_bench/score.py alone.
   (documented there) rather than by editing the vendored source, so the vendored copy
   stays a faithful copy of the original.
