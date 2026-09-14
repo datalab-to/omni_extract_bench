@@ -5,8 +5,22 @@ Reads predictions in the shape the run produced -- `<vendor>/<suite>/<doc_id>.js
 `{"result": ..., "_secs": ...}` envelope -- and writes the shape `docs/DATA_LAYOUT.md`
 settles on:
 
-    <out>/vendors/<vendor>.parquet
-    <out>/predictions/<vendor>/<doc_id>.json      the bare extraction, nothing else
+    <out>/vendors/<vendor>/predictions.parquet
+    <out>/vendors/<vendor>/<doc_id>.json          the bare extraction, nothing else
+
+Each vendor is one self-contained directory, holding its atlas beside the payloads it
+describes -- the same shape the corpus uses, where `corpus.parquet` sits beside the document
+directories. Deleting a vendor is one `rm -rf`, and `vendors/reducto/` can be handed to
+someone as a complete thing.
+
+The directory is the vendor's plain name. Which RUN produced it is in the stamp
+(`captured_at`), so putting it in the path too would duplicate a fact that is already
+recorded -- the same reason the corpus dropped its suite level.
+
+Payloads sit flat rather than in `<doc_id>/result.json`. A per-document directory won that
+argument for the corpus because a document has several artifacts and will grow more; a
+prediction has exactly one, and its run provenance turned out to be per-vendor. If a second
+per-prediction artifact ever appears, it becomes a directory then, for the same reason.
 
 Storing the bare result is not a space optimisation: the envelope is a few dozen bytes on
 files averaging 98 KB, and stripping it measured **0.0% smaller** across all 5,936. It is an
@@ -24,7 +38,7 @@ hold two different descriptions of the identical model `openai/gpt-5.6-sol`.
 
 Usage:
     uv run --with pyarrow --with boto3 python scripts/build_vendors.py --out build/
-    uv run ... python scripts/build_vendors.py --out build/ --vendors datalab_full
+    uv run ... python scripts/build_vendors.py --out build/ --vendors datalab
     uv run ... python scripts/build_vendors.py --out build/ --verify-only
 """
 from __future__ import annotations
@@ -46,6 +60,17 @@ from omni_extract_bench.layout import (                                   # noqa
 BUCKET = "datalab-training-pipelines"
 R2_ROOT = "omni-extract-bench/runs/full/baselines"
 ENV_FILE = Path.home() / "datalab" / "gke_pipelines" / ".env"
+
+#: The atlas filename inside each vendor directory. Not `metadata.parquet`: that name is
+#: taken at the corpus level for page counts, and two different tables sharing one name is a
+#: trap for whoever reads the tree next.
+ATLAS = "predictions.parquet"
+
+#: The source directories carry a `_full` suffix naming the run that produced them. The
+#: output drops it: which run this is lives in the stamp (`captured_at`), and encoding it in
+#: the path as well duplicates a recorded fact -- the same reason the corpus dropped its
+#: suite level. A second run wants `vendors/<vendor>/<run>/` or a column, not a suffix.
+RUN_SUFFIX = "_full"
 
 #: Where the run's predictions are mirrored locally. This is what `scripts/score_r2.py`
 #: populates, and it holds `<vendor>/<suite>/<doc_id>.json` exactly as R2 does.
@@ -85,7 +110,7 @@ def run_stamp(s3, vendor: str, sample: Path) -> dict:
     One object, not 660: `timeout_s` and `model` are constants of the run rather than facts
     about a document, so fetching them per document would be 1,084 MB for a repeated value.
     """
-    stamp = {"vendor": vendor}
+    stamp = {}
     if s3 is None:
         return stamp
     key = f"{R2_ROOT}/{vendor}/_raw/{sample.parent.name}/{sample.stem}.json"
@@ -114,12 +139,18 @@ def classify(result):
     return usable, error
 
 
+def output_name(source_vendor: str) -> str:
+    """The vendor's plain name, without the run suffix the source directory carries."""
+    return (source_vendor[:-len(RUN_SUFFIX)]
+            if source_vendor.endswith(RUN_SUFFIX) else source_vendor)
+
+
 def build_vendor(vendor: str, source: Path, out: Path, s3):
     files = sorted((source / vendor).rglob("*.json"))
     if not files:
         raise ValueError(f"no predictions under {source / vendor}")
 
-    preds = out / "predictions" / vendor
+    preds = out / "vendors" / output_name(vendor)
     preds.mkdir(parents=True, exist_ok=True)
     rows = []
     for f in files:
@@ -144,19 +175,24 @@ def build_vendor(vendor: str, source: Path, out: Path, s3):
         })
 
     stamp = run_stamp(s3, vendor, files[0])
+    # The plain name is what the directory is called; the source name is kept so a row can
+    # be traced back to the run directory it came from.
+    stamp["vendor"] = output_name(vendor)
+    stamp["source_dir"] = vendor
     stamp.update({"prediction_id_version": PREDICTION_ID_VERSION,
                   "rows": str(len(rows)),
                   "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     table = pa.Table.from_pylist(rows).replace_schema_metadata(stamp)
-    (out / "vendors").mkdir(parents=True, exist_ok=True)
-    pq.write_table(table, out / "vendors" / f"{vendor}.parquet", compression="zstd")
+    pq.write_table(table, preds / ATLAS, compression="zstd")
     return rows, stamp
 
 
 def expected_payloads(rows):
-    """(path relative to the vendor's prediction directory, sha256) for `verify`.
+    """(path relative to the vendor's directory, sha256) for `verify`.
 
     `prediction_id` IS the payload's hash, so the atlas needs no separate checksum column.
+    The atlas itself is not listed: `verify` globs `*.json`, so a parquet living in the tree
+    it describes is correctly ignored rather than read as an orphan.
     """
     for r in rows:
         yield f"{r['doc_id']}.json", r["prediction_id"]
@@ -176,11 +212,11 @@ def main():
     if args.verify_only:
         failed = 0
         for vendor in vendors:
-            rows = pq.read_table(args.out / "vendors" / f"{vendor}.parquet").to_pylist()
-            problems = verify(expected_payloads(rows),
-                              args.out / "predictions" / vendor)
+            name = output_name(vendor)
+            rows = pq.read_table(args.out / "vendors" / name / ATLAS).to_pylist()
+            problems = verify(expected_payloads(rows), args.out / "vendors" / name)
             failed += len(problems)
-            print(f"  {vendor:<20}{len(rows):>5} rows, {len(problems)} problems")
+            print(f"  {name:<16}{len(rows):>5} rows, {len(problems)} problems")
             for p in problems[:5]:
                 print(f"      {p}")
         return 1 if failed else 0
@@ -192,10 +228,11 @@ def main():
     total, t0 = 0, time.monotonic()
     for vendor in vendors:
         rows, stamp = build_vendor(vendor, args.source, args.out, s3)
-        problems = verify(expected_payloads(rows), args.out / "predictions" / vendor)
+        problems = verify(expected_payloads(rows),
+                          args.out / "vendors" / output_name(vendor))
         total += len(problems)
         model = stamp.get("model", "-")
-        print(f"  {vendor:<20}{len(rows):>5} predictions  "
+        print(f"  {output_name(vendor):<16}{len(rows):>5} predictions  "
               f"{len(problems)} problems  model={model}")
         for p in problems[:5]:
             print(f"      {p}")

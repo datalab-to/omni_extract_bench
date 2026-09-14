@@ -11,8 +11,8 @@ about where the bytes live.
 
 ```
 HuggingFace (private)                 R2  datalab-training-pipelines
-  corpus.parquet                        vendors/<vendor>.parquet
-  metadata.parquet                      baselines/<vendor>/<suite>/<doc_id>.json
+  corpus.parquet                        vendors/<vendor>/predictions.parquet
+  metadata.parquet                      vendors/<vendor>/<doc_id>.json
   tags.parquet                          scores/<scorer_commit>.parquet
   thumbnails.parquet
   <doc_id>/
@@ -265,7 +265,35 @@ the dataset carrying them forever.
 
 Not built yet. The measurements are recorded so the decision does not have to be made twice.
 
-### `vendors/<vendor>.parquet`
+### `vendors/<vendor>/`
+
+One self-contained directory per vendor, its atlas beside the payloads it describes:
+
+```
+vendors/reducto/
+    predictions.parquet
+    <doc_id>.json          the bare extraction, 660 of them
+```
+
+The same shape the corpus uses, where `corpus.parquet` sits beside the document directories.
+Deleting a vendor is one `rm -rf`, and `vendors/reducto/` can be handed over as a complete
+thing. An earlier split into `vendors/` and `predictions/` meant a vendor lived in two places
+and neither half stood alone.
+
+The atlas is `predictions.parquet`, not `metadata.parquet` -- that name is taken at the corpus
+level for page counts, and two tables sharing one name is a trap for whoever reads the tree
+next.
+
+The directory is the vendor's plain name, `reducto` rather than `reducto_full`. The suffix
+names the RUN, and which run this is lives in the stamp; encoding it in the path too would
+duplicate a recorded fact, the same reason the corpus dropped its suite level. A second run
+wants `vendors/<vendor>/<run>/` or a column, not a suffix. The source directory is kept in
+the stamp so a row can be traced back.
+
+Payloads sit flat rather than as `<doc_id>/result.json`. A per-document directory won that
+argument for the corpus because a document has several artifacts and will grow more; a
+prediction has exactly one, and its run provenance turned out to be per-vendor. If a second
+per-prediction artifact ever appears it becomes a directory then, for the same reason.
 
 One row per document the vendor returned. Coverage is ragged and the table says so: azure-cu
 and gpt are missing one document each, claude two, because nothing was written for them.
@@ -276,21 +304,23 @@ secs          recovered_after_timeout      usable      error
 ```
 
 `prediction_id` doubles as the payload's checksum, so there is no separate hash column and
-`verify` needs nothing extra.
+`verify` needs nothing extra. The atlas is not listed among the payloads it describes --
+`verify` globs `*.json`, so a parquet inside its own tree is correctly ignored rather than
+read as an orphan.
 
-**Run metadata is a stamp, not columns.** `timeout_s`, `model`, `max_output_tokens` and
-`captured_at` live in the parquet's own metadata:
+**Run metadata is a stamp, not columns.**
 
 ```
-{'vendor': 'gpt_full', 'timeout_s': '1800', 'model': 'openai/gpt-5.6-sol',
- 'max_output_tokens': '64000', 'captured_at': '2026-08-21T22:21:44',
+{'timeout_s': '1800', 'model': 'openai/gpt-5.6-sol', 'max_output_tokens': '64000',
+ 'captured_at': '2026-08-21T22:21:44', 'vendor': 'gpt', 'source_dir': 'gpt_full',
  'prediction_id_version': 'v1', 'rows': '659', 'built': '...'}
 ```
 
-They sit in `_raw/`, and sampling showed they are run- and vendor-level constants rather than
-facts about a document: `timeout_s` is **1800 across all 5,940**, `model` is fixed per vendor,
-and `cost.wall_s` duplicates the envelope's `_secs`. So the builder reads **one** `_raw`
-object per vendor instead of 660 -- the difference between nine requests and **1,084 MB**.
+Those fields sit in `_raw/`, and sampling showed they are run- and vendor-level constants
+rather than facts about a document: `timeout_s` is **1800 across all 5,940**, `model` is fixed
+per vendor, and `cost.wall_s` duplicates the envelope's `_secs`. So the builder reads **one**
+`_raw` object per vendor instead of 660 -- the difference between nine requests and
+**1,084 MB**.
 
 `tier` is deliberately absent. It reads like a fact and is not: gpt's records carry two
 different hand-written descriptions of the identical model `openai/gpt-5.6-sol`, so it is
