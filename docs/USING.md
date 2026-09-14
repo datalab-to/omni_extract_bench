@@ -121,8 +121,10 @@ predictions every wrong value was a boundary disagreement rather than a misreadi
 `"Glenmere Robotics"` against `"Glenmere Robotics Inc."`, `"14 March 2026"` against
 `"Updated 14 March 2026"`. That is invisible in a score and obvious per address.
 
-Verdicts roughly double the run time, because `grade` and `explain` each repeat the shared
-matching work. `--no-verdicts` skips them.
+Verdicts come back from the same pass that computes the score, so they cost almost no extra
+time -- 43.8s against 41.4s on an 89,000-leaf document. What they do cost is memory: one
+record per address, and the largest document in the corpus has 410,012 of them.
+`--no-verdicts` is there for that, not for speed.
 
 ---
 
