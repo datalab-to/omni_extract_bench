@@ -248,6 +248,22 @@ not scored, on either side.**
 so does omitting it. Asserting a value where gold is silent is charged. A prediction that
 says `null` scores exactly as one that omits the key.
 
+**The empty string is a third spelling of the same thing.** A document can *print* `N/A`; it
+cannot print emptiness, so `""` is what a blank cell becomes on the way into JSON — exactly
+what `null` means. `null`, `""`, whitespace and an absent key therefore all score alike, on
+both sides, and a gold row whose payload is only `""` is dropped like an all-null one.
+
+The rule stops there, and the corpus is why. The placeholder *words* are ink on the page:
+`N/A`, `None`, `-` and `not applicable` appear as real gold values **24,980 times**, and 67
+documents hold both those strings and `null` in the same file — the annotation distinguishes
+"the page printed N/A" from "the page is silent", so folding them would delete answers. `""`
+carries no such risk: all **1,369** gold empty strings in the corpus are blank cells, 1,196 of
+them a single empty column in one check register.
+
+Without this rule the score moved with a vendor's serialization habit rather than with what it
+read: one provider's house style of `""` for blank cost it **7.92 points on `longarray`** while
+a provider writing `null` for the same blanks paid nothing.
+
 That last point is a comparability guarantee, not a convenience. `dialects.to_strict_dialect`
 rewrites properties as `["string","null"]` because strict vendors must emit every declared
 property and use `null` for "no value", while permissive vendors omit the key. The harness
@@ -268,9 +284,9 @@ keyword, so a strict vendor receives a bare `{"type":"object"}` and has nothing 
 with. Grading it would score a request the harness never made. Skipped on both sides,
 reported in `skipped_open_maps`, and detected from *explicit* presence of the keyword.
 
-**All-null rows are dropped, on both sides.** A gold row whose payload is entirely `null`
-asserts no fact, so charging a vendor for omitting it would penalise everyone for an unstated
-convention. The same filter runs over the prediction, so an invented empty row is free —
+**Rows that assert nothing are dropped, on both sides.** A gold row whose payload is entirely
+`null` or `""` asserts no fact, so charging a vendor for omitting it would penalise everyone
+for an unstated convention. The same filter runs over the prediction, so an invented empty row is free —
 consistent with scoring facts, but it does mean output bloat is not measured here.
 
 **What this does and does not cost.** `{"b": null}` and `{}` are indistinguishable — but they

@@ -386,6 +386,34 @@ def unwrap_schema(node):
     return node
 
 
+# ── values that assert nothing ───────────────────────────────────────────────────
+
+
+def states_nothing(value) -> bool:
+    """Does this value make no claim about the document?
+
+    `null` is the obvious case. The empty string is the same case wearing a different
+    serialization: a document can *print* "N/A", but it cannot print emptiness, so `""` is
+    what a blank cell becomes on the way into JSON -- exactly what `null` means.
+
+    The distinction is worth stating because it does not extend to the placeholder WORDS.
+    "N/A", "None" and "-" are ink on the page, and the corpus uses them as real gold values
+    24,980 times, with 67 documents holding both those strings and `null` in the same file.
+    Folding those would delete real answers. Folding `""` cannot: every one of the 1,369
+    gold empty strings in the corpus is a blank cell, 1,196 of them one empty column in a
+    check register.
+
+    Called on both documents, so the rule is symmetric by construction: a prediction that
+    writes `""` scores exactly as one that writes `null` or omits the key, and gold spelled
+    either way asks for the same thing. Without it the score moved with a vendor's house
+    style -- one provider's `""` convention cost it 7.92 points on `longarray` alone.
+
+    >>> [states_nothing(v) for v in (None, "", "   ", 0, False, "n/a", "0")]
+    [True, True, True, False, False, False, False]
+    """
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
 # ── ground-truth rows that assert nothing ────────────────────────────────────────
 # Dropping these is uniform (it applies to every subset), deterministic, and favours no
 # provider. Payload = any field that is not a repeated scoping/dimension field.
@@ -401,11 +429,11 @@ def _row_asserts_nothing(row):
                and not any(h in k.lower() for h in _DIMENSION_HINTS)]
     if not payload:
         return False  # all-dimension row: can't tell, keep it
-    return all(row.get(k) is None for k in payload)
+    return all(states_nothing(row.get(k)) for k in payload)
 
 
 def drop_empty_gt_rows(node):
-    """Recursively remove GT array rows whose payload is entirely null."""
+    """Recursively remove GT array rows whose payload asserts nothing (`null` or `""`)."""
     if isinstance(node, dict):
         return {k: drop_empty_gt_rows(v) for k, v in node.items()}
     if isinstance(node, list):

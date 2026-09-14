@@ -119,4 +119,52 @@ print("          declining scatters across hard fields; truncation leaves a cont
 if not all(c[1] for c in checks):
     sys.exit(1)
 
+
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# THE EMPTY STRING IS A THIRD SPELLING OF ABSENCE (section 5)
+# ---------------------------------------------------------------------------------------
+# A document can print "N/A"; it cannot print emptiness. `""` is what a blank cell becomes
+# on the way into JSON, so it means what `null` means and must score the same -- otherwise
+# the number moves with a vendor's serialization habit rather than with what it read. It
+# did: one provider's `""` convention cost it 7.92 points on `longarray` before this rule.
+#
+# The rule stops at the empty string. "N/A", "None" and "-" are ink on the page and the
+# corpus uses them as real gold values 24,980 times, so folding those would delete answers.
+print("\nTHE EMPTY STRING SCORES AS AN ABSENCE (section 5)")
+ES_S = {"properties": {"a": {"type": "string"}, "b": {"type": "string"}}}
+es_gold = {"a": "keep", "b": None}
+spellings = {spelling: grade(pred, es_gold, ES_S) for spelling, pred in (
+    ("null", {"a": "keep", "b": None}),
+    ("omitted", {"a": "keep"}),
+    ("empty string", {"a": "keep", "b": ""}),
+    ("whitespace", {"a": "keep", "b": "   "}),
+)}
+placeholder = grade({"a": "keep", "b": "n/a"}, es_gold, ES_S)
+gold_blank = grade({"a": "keep", "b": "x"}, {"a": "keep", "b": ""}, ES_S)
+gold_na = grade({"a": "keep", "b": "n/a"}, {"a": "keep", "b": "n/a"}, ES_S)
+row_S = {"properties": {"r": {"type": "array", "items": {"properties": {
+    "v": {"type": "string"}}}}}}
+blank_row = grade({"r": [{"v": "x"}]}, {"r": [{"v": "x"}, {"v": ""}]}, row_S)
+
+es_checks = [
+    ("all four spellings of absence score identically",
+     len({(round(r["accuracy"], 6), round(r["f1"], 6), r["total"]) for r in spellings.values()}) == 1),
+    ("...and none of them is charged as a fabrication",
+     all(r["fabricated"] == 0 for r in spellings.values())),
+    ("a predicted '' where gold is silent adds no address",
+     spellings["empty string"]["total"] == spellings["null"]["total"]),
+    ("'n/a' is still a value, and still charged",
+     placeholder["fabricated"] == 1 and placeholder["accuracy"] < spellings["null"]["accuracy"]),
+    ("...and matches a gold 'n/a', which is content the page carries",
+     gold_na["accuracy"] == 100.0),
+    ("a gold '' asks for nothing, so asserting there is charged",
+     gold_blank["fabricated"] == 1),
+    ("a gold row whose payload is only '' is dropped like an all-null row",
+     blank_row["accuracy"] == 100.0 and blank_row["gt_rows"] == 1),
+]
+for name, passed in es_checks:
+    print(f"  {'PASS' if passed else 'FAIL'}  {name}")
+if not all(c[1] for c in es_checks):
+    sys.exit(1)
+
 sys.exit(0 if ok else 1)
