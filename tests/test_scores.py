@@ -188,7 +188,7 @@ try:
     b.doc("small", {"n": 2, "s": "y"})
     for v in ("alpha", "beta"):
         b.vendor(v, {"big": {"n": 1, "s": "x"}, "small": {"n": 9, "s": v}})
-    work, paths = survey(b.corpus, b.vendors)
+    work, paths, _awaiting = survey(b.corpus, b.vendors)
     total = sum(len(p) for p in paths.values())
     distinct = sum(len(w.preds) for w in work)
     report("two vendors emitting identical bytes are scored once",
@@ -200,7 +200,7 @@ try:
            check_dedup(paths) == 0)
 
     (b.vendors / "beta" / "big.json").write_bytes(b'{"n": 1, "s":  "x"}')
-    _w, paths = survey(b.corpus, b.vendors)
+    _w, paths, _a = survey(b.corpus, b.vendors)
     report("a key whose files are NOT identical is caught", check_dedup(paths) == 1)
     note("without this, one vendor's score is attributed to another's prediction")
 

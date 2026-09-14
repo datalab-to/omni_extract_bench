@@ -135,6 +135,12 @@ def survey(corpus: Path, vendors: Path):
     Most expensive first because the cost spread is extreme -- a median document has 6 array
     rows against a largest of 26,725 -- so a pool fed any other way finishes its cheap work
     and waits on one straggler.
+
+    Also returns the documents no vendor has a prediction for. Adding a document to the
+    benchmark and having it scored are separate events -- the corpus grows first, and the
+    vendors run later -- so this is the normal state for a newly added document, not an error.
+    It still has to be visible: otherwise a document sits unscored indefinitely and the run
+    reports only the documents it happened to cover.
     """
     atlas = {r["doc_id"]: r for r in pq.read_table(corpus / "corpus.parquet").to_pylist()}
     paths = defaultdict(list)
@@ -154,7 +160,8 @@ def survey(corpus: Path, vendors: Path):
     work = [Work(doc_id, sha(doc_id, GROUND_TRUTH), sha(doc_id, SCHEMA),
                  tuple(sorted(preds)), atlas[doc_id]["max_array_rows"])
             for doc_id, preds in by_doc.items()]
-    return sorted(work, key=lambda w: -w.cost), paths
+    awaiting = sorted(set(atlas) - set(by_doc))
+    return sorted(work, key=lambda w: -w.cost), paths, awaiting
 
 
 def stored(out: Path) -> dict:
@@ -296,7 +303,7 @@ def main():
     args = ap.parse_args()
 
     repo = Path(__file__).resolve().parent.parent
-    work, paths = survey(args.corpus, args.vendors)
+    work, paths, awaiting = survey(args.corpus, args.vendors)
     if args.check_dedup:
         return 1 if check_dedup(paths) else 0
 
@@ -306,6 +313,10 @@ def main():
     total = sum(len(w.preds) for w in work)
     print(f"  {sum(len(v) for v in paths.values())} predictions -> {total} distinct "
           f"over {len(work)} documents, scorer {name[:16]}")
+    if awaiting:
+        print(f"  {len(awaiting)} document(s) in the corpus have no prediction from any "
+              f"vendor yet: {', '.join(awaiting[:5])}"
+              + (f" and {len(awaiting) - 5} more" if len(awaiting) > 5 else ""))
 
     if args.recheck:
         return recheck(out, work, args.corpus, args.jobs)
