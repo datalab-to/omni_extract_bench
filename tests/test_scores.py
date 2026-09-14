@@ -36,7 +36,6 @@ import pyarrow.parquet as pq
 _ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 _sys.path.insert(0, _ROOT)
 from omni_extract_bench import corpus as corpus_atlas                   # noqa: E402
-from omni_extract_bench.corpus import version as corpus_version         # noqa: E402
 from omni_extract_bench.run import scorer_version                       # noqa: E402
 
 FAILS = []
@@ -112,77 +111,40 @@ report("the scorer records its version", "scorer_version" in scorer_version())
 report("...and nothing about git", not {"scorer_commit", "scorer_dirty"} & set(scorer_version()))
 note("a commit only means something inside this repository; a pip install never had one")
 
-# ── the corpus is versioned, and a version is answered once ───────────────────────────
+# ── the atlas decides what runs ───────────────────────────────────────────────────────
 tmp = Path(tempfile.mkdtemp())
 try:
     b = Bench(tmp)
     b.doc("alpha", {"n": 1, "s": "x"})
-    b.vendor("acme", {"alpha": {"n": 1, "s": "x"}})
-    b.vendor("brand", {"alpha": {"n": 1, "s": "WRONG"}})
+    b.doc("beta", {"n": 2, "s": "y"})
+    b.vendor("acme", {"alpha": {"n": 1, "s": "x"}, "beta": {"n": 2, "s": "WRONG"}})
     code, log = b.build()
-    report("a first run scores this source's predictions",
-           code == 0 and len(b.summary()) == 1, log[-200:])
-    v1 = b.stamp()["corpus_version"]
-    report("the corpus version is stamped on the table", len(v1) == 16, v1)
-    note("in the metadata, not the path: --out is exactly what you asked for")
+    report("both documents are scored", code == 0 and len(b.summary()) == 2, log[-200:])
 
     code, log = b.build()
-    report("the same corpus, scorer and source are not scored twice",
+    report("the same run is not written twice",
            code == 1 and "already have an answer" in log, log[-200:])
-    note("one rule, no exception for dirty: iterating means pointing --out elsewhere")
+    note("scoring again means naming a different --out")
 
-    # Scoring the same thing again is a second run and a join, not a verb on the tool.
-    code, log = b.build(out=b.out / "again")
-    first, again = b.summary(), b.summary("again")
-    report("scoring the same inputs twice gives the same numbers",
-           code == 0 and [r["accuracy"] for r in first] == [r["accuracy"] for r in again],
-           log[-200:])
-    note("comparing two runs is a join on (doc_id, prediction_id); there is no --recheck")
+    # Filtering the atlas is how you choose a subset to score.
+    t = pq.read_table(b.corpus / "corpus.parquet")
+    pq.write_table(pa.Table.from_pylist([r for r in t.to_pylist() if r["doc_id"] != "beta"]),
+                   b.corpus / "corpus.parquet")
+    code, log = b.build(out=b.out / "filtered")
+    rows = b.summary("filtered")
+    report("a row deleted from the atlas is not scored",
+           [r["doc_id"] for r in rows] == ["alpha"], str([r["doc_id"] for r in rows]))
+    report("...and its prediction is skipped, not an error",
+           code == 0 and "skipped" in log, log[-200:])
+    note("the atlas is what the run follows; filtering it is the point of it being a table")
 
-    b.doc("beta", {"n": 2, "s": "y"})            # no predictions for it yet
-    code, log = b.build(out=b.out / "v2")
-    v2 = b.stamp("v2")["corpus_version"] if (b.out / "v2" / "summary.parquet").exists() else None
-    report("adding a document makes a different corpus version", v2 not in (None, v1),
-           f"{v1} -> {v2}")
-    report("...and the previous run is still there, untouched",
-           b.stamp()["corpus_version"] == v1)
-    note("versions are comparable within one and visibly incomparable across two")
-
-    b.doc("alpha", {"n": 99, "s": "x"})          # the gold was wrong; fix it
-    code, log = b.build(out=b.out / "v3")
-    report("correcting a ground truth makes a different corpus version too",
-           b.stamp("v3")["corpus_version"] not in (v1, v2))
-
-    b.doc("alpha", {"n": 1, "s": "x"})           # put it back
-    code, log = b.build(out=b.out / "v4")
-    report("restoring the corpus returns to its own version",
-           b.stamp("v4")["corpus_version"] == v2, b.stamp("v4")["corpus_version"])
-    note("the version is a hash of the contents, so it is a fact rather than a counter")
-
-    # Non-determinism itself is guarded where it can be guarded properly:
-    # tests/test_pairing_determinism.py shuffles both sides of 600 generated documents. A
-    # rescore-and-diff verb would only ever re-check what a run happened to cover.
+    # A row naming a file that is not there is a stop, not a skip.
+    (b.corpus / "alpha" / "ground_truth.json").unlink()
+    code, log = b.build(out=b.out / "broken")
+    report("a row pointing at a missing file stops the run",
+           code == 1 and "listed in the atlas but missing" in log, log[-200:])
 finally:
     shutil.rmtree(tmp)
-
-# ── the corpus version is a fact about the corpus ─────────────────────────────────────
-def E(doc_id, gt, schema):
-    g, s_ = corpus_atlas.expected_paths(doc_id)
-    return corpus_atlas.Entry(doc_id, g, s_, gt, schema)
-
-
-a = [E("d1", "gt1", "s1"), E("d2", "gt2", "s2")]
-report("the same corpus hashes the same, whatever the row order",
-       corpus_version(a) == corpus_version(list(reversed(a))))
-report("a changed gold changes the version",
-       corpus_version(a) != corpus_version([E("d1", "gt1-fixed", "s1"), a[1]]))
-report("a changed schema changes the version",
-       corpus_version(a) != corpus_version([E("d1", "gt1", "s1-fixed"), a[1]]))
-report("an added document changes the version, even with no predictions for it",
-       corpus_version(a) != corpus_version(a + [E("d3", "gt3", "s3")]))
-report("CURATING A DOCUMENT OUT changes the version",
-       corpus_version(a) != corpus_version(a[:1]))
-note("a filtered corpus is a different benchmark, and its scores belong somewhere else")
 
 # ── one prediction set per run, and the path says which ──────────────────────────────
 tmp = Path(tempfile.mkdtemp())

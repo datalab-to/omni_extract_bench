@@ -66,18 +66,28 @@ oeb build-corpus --corpus my-benchmark/
 oeb score        --corpus my-benchmark/ --predictions preds/ --out run/
 ```
 
-### Changing data is deliberate
+### Choosing what to run
 
-Each row records the sha256 of the files it names, so editing a ground truth stops the next run:
+The atlas is a plain parquet and scoring follows its rows, so filtering it is how you pick a
+subset:
+
+```python
+import pyarrow.parquet as pq, pyarrow as pa
+t = pq.read_table("my-benchmark/corpus.parquet")
+keep = [r for r in t.to_pylist() if r["suite"] == "invoices"]
+pq.write_table(pa.Table.from_pylist(keep), "my-benchmark/corpus.parquet")
+```
+
+Predictions for documents the atlas no longer lists are skipped and counted:
 
 ```
-acme-jan: ground_truth.json has changed since the atlas was written.
-  If that was intended, record it:  oeb build-corpus --corpus my-bench
-  If it was not, the benchmark's data has drifted underneath it.
+12 predictions, 12 documents in the atlas
+3 prediction(s) skipped; the atlas does not list them: inv-004, inv-007, inv-009
 ```
 
-Re-run `build-corpus` to record it. That is the only rebuild verb: it always describes what is
-on disk now, so adding, removing or editing documents is arranging files and then re-running it.
+A row naming a file that is **not there** stops the run instead — the atlas is what the run
+follows, so it has to resolve. `build-corpus` re-derives it from the tree whenever documents
+are added or removed.
 
 ```bash
 oeb verify --corpus my-benchmark/    # what has changed since the atlas was written

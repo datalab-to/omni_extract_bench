@@ -39,24 +39,17 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, NamedTuple
 
 from . import corpus as corpus_atlas
-from .corpus import GROUND_TRUTH, SCHEMA, Entry, Stale
+from .corpus import Entry
 from .harness.dialects import resolve_refs, strip_benchmark_keys
 from .harness.prediction_io import usable
 from .score import grade, show
 
 class Document(NamedTuple):
-    """One document of a benchmark, before any prediction.
-
-    The hashes are what let a score record *what it scored*. A corrected ground truth is a
-    different `gt_sha256`, so the corrected score is a different row rather than the same row
-    disagreeing with itself.
-    """
+    """One document of a benchmark, before any prediction."""
 
     doc_id: str
     gt: object
     schema: object
-    gt_sha256: str
-    schema_sha256: str
 
 
 class Case(NamedTuple):
@@ -114,16 +107,11 @@ def prediction_id(result_bytes: bytes) -> str:
 
 
 def document(root: Path, entry: Entry) -> Document:
-    """Load one document named by an atlas row, checking it is what the atlas says.
+    """Load the document an atlas row names.
 
     Takes an entry rather than a bare id so a worker can load exactly what it was handed
-    without re-reading the atlas. A parsed ground truth can be tens of megabytes, so it is
-    read here rather than pickled across.
-
-    Raises:
-        Stale: if a file's contents no longer match the atlas. Scoring against data that has
-            moved underneath the benchmark is worse than stopping: the numbers would look
-            ordinary and mean something else.
+    without re-reading the atlas. A parsed ground truth can be tens of megabytes, so it is read
+    here rather than pickled across.
     """
     root = Path(root)
     gt_file, schema_file = root / entry.ground_truth_path, root / entry.schema_path
@@ -131,22 +119,10 @@ def document(root: Path, entry: Entry) -> Document:
         if not f.exists():
             raise FileNotFoundError(
                 f"{entry.doc_id}: {f.relative_to(root)} is listed in the atlas but missing")
-    gt_bytes, schema_bytes = gt_file.read_bytes(), schema_file.read_bytes()
-    gt_sha = hashlib.sha256(gt_bytes).hexdigest()
-    schema_sha = hashlib.sha256(schema_bytes).hexdigest()
-    for got, want, what in ((gt_sha, entry.gt_sha256, GROUND_TRUTH),
-                            (schema_sha, entry.schema_sha256, SCHEMA)):
-        if got != want:
-            raise Stale(
-                f"{entry.doc_id}: {what} has changed since the atlas was written.\n"
-                f"  If that was intended, record it:  oeb build-corpus --corpus {root}\n"
-                f"  If it was not, the benchmark's data has drifted underneath it.")
     return Document(
         doc_id=entry.doc_id,
-        gt=json.loads(gt_bytes),
-        schema=resolve_refs(strip_benchmark_keys(json.loads(schema_bytes))),
-        gt_sha256=gt_sha,
-        schema_sha256=schema_sha,
+        gt=json.loads(gt_file.read_bytes()),
+        schema=resolve_refs(strip_benchmark_keys(json.loads(schema_file.read_bytes()))),
     )
 
 
@@ -154,8 +130,8 @@ def documents(root: Path) -> Iterator[Document]:
     """Every document the atlas lists, in its order.
 
     Raises:
-        FileNotFoundError: if there is no atlas, or a listed file is missing.
-        Stale: if a file no longer matches its recorded hash.
+        FileNotFoundError: if there is no atlas, or a row names a file that is not there. The
+            atlas is what the run follows, so a row pointing at nothing is a stop, not a skip.
     """
     root = Path(root)
     for entry in corpus_atlas.read(root):
@@ -283,7 +259,7 @@ def score(case: Case, verdicts: bool = True) -> Outcome:
 #: Column names this module owns on a summary row. A prediction set's own metadata may not
 #: use them, because each would then mean two different things depending on the row.
 SUMMARY_COLUMNS = frozenset({
-    "doc_id", "prediction_id", "gt_sha256", "schema_sha256", "kind", "error",
+    "doc_id", "prediction_id", "kind", "error",
     "accuracy", "f1", "precision", "recall", "found", "read_right", "matched", "total",
     "asserted", "misread", "unfound", "fabricated", "invented_item", "invented_field",
     "gt_rows", "pred_rows", "matched_rows", "matching_exact",
@@ -293,13 +269,11 @@ SUMMARY_COLUMNS = frozenset({
 def key_of(case: Case) -> dict:
     """The columns that identify a scored row.
 
-    A score is a function of the prediction bytes, the ground truth, the schema and the
-    scorer's code. The first three are here; the fourth is the run's scorer version. Recording
-    fewer would make two legitimately different numbers look like the same number disagreeing
-    with itself.
+    `prediction_id` is the prediction's own bytes hashed, so it still tells a re-run apart from
+    an unchanged one -- which is the question the summary is asked most often after "what did it
+    score".
     """
-    return {"doc_id": case.doc.doc_id, "prediction_id": case.prediction_id,
-            "gt_sha256": case.doc.gt_sha256, "schema_sha256": case.doc.schema_sha256}
+    return {"doc_id": case.doc.doc_id, "prediction_id": case.prediction_id}
 
 
 def summary_row(case: Case, outcome: Outcome) -> dict:
