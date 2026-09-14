@@ -1015,3 +1015,56 @@ is stated in METRIC_SPEC 5.3; the upstream relationship is stated in `NOTICE`.
 **Method note.** The hyphen regression was caught only because all vendors dropped identically
 on the same documents -- a normalisation tightening that helps nobody and hurts everyone equally
 is the signature of a broken fold, not a stricter one. Worth checking for on any future change.
+
+## 23. Row-level dropping is gone; the 174 rows it hid are now a GOLD question
+
+**Changed.** `drop_empty_gt_rows` and `_DIMENSION_HINTS` are deleted. Only leaves are dropped
+now, by `states_nothing`, on both sides.
+
+**What the rule was, and why it existed.** It removed any array row whose *payload* fields all
+asserted nothing, where payload was every key that did not look like a dimension -- decided by
+matching the substrings `period, segment, type, name, id, label, category, unit, scale, date,
+quarter, year` against the field NAME. The initial-release comment states the reason honestly:
+10-Q gold carries rows like `{"data_period": "FY2025 Q2", "segment_type": "company", "value":
+null}` that state no fact and that no extractor returns, so scoring them charged every vendor
+for an unstated annotation convention.
+
+**Why it went anyway.**
+
+1. **It contradicted METRIC_SPEC 5.** Payload was read off the row in hand, so `{"id": "1"}`
+   had no payload and survived as an "all-dimension row", while `{"id": "1", "action": null}`
+   had a payload asserting nothing and was DELETED -- discarding a correct `id`. Identical
+   predictions scored **62.50 or 25.00** depending only on which spelling of absence was used.
+   132 of the 174 dropped rows had exactly ONE payload key, so a single `null` deleted them;
+   116 of those carried five other values that went with the row.
+2. **It was unnecessary.** `flatten` already skips nothing-asserting leaves, so such a row
+   contributes no addresses and cannot be matched, missed or charged. Blank rows are inert on
+   both sides with no rule: verified 100/100 in `tests/test_score_properties.py`.
+3. **It was a field-name heuristic**, which is the thing METRIC_SPEC 5.2 and property P4 exist
+   to forbid.
+
+**Measured cost.** 174 rows across 43 documents. Corpus mean per vendor: datalab -0.051,
+gpt -0.056, claude -0.050, extend -0.042, azure-cu -0.039, llamaextract -0.030, reducto -0.030,
+gemini -0.028, mistral -0.004. Uniform enough to change no ordering. Individual documents move
+both ways, up to -6.78 (azure-cu, `short__P18-28-50_51`) and +4.90 (reducto,
+`10kq__nke_10q_fy2025q2`) -- it moves UP where a model emitted the blank rows and used to have
+them deleted along with its correct dimensions.
+
+**THE OPEN QUESTION, and it is a gold question.** Are those 174 rows real blank lines in the
+document, or annotation artifacts? Mechanical check: none of them duplicates the coordinate of
+a row that HAS a value, so they are not obvious dedup noise. But a row like
+
+```json
+{"data_period": "FY2025 Q2", "metric_type": "actual", "segment_type": "company",
+ "segment_name": "NA", "unit": "NA", "scale": null, "value": null}
+```
+
+names no metric, and two of its five "values" are the placeholder word `NA`. If the 10-Q has no
+such line, the GOLD is wrong and should be fixed in the item 19-21 audit -- once, rather than
+hidden by a scorer rule on every run. **Needs eyes on the PDFs before any gold edit**, same
+rule as `GOLD_REVIEW.md`. 43 documents; the 121-row cluster is in `contextual/10kq__*`.
+
+**If the audit says they are artifacts and you would rather not edit gold**, the alternative is
+to restore row-dropping with the payload key set computed from the UNION of keys across the
+array instead of per row. That fixes the null-vs-omitted asymmetry while keeping the leniency,
+but it keeps the field-name heuristic and still discards correct dimension values.

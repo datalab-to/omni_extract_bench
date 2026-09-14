@@ -256,7 +256,7 @@ says `null` scores exactly as one that omits the key.
 **The empty string is a third spelling of the same thing.** A document can *print* `N/A`; it
 cannot print emptiness, so `""` is what a blank cell becomes on the way into JSON — exactly
 what `null` means. `null`, `""`, whitespace and an absent key therefore all score alike, on
-both sides, and a gold row whose payload is only `""` is dropped like an all-null one.
+both sides -- at every level, including inside an array row (see below).
 
 The rule stops there, and the corpus is why. The placeholder *words* are ink on the page:
 `N/A`, `None`, `-` and `not applicable` appear as real gold values **24,980 times**, and 67
@@ -289,10 +289,40 @@ keyword, so a strict vendor receives a bare `{"type":"object"}` and has nothing 
 with. Grading it would score a request the harness never made. Skipped on both sides,
 reported in `skipped_open_maps`, and detected from *explicit* presence of the keyword.
 
-**Rows that assert nothing are dropped, on both sides.** A gold row whose payload is entirely
-`null` or `""` asserts no fact, so charging a vendor for omitting it would penalise everyone
-for an unstated convention. The same filter runs over the prediction, so an invented empty row is free —
-consistent with scoring facts, but it does mean output bloat is not measured here.
+**Rows are never deleted; only leaves are.** There is no row-level filter, and there used to
+be. `drop_empty_gt_rows` removed any array row whose *payload* fields all asserted nothing,
+where payload meant every key that did not look like a dimension — decided by matching a
+hardcoded list of substrings (`period`, `id`, `name`, `date`, `unit`, …) against the field
+NAME. It was introduced for a real reason: the 10-Q ground truth carries rows like
+`{"data_period": "FY2025 Q2", "segment_type": "company", "value": null}`, which state no fact
+and which no extractor produces, so scoring them charged every vendor for an unstated
+annotation convention.
+
+It was removed anyway, for two reasons.
+
+*It contradicted this very section.* The payload set was read off the row in hand, so
+`{"id": "1"}` had no payload at all and survived as an "all-dimension row", while
+`{"id": "1", "action": null}` had a payload asserting nothing and was deleted — **taking a
+correct `id` with it**. The same prediction scored 62.50 or 25.00 depending only on which of
+the three equivalent spellings of absence it used. 132 of the 174 rows the rule dropped had
+exactly one payload key, so a single `null` deleted them; 116 of them carried five other
+values that went with the row.
+
+*It was unnecessary.* `flatten` already skips every leaf that asserts nothing, so a row
+asserting nothing contributes no addresses, and a row with no addresses cannot be matched,
+missed or charged. Blank rows are inert on either side with no rule at all: a blank gold row
+scores 100 against a prediction that omits it, and a blank predicted row scores 100 against
+gold that omits it. The row rule was solving a problem the leaf rule had already solved, and
+paying for it with a field-name heuristic that §5.2 and P4 exist to forbid.
+
+**What that costs, and where the cost belongs.** 174 gold rows across 43 documents now
+contribute their coordinate leaves. Measured over nine vendors this is −0.03 to −0.06 corpus
+mean for each, uniform enough to change no ordering, though individual documents move up to
+±5. Those rows are a GROUND TRUTH question, not a scoring one: if a 10-Q truly has no such
+line, the gold is wrong and belongs in the audit that `TO_LOOK_AT.md` items 19–21 describe,
+where it can be fixed once instead of being hidden by a scorer rule on every run. Note also
+that an invented empty row in a prediction remains free — it asserts nothing — so output bloat
+is still not measured here.
 
 **What this does and does not cost.** `{"b": null}` and `{}` are indistinguishable — but they
 are the same behaviour, so nothing is lost. Abstaining *is* producing no value at an address,

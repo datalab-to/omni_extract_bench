@@ -36,7 +36,7 @@ from collections.abc import Hashable, Iterable
 from typing import Any, Literal, NamedTuple
 
 from . import matching as OM
-from .values import (canon_key, cmp_leaf, drop_empty_gt_rows, is_open_map,
+from .values import (canon_key, cmp_leaf, is_open_map,
                      prep_ground_truth, prep_prediction, states_nothing, unwrap_schema)
 
 # An address is a tuple of steps. Each step is tagged, because a document may contain the key
@@ -700,8 +700,8 @@ def _both(pred: Any, gt: Any, schema: Any,
             "written inline is skipped."
         )
     raw_gt, raw_pred = gt or {}, pred or {}
-    gt = drop_empty_gt_rows(prep_ground_truth(raw_gt))
-    pred = drop_empty_gt_rows(prep_prediction(raw_pred))
+    gt = prep_ground_truth(raw_gt)
+    pred = prep_prediction(raw_pred)
     ordered = _resolve_order(order_matters, schema, (raw_gt, raw_pred, gt, pred))
     skipped: list[Address] = []
     gold_leaves = flatten(gt, schema, skipped=skipped)
