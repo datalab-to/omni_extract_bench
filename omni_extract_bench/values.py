@@ -19,7 +19,7 @@ schema questions the scorer asks.
 
     canon_key / cmp_leaf              are these two values the same value
     states_nothing                    does this value claim anything at all
-    prep_prediction / prep_ground_truth / drop_empty_gt_rows
+    prep_prediction / prep_ground_truth
                                       what to strip before any of that
     is_open_map / unwrap_schema       the only two things the scorer asks a schema
 
@@ -633,29 +633,22 @@ def states_nothing(value) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
 
-# ── ground-truth rows that assert nothing ────────────────────────────────────────
-# Dropping these is uniform (it applies to every subset), deterministic, and favours no
-# provider. Payload = any field that is not a repeated scoping/dimension field.
-_DIMENSION_HINTS = ("period", "segment", "type", "name", "id", "label", "category", "unit",
-                    "scale", "date", "quarter", "year")
-
-
-def _row_asserts_nothing(row):
-    if not isinstance(row, dict):
-        return False
-    payload = [k for k in row
-               if not k.endswith(("_citations", "_meta"))
-               and not any(h in k.lower() for h in _DIMENSION_HINTS)]
-    if not payload:
-        return False  # all-dimension row: can't tell, keep it
-    return all(states_nothing(row.get(k)) for k in payload)
-
-
-def drop_empty_gt_rows(node):
-    """Recursively remove GT array rows whose payload asserts nothing (`null` or `""`)."""
-    if isinstance(node, dict):
-        return {k: drop_empty_gt_rows(v) for k, v in node.items()}
-    if isinstance(node, list):
-        kept = [x for x in node if not _row_asserts_nothing(x)]
-        return [drop_empty_gt_rows(x) for x in kept]
-    return node
+# ── why there is no row-level dropping here ──────────────────────────────────────
+# There used to be. `drop_empty_gt_rows` deleted whole array rows whose "payload" fields all
+# asserted nothing, where payload meant every key that did not look like a dimension -- a
+# hardcoded list of substrings (`period`, `id`, `name`, `date`, ...) matched against field
+# NAMES. It is gone, and both halves of that are the reason.
+#
+# It was inconsistent. The payload set was read off the row in hand, so `{"id": "1"}` had no
+# payload and survived as an "all-dimension row", while `{"id": "1", "action": null}` had a
+# payload asserting nothing and was DELETED -- taking a correct `id` with it. Two spellings
+# of "row 1, no action stated", scored 62.50 and 25.00. METRIC_SPEC 5 says `null`, `""` and
+# an absent key are one thing; this was the one place that was not true.
+#
+# It was also unnecessary, which is what makes deleting it rather than repairing it right.
+# `flatten` already skips every leaf that `states_nothing`, so a row that asserts nothing
+# contributes no addresses, and a row that contributes no addresses cannot be matched, missed
+# or charged. Blank rows on EITHER side are inert without any help: a blank gold row scores
+# 100 against a prediction that omits it, and a blank predicted row scores 100 against gold
+# that omits it. The row rule was solving a problem the leaf rule had already solved, and
+# paying for it with a field-name heuristic that P4 exists to forbid.
