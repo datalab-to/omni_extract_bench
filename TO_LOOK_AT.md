@@ -231,9 +231,10 @@ gaps.
 under-crediting) and raising the caps is not worth it. Two comments in `matching.py`
 are provably false and nothing has been changed.
 
-**Next:** fix the two comments -- they are how the next person sizes these constants.
-Optionally surface the greedy count in the run summary so "3 of 660 approximately
-matched" is visible at the top rather than per-document.
+**Next:** surface the greedy count in the run summary so "3 of 660 approximately matched"
+is visible at the top rather than per-document. The two false comments are FIXED -- the
+"unreachable on any realistic input" claim and the 6881 x 6881 figure, which appeared in
+four places and is really 26,725 x 26,725.
 
 **Unmeasured:** the 0.177 figure comes from documents of 532-4,278 rows. Nobody has
 measured what greedy costs at 26,725 rows, which needs an exact solve on the biggest
@@ -253,13 +254,10 @@ only ever under-credits. Across a 660-document mean that is ~0.001 points, so ra
 caps is not worth it -- exact on the largest document costs ~23 minutes and ~6 GB against
 4.6 minutes and 1.86 GB today.
 
-Two comments in `matching.py` are now false and will mislead whoever next sizes these
-constants:
-
-- `force_approximate`: *"The greedy path is unreachable on any realistic input"* -- three
-  corpus documents reach it.
-- `optimal_pairs`: *"the largest real array (6881 x 6881, 47 million cells)"* -- it is
-  26,725 x 26,725, 714 million cells, 15x larger.
+Two comments in `matching.py` were false and have been corrected: `force_approximate`
+claimed *"The greedy path is unreachable on any realistic input"* when three corpus
+documents reach it, and the largest-array figure was given as 6881 x 6881 / 47 million
+cells in four places when it is 26,725 x 26,725 / 714 million, 15x larger.
 
 ---
 

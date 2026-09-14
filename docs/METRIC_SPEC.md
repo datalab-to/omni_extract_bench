@@ -531,6 +531,33 @@ are enforced over generated documents, not over these.
 - **No separate credit for declining.** It needs none: abstaining is producing no value, and
   `precision` already distinguishes a model that declines from one that guesses (§5). A
   bonus for silence would be a second, gameable path to a good score.
+- **No key, and no bucketing rows before matching.** Every predicted row is priced against
+  every gold row; correspondence is decided by how much the rows agree, never by their
+  agreement on one chosen column. The alternative — partition rows on a key, pair only
+  within a partition — is cheaper and is what the metric this benchmark is compared against
+  does, so it is worth saying why we do not.
+
+  A partition is sound only if rows disagreeing on the key genuinely cannot correspond, and
+  nothing establishes that. The key is either supplied by a caller with no basis for picking
+  one, or inferred from the data, and inferring it fails in three ways we have measured on a
+  four-row invoice:
+
+  | prediction | under a key | here |
+  | --- | --- | --- |
+  | labels right, amounts rounded to the dollar | P 0.000, R 0.000, cells 0.0 — identical to submitting nothing | 50.0 |
+  | amounts right, every label wrong | P 1.000, R 1.000 | 50.0 |
+
+  Both read four of eight cells correctly. Under a key the first scores zero because its
+  rows land in partitions the gold rows are not in, and each is then charged twice — once
+  as a row nobody found, once as a row the model invented — while its correct cells are
+  dropped from the tally rather than scored. Precision and recall under a key measure
+  agreement on the key column and nothing else; where no key can be inferred they measure
+  the row count alone, and a submission of empty objects scores 1.000 on both.
+
+  The cost of not partitioning is `O(n*m)`. That is handled by solving exactly up to a
+  memory ceiling and falling back to greedy past it — which **reports itself**
+  (`matching_exact`, `approximated`). A partition is an approximation that cannot: it
+  removes pairings and the score still reads as exact. P15 is the rule it would break.
 
 ## 11. Reading a score
 
