@@ -40,6 +40,14 @@ def note(text):
     print(f"          {text}")
 
 
+_RUNS = [0]
+
+
+def _next():
+    _RUNS[0] += 1
+    return _RUNS[0]
+
+
 def run(*argv):
     """Invoke the CLI in-process, capturing both streams."""
     import contextlib
@@ -83,7 +91,8 @@ try:
 
     print("\nA CORPUS IS ITS ATLAS")
     (preds / "good.json").write_text(json.dumps(NEARLY))
-    code, out, err = run("score", "--corpus", corpus, "--predictions", preds)
+    code, out, err = run("score", "--corpus", corpus, "--predictions", preds,
+                                 "--out", str(TMP / f"run{_next()}"))
     report("scoring a corpus with no atlas stops, and says how to make one",
            code == 1 and "build-corpus" in err, (out + err).strip()[:200])
     note("a directory listing is not a benchmark; membership has to be declared")
@@ -100,14 +109,16 @@ try:
     report("declaring it works once every document has both files", code == 0, (out + err)[:200])
 
     print("\nSCORING RESOLVES $ref AND CHARGES THE RIGHT THINGS")
-    code, out, err = run("score", "--corpus", corpus, "--predictions", preds)
+    code, out, err = run("score", "--corpus", corpus, "--predictions", preds,
+                                 "--out", str(TMP / f"run{_next()}"))
     report("`bench` succeeds on a schema containing $ref", code == 0, (out + err)[:200])
     report("the imperfect document scores 2 of 3", "66.67" in out, out.strip()[:200])
 
     print("\nONE UNSCORABLE DOCUMENT DOES NOT TAKE THE RUN WITH IT")
     (preds / "broken.json").write_text('{"name": {not json')
     (preds / "empty.json").write_text("{}")
-    code, out, err = run("score", "--corpus", corpus, "--predictions", preds)
+    code, out, err = run("score", "--corpus", corpus, "--predictions", preds,
+                                 "--out", str(TMP / f"run{_next()}"))
     report("the run completes despite an unparseable prediction", code == 0,
            (out + err).strip()[:200])
     report("the good document is still scored", "66.67" in out, out.strip()[:200])
@@ -128,7 +139,8 @@ try:
     (corpus / "noschema" / "schema.json").write_text(json.dumps({"$ref": "#/nowhere"}))
     (preds / "noschema.json").write_text(json.dumps(DOC))
     run("build-corpus", "--corpus", corpus)
-    code, out, err = run("score", "--corpus", corpus, "--predictions", preds)
+    code, out, err = run("score", "--corpus", corpus, "--predictions", preds,
+                                 "--out", str(TMP / f"run{_next()}"))
     report("a document this harness cannot score is NOT SCORED, not 0",
            "NOT SCORED" in err, (out + err).strip()[:300])
     report("it is named with the reason, on stderr", "noschema" in err, err.strip()[:200])
@@ -139,9 +151,9 @@ try:
 
     print("\nTHE ARGUMENT PARSER DEMANDS WHAT IS REQUIRED")
     for cmd, missing in ((("score-one", "--pred", "p", "--gt", "g"), "--schema"),
-                         (("score",), "--predictions"),
+                         (("score", "--predictions", "p"), "--out"),
                          (("build-corpus",), "--corpus"),
-                         (("explain", "--predictions", "p"), "--doc"),
+                         (("explain", "--run", "r"), "--doc"),
                          (("verify",), "--corpus")):
         code, _o, _e = run(*cmd)
         report(f"`{cmd[0]}` refuses to run without {missing}", code == 2, f"exit {code}")

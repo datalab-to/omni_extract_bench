@@ -114,7 +114,7 @@ where verdict = 'wrong value';
 Or for one document, without SQL:
 
 ```bash
-oeb explain --predictions preds/ --doc <doc_id>
+oeb explain --run run/ --doc <doc_id>
 ```
 
 This is worth doing before trusting an accuracy number. On a sample of real vendor output,
