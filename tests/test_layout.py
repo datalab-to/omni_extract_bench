@@ -109,44 +109,75 @@ try:
 except ValueError:
     report("a duplicate doc_id is a build error", True)
 
-# ── verify sees all three kinds of drift ──────────────────────────────────────────────
+# ── verify sees all three kinds of drift, in BOTH layouts ─────────────────────────────
+# The first version guessed that a payload lived at `<row_id>.json`, which made it useless
+# for the corpus tree, where a document is a directory holding several files. Paths come
+# from the caller now, so one function serves both shapes.
 tmp = Path(tempfile.mkdtemp())
 try:
-    payloads = tmp / "predictions"
-    payloads.mkdir()
-    rows = []
-    for name in ("alpha", "beta", "gamma"):
-        body = f'{{"doc": "{name}"}}'.encode()
-        (payloads / f"{name}.json").write_bytes(body)
-        rows.append({"doc_id": name, "prediction_id": prediction_id(body)})
-    name_of = lambda r: r["doc_id"]
+    # the corpus shape: a directory per document, several payloads inside
+    corpus = tmp / "corpus"
+    expected = []
+    for name in ("alpha", "beta"):
+        d = corpus / name
+        d.mkdir(parents=True)
+        for payload in ("ground_truth.json", "schema.json"):
+            body = f'{{"{name}": "{payload}"}}'.encode()
+            (d / payload).write_bytes(body)
+            expected.append((f"{name}/{payload}", hashlib.sha256(body).hexdigest()))
 
-    report("a consistent tree reports nothing",
-           verify(rows, payloads, "prediction_id", name_of) == [])
+    report("a consistent corpus tree reports nothing", verify(expected, corpus) == [])
 
-    body = (payloads / "alpha.json").read_bytes()
-    (payloads / "alpha.json").unlink()
-    probs = verify(rows, payloads, "prediction_id", name_of)
-    report("a row with no file is caught",
-           len(probs) == 1 and "row with no file" in probs[0], f"{probs}")
-    (payloads / "alpha.json").write_bytes(body)
+    body = (corpus / "alpha" / "schema.json").read_bytes()
+    (corpus / "alpha" / "schema.json").unlink()
+    probs = verify(expected, corpus)
+    report("a row with no file is caught, nested one level down",
+           len(probs) == 1 and "alpha/schema.json" in probs[0], f"{probs}")
+    (corpus / "alpha" / "schema.json").write_bytes(body)
 
-    (payloads / "orphan.json").write_text("{}")
-    probs = verify(rows, payloads, "prediction_id", name_of)
+    (corpus / "beta" / "stray.json").write_text("{}")
+    probs = verify(expected, corpus)
     report("a file with no row is caught",
-           len(probs) == 1 and "file with no row" in probs[0], f"{probs}")
-    (payloads / "orphan.json").unlink()
+           len(probs) == 1 and "beta/stray.json" in probs[0], f"{probs}")
+    (corpus / "beta" / "stray.json").unlink()
 
     # The one nothing else would notice, and the reason the atlas carries hashes.
-    original = (payloads / "beta.json").read_bytes()
-    (payloads / "beta.json").write_bytes(original + b" ")
-    probs = verify(rows, payloads, "prediction_id", name_of)
+    original = (corpus / "beta" / "ground_truth.json").read_bytes()
+    (corpus / "beta" / "ground_truth.json").write_bytes(original + b" ")
+    probs = verify(expected, corpus)
     report("a ONE-BYTE edit is caught",
            len(probs) == 1 and "hash mismatch" in probs[0], f"{probs}")
-    (payloads / "beta.json").write_bytes(original)
+    (corpus / "beta" / "ground_truth.json").write_bytes(original)
+    report("restoring the byte clears it", verify(expected, corpus) == [])
 
-    report("restoring the byte clears it",
-           verify(rows, payloads, "prediction_id", name_of) == [])
+    # an atlas living inside its own tree must not read as an orphan
+    (corpus / "corpus.parquet").write_bytes(b"not json")
+    report("a non-payload file in the tree is ignored", verify(expected, corpus) == [])
+
+    # A payload type left out of `patterns` is invisible the same way the atlas is, so
+    # every row claiming one reads as a missing file. This shipped as a real bug: the
+    # corpus builder emitted PDFs and verified only *.json, and reported all 660 as absent
+    # while they sat on disk.
+    (corpus / "alpha" / "document.pdf").write_bytes(b"%PDF-1.4 fake")
+    with_pdf = expected + [("alpha/document.pdf",
+                            hashlib.sha256(b"%PDF-1.4 fake").hexdigest())]
+    probs = verify(with_pdf, corpus)
+    report("a payload type missing from `patterns` reads as absent -- the trap",
+           len(probs) == 1 and "row with no file" in probs[0], f"{probs}")
+    report("...and naming the pattern fixes it",
+           verify(with_pdf, corpus, ("**/*.json", "**/*.pdf")) == [])
+    (corpus / "alpha" / "document.pdf").unlink()
+
+    # the predictions shape: one flat file per document, same function
+    preds = tmp / "predictions"
+    preds.mkdir()
+    flat = []
+    for name in ("alpha", "beta"):
+        body = f'{{"doc": "{name}"}}'.encode()
+        (preds / f"{name}.json").write_bytes(body)
+        flat.append((f"{name}.json", prediction_id(body)))
+    report("the same function verifies the flat predictions shape",
+           verify(flat, preds) == [])
 finally:
     shutil.rmtree(tmp)
 
