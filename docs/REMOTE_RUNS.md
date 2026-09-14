@@ -1,6 +1,6 @@
 # Running the benchmark remotely
 
-A design for scoring the corpus on Modal instead of one laptop. Two goals, and the second
+A design for scoring the corpus on Modal instead of one laptop. Where the bytes live is `DATA_LAYOUT.md`; this is about running the scorer over them. Two goals, and the second
 matters more than the first.
 
 **Fast enough to re-run after every scorer change.** A full run is 5,940 gradings and takes
