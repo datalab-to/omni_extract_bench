@@ -502,3 +502,237 @@ is a proxy's, not Anthropic's or Google's.
 **Next:** retry the 185 under whatever policy item 13 settles on, then rebuild the board.
 Gemini stands to move ~13 points and would reorder the middle of the table. Until then
 this is a coverage measurement as much as a quality one, and should be reported as both.
+
+---
+
+## 15. `order_matters` is never passed, and 109 documents ask for ordering
+
+**Known so far:** the capability exists and is exercised by the tests; no scoring path
+supplies it. The candidate list is measured but NOT triaged, and it has visible false
+positives.
+
+**Next:** triage the 50 + 56 arrays below by hand -- the regex cannot tell "ordered
+list" from "ordered/requisitioned line item" -- then decide where the surviving names
+live. They are per-document, so they belong beside the corpus rather than in the scorer;
+the schema is the natural home, since it is already what the harness reads.
+
+`grep order_matters` finds it in `score.py` (17), `METRIC_SPEC.md` (4) and five test
+files. It appears in **neither `cli.py` nor `scripts/score_r2.py`**, so every array in
+every published run has been scored order-insensitively, including the ones whose ground
+truth explicitly asks for an order.
+
+Scanning all 660 schemas (refs resolved) for ordering language in an array's own
+`description` or its `items.description`: **151 arrays across 109 documents.** They split
+three ways, and the split is the whole point -- only one group actually needs the flag.
+
+| group | arrays | docs | what it means |
+| --- | --- | --- | --- |
+| object rows, **no positional field** | 50 | 48 | order is unrecoverable from content -- the real candidates |
+| **scalar arrays** | 56 | 45 | order ignored *and* a near-miss double-charged (§8) |
+| object rows **with** a positional field | 45 | 40 | `rank`, `line_no`, `subject_number` already carry it; pairing recovers the order without the flag |
+
+Examples from the first group:
+
+```
+holdings          "one Holding object per row, in the order they appear in the table"
+creditors         "Every creditor row in document order"
+items             "Every genuine catalog line item ... in reading order"
+authors           "Complete, ordered list of authors as printed in the byline"
+tables[*].rows    "One entry per printed data line of the schedule, top to bottom"
+```
+
+The scalar-array group is the more consequential one, because there position is the only
+identity an element has:
+
+```
+tables[*].column_headers        "The ordered list of LEAF data-column labels, left to right"
+creditors[*].mailing_address    "Mailing-address lines in order (street, city/state/zip)"
+risk_management_cycle_stages    "Names of the stages in the council's risk-management cycle diagram, in order"
+section_letters                 "... section headers in the paper body, in their order of appearance"
+```
+
+A model that returns a correct mailing address with the city line first scores it perfect
+today. One that returns the right column headers left-to-right gets no credit for the
+ordering it was asked for.
+
+**Two false positives are already visible in the candidate list**, which is why this is a
+triage job and not a patch: `line_items` matches on "Every **ordered**/requisitioned line
+item", where "ordered" means purchased; and `age_groups` matches on "the **ranked**
+results for that group", which describes its children rather than itself -- the ranking is
+real one level down at `age_groups[*].results`, and that array carries a `rank` field, so
+it is already recoverable and needs nothing.
+
+Full scan, with every path, phrase and description, is in the session scratchpad as
+`order_scan.json`.
+
+**Not a scorer bug.** §5 says the default is order-free deliberately, because the order
+rows appear in a document is usually an accident of layout. The gap is that the escape
+hatch was built, documented, tested -- and then never wired to a run.
+
+---
+
+## 16. What the long-text values actually are, and where item 2 really applies
+
+**Known so far:** the exposure is measured and it is far narrower than item 2 implies.
+Nothing is decided; item 2's three options are still open.
+
+**Next:** item 2 can be scoped to bibliographies before choosing between them. Whatever
+is chosen must NOT touch category 4 below, where exact match is correct.
+
+Threshold first, because item 12's similarity sweep used a 40-char gate and a different
+number would make the two measurements incomparable. **100 characters is the better cut,
+and the corpus says why:** at >=100, 6,448 of 6,478 values (99.5%) are eight words or
+more, so length alone isolates prose; at >=40 only 52% are, and the rest are URLs, codes
+and concatenated identifiers where exact match is entirely fair. Using 40 would double the
+apparent exposure with values that are not the problem.
+
+For scale: 66.8% of gold scalars are strings and their **median length is 8 characters**
+(p90 25, p99 73). Long text is genuinely the tail -- 6,478 values, 0.22% of the corpus.
+
+| suite | gold values | >=100ch | share | in scalar arrays | docs with any |
+| --- | --- | --- | --- | --- | --- |
+| **contextual** | 12,364 | 1,803 | **14.58%** | **1,722 (95.5%)** | 23/35 |
+| internal | 10,473 | 201 | 1.92% | 30 | 44/207 |
+| extractbench | 606,916 | 3,015 | 0.50% | 75 | 62/329 |
+| micro1 | 1,962,615 | 1,395 | 0.07% | 0 | 10/47 |
+| longarray | 293,139 | 64 | 0.02% | 0 | 13/42 |
+
+**Of the 1,827 long values that sit inside scalar arrays -- the double-charge case -- 1,721
+are one field, `citations`, in six `contextual` research papers.** Item 2's "arrays of
+free-text strings are near-unscoreable" is not a corpus-wide property. It is bibliographies,
+in six documents, in the suite §7 weights at a fifth of the headline. That also answers
+item 4's question about `contextual`: five of its 35 documents are 69-93% long-text-in-
+scalar-arrays by value count.
+
+The long values are four different things, and they do not want the same treatment:
+
+1. **Bibliographies.** `citations` (n=1,721, median 201 chars, 100% in scalar arrays),
+   schema: *"List of works cited by this paper."* The only category with the double charge.
+2. **Prose commentary**, named fields, charged once. `facts.text` (406), `directives_comment`
+   (1,238 -- near-identical OFAC boilerplate), `communications.text`, `inspection_notes`.
+3. **Boilerplate and delimited lists.** `standing_offer_description` (491),
+   `trade_agreements` (358, median **502 chars**) -- the latter is a comma-joined list
+   crammed into one scalar, asked for "as printed in the column". A model returning the same
+   agreements in a different order fails outright, and no scoring rule fixes that; the schema
+   is asking for a serialization rather than a fact.
+4. **Long structured identifiers, where exact match is correct.** `holdings.security_name`
+   (326), e.g. `Abry Liquid Credit CLO Ltd., Series 2025-2A, Class C, (3-mo. CME Term SOFR +
+   2.10%), 5.78%, 01/15/39`. Every token is content: two tranches differing in one digit are
+   different securities. Also `aliases.name`, `creditors.creditor_name`, `parties.address`.
+   A similarity threshold here would be actively wrong.
+
+A rule aimed at "long free text" in general would loosen 6,478 values to fix 1,721, and
+would loosen category 4 along the way.
+
+Noticed while measuring, and now item 15: `facts` is described as *"Every numbered fact
+paragraph **in order**"*, and we score that array order-insensitively.
+
+---
+
+## 17. The published board scored two vendors on 660 documents and seven on 657
+
+**Known so far:** the defect is confirmed and the three documents identified. The
+per-vendor effect is measured for the three vendors re-scored so far and is NOT uniform
+in sign, so the published ordering cannot be corrected by arithmetic -- it needs the
+complete run.
+
+**Next:** rebuild the board from a run where every vendor covers the same 660, and make
+`score_r2.py` refuse to write a summary whose document count disagrees with the manifest.
+The summaries claimed `660 / 660` while the file held 657, which is the same class of
+silent-coverage bug as item 1.
+
+`r2_scores/*.jsonl` holds **657** rows for seven of the nine vendors; only `datalab` and
+`reducto` have 660. The missing documents are **the same three in every one of the seven**,
+and they are exactly item 6's three giants:
+
+```
+extractbench/long__real_oklahoma_unclaimed_2024                  26,725 rows
+micro1/06_19_Government_zoning_and_land_use_geospatial_datasets  19,486 rows
+micro1/hard__Municipal_continuing_disclosure_..._efis            18,494 rows
+```
+
+The untracked `r2_reducto.log` and `r2_last2.log` fit the sequence: the nine-vendor run
+stopped short of the giants, then datalab and reducto were re-run to completion and the
+other seven were not. Every `*.summary.txt` nonetheless reports `documents 660`,
+`scored 660` -- the count came from the manifest rather than from the rows actually written.
+
+**The effect is not a uniform inflation, which was the first guess and it was wrong.**
+These documents are easy for the top two and catastrophic for at least one other vendor:
+
+| vendor | with the three | without | effect | scores on the three |
+| --- | --- | --- | --- | --- |
+| datalab | 91.75 | 91.72 | **+0.030** | 98.16, 97.23, 99.87 |
+| reducto | 92.09 | 92.06 | **+0.027** | 94.72, 99.23, 100.00 |
+| extend | 88.09 | 88.17 | **-0.080** | **24.92**, 99.95, 87.02 |
+
+So excluding them *helped* extend and would have *hurt* datalab and reducto. They are
+strongly discriminating documents -- the top two score 94-100 while extend collapses to
+24.92 on the Oklahoma array -- and dropping them removed signal rather than adding a
+constant.
+
+Which means the published item 14 ordering below the top two cannot be repaired by adding
+an offset; each of the remaining six has to be re-scored on the full corpus before the
+board means anything. That is already in flight.
+
+**Watch for this when reading any old-vs-new comparison**: `extend` appears to fall
+88.16 -> 88.09, but 88.16 was its mean over 657 documents. Like-for-like on the 657 it
+shares with the new run, it *rose* by +0.006, and the three giants account for the -0.08.
+
+---
+
+## 18. Four documents are partial responses scored as quality results, and none is on the retry list
+
+**Known so far:** four cases are identified across two vendors, and the evidence points
+vendor-side in each. `retry_list.csv` cannot contain them by construction: it is built
+from empty and error payloads, and these are structurally valid 200s.
+
+**Next:** re-run these four. For the extend one, re-run it twice -- once as configured
+and once with the array strategy unset -- because the mode involved is one WE selected
+(below), and that is the only way to tell a transient chunk failure from a deterministic
+one. Then add a completeness check to `usable()` or beside it, since `retry_list.csv`
+will keep missing this class until something looks at row counts.
+
+| vendor | document | score | read_right | what came back |
+| --- | --- | --- | --- | --- |
+| extend | `extractbench/long__real_oklahoma_unclaimed_2024` | 24.92 | 97.8% | 7,142 of 26,725 rows |
+| llamaextract | `extractbench/short__sec_13f_0009_coatue_management` | 0.55 | 100.0% | 14 addresses; peer median 2,174 |
+| llamaextract | `extractbench/short__sec_13f_0019_soros_fund_management` | 0.79 | 100.0% | 27 addresses; peer median 2,907 |
+| llamaextract | `micro1/f47be8a4__aaq-mntrpt-2005-vic-report-final` | 11.16 | 99.7% | 816 addresses; peer median 6,676 |
+
+The `read_right` column is the tell. In all four, essentially everything returned is
+CORRECT. These are not extraction failures; they are coverage failures wearing a quality
+score, and the mean cannot tell the difference.
+
+**The extend case, because the mechanism is fully visible.** Its 7,142 rows form exactly
+**15 contiguous blocks, one per page, in ascending page order** -- pages 2, 3, 6, 12, 15,
+16, 18-22, 38, 57, 58, 59 -- and every one of those pages is complete (436/441, 445/445,
+459/459, 472/474). The other 43 pages returned zero rows. That is concatenated per-chunk
+output with 43 chunks contributing nothing; a harness-side loss would give partial pages
+or interleaving, not whole-page blocks in sorted order.
+
+Ruled out on our side: `capture.py` has no truncation path; the file is valid JSON that
+parses in full (a truncated write would be malformed); the envelope is a plain
+`{result, _secs}` at 1,083s with no `recovered_after_timeout`, so it is not the 1,800s cap;
+and extend returned the OTHER two giants complete -- 19,486 rows against a gold 19,486, and
+18,493 against 18,494 -- so there is no size ceiling on either side.
+
+**What is ours** is `providers/extend_provider.py:52`:
+
+```python
+ARRAY_STRATEGY = os.environ.get("EXTEND_ARRAY_STRATEGY", "large_array_max_context")
+```
+
+sent as `advancedOptions.arrayStrategy.type`. Per the comment there, this is Extend's MAX
+array mode and the vendor flagged that we were benchmarking without it. So the dropout
+happened in a non-default mode we selected on the vendor's own advice, on the largest array
+in the corpus -- which is precisely the case the mode exists for. Nothing in the stored
+artifacts says whether the default would have done better, and the re-run is the only way
+to find out. If it reproduces, it is a real result and worth telling Extend.
+
+**The gap this exposes.** `usable()` asks whether a payload parses and is non-empty. All
+four pass. `retry_list.csv`'s 258 rows are drawn from empty bodies, gateway errors, 5xx,
+timeouts and 400s -- every category assumes the failure is visible in the envelope. A
+response missing three quarters of its rows is invisible to all of it. Two cheap detectors
+would have caught all four before they reached a board: rows returned against the peer
+median for that document, or pages covered against the document's own page span. Neither
+needs ground truth, so both could run at capture time.
