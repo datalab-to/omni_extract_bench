@@ -126,10 +126,6 @@ def main(argv=None):
 
     c = sub.add_parser("build-corpus", help="write the atlas that says what a corpus contains")
     c.add_argument("--corpus", required=True)
-    c.add_argument("--refresh", action="store_true",
-                   help="re-hash the documents already listed, keeping the selection")
-    c.add_argument("--replace", action="store_true",
-                   help="re-discover from the tree, discarding any curation")
     c.set_defaults(fn=_run.cmd_build_corpus)
 
     n = sub.add_parser("score", help="score a directory of predictions against a corpus")

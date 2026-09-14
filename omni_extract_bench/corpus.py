@@ -8,13 +8,12 @@
 rows in `corpus.parquet` and nothing else, so a half-copied document, a leftover directory or
 a scratch file cannot silently join a benchmark by being present.
 
-That inversion is what makes curation an ordinary operation. Build an atlas over everything
-you have, then delete rows -- in DuckDB, pandas, anything -- and the remaining rows are the
-benchmark. The files stay on disk, so nothing is lost and a document returns by re-adding its
-row. A filtered corpus is a different corpus and gets a different `version`, which is correct:
-it is a different benchmark.
+Which documents are in the benchmark is decided by which are in the directory: `build`
+describes what is on disk, and curating is arranging files rather than editing a table. A
+corpus of a different set of documents gets a different `version`, which is correct -- it is a
+different benchmark.
 
-It also makes editing data deliberate. Each row carries the sha256 of the files it names, and
+The atlas makes editing data deliberate. Each row carries the sha256 of the files it names, and
 loading a document checks them, so an edited ground truth stops the run instead of quietly
 producing different numbers. Rebuilding the atlas is how you say you meant it.
 
@@ -105,10 +104,12 @@ def entry_for(root: Path, doc_id: str) -> Entry:
 
 
 def discover(root: Path) -> list[Entry]:
-    """Every document the tree contains, for a first atlas.
+    """Every document the tree contains, hashed as it is now.
 
-    Discovery happens exactly here and nowhere else. Every other operation reads the atlas, so
-    this is the one moment a benchmark's membership is decided by what is on disk.
+    The one place a benchmark's membership is decided by what is on disk; every other operation
+    reads the atlas. That split is what lets the atlas be checked against the files it names:
+    scoring trusts the atlas, and an edited file stops the run rather than quietly changing a
+    number.
     """
     root = Path(root)
     if not root.is_dir():
@@ -118,15 +119,6 @@ def discover(root: Path) -> list[Entry]:
         if (d / GROUND_TRUTH).exists() or (d / SCHEMA).exists():
             out.append(entry_for(root, d.name))
     return out
-
-
-def refresh(root: Path, entries: Iterable[Entry]) -> list[Entry]:
-    """Re-hash the documents already listed, preserving the selection.
-
-    The counterpart to `discover`, and the reason both exist: re-discovering would resurrect
-    every document curation removed. This is what you run after deciding an edit was intended.
-    """
-    return [entry_for(Path(root), e.doc_id) for e in entries]
 
 
 def version(entries: Iterable[Entry]) -> str:
@@ -315,9 +307,9 @@ def check(root: Path, entries: Iterable[Entry]) -> list[str]:
 
     The globs are exactly what `check_path` allows a row to name, so nothing else in the tree
     is treated as a payload -- a corpus may hold PDFs, page images and provenance beside the
-    documents, and those are not drift. Files matching the globs that no row names ARE found,
-    and then dropped here: a document curated out of the atlas is the normal case, and
-    `undeclared` reports it as information rather than as a problem.
+    documents, and those are not drift. A file matching the globs that no row names is dropped
+    rather than reported: it means the atlas predates it, which `build` fixes and which is not
+    the data-moving-underneath-you problem this exists to catch.
     """
     expected = [(e.ground_truth_path, e.gt_sha256) for e in entries]
     expected += [(e.schema_path, e.schema_sha256) for e in entries]
@@ -326,13 +318,3 @@ def check(root: Path, entries: Iterable[Entry]) -> list[str]:
     return [p for p in problems if not p.startswith("file with no row")]
 
 
-def undeclared(root: Path, entries: Iterable[Entry]) -> list[str]:
-    """Document directories on disk that the atlas does not list.
-
-    Not an error -- curating a document out is exactly this -- but worth seeing, because it is
-    also what a half-finished copy looks like.
-    """
-    listed = {e.doc_id for e in entries}
-    return sorted(d.name for d in Path(root).iterdir()
-                  if d.is_dir() and d.name not in listed
-                  and ((d / GROUND_TRUTH).exists() or (d / SCHEMA).exists()))

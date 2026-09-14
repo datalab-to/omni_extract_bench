@@ -66,33 +66,18 @@ oeb build-corpus --corpus my-benchmark/
 oeb score        --corpus my-benchmark/ --predictions preds/ --out run/
 ```
 
-### Curating
-
-The atlas is the selection, so filtering the benchmark is filtering a table:
-
-```python
-import pyarrow.parquet as pq, pyarrow as pa
-t = pq.read_table("my-benchmark/corpus.parquet")
-keep = [r for r in t.to_pylist() if r["doc_id"] != "the-bad-one"]
-pq.write_table(pa.Table.from_pylist(keep), "my-benchmark/corpus.parquet")
-```
-
-The files stay on disk, so nothing is lost and the document returns by re-adding its row. The
-corpus version changes, because a filtered corpus is a different benchmark.
-
 ### Changing data is deliberate
 
 Each row records the sha256 of the files it names, so editing a ground truth stops the next run:
 
 ```
 acme-jan: ground_truth.json has changed since the atlas was written.
-  If that was intended, record it:  oeb build-corpus --corpus my-bench --refresh
+  If that was intended, record it:  oeb build-corpus --corpus my-bench
   If it was not, the benchmark's data has drifted underneath it.
 ```
 
-`--refresh` re-hashes the rows already listed; it will not resurrect documents you curated out.
-Plain `build-corpus` re-discovers from the tree and refuses to overwrite an existing atlas for
-exactly that reason (`--replace` if you mean it).
+Re-run `build-corpus` to record it. That is the only rebuild verb: it always describes what is
+on disk now, so adding, removing or editing documents is arranging files and then re-running it.
 
 ```bash
 oeb verify --corpus my-benchmark/    # what has changed since the atlas was written

@@ -33,15 +33,15 @@ This is the distinction worth holding, because it decides how much care each one
 
 | table | relationship to truth | cost to rebuild |
 | --- | --- | --- |
-| `corpus.parquet` | **the benchmark's definition** | seconds, but it destroys curation |
+| `corpus.parquet` | **the benchmark's definition** | seconds, and re-versions the corpus |
 | `predictions.parquet` | a **view** of the prediction files | minutes |
 | `scores/.../summary.parquet` | **primary — nothing else holds it** | *hours of compute* |
 
 **The corpus atlas is not a cache.** It was, once, and this table used to say so. Since it
-became the statement of which documents are in the benchmark, re-deriving it from the tree is
-a destructive act: it resurrects every document curation removed. That is why `build-corpus`
-refuses to overwrite one, and why `--refresh` -- which re-hashes only the rows already listed
--- is a separate verb.
+became the statement of which documents are in the benchmark -- and the record of what their
+files hashed to -- re-deriving it is how you say a change to the data was intended. Cheap to
+run, but not a no-op: it is the act that lets a corrected ground truth produce a new corpus
+version instead of a silently different score.
 
 The vendor atlas still is a cache. Delete it and rebuild; a builder bug there is never data
 loss.
@@ -450,9 +450,8 @@ hides this across nine vendors and cannot hide it for one. See `TO_LOOK_AT.md` i
 ### The atlas is the corpus
 
 `corpus.parquet` is not an index of the directory; it is the statement of what the benchmark
-contains. Scoring runs over its rows and nothing else, so a half-copied document or a scratch
-directory cannot join a benchmark by being present, and curating one out is deleting a row
-rather than deleting data.
+contains at the moment it was built. Scoring runs over its rows and nothing else, so a
+half-copied document or a scratch directory cannot join a benchmark by being present.
 
 Each row names its files **relative to the atlas** and records their sha256. Paths are stored
 rather than implied so a row says what it points at, and they are still required to be
@@ -460,9 +459,9 @@ rather than implied so a row says what it points at, and they are still required
 is one that can point outside the corpus, or at another corpus.
 
 The hashes make editing data deliberate: a changed ground truth stops the run instead of
-quietly producing different numbers, and `build-corpus --refresh` is how you record that you
-meant it. `--refresh` re-hashes only the rows already listed, so recording an edit never undoes
-curation.
+quietly producing different numbers, and re-running `build-corpus` is how you record that you
+meant it. There is one rebuild verb, and it always describes what is on disk -- which documents
+are in the benchmark is decided by which are in the directory, so curating is arranging files.
 
 ### The corpus is versioned, not mutated
 

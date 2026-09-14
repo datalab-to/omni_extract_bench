@@ -227,11 +227,10 @@ try:
     report("those columns are readable back as extras",
            carried == {"doc-a": {"suite": "micro1", "page_count": 12}}, str(carried))
 
-    # A refresh re-hashes; it must not drop what it did not compute.
-    _corpus_mod.write(tmp, _corpus_mod.refresh(tmp, _corpus_mod.read(tmp)),
-                      _corpus_mod.extras(tmp))
+    # Rebuilding re-hashes; it must not drop what it did not compute.
+    _corpus_mod.write(tmp, _corpus_mod.discover(tmp), _corpus_mod.extras(tmp))
     back = _pq.read_table(tmp / "corpus.parquet").to_pylist()[0]
-    report("a refresh preserves them", back.get("suite") == "micro1", str(back))
+    report("rebuilding preserves them", back.get("suite") == "micro1", str(back))
     note("suite decides the subsets the published number averages over")
 
     report("the contract still reads such an atlas",

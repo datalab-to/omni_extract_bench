@@ -139,8 +139,7 @@ def document(root: Path, entry: Entry) -> Document:
         if got != want:
             raise Stale(
                 f"{entry.doc_id}: {what} has changed since the atlas was written.\n"
-                f"  If that was intended, record it:  oeb build-corpus --corpus {root} "
-                f"--refresh\n"
+                f"  If that was intended, record it:  oeb build-corpus --corpus {root}\n"
                 f"  If it was not, the benchmark's data has drifted underneath it.")
     return Document(
         doc_id=entry.doc_id,

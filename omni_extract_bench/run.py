@@ -380,46 +380,38 @@ def cmd_explain(args: Namespace) -> int:
 
 
 def cmd_build_corpus(args: Namespace) -> int:
-    """Declare what a corpus contains, or re-record files you meant to change.
+    """Declare what a corpus contains: every document in the tree, and what its files hash to.
 
-    Two verbs, because they answer different questions. Without `--refresh` this discovers
-    every document in the tree, which is how a corpus starts. With it, it re-hashes exactly
-    the rows already listed -- so a corpus you have curated down does not silently regain
-    everything you removed.
+    One verb, and it always describes what is on disk now. Which documents are in the
+    benchmark is decided by which are in the directory -- so curating is arranging files, and
+    this records the result rather than being the place you do it.
+
+    Re-run it whenever the files change. That is the deliberate act that a changed ground truth
+    demands: scoring stops until the atlas agrees with the data again, so a corrected gold
+    cannot quietly become a different score.
+
+    Columns the contract does not define are carried over. A published corpus records `suite`,
+    page counts and provenance beside the five required ones, and `suite` decides the subsets
+    the published number averages over -- rebuilding is not a reason to lose it.
     """
     root = Path(args.corpus)
-    if args.refresh:
-        entries, how = corpus_atlas.refresh(root, corpus_atlas.read(root)), "refreshed"
-    else:
-        if (root / corpus_atlas.ATLAS).exists() and not args.replace:
-            print(f"  {root / corpus_atlas.ATLAS} exists. Re-discovering would undo any "
-                  f"curation.\n"
-                  f"  To re-record files you changed:   --refresh\n"
-                  f"  To start again from the tree:     --replace", file=sys.stderr)
-            return 1
-        entries, how = corpus_atlas.discover(root), "discovered"
+    entries = corpus_atlas.discover(root)
     if not entries:
         print(f"  no documents under {root}", file=sys.stderr)
         return 1
 
-    before = None
-    if args.refresh:
-        before = corpus_atlas.version(corpus_atlas.read(root))
-    # Whatever the old atlas recorded beyond the contract is the corpus's, not ours, and
-    # rebuilding is not a reason to lose it.
+    before = corpus_atlas.version(corpus_atlas.read(root)) if \
+        (root / corpus_atlas.ATLAS).exists() else None
     carried = corpus_atlas.extras(root)
     corpus_atlas.write(root, entries, carried)
+    after = corpus_atlas.version(entries)
+
+    print(f"  {len(entries)} documents -> {corpus_atlas.ATLAS}")
+    print(f"  corpus version {after}" + (f"  (was {before})" if before and before != after
+                                         else ""))
     kept = sorted({k for v in carried.values() for k in v})
     if kept:
         print(f"  carried {len(kept)} extra column(s) through: {', '.join(kept[:8])}")
-    after = corpus_atlas.version(entries)
-    print(f"  {how} {len(entries)} documents -> {corpus_atlas.ATLAS}")
-    print(f"  corpus version {after}"
-          + (f"  (was {before})" if before and before != after else ""))
-    extra = corpus_atlas.undeclared(root, entries)
-    if extra:
-        print(f"  {len(extra)} document(s) on disk are not listed: {', '.join(extra[:5])}"
-              + (f" and {len(extra) - 5} more" if len(extra) > 5 else ""))
     return 0
 
 
@@ -432,21 +424,14 @@ def cmd_verify(args: Namespace) -> int:
     root = Path(args.corpus)
     entries = corpus_atlas.read(root)
     problems = corpus_atlas.check(root, entries)
-    extra = corpus_atlas.undeclared(root, entries)
     print(f"  {len(entries)} documents listed, corpus version "
           f"{corpus_atlas.version(entries)}")
-    if extra:
-        # Not an error: curating a document out is exactly this. It is also what a
-        # half-finished copy looks like, so it is worth seeing either way.
-        print(f"  {len(extra)} on disk but not listed (curated out, or not yet added): "
-              f"{', '.join(extra[:5])}" + (f" and {len(extra) - 5} more" if len(extra) > 5
-                                           else ""))
     if problems:
         print(f"  {len(problems)} file(s) no longer match the atlas:", file=sys.stderr)
         for p in problems[:10]:
             print(f"      {p}", file=sys.stderr)
-        print(f"  If those changes were intended:  oeb build-corpus --corpus {root} "
-              f"--refresh", file=sys.stderr)
+        print(f"  If those changes were intended:  oeb build-corpus --corpus {root}",
+              file=sys.stderr)
         return 1
     print("  every listed file matches the atlas")
     return 0

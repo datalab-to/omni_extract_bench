@@ -58,15 +58,13 @@ oeb build-corpus --corpus my-benchmark/                    # declare what it con
 oeb score --corpus my-benchmark/ --predictions preds/ --out run/
 ```
 
-**The atlas defines the benchmark; the directory merely stores it.** Scoring runs over its rows
-and nothing else, so a half-copied document or a scratch directory cannot silently join. That
-makes curation ordinary: build an atlas over everything you have, delete rows in DuckDB or
-pandas, and the remaining rows are the benchmark. The files stay on disk, so a document comes
-back by re-adding its row.
+**Scoring runs over the atlas, not a directory listing**, so a half-copied document or a
+scratch directory cannot silently join a benchmark by being present. Which documents are in it
+is decided by which are in the directory when you build it.
 
-Each row records the sha256 of the files it names, so editing a ground truth stops the run
-rather than quietly changing your numbers. `oeb build-corpus --refresh` is how you say you
-meant it — it re-hashes the rows already listed, without resurrecting anything you curated out.
+Each row records the sha256 of the files it names, so editing a ground truth stops the next run
+rather than quietly changing your numbers. Re-running `build-corpus` is how you say you meant
+it.
 
 ```bash
 oeb verify --corpus my-benchmark/     # what has changed since the atlas was written
