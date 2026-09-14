@@ -199,6 +199,56 @@ report("prediction identity is defined exactly once",
        and not hasattr(_corpus, "prediction_id"))
 note("a join key with two definitions is a disagreement waiting to be written down")
 
+# ── rebuilding must not discard what it does not understand ───────────────────────────
+# A published corpus records `suite` and provenance beside the five required columns, and
+# `suite` decides the subsets the published number averages over. It cannot be recovered from
+# the payloads, so losing it on a rebuild is losing data.
+import json as _json                                                       # noqa: E402
+
+import pyarrow as _pa                                                      # noqa: E402
+import pyarrow.parquet as _pq                                              # noqa: E402
+
+from omni_extract_bench import corpus as _corpus_mod                       # noqa: E402
+
+tmp = Path(tempfile.mkdtemp())
+try:
+    d = tmp / "doc-a"
+    d.mkdir()
+    (d / "ground_truth.json").write_text('{"a": 1}')
+    (d / "schema.json").write_text('{"type": "object"}')
+    entries = _corpus_mod.discover(tmp)
+    _corpus_mod.write(tmp, entries, {"doc-a": {"suite": "micro1", "page_count": 12}})
+
+    report("an atlas carries columns beyond the contract",
+           set(_pq.read_table(tmp / "corpus.parquet").column_names)
+           >= {"suite", "page_count", *_corpus_mod.REQUIRED})
+
+    carried = _corpus_mod.extras(tmp)
+    report("those columns are readable back as extras",
+           carried == {"doc-a": {"suite": "micro1", "page_count": 12}}, str(carried))
+
+    # A refresh re-hashes; it must not drop what it did not compute.
+    _corpus_mod.write(tmp, _corpus_mod.refresh(tmp, _corpus_mod.read(tmp)),
+                      _corpus_mod.extras(tmp))
+    back = _pq.read_table(tmp / "corpus.parquet").to_pylist()[0]
+    report("a refresh preserves them", back.get("suite") == "micro1", str(back))
+    note("suite decides the subsets the published number averages over")
+
+    report("the contract still reads such an atlas",
+           [e.doc_id for e in _corpus_mod.read(tmp)] == ["doc-a"])
+finally:
+    shutil.rmtree(tmp)
+
+# ── the migration builder produces a contract-valid atlas ─────────────────────────────
+# It writes 14 columns and the contract needs 5 of them; nothing checked that the 5 were
+# among them, and for a while they were not.
+from build_corpus import row_for                                           # noqa: E402
+
+_row = row_for("doc-a", "micro1", None, Path("."), b"{}", b'{"a": 1}',
+               b'{"type": "object"}', None)
+report("scripts/build_corpus.py emits every required column",
+       set(_corpus_mod.REQUIRED) <= set(_row), str(sorted(set(_corpus_mod.REQUIRED) - set(_row))))
+
 print(f"\n{'CORPUS AND IDENTITY HOLDS' if not FAILS else 'FAILURES:'}")
 for f in FAILS:
     print(f"   {f}")

@@ -14,7 +14,7 @@ run extractors, and it ships no benchmark data.
 
 ```bash
 pip install omni-extract-bench            # the scorer; one dependency, scipy
-pip install 'omni-extract-bench[run]'     # plus running a whole benchmark
+pip install 'omni-extract-bench[benchmark]'   # plus running a whole benchmark
 ```
 
 Python 3.11+.
