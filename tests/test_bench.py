@@ -110,9 +110,9 @@ try:
 
     (corpus / "b").mkdir()
     (corpus / "b" / "ground_truth.json").write_text("{}")
-    report("a document not in the atlas is not in the benchmark",
+    report("scoring follows the atlas, not a directory listing",
            [d.doc_id for d in documents(corpus)] == ["a"])
-    note("curation is deleting a row, and the files stay on disk")
+    note("so a half-copied document cannot join a benchmark by being present")
     try:
         corpus_atlas.discover(corpus)
         report("a document without a schema stops a rebuild", False, "accepted")
@@ -139,11 +139,11 @@ try:
         list(documents(corpus))
         report("an edited ground truth stops the run", False, "accepted silently")
     except Stale as exc:
-        report("an edited ground truth stops the run", "--refresh" in str(exc))
+        report("an edited ground truth stops the run", "build-corpus" in str(exc))
         note("otherwise the numbers look ordinary and mean something else")
 
     # Recording the change is the deliberate act, and it changes the row's identity.
-    corpus_atlas.write(corpus, corpus_atlas.refresh(corpus, corpus_atlas.read(corpus)))
+    corpus_atlas.write(corpus, corpus_atlas.discover(corpus))
     after = key_of(next(cases(documents(corpus), predictions(p))))
     report("correcting a ground truth changes the row's identity",
            after["gt_sha256"] != before["gt_sha256"]

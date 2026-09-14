@@ -127,7 +127,7 @@ try:
     # scoring badly. Recorded in the atlas first, because changing data is deliberate.
     (corpus / "noschema" / "schema.json").write_text(json.dumps({"$ref": "#/nowhere"}))
     (preds / "noschema.json").write_text(json.dumps(DOC))
-    run("build-corpus", "--corpus", corpus, "--refresh")
+    run("build-corpus", "--corpus", corpus)
     code, out, err = run("score", "--corpus", corpus, "--predictions", preds)
     report("a document this harness cannot score is NOT SCORED, not 0",
            "NOT SCORED" in err, (out + err).strip()[:300])

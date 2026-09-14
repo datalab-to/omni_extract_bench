@@ -28,7 +28,7 @@ position — a vendor that emits a table bottom-to-top has not made a mistake.
 ### invoice-b scores 55.56, and `explain` says why
 
 ```bash
-oeb explain --corpus examples/corpus --predictions examples/predictions --doc invoice-b
+oeb explain --corpus corpus --predictions predictions --doc invoice-b
 ```
 
 ```
@@ -77,15 +77,14 @@ corpus/<doc_id>/ground_truth.json
 corpus/<doc_id>/schema.json
 ```
 
-Add a document by creating its directory and re-running `build-corpus`. Remove one from the
-benchmark by deleting its **row** from `corpus.parquet` — the files stay, and the corpus version
-changes, because a filtered corpus is a different benchmark.
+Add or remove a document by changing what is in the directory, then re-run `build-corpus`. The
+corpus version changes, because a different set of documents is a different benchmark.
 
 Edit a ground truth and the next run stops:
 
 ```
 invoice-a: ground_truth.json has changed since the atlas was written.
-  If that was intended, record it:  oeb build-corpus --corpus examples/corpus --refresh
+  If that was intended, record it:  oeb build-corpus --corpus examples/corpus
 ```
 
 That is the point: data cannot move underneath a benchmark by accident.
