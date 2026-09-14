@@ -46,7 +46,7 @@ def _pyarrow():
         import pyarrow.parquet as pq
     except ImportError:                                     # pragma: no cover - env specific
         raise SystemExit(
-            "writing a run needs pyarrow: pip install 'omni-extract-bench[run]'")
+            "writing a run needs pyarrow: pip install 'omni-extract-bench[benchmark]'")
     return pa, pq
 
 
@@ -61,7 +61,7 @@ def published_corpus() -> Path:
     except ImportError:                                     # pragma: no cover - env specific
         raise SystemExit(
             "downloading the published corpus needs huggingface_hub: "
-            "pip install 'omni-extract-bench[run]', or pass --corpus to use your own")
+            "pip install 'omni-extract-bench[benchmark]', or pass --corpus to use your own")
     return Path(snapshot_download(
         HF_REPO, repo_type="dataset",
         allow_patterns=[corpus_atlas.ATLAS, "*/ground_truth.json", "*/schema.json"]))
@@ -237,7 +237,13 @@ def cmd_build_corpus(args) -> int:
     before = None
     if args.refresh:
         before = corpus_atlas.version(corpus_atlas.read(root))
-    corpus_atlas.write(root, entries)
+    # Whatever the old atlas recorded beyond the contract is the corpus's, not ours, and
+    # rebuilding is not a reason to lose it.
+    carried = corpus_atlas.extras(root)
+    corpus_atlas.write(root, entries, carried)
+    kept = sorted({k for v in carried.values() for k in v})
+    if kept:
+        print(f"  carried {len(kept)} extra column(s) through: {', '.join(kept[:8])}")
     after = corpus_atlas.version(entries)
     print(f"  {how} {len(entries)} documents -> {corpus_atlas.ATLAS}")
     print(f"  corpus version {after}"

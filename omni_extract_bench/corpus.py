@@ -178,6 +178,27 @@ def read(root: Path) -> list[Entry]:
     return out
 
 
+def extras(root: Path) -> dict:
+    """Columns an existing atlas carries that the contract does not define, by doc_id.
+
+    A published corpus records `suite`, page counts, sizes and provenance alongside the five
+    required columns. Rebuilding the atlas must not throw those away just because this module
+    does not know what they mean -- `suite` decides the subsets the published number averages
+    over, and it cannot be recovered from the payloads.
+    """
+    import pyarrow.parquet as pq
+
+    path = Path(root) / ATLAS
+    if not path.exists():
+        return {}
+    out = {}
+    for r in pq.read_table(path).to_pylist():
+        rest = {k: v for k, v in r.items() if k not in REQUIRED}
+        if rest:
+            out[r["doc_id"]] = rest
+    return out
+
+
 def write(root: Path, entries: Iterable[Entry], extra: dict | None = None) -> Path:
     """Write the atlas, preserving any extra columns a caller wants to carry.
 

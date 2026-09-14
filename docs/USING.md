@@ -9,7 +9,7 @@ this file is about what you need, which is much less.
 ## The whole thing
 
 ```bash
-pip install 'omni-extract-bench[run]'
+pip install 'omni-extract-bench[benchmark]'
 
 oeb score --predictions preds/ --out run/
 ```
