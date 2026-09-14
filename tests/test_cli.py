@@ -25,6 +25,7 @@ from pathlib import Path
 
 _ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 _sys.path.insert(0, _ROOT)
+from omni_extract_bench import corpus as corpus_atlas                       # noqa: E402
 
 FAILS = []
 
@@ -80,25 +81,33 @@ try:
         if doc_id != "noschema":
             (corpus / doc_id / "schema.json").write_text(json.dumps(SCHEMA))
 
-    print("\nA MISSING SCHEMA IS AN ERROR, NOT AN EMPTY ONE")
+    print("\nA CORPUS IS ITS ATLAS")
     (preds / "good.json").write_text(json.dumps(NEARLY))
-    code, out, err = run("bench", "--corpus", corpus, "--predictions", preds)
-    report("a document with no schema stops the run, naming the file",
-           code == 1 and "schema.json" in err, (out + err).strip()[:160])
+    code, out, err = run("score", "--corpus", corpus, "--predictions", preds)
+    report("scoring a corpus with no atlas stops, and says how to make one",
+           code == 1 and "build-corpus" in err, (out + err).strip()[:200])
+    note("a directory listing is not a benchmark; membership has to be declared")
+
+    print("\nA MISSING SCHEMA IS AN ERROR, NOT AN EMPTY ONE")
+    code, out, err = run("build-corpus", "--corpus", corpus)
+    report("declaring a corpus with a schema-less document stops, naming the file",
+           code == 1 and "schema.json" in err, (out + err).strip()[:200])
     note("an empty schema would grade an additionalProperties subtree silently")
 
     # Now make it a real corpus and test the rest.
     (corpus / "noschema" / "schema.json").write_text(json.dumps(SCHEMA))
+    code, out, err = run("build-corpus", "--corpus", corpus)
+    report("declaring it works once every document has both files", code == 0, (out + err)[:200])
 
     print("\nSCORING RESOLVES $ref AND CHARGES THE RIGHT THINGS")
-    code, out, err = run("bench", "--corpus", corpus, "--predictions", preds)
+    code, out, err = run("score", "--corpus", corpus, "--predictions", preds)
     report("`bench` succeeds on a schema containing $ref", code == 0, (out + err)[:200])
     report("the imperfect document scores 2 of 3", "66.67" in out, out.strip()[:200])
 
     print("\nONE UNSCORABLE DOCUMENT DOES NOT TAKE THE RUN WITH IT")
     (preds / "broken.json").write_text('{"name": {not json')
     (preds / "empty.json").write_text("{}")
-    code, out, err = run("bench", "--corpus", corpus, "--predictions", preds)
+    code, out, err = run("score", "--corpus", corpus, "--predictions", preds)
     report("the run completes despite an unparseable prediction", code == 0,
            (out + err).strip()[:200])
     report("the good document is still scored", "66.67" in out, out.strip()[:200])
@@ -115,10 +124,11 @@ try:
 
     print("\nA HARNESS FAILURE IS REPORTED SEPARATELY, AND LOUDLY")
     # A schema the scorer cannot see through: ours to fix, and it must not read as a vendor
-    # scoring badly.
+    # scoring badly. Recorded in the atlas first, because changing data is deliberate.
     (corpus / "noschema" / "schema.json").write_text(json.dumps({"$ref": "#/nowhere"}))
     (preds / "noschema.json").write_text(json.dumps(DOC))
-    code, out, err = run("bench", "--corpus", corpus, "--predictions", preds)
+    run("build-corpus", "--corpus", corpus, "--refresh")
+    code, out, err = run("score", "--corpus", corpus, "--predictions", preds)
     report("a document this harness cannot score is NOT SCORED, not 0",
            "NOT SCORED" in err, (out + err).strip()[:300])
     report("it is named with the reason, on stderr", "noschema" in err, err.strip()[:200])
@@ -128,8 +138,9 @@ try:
     note("merging the two would let a broken corpus read as a poor vendor")
 
     print("\nTHE ARGUMENT PARSER DEMANDS WHAT IS REQUIRED")
-    for cmd, missing in ((("score", "--pred", "p", "--gt", "g"), "--schema"),
-                         (("bench",), "--predictions"),
+    for cmd, missing in ((("score-one", "--pred", "p", "--gt", "g"), "--schema"),
+                         (("score",), "--predictions"),
+                         (("build-corpus",), "--corpus"),
                          (("explain", "--predictions", "p"), "--doc"),
                          (("verify",), "--corpus")):
         code, _o, _e = run(*cmd)

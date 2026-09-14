@@ -36,8 +36,9 @@ import pyarrow.parquet as pq
 _ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 _sys.path.insert(0, _ROOT)
 _sys.path.insert(0, _os.path.join(_ROOT, "scripts"))
-from build_scores import (                                              # noqa: E402
-    KEY, check_dedup, corpus_version, scorer_version, survey)
+from omni_extract_bench import corpus as corpus_atlas                   # noqa: E402
+from omni_extract_bench.corpus import version as corpus_version         # noqa: E402
+from build_scores import KEY, check_dedup, scorer_version, survey       # noqa: E402
 
 FAILS = []
 BUILD = _os.path.join(_ROOT, "scripts", "build_scores.py")
@@ -66,10 +67,7 @@ class Bench:
         d.mkdir(parents=True, exist_ok=True)
         (d / "ground_truth.json").write_text(json.dumps(gt))
         (d / "schema.json").write_text(json.dumps(SCHEMA))
-        pq.write_table(pa.Table.from_pylist(
-            [{"doc_id": p.name, "max_array_rows": 1}
-             for p in sorted(self.corpus.iterdir()) if p.is_dir()]),
-            self.corpus / "corpus.parquet")
+        corpus_atlas.write(self.corpus, corpus_atlas.discover(self.corpus))
 
     def vendor(self, name, preds):
         vd = self.vendors / name
@@ -189,16 +187,23 @@ finally:
     shutil.rmtree(tmp)
 
 # ── the corpus version is a fact about the corpus ─────────────────────────────────────
-a = {"d1": ("gt1", "s1"), "d2": ("gt2", "s2")}
-report("the same corpus hashes the same, whatever the dict order",
-       corpus_version(a) == corpus_version({"d2": ("gt2", "s2"), "d1": ("gt1", "s1")}))
+def E(doc_id, gt, schema):
+    g, s_ = corpus_atlas.expected_paths(doc_id)
+    return corpus_atlas.Entry(doc_id, g, s_, gt, schema)
+
+
+a = [E("d1", "gt1", "s1"), E("d2", "gt2", "s2")]
+report("the same corpus hashes the same, whatever the row order",
+       corpus_version(a) == corpus_version(list(reversed(a))))
 report("a changed gold changes the version",
-       corpus_version(a) != corpus_version({**a, "d1": ("gt1-fixed", "s1")}))
+       corpus_version(a) != corpus_version([E("d1", "gt1-fixed", "s1"), a[1]]))
 report("a changed schema changes the version",
-       corpus_version(a) != corpus_version({**a, "d1": ("gt1", "s1-fixed")}))
+       corpus_version(a) != corpus_version([E("d1", "gt1", "s1-fixed"), a[1]]))
 report("an added document changes the version, even with no predictions for it",
-       corpus_version(a) != corpus_version({**a, "d3": ("gt3", "s3")}))
-note("the version identifies the corpus, not the subset that happened to be covered")
+       corpus_version(a) != corpus_version(a + [E("d3", "gt3", "s3")]))
+report("CURATING A DOCUMENT OUT changes the version",
+       corpus_version(a) != corpus_version(a[:1]))
+note("a filtered corpus is a different benchmark, and its scores belong somewhere else")
 
 # ── dedup, and the assumption under it ────────────────────────────────────────────────
 tmp = Path(tempfile.mkdtemp())
@@ -208,7 +213,7 @@ try:
     b.doc("small", {"n": 2, "s": "y"})
     for v in ("alpha", "beta"):
         b.vendor(v, {"big": {"n": 1, "s": "x"}, "small": {"n": 9, "s": v}})
-    work, paths, _awaiting, _v = survey(b.corpus, b.vendors)
+    work, paths, _awaiting, _v, _s = survey(b.corpus, b.vendors)
     total = sum(len(p) for p in paths.values())
     distinct = sum(len(w.preds) for w in work)
     report("two vendors emitting identical bytes are scored once",
@@ -220,19 +225,17 @@ try:
            check_dedup(paths) == 0)
 
     (b.vendors / "beta" / "big.json").write_bytes(b'{"n": 1, "s":  "x"}')
-    _w, paths, _a, _v = survey(b.corpus, b.vendors)
+    _w, paths, _a, _v, _s = survey(b.corpus, b.vendors)
     report("a key whose files are NOT identical is caught", check_dedup(paths) == 1)
     note("without this, one vendor's score is attributed to another's prediction")
 
     pq.write_table(pa.Table.from_pylist([
         {"doc_id": "ghost", "prediction_id": "z" * 64, "usable": True}]),
         b.vendors / "alpha" / "predictions.parquet")
-    try:
-        survey(b.corpus, b.vendors)
-        report("a prediction for an unknown document stops the build", False, "accepted")
-    except ValueError as exc:
-        report("a prediction for an unknown document stops the build",
-               "not in the corpus" in str(exc))
+    _w, _p, _a, _v, skipped = survey(b.corpus, b.vendors)
+    report("a prediction whose document is not in the atlas is skipped, not fatal",
+           skipped == ["ghost"], str(skipped))
+    note("curating a document out leaves its predictions behind; that is normal")
 finally:
     shutil.rmtree(tmp)
 
