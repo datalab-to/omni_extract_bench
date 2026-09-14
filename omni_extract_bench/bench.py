@@ -37,7 +37,7 @@ from typing import Iterable, Iterator, NamedTuple
 
 from .dialects import resolve_refs, strip_benchmark_keys
 from .prediction_io import usable
-from .score import explain, grade, show
+from .score import grade, show
 
 #: The two files a document must have. Named in full because they appear in error messages.
 GROUND_TRUTH = "ground_truth.json"
@@ -159,16 +159,14 @@ def score(case: Case, verdicts: bool = True) -> Outcome:
     missed every field, which reads identically to a genuine total failure and is not the same
     thing at all.
 
-    Verdicts cost a second pass today, because `grade` and `explain` each re-run the shared
-    work in `score._both`. That is worth knowing when scoring a corpus: it roughly doubles the
-    time. It is a `score.py` change to fix, not a change to this shape.
+    Verdicts come back from the same pass, so asking for them costs the memory of one
+    `Verdict` per address and no extra matching.
     """
     if not usable(case.pred):
         error = case.pred.get("__error__") if isinstance(case.pred, dict) else None
         return Outcome("unusable", str(error) if error is not None else None, None, None)
-    summary = grade(case.pred, case.doc.gt, case.doc.schema)
-    found = explain(case.pred, case.doc.gt, case.doc.schema) if verdicts else None
-    return Outcome("graded", None, summary, found)
+    result = grade(case.pred, case.doc.gt, case.doc.schema, verdicts=verdicts)
+    return Outcome("graded", None, result, result.pop("verdicts", None))
 
 
 def key_of(case: Case) -> dict:

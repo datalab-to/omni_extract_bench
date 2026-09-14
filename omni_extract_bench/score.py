@@ -708,7 +708,7 @@ def _both(pred: Any, gt: Any, schema: Any,
 
 
 def grade(pred: Any, gt: Any, schema: Any,
-          order_matters: Iterable[str] = ()) -> dict:
+          order_matters: Iterable[str] = (), verdicts: bool = False) -> dict:
     """Score one prediction against one ground truth.
 
     `schema` is only used to find `additionalProperties` objects, which are not graded.
@@ -762,6 +762,18 @@ def grade(pred: Any, gt: Any, schema: Any,
     50.0
     >>> r["misread"], r["unfound"], r["invented_item"]
     (0, 1, 1)
+
+    Pass `verdicts=True` to get the per-address view back in the same result, under
+    `"verdicts"`. Do that rather than calling `explain` separately: aligning the two documents
+    is nearly all of the work, so asking twice does it twice.
+
+    >>> r = grade({"a": 1}, {"a": 2}, {"properties": {"a": {"type": "number"}}},
+    ...           verdicts=True)
+    >>> [(show(v.address), v.gold, v.pred, v.verdict) for v in r["verdicts"]]
+    [('a', 2, 1, 'wrong value')]
+
+    It is off by default because it is not free in memory: one `Verdict` per address, and the
+    largest document in the benchmark corpus has 410,012 of them.
 
     That last line is worth reading twice. The wrong value is in a scalar array, whose
     elements have no identity to be wrong about -- they compare as a multiset. So it is not
@@ -821,6 +833,7 @@ def grade(pred: Any, gt: Any, schema: Any,
         "matching_exact": not inexact,
         "approximated": sorted(set(inexact), reverse=True),
         "skipped_open_maps": [show(a) for a in skipped],
+        **({"verdicts": _verdicts(gold, pred_addr, skipped, slots)} if verdicts else {}),
     }
     
 
@@ -837,6 +850,9 @@ class Verdict(NamedTuple):
 def explain(pred: Any, gt: Any, schema: Any,
             order_matters: Iterable[str] = ()) -> list[Verdict]:
     """List what happened at every address, so you can see why a score is what it is.
+
+    `grade(..., verdicts=True)` is the same work and also gives you the score; this is the
+    shorthand for when the score is not what you are after.
 
     One `Verdict` per address, in reading order. Anything skipped shows up too, as its own
     line, rather than quietly not appearing.
@@ -876,8 +892,17 @@ def explain(pred: Any, gt: Any, schema: Any,
     >>> round(grade(pred, gold, sch)["accuracy"], 1)   # the leaf view is kinder: 3 of 4
     75.0
     """
-    gold, pred_addr, _inexact, skipped = _both(pred, gt, schema, order_matters)
-    slots = _schema_leaves(schema)
+    return grade(pred, gt, schema, order_matters, verdicts=True)["verdicts"]
+
+
+def _verdicts(gold, pred_addr, skipped, slots) -> list:
+    """Build the per-address view from an already-aligned pair.
+
+    Split out so `grade` can return it from the pass it has already done. Aligning the two
+    documents is essentially all of the cost -- 44.85s against 44.08s on an 89,000-leaf
+    document -- so a caller that wanted a score and an explanation used to pay for the
+    matching twice.
+    """
     out = [Verdict(a, None, None, "skipped (open map)") for a in skipped]
     for a in sorted(set(gold) | set(pred_addr), key=_reading_order):
         if a in gold and a in pred_addr:

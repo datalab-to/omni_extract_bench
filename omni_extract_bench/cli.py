@@ -1,19 +1,23 @@
 """Command-line interface.
 
-    omni-extract-bench score --pred p.json --gt g.json --schema s.json
-    omni-extract-bench score-dir --pred-dir preds/ --gt-dir gt/ --schema-dir schemas/
-    omni-extract-bench leaderboard --pred-root baselines/ --gt-dir gt/ --schema-dir schemas/
+    omni-extract-bench bench   --predictions preds/ [--corpus DIR] [--out run/]
+    omni-extract-bench explain --predictions preds/ --doc <doc_id>
+    omni-extract-bench verify  --corpus DIR
+    omni-extract-bench score   --pred p.json --gt g.json --schema s.json
 
-`score-dir` pairs files by basename. `leaderboard` expects one sub-directory per provider
-under `--pred-root` and scores them all over the same document list, which is what makes the
-comparison fair: every provider is scored over an identical denominator, and a document a
-provider failed to return scores 0 rather than being dropped from its mean.
+`bench` is the one to reach for: a corpus is a directory of document directories, each holding
+`ground_truth.json` and `schema.json`, and predictions are `<doc_id>.json`. `--corpus` defaults
+to the published benchmark, and pointing it elsewhere is how you score against your own ground
+truth. See `docs/USING.md`.
+
+`score` is the single-pair escape hatch, for when there is no benchmark involved at all.
 
 A schema is required, and is passed through `strip_benchmark_keys` and `resolve_refs` first --
-the scorer refuses a schema it cannot see through. A document that cannot be scored at all is
-recorded and reported at the end rather than aborting the run, and is kept distinct from a
-document a provider simply did not return: those are a harness problem and a vendor problem,
-and reporting them together would hide the first as the second.
+the scorer refuses a schema it cannot see through.
+
+Two earlier commands, `score-dir` and `leaderboard`, took `--gt-dir` and `--schema-dir` and
+paired files by basename across flat per-type directories. They could not read the benchmark
+layout at all, so they were a second and incompatible way in. `bench` replaces both.
 
 NOTE: aggregation here is a flat mean over documents. METRIC_SPEC section 7 defines the
 published number as an equal-weight mean over SUBSETS, which needs the subset each document
@@ -89,34 +93,6 @@ def _score_one(pred_path, gt_path, schema_path):
         raise Failed(f"{type(exc).__name__}: {exc}") from exc
 
 
-def _score_or_note(pred_path, gt_path, schema_path, failures, stem):
-    """`_score_one`, with the failure recorded instead of raised."""
-    try:
-        return _score_one(pred_path, gt_path, schema_path)
-    except Failed as exc:
-        failures.append((stem, str(exc)))
-        return None
-
-
-def _mean(xs):
-    return sum(xs) / len(xs) if xs else 0.0
-
-
-def _report_failures(failures):
-    """Say which documents could not be scored, and why. Never swallow them.
-
-    A document that failed to score is not the same as a provider that returned nothing, and
-    reporting them together would hide a broken harness as a poor vendor.
-    """
-    if not failures:
-        return
-    print(f"\n{len(failures)} document(s) could not be scored:", file=sys.stderr)
-    for stem, why in failures[:20]:
-        print(f"   {stem}: {why}", file=sys.stderr)
-    if len(failures) > 20:
-        print(f"   ... and {len(failures) - 20} more", file=sys.stderr)
-
-
 def cmd_score(args):
     try:
         r = _score_one(args.pred, args.gt, args.schema)
@@ -127,88 +103,6 @@ def cmd_score(args):
         print("prediction is empty or errored -> scores 0")
         return 0
     print(json.dumps(r, indent=2))
-    return 0
-
-
-def _pairs(gt_dir, pred_dir, schema_dir):
-    for gt_file in sorted(Path(gt_dir).glob("*.json")):
-        stem = gt_file.stem
-        schema = Path(schema_dir) / f"{stem}.json" if schema_dir else None
-        yield stem, Path(pred_dir) / f"{stem}.json", gt_file, schema
-
-
-def cmd_score_dir(args):
-    # Three outcomes, kept apart on purpose. A provider that returned nothing scores 0 and
-    # stays in the mean, because dropping it would reward failing on hard documents. A
-    # document THIS harness could not score is not a measurement of the provider at all, so
-    # it is excluded from the mean and reported loudly. Merging the two would let a broken
-    # harness read as a poor vendor.
-    graded, empty, failures = [], [], []
-    for stem, pred, gt, schema in _pairs(args.gt_dir, args.pred_dir, args.schema_dir):
-        before = len(failures)
-        r = _score_or_note(pred, gt, schema, failures, stem)
-        if len(failures) > before:
-            continue
-        (graded if r else empty).append((stem, r))
-    total = len(graded) + len(empty) + len(failures)
-    if not total:
-        print(f"no ground-truth files found in {args.gt_dir}", file=sys.stderr)
-        return 1
-
-    print(f"  {'acc':>6} {'f1':>6} {'prec':>6} {'rec':>6}  {'fab':>4} {'inv':>4}  document")
-    for stem, r in sorted(graded, key=lambda x: x[1]["accuracy"]):
-        inv = r["invented_item"] + r["invented_field"]
-        print(f"  {r['accuracy']:6.2f} {r['f1'] * 100:6.2f} {r['precision'] * 100:6.2f}"
-              f" {r['recall'] * 100:6.2f}  {r['fabricated']:4} {inv:4}  {stem}")
-    for stem, _ in empty:
-        print(f"  {0.0:6.2f} {'':>6} {'':>6} {'':>6}  {'':>4} {'':>4}  {stem}"
-              f"   (no output -> 0)")
-
-    scores = [r["accuracy"] for _, r in graded] + [0.0] * len(empty)
-    measured = len(graded) + len(empty)
-    print(f"\ndocuments      {total}")
-    print(f"scored         {measured}   ({len(graded)} returned, {len(empty)} empty -> 0)")
-    if failures:
-        print(f"NOT SCORED     {len(failures)}   excluded from the mean -- harness, "
-              f"not vendor")
-    print(f"score          {_mean(scores):.2f}   over the {measured} scored")
-    print(f"on returned    {_mean([r['accuracy'] for _, r in graded]):.2f}")
-    _report_failures(failures)
-    return 0
-
-
-def cmd_leaderboard(args):
-    providers = sorted(p for p in Path(args.pred_root).iterdir() if p.is_dir())
-    if not providers:
-        print(f"no provider directories under {args.pred_root}", file=sys.stderr)
-        return 1
-    docs = [g.stem for g in sorted(Path(args.gt_dir).glob("*.json"))]
-    print(f"{'provider':22}{'score':>9}{'coverage':>10}{'on returned':>13}")
-    print("-" * 54)
-    table, failures = [], []
-    for prov in providers:
-        scores, returned = [], 0
-        for stem in docs:
-            schema = Path(args.schema_dir) / f"{stem}.json"
-            before = len(failures)
-            r = _score_or_note(prov / f"{stem}.json", Path(args.gt_dir) / f"{stem}.json",
-                               schema, failures, f"{prov.name}/{stem}")
-            if len(failures) > before:
-                continue                      # harness, not vendor -- see cmd_score_dir
-            # A document a provider did not return scores 0; it is never dropped from the
-            # mean, or a provider that fails on hard documents would look better than one
-            # that attempts them.
-            scores.append(r["accuracy"] if r else 0.0)
-            returned += 1 if r else 0
-        table.append((prov.name, _mean(scores), returned, len(scores),
-                      _mean([s for s in scores if s > 0])))
-    for name, score, ret, scored, on_ret in sorted(table, key=lambda t: -t[1]):
-        print(f"{name:22}{score:>9.2f}{f'{ret}/{scored}':>10}{on_ret:>13.2f}")
-    if failures:
-        print(f"\n{len(failures)} provider-document pair(s) not scored; those documents are "
-              f"excluded from the means above, so a provider's denominator may differ.",
-              file=sys.stderr)
-    _report_failures(failures)
     return 0
 
 
@@ -223,11 +117,6 @@ def main(argv=None):
     s.add_argument("--schema", required=True)
     s.set_defaults(fn=cmd_score)
 
-    d = sub.add_parser("score-dir", help="score a directory of predictions")
-    d.add_argument("--pred-dir", required=True)
-    d.add_argument("--gt-dir", required=True)
-    d.add_argument("--schema-dir", required=True)
-    d.set_defaults(fn=cmd_score_dir)
 
     # The corpus-level commands. These read the benchmark layout -- a directory per document
     # holding ground_truth.json and schema.json -- rather than the flat per-type directories
@@ -239,7 +128,7 @@ def main(argv=None):
     n.add_argument("--corpus", help="default: download the published benchmark")
     n.add_argument("--out", help="write summary.parquet and verdicts/ here")
     n.add_argument("--no-verdicts", action="store_true",
-                   help="skip the per-address table; roughly halves the time")
+                   help="skip the per-address table; saves memory, not much time")
     n.set_defaults(fn=_run.cmd_bench)
 
     e = sub.add_parser("explain", help="show every address for one document")
@@ -253,11 +142,6 @@ def main(argv=None):
     v.add_argument("--corpus", required=True)
     v.set_defaults(fn=_run.cmd_verify)
 
-    b = sub.add_parser("leaderboard", help="score every provider under a root directory")
-    b.add_argument("--pred-root", required=True)
-    b.add_argument("--gt-dir", required=True)
-    b.add_argument("--schema-dir", required=True)
-    b.set_defaults(fn=cmd_leaderboard)
 
     args = ap.parse_args(argv)
     return args.fn(args)
