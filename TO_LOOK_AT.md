@@ -821,12 +821,14 @@ Full list: `consensus.json` in the session scratchpad, with the vendor set per s
 **Known so far:** 73 suspects, and **at least 28 are gold errors provable from the schema's
 own text or the page** -- no judgement needed. A first pass called them annotation
 conventions; that was wrong, and the way it was wrong is worth recording (below). Two scorer
-gaps fell out as well. Nothing is fixed.
+gaps appeared to fall out as well, and both turned out to be false -- see below. Nothing is
+fixed.
 
 **Next:** fix the gold for the 28 settled cases and re-score -- no vendor calls, because the
 question put to the model did not change. Check the remaining 27 containment cases against
 their pages; they follow the same pattern. The 8 disjoint cases need a person with the
-document. The two date formats are a one-line scorer fix, also re-score only.
+document. Do NOT add the two date formats: one is worth two values, the other would make the
+scorer read section identifiers as dates.
 
 **A method error worth not repeating.** The first pass classified by string containment --
 one value contains the other, therefore a convention -- which silently assumed that where
@@ -890,14 +892,73 @@ and each needs a person with the document:
 7/8  due_unitization / due_subdivision   gold True   vendors False
 ```
 
-**Two scorer gaps fell out of it**, which is the most useful thing the audit produced:
+**Two apparent scorer gaps fell out of it, and BOTH were wrong.** Recorded because the way
+they were wrong is the same mistake twice.
 
-* `6 Apr 2025` does not parse as a date. `_DATEFMTS` carries `%d %B %Y` (`6 April 2025`),
-  `%b %d, %Y`, `%B %d, %Y`, `%d-%b-%Y` and `%d%b%Y` -- the space-separated day-first
-  ABBREVIATED form is the one member of the family missing. **384 gold values in 3
-  documents** fail to fold because of it.
-* `01.01.24` does not parse: `%d.%m.%y` is absent while `%d.%m.%Y` is present. 14 values.
+* `6 Apr 2025` does not parse as a date: `_DATEFMTS` has `%d %B %Y` (`6 April 2025`) but not
+  the abbreviated `%d %b %Y`. First measured as **384 gold values**. It is about **two**. 382
+  of the 384 are `entities.features.value` in the OFAC file -- a generic label/value pair
+  (*"label 'Website' value 'www.example.ru'"*), where a date-looking string is a feature's
+  printed text and not a date field. Counting strings by shape instead of asking which field
+  they sat in.
+* `01.01.24` does not parse: `%d.%m.%y` is absent. Adding it would be **actively harmful**.
+  `6.12.13`, `6.12.16` and `10.5.12` parse under it, and they are not dates -- they are
+  `assigned_section_ids` and `edited_section_ids`, *"numbered section identifiers (e.g.
+  '5.2.1.5')"*. The scorer would start folding two different section IDs into one value. The
+  detection that proposed the format produced the counter-example that kills it.
 
-Both are one-line additions, both are re-score-only, and both currently charge every vendor
-that writes a date the way the document prints it. Full list: `gold_errors.json` in the
-session scratchpad.
+So: add neither. What the exercise did produce is the question in METRIC_SPEC section 5.1 --
+**793 of the corpus's 1,258 date-ish fields say "verbatim" or "as printed"**, and only 12 are
+typed `format: date`, so the vendors could have returned the printed characters and chose not
+to. The fold is a leniency the corpus did not ask for on most of its date fields. It is kept
+anyway, for the reason 5.1 gives: a reformatted date loses nothing recoverable. That is a
+decision now, rather than an accident.
+
+Full list: `gold_errors.json` in the session scratchpad.
+
+---
+
+## 21. Lint the ground truth against its own schema
+
+**Known so far:** the idea is unimplemented, but its yield is already measured: it would have
+caught **16 of the 28** gold errors item 20 confirmed, mechanically and at annotation time,
+with no vendors involved. The keywords it needs are already present in the corpus, just unused
+for this.
+
+**Next:** write the linter. Start with the three checks that need nothing new -- `enum`
+membership, `format: date` parseability, `pattern` match -- and report violations per document.
+Then decide whether to ADD constraints to schemas that lack them, which is where the remaining
+yield is.
+
+The corpus already carries validating keywords, thinly:
+
+```
+enum      279 occurrences in 110 documents
+format     48 in 31        pattern  7 in 7        minimum/maximum  6 each
+```
+
+Nothing checks the ground truth against any of them. `meta.report_period_end_date` is declared
+`format: date` in several schemas and one gold value reads `2025-01-2025`. A `pattern` of
+`^FY\d{4}( (Q[1-4]|H[1-2]|YTD))?$` exists on `data_period` and is never verified.
+
+**Why this is the right home for constraints, and scoring is not.** METRIC_SPEC section 5.2
+now says the scorer enforces nothing the model was not shown, and `pattern`, `format` and
+`minimum` are stripped by `to_strict_dialect` -- a strict vendor never receives them, a
+permissive one may. Scoring against them would penalise vendors in proportion to how strict
+their API is. But the GROUND TRUTH is under no such constraint: it is ours, it is not being
+graded, and checking it against the schema it was written for is free.
+
+So the split is: `description` is the vendor-facing ask, `enum` is the one constraint that
+reaches the vendor AND validates, and everything else is annotation-side machinery for keeping
+the answer key honest.
+
+**The case that pays for it.** `employee_ssn`'s description says *"if the tail is fully
+masked, return exactly `XXX-XX-XXXX` (canonical 4-X form)"*. The gold writes `XXX-XX-XXXXX`,
+five X's, sixteen times across seven W-2 documents -- and every vendor returned the string the
+schema asked for and was marked wrong. A `pattern` of `^XXX-XX-(\d{4}|XXXX)$` on that field
+turns a prose instruction into a check that runs in milliseconds.
+
+**What it does not cover.** A linter checks shape, not truth. It would not have found the 63
+omitted slots in item 19, nor `meta.company` shortening `NIKE, Inc.` to `Nike` -- both are
+well-formed values that are simply wrong. Consensus finds those; a linter finds the ones the
+schema already knows how to describe. The two audits are complements.
