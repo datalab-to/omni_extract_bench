@@ -111,13 +111,17 @@ problem on top.
 
 ## 3. `contextual/10kq__nke_10q_fy2025q2` -- every vendor 48-58
 
-**Known so far:** the extras are identified and they are real balance-sheet line
-items, not noise. Whether the gold or the models are wrong is NOT established.
+**Known so far:** the extras are real balance-sheet line items, and the consensus audit
+(item 19) now says the gold is the incomplete side -- on this document **7 of 8 vendors
+produce an entire `short_term_debt` row with all six of its fields**, values agreeing. It
+is not one document either: `tho_10q` and `dell_10q` have the same shape.
 
-**Next:** open the Nike 10-Q and check whether `short_term_debt` actually has a value
-in the filing. If it does, the gold is incomplete and this document is mis-scoring
-every vendor. That single check decides the item. If the gold is right, the question
-becomes why four vendors invent the same line items.
+**Next:** open the Nike 10-Q and confirm `short_term_debt` is printed, which validates the
+audit's method as well as this document. Then fix the gold for all three 10-Qs and
+re-score -- a gold fix needs no vendor calls, because what the model was asked did not
+change. Note the fixed slots are only 1-6% of each document's addresses while the scores
+sit 30-40 points below these vendors' averages, so something ELSE is also wrong in these
+three and the item does not close when the gold is fixed.
 
 | vendor | accuracy | found |
 |---|---|---|
@@ -138,8 +142,21 @@ So the models are producing balance-sheet line items the ground truth does not r
 `short_term_debt` has a slot in the schema and no value in the gold, and the models fill
 it. Four vendors doing the same thing in the same places is more consistent with a gold
 file that captures a subset of the statement than with four models hallucinating the same
-line items. Worth checking the gold against the filing before treating this as a vendor
-result.
+line items.
+
+The full-corpus audit in item 19 settles the direction. Across all nine vendors this
+document carries **16** slots the schema declares, the gold never fills, and at least
+seven vendors do -- and they agree on the values:
+
+```
+7/8 vendors, 7 agree   balance_sheet.short_term_debt[*].value / unit / scale /
+                       data_period / segment_type / metric_type
+```
+
+Seven independent extractors do not invent a consistent six-tuple. `tho_10q` (12 slots,
+`accounts_receivable = 535137 usd thousands`) and `dell_10q` (6 slots,
+`other_disclosures.notional_swaps_value = 6564`) are the same finding on the same subset,
+which is what one annotation pass with a consistent omission looks like.
 
 Ruled out while looking: none of the 465 extras are `_citations`/`_meta` sidecars. Those
 suffixes appear all over datalab's output and are **not** counted as invented, so they are
@@ -734,3 +751,133 @@ response missing three quarters of its rows is invisible to all of it. Two cheap
 would have caught all four before they reached a board: rows returned against the peer
 median for that document, or pages covered against the document's own page span. Neither
 needs ground truth, so both could run at capture time.
+
+---
+
+## 19. Consensus audit: 63 slots the schema declares, the gold omits, and 7+ vendors fill
+
+**Known so far:** the method works and the omission half is measured -- 63 strong suspects
+across 25 documents, and it confirms item 3 on three documents rather than one. Nothing is
+fixed, and no suspect has been checked against a source document.
+
+**Next:** open ONE of them -- the Nike 10-Q `short_term_debt` is the obvious choice -- and
+confirm the value is printed. That single check validates the method for all 63. Then fix
+the gold and re-score; a gold fix needs no vendor calls, because the question put to the
+model did not change.
+
+**The question.** For every schema slot the ground truth leaves silent, how many independent
+vendors filled it? N vendors agreeing on a field the answer key lacks is far better explained
+by an incomplete answer key than by N identical hallucinations. It needs no new data: the
+predictions are already cached, and comparing SLOTS (`node_key` -- an address with array
+indices blanked) rather than addresses means no row alignment, so it is a `flatten` per
+document per vendor and runs in minutes.
+
+**The distribution is the result.** 12,356 slots are filled by >=4 vendors and never by gold,
+but almost all of that is one model talking to itself:
+
+```
+9 vendors:     7        4 vendors:   136
+8 vendors:    36        3 vendors:   199
+7 vendors:    66        2 vendors:   514
+                        1 vendor:  11,156
+```
+
+Of the 109 at >=7 vendors, **63 are near-unanimous on a specific value**, across **25
+documents**. The other 46 are excluded deliberately: a boolean `false`, an enum default, or
+vendors disagreeing on the value. Nine models agreeing a boolean is false may be nine models
+defaulting; nine agreeing a number is `1027.8` is not. That filter is the whole difference
+between a signal and a list.
+
+**Three 10-Qs dominate**, and they are one finding, not three:
+
+| document | slots | best vendor |
+| --- | --- | --- |
+| `contextual/10kq__nke_10q_fy2025q2` | 16 | 53.0 |
+| `contextual/10kq__tho_10q_fy2025q2` | 12 | 52.9 |
+| `contextual/10kq__dell_10q_fy2025q2` | 6 | 65.8 |
+
+In each, 7 of 8 vendors produce an entire balance-sheet line with all six of its metadata
+fields -- `value`, `unit`, `scale`, `data_period`, `segment_type`, `metric_type` -- for a line
+the gold does not carry. Same shape in all three: one annotation pass with a consistent
+omission.
+
+Two further clusters of the same kind: `comparable_vehicles[*].equipment_adjustments` across
+three vehicle-valuation documents (8/9 vendors, values like `-104.15` and
+`[B92] Body Colored Splash Guards 4 Piece`, 5-10% of those documents), and
+`form_8582.part_vii_allocations` / `part_iv_activities` in `extractbench/medium__cabrera-2023`
+(7/8 agreeing on `58937`, `-28305`, `-30632`).
+
+**What it does NOT say.** The three 10-Qs sit 30-40 points below these vendors' averages while
+the suspect slots are 1-6% of their addresses, so the omission is a component of those scores
+and not the explanation. And the audit sees omissions only -- a gold value that is WRONG is
+invisible to it, which is the mirror query.
+
+Full list: `consensus.json` in the session scratchpad, with the vendor set per slot.
+
+---
+
+## 20. The mirror audit: mostly unstated conventions and two scorer gaps, not gold errors
+
+**Known so far:** run, classified, and the headline is that it did NOT find what it went
+looking for. Of 73 suspects only 8 are plausibly a wrong gold value; the rest are annotation
+conventions the schema never states, plus two date formats the scorer cannot parse. Nothing
+is fixed.
+
+**Next:** three separable pieces, in cost order. (a) The two date formats are a scorer fix
+and re-score only -- do them. (b) `employee_ssn` is a gold typo repeated 16 times; fix it.
+(c) The convention cluster is a decision, not a repair: either state the convention in the
+field description or accept the vendors' reading. Section 10 already says which way this
+repo leans -- *"Conventions belong in the schema, so vendors are told rather than guessed
+at."*
+
+**The question**, mirroring item 19: where the gold HAS a value, do the vendors unanimously
+have a DIFFERENT one? A wrong gold value costs more than a missing one, because it is charged
+twice -- the gold address is unfound and the model's correct reading is a misread.
+
+Alignment-free by construction: it compares only slots occurring EXACTLY ONCE in gold and
+once in each vendor, so the address is unambiguous and no row pairing is involved. That covers
+document-level scalars and single-row arrays and says nothing about repeated rows, which is a
+real limit -- the whole-column cases item 19 found could not appear here.
+
+73 suspects at >=7 vendors near-unanimous, in 68 documents. Classified:
+
+| | |
+| --- | --- |
+| 55 | one value contains the other -- a convention, not an error |
+| 10 | overlapping but different -- needs a human |
+| 8 | disjoint -- one side is simply wrong |
+
+**Two of the 55 are not conventions at all.** `employee_ssn` appears 16 times with gold
+`XXX-XX-XXXXX` against every vendor's `XXX-XX-XXXX`: an SSN mask has four digits in the last
+group, so the gold has one X too many. That is a typo, repeated across seven W-2 documents.
+
+**The real convention cluster** is `meta.company` (6, gold `Nike` against `NIKE, Inc.`) and
+`terms.governing_law` (5, vendors say `State of New York`). The governing-law case is worth
+noting because **the gold is inconsistent with itself**: one document records `New York` and
+another `the State of New York` for the same clause. Whatever is decided, it should be decided
+once. `meta.company` lands on five of the seven 10-Qs, which are already the worst-scoring
+documents in `contextual`.
+
+**The eight disjoint cases** are the only candidates for a straightforward gold correction,
+and each needs a person with the document:
+
+```
+9/9  event_details.length                gold 50m    vendors 200m
+9/9  advisory_board_count                gold 5      vendors 6
+9/9  month_with_largest_overperformance  gold Jun    vendors May
+8/9  audit_signing_lag_months            gold 4      vendors 3
+8/9  earliest_referenced_year            gold 1980   vendors 1951
+7/8  due_unitization / due_subdivision   gold True   vendors False
+```
+
+**Two scorer gaps fell out of it**, which is the most useful thing the audit produced:
+
+* `6 Apr 2025` does not parse as a date. `_DATEFMTS` carries `%d %B %Y` (`6 April 2025`),
+  `%b %d, %Y`, `%B %d, %Y`, `%d-%b-%Y` and `%d%b%Y` -- the space-separated day-first
+  ABBREVIATED form is the one member of the family missing. **384 gold values in 3
+  documents** fail to fold because of it.
+* `01.01.24` does not parse: `%d.%m.%y` is absent while `%d.%m.%Y` is present. 14 values.
+
+Both are one-line additions, both are re-score-only, and both currently charge every vendor
+that writes a date the way the document prints it. Full list: `gold_errors.json` in the
+session scratchpad.
