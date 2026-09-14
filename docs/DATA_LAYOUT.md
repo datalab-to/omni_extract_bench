@@ -108,34 +108,53 @@ it is computed orphans every historical score, silently. Treat a change as a mig
 ### v1
 
 ```python
-def prediction_id_v1(payload: dict) -> str:
-    """Identifies the EXTRACTION, not the run that produced it."""
-    result = payload["result"] if "result" in payload else payload
-    canon = json.dumps(result, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canon.encode()).hexdigest()[:16]
+def prediction_id_v1(result_bytes: bytes) -> str:
+    """The extraction as stored, hashed. There is no envelope to see through."""
+    return hashlib.sha256(result_bytes).hexdigest()
 ```
 
-Three properties, all measured on the 5,936 real predictions:
+That is the whole definition, and it is only that short because the stored file holds the
+bare extraction: no `_secs`, no envelope, so no unwrap, no schema coupling, no
+canonicalisation spec. Anyone in any language can reproduce it from the file.
 
-**It survives a re-run.** The envelope carries `_secs`, which differs every time even when the
-extraction is byte-identical. Hashing the file or the whole envelope makes a re-run look like
-a new prediction, destroying the one property the id exists for:
+**The stored bytes are the vendor's, not ours.** `json.loads` discards byte offsets, so
+parsing a prediction and re-dumping it yields *our* formatting. Take the raw span instead --
+decode from the value's start index and keep what the decoder consumed:
 
+```python
+dec = json.JSONDecoder()
+i = text.index('"result"')
+j = text.index(":", i + len('"result"')) + 1
+while text[j] in " \t\r\n":
+    j += 1
+_obj, end = dec.raw_decode(text, j)
+verbatim = text[j:end]
 ```
-same extraction, different wall time
-  raw file bytes   964a87f8...  ->  d719b471...   changes
-  whole envelope   cdd0ef9a...  ->  41c2c433...   changes
-  result only      db32da34...  ->  db32da34...   stable
-```
 
-**It deduplicates.** 5,936 predictions carry only 4,868 distinct ids — 1,068 are exact
-duplicates of another, usually several vendors agreeing on an easy document. One is shared by
-six vendors. Under a content-addressed id that is one prediction scored once.
+Measured on all 5,936: every span parses equal to the value the whole file gives, zero
+failures, about eight seconds for the corpus. And **100% differ from a reserialised form** --
+every vendor writes `", "` where `json.dumps` writes `","`. So this is not an edge case to
+guard against, it is every file, and hashing a reserialised form would make the id describe
+our formatting rather than the vendor's output.
+
+Two further properties, measured on the same 5,936:
+
+**It survives a re-run.** The envelope carries `_secs`, which differs every time even when
+the extraction is byte-identical. Storing only the result means a re-run of the same
+extraction gets the same id, which is the property the whole thing exists for.
+
+**It deduplicates, but only byte-for-byte.** 5,936 predictions carry 5,016 distinct ids --
+920 are exact duplicates of another, and 343 of those are shared across vendors rather than
+within one. Under a content-addressed id that is one prediction scored once.
+
+Hashing a *canonicalised* form instead would find more -- 4,868 distinct, 1,068 duplicates --
+because it collapses vendors that agree on content while differing in whitespace. That is the
+price of v1 being the vendor's own bytes, and it is the right price: an id that describes what
+was actually stored is worth more than 148 extra matches. It does mean the dedup here is
+syntactic, and semantically identical predictions can carry different ids.
 
 **It is not a key on its own.** Three azure-cu ids appear under *different documents*, because
 its error payloads are identical whatever the input. **The key is `(doc_id, prediction_id)`.**
-
-Canonical JSON — sorted keys, no whitespace — makes it immune to reserialisation.
 
 ---
 
@@ -212,23 +231,6 @@ order-sensitivity automatically, instead of it surfacing as one document quietly
 
 ---
 
-## Row groups
-
-`pyarrow` sizes row groups by row COUNT, so content-sizing means slicing the table and making
-one `write_table` call per slice on an open `ParquetWriter` — each call starts a new group.
-
-Measured on 660 predictions, same data, same compression:
-
-```
-default        12.4 MB file   1 row group    largest 242.6 MB    75.7 ms per single-row read
-content-sized  12.4 MB file   9 row groups   largest  33.6 MB     9.8 ms
-```
-
-Eight times faster single-row reads at no size cost. It matters wherever cell sizes span
-orders of magnitude, which they do everywhere here.
-
----
-
 ## The failure this shape invites
 
 An atlas and its files can drift, and nothing notices. A row pointing at a deleted file, or a
@@ -254,3 +256,27 @@ are forgotten. `verify` catching the drift is the backstop.
 2. **`corpus.parquet` builder, with `verify`.** Both from the start.
 3. **Vendor atlas builder**, including the `_raw` fields.
 4. **Scores writer**, once the first two are trusted.
+
+---
+
+## What building it changed
+
+A throwaway converter was built first -- the whole corpus and one vendor, end to end -- to
+find what the design had wrong. Three things.
+
+**Row groups stopped mattering, and that section is gone.** It argued for content-sized row
+groups from a real measurement, 8x faster single-row reads, taken when payloads were embedded
+in the parquet. Once files hold the payloads the atlases are **35-64 KB** and the machinery
+has nothing to do. The probe made it obvious by sizing groups with `gt_bytes` -- a number
+describing data the table does not contain.
+
+**Conversion is seconds, not minutes.** 0.4s for 660 documents, 0.1s for a vendor, ~8s to
+extract every result span across all 5,936. It had been sized as a batch job worth scheduling;
+it is one fast pass and needs no resumability.
+
+**Verbatim extraction applies to every file, not a few.** 100% differ from a reserialised
+form, which turns a nicety into the reason the id means anything.
+
+Unchanged by contact: flat filenames (660/660 round-tripped, including the 28 with spaces and
+brackets), and `verify` catching all three drift modes -- a row with no file, a file with no
+row, and a **one-byte edit**, which is the one nothing else would notice.
