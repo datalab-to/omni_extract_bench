@@ -962,3 +962,56 @@ turns a prose instruction into a check that runs in milliseconds.
 omitted slots in item 19, nor `meta.company` shortening `NIKE, Inc.` to `Nike` -- both are
 well-formed values that are simply wrong. Consensus finds those; a linter finds the ones the
 schema already knows how to describe. The two audits are complements.
+
+## 22. Normalisation policy: change only what is egregious, and publish the leniency
+
+**Settled.** `canon_key` diverges from the upstream fold in exactly ONE place, and everything
+else upstream folds, this folds too.
+
+**The one divergence: leading zeros are kept.** Upstream runs
+`re.sub(r"\d+", lambda m: str(int(m.group())), s)`, stripping leading zeros inside every digit
+run. That is not a rendering difference, it is content:
+
+| | |
+| --- | --- |
+| `INV-007` == `INV-7` | two different invoices |
+| `02000` == `2000` | two different postal codes |
+| `06` == `6` | two different state codes |
+| `arXiv:2405.06211v3` == `arXiv:2405.6211v3` | two different papers |
+| `wenqifan03@gmail.com` == `wenqifan3@gmail.com` | two different people |
+
+Upstream's reason for the fold was `09. Mai` == `9. Mai` -- a day and a month name with no
+year, which our date recognisers do not parse anyway. Blast radius of removing it: **34 of 660
+documents** can move.
+
+**What was tried and reverted.** Keeping hyphens and internal periods looked principled and was
+measured to be wrong for this corpus:
+
+* **Hyphens.** Broke 526 matches in one Schedule I return alone
+  (`sched_i__akron_community_foundation`: 335 EINs, 187 ZIP+4s), costing three vendors ~15
+  points, because the gold writes them bare (`311440073`) and every model hyphenates
+  (`31-1440073`). A whitelist of fixed numeric formats was tried next and rejected: it missed
+  `case_number` (6,933 values), `rrc_id` (2,419) and `account_number` (486), and would need
+  extending for every format the corpus grows. It also could not tell `90-94` (2,163 range
+  values) from an identifier.
+* **Periods.** Folding them recovers **1,607** value matches across 660 documents and nine
+  vendors. 1,532 differ by punctuation ALONE (`PO BOX 125` / `P.O. BOX 125`, `FT LAUDERDALE` /
+  `FT. LAUDERDALE`); the other 75 are bibliography entries where the model kept its `[4] `
+  citation number. **Zero** credit a wrong value as right. Of the gold values the fold merges
+  inside a single field, all 215 have identical digit strings -- **zero** change a digit.
+
+**Why so little P1 is lost.** The protections worth having survive without punctuation, because
+they come from the leading-zero rule: `1:00.50` != `1:50`, `0.11%w/w` != `11%w/w`,
+`COM PAR $.001` != `COM PAR $.01`, `arXiv:2405.06211v3` != `arXiv:2405.6211v3`.
+
+**The bill, published.** Five collisions, listed in `tests/test_canon_properties.py` under
+`ACCEPTED_LENIENCY`, with a test asserting they still behave as priced:
+`5.2.1.5` = `5215` · `1.1%w/w` = `11%w/w` · `#30-2` = `#302` · `RR-2` = `RR2` · `90-94` = `9094`.
+
+That file now separates **leniency we chose** (`ACCEPTED_LENIENCY`, measured and priced) from
+**debt nobody chose** (`KNOWN_COLLISIONS`, 8 entries, all reaching the string fallback). Policy
+is stated in METRIC_SPEC 5.3; the upstream relationship is stated in `NOTICE`.
+
+**Method note.** The hyphen regression was caught only because all vendors dropped identically
+on the same documents -- a normalisation tightening that helps nobody and hurts everyone equally
+is the signature of a broken fold, not a stricter one. Worth checking for on any future change.

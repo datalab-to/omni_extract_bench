@@ -368,6 +368,52 @@ Two consequences worth naming:
   occurs sixteen times in this corpus. Their value is in checking the answer key, not in
   scoring the answer.
 
+### 5.3 Where the fold is lenient on purpose, and what that costs
+
+§5.1 says rendering folds and content does not. This says where that line was drawn *generously*,
+because a reader who finds `5.2.1.5` scoring equal to `5215` deserves to find it written down
+here rather than discover it in a number.
+
+**The policy.** Normalisation changes only where the current behaviour is egregious. Everywhere
+else this metric folds what the upstream metric folds, and the benefit of the doubt goes to the
+model. The reason is that this benchmark measures extraction, and a fold that is wrong in
+principle but harmless in this corpus costs the reader nothing while its removal costs real
+matches. Only one fold met the bar for removal:
+
+* **Leading zeros are kept.** Upstream strips them inside every digit run, making `INV-007` the
+  same as `INV-7`, `02000` the same as `2000`, and `wenqifan03@gmail.com` the same as
+  `wenqifan3@gmail.com`. Zero-padding is how a document says which identifier it means, so this
+  one is not a rendering difference at all -- it is content, and it is the one divergence.
+
+**What stays lenient, measured.** Whitespace, commas, hyphens and periods fold from anywhere in a
+value. That is wrong in principle -- two section identifiers can differ only by their dots -- and
+right here. Measured over all 660 documents against nine vendors:
+
+| | |
+| --- | --- |
+| value matches the punctuation fold recovers | 1,607 |
+| ...that differ by punctuation **alone** (`PO BOX 125` / `P.O. BOX 125`) | 1,532 |
+| ...that are the same bibliography entry with a `[4] ` citation number | 75 |
+| ...that credit a **wrong** value as right | 0 |
+| gold values it merges inside one field | 215 |
+| ...whose digit strings differ | 0 |
+
+The hyphen half of that was found the expensive way: keeping hyphens broke 526 matches in a
+single Schedule I return, where the gold writes EINs and ZIP+4s bare (`311440073`) and every
+model hyphenates them (`31-1440073`), costing three vendors roughly fifteen points on that
+document for nothing.
+
+**The bill.** Five collisions, enumerated in `tests/test_canon_properties.py` under
+`ACCEPTED_LENIENCY`, where a test asserts they still behave as priced:
+
+`5.2.1.5` = `5215` · `1.1%w/w` = `11%w/w` · `#30-2` = `#302` · `RR-2` = `RR2` · `90-94` = `9094`
+
+**How little P1 this actually gives up** is the reason it is affordable. `1:00.50` and `1:50`
+stay distinct; so do `0.11%w/w` and `11%w/w`, `COM PAR $.001` and `COM PAR $.01`, and
+`arXiv:2405.06211v3` and `arXiv:2405.6211v3`. None of them is protected by punctuation. All of
+them are protected by keeping leading zeros -- which is why that divergence earns its place and
+the punctuation ones did not.
+
 ## 6. Ground truth adjustments
 
 Applied uniformly, before scoring, to every vendor alike.
