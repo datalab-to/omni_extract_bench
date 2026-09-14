@@ -267,21 +267,44 @@ Not built yet. The measurements are recorded so the decision does not have to be
 
 ### `vendors/<vendor>.parquet`
 
-One row per document. Half of this exists today only inside `_raw/` objects nobody mounts.
+One row per document the vendor returned. Coverage is ragged and the table says so: azure-cu
+and gpt are missing one document each, claude two, because nothing was written for them.
 
 ```
-doc_id            prediction_id     uri              bytes
-secs              recovered_after_timeout            usable      error
-timeout_s         tier              model            wall_s      http_status
+doc_id        prediction_id     bytes
+secs          recovered_after_timeout      usable      error
 ```
 
-`timeout_s`, `tier` and `model` come from `_raw/run_manifest`; it is what made the retry
-policy recoverable after the runner itself could not be found. The atlas **summarises**
-`_raw/` rather than replacing it — the full records stay in R2.
+`prediction_id` doubles as the payload's checksum, so there is no separate hash column and
+`verify` needs nothing extra.
 
-One table per vendor because vendors are produced independently and vary 29x in size
-(datalab 233 MB, gemini 8 MB). Adding one should not rewrite the others, and it is the natural
-shard boundary for a remote run.
+**Run metadata is a stamp, not columns.** `timeout_s`, `model`, `max_output_tokens` and
+`captured_at` live in the parquet's own metadata:
+
+```
+{'vendor': 'gpt_full', 'timeout_s': '1800', 'model': 'openai/gpt-5.6-sol',
+ 'max_output_tokens': '64000', 'captured_at': '2026-08-21T22:21:44',
+ 'prediction_id_version': 'v1', 'rows': '659', 'built': '...'}
+```
+
+They sit in `_raw/`, and sampling showed they are run- and vendor-level constants rather than
+facts about a document: `timeout_s` is **1800 across all 5,940**, `model` is fixed per vendor,
+and `cost.wall_s` duplicates the envelope's `_secs`. So the builder reads **one** `_raw`
+object per vendor instead of 660 -- the difference between nine requests and **1,084 MB**.
+
+`tier` is deliberately absent. It reads like a fact and is not: gpt's records carry two
+different hand-written descriptions of the identical model `openai/gpt-5.6-sol`, so it is
+prose about a run, not an attribute of one.
+
+### Storing the bare result is about identity, not size
+
+Stripping the envelope saves nothing. Measured across all 5,936: **582 MB in, 582 MB out,
+0.0% smaller**, because `{"result": ..., "_secs": N}` is a few dozen bytes against files
+averaging 98 KB.
+
+The reason to do it is that a file holding only the extraction has nothing to unwrap, so
+`prediction_id` is a plain hash with no rule to agree on and no schema to consult. Two bugs
+this week came from unwrap rules guessing wrong; this removes the category.
 
 ### `scores/<scorer_commit>.parquet`
 
