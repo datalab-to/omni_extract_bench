@@ -12,11 +12,19 @@ longextract_bench
   Licensed under the MIT License; the full licence text is retained at
   LICENSE-longextract_bench.
 
-  Three functions are included, copied verbatim into omni_extract_bench/normalize.py and
-  marked there: `canonical` (as `_upstream_canonical`), `unwrap`, and
-  `_drop_datalab_sidecars`. They are copied rather than reimplemented so that scores
-  produced here remain identical to the upstream metric on the same inputs --
-  reimplementing string normalisation risks silent divergence.
+  Three functions are included, in omni_extract_bench/values.py and marked there:
+  `canonical` (as `_upstream_canonical`), `unwrap`, and `_drop_datalab_sidecars`. They were
+  copied rather than reimplemented so that scores produced here would remain identical to the
+  upstream metric on the same inputs.
+
+  `_upstream_canonical` has since DIVERGED, in two places, each marked `DIVERGENCE FROM
+  UPSTREAM` in the source with its evidence. Upstream strips whitespace, commas, hyphens and
+  periods from anywhere in a value, and strips leading zeros inside every digit run. Both
+  destroy content rather than spelling on this corpus -- `A-01` == `A01`, `5.2.1.5` == `5215`,
+  the swim times `1:00.50` == `1:50`, the concentrations `0.11%w/w` == `1.1%w/w` == `11%w/w`,
+  and `INV-007` == `INV-7`. Whitespace and commas are still folded everywhere; a period only
+  when trailing; hyphens and leading zeros are kept. `unwrap` and `_drop_datalab_sidecars`
+  remain verbatim.
 
   The full grader was vendored at omni_extract_bench/vendor/longextract_bench/ until these
   three were the only parts still reachable from the scoring path. Nothing else from it is

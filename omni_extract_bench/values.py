@@ -85,15 +85,43 @@ def _upstream_canonical(v: Json) -> str:
     ):
         s = s.replace(a, b)
     num = s.replace(",", "").replace("$", "").replace("%", "")
-    try:
-        f = float(num)
-        return str(int(f)) if f == int(f) else str(f)
-    except ValueError:
-        pass
+    # DIVERGENCE FROM UPSTREAM: a zero-PADDED integer is not a number here, it is an
+    # identifier. `02000` and `2000` are different postal codes, `06` and `6` different state
+    # codes; padding is how a document says which. `0` and `0.5` are unaffected -- the guard
+    # is a leading zero followed by another digit.
+    if not re.match(r"-?0\d", num.strip()):
+        try:
+            f = float(num)
+            return str(int(f)) if f == int(f) else str(f)
+        except ValueError:
+            pass
     if re.sub(r"\s+", " ", s) in _PLACEHOLDERS:
         return ""
-    s = re.sub(r"[\s,\-.]", "", s)
-    return re.sub(r"\d+", lambda m: str(int(m.group())), s)
+    # DIVERGENCE FROM UPSTREAM. This was `re.sub(r"[\s,\-.]", "", s)` -- whitespace, commas,
+    # hyphens and periods removed from anywhere in the value. Two of those four destroy
+    # content rather than spelling, because a hyphen or an internal period is how documents
+    # build identifiers:
+    #
+    #     A-01 == A01        5.2.1.5 == 5215        1:00.50 == 1:50 (two swim times)
+    #     #30-2 == #302      0.11%w/w == 1.1%w/w == 11%w/w (three drug concentrations)
+    #
+    # Whitespace still goes everywhere -- PDF extraction invents it mid-word, which is the
+    # `Inst itutional` case. Commas still go everywhere: they separate thousands, and in a
+    # name they are noise (`101 SECOND STREET, INC.`). A period goes only when TRAILING,
+    # which is all the original case needed (`Table B-1.`).
+    #
+    # `tests/test_canon_properties.py` P1 is what this serves, and its KNOWN_COLLISIONS list
+    # is where the evidence sits.
+    s = re.sub(r"[\s,]", "", s)
+    s = s.rstrip(".")
+    # DIVERGENCE FROM UPSTREAM: this line was
+    # `re.sub(r"\d+", lambda m: str(int(m.group())), s)`, stripping leading zeros inside every
+    # digit run. Upstream's reason was `09. Mai` == `9. Mai`, and the cost of keeping it is
+    # `INV-007` == `INV-7`, `arXiv:2405.06211v3` == `arXiv:2405.6211v3`,
+    # `COM PAR $.001` == `COM PAR $.01`. Padding is how a document distinguishes identifiers,
+    # so P1 outranks the one rendering case it was serving -- and that case is a date our
+    # recognisers do not parse anyway (a day and a month name, no year).
+    return s
 
 
 def unwrap(o: Json) -> Json:
