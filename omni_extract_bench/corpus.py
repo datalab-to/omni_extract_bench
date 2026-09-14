@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path, PurePosixPath
-from typing import Iterable, NamedTuple
+from typing import Iterable, NamedTuple, Sequence
 
 #: Characters that make a doc_id unusable as a directory name. The layout has no suite level,
 #: so uniqueness and filename-safety stop being free and have to be asserted.
@@ -248,7 +248,7 @@ def check_doc_id(doc_id: str) -> None:
             raise ValueError(f"doc_id contains {ch!r}, unusable as a filename: {doc_id!r}")
 
 
-def check_unique(doc_ids) -> None:
+def check_unique(doc_ids: Iterable[str]) -> None:
     """Fail loudly on duplicates.
 
     With the suite directory gone, two documents sharing an id would silently overwrite each
@@ -266,7 +266,8 @@ def check_unique(doc_ids) -> None:
         raise ValueError(f"{len(dupes)} duplicate doc_id(s): {sorted(set(dupes))[:5]}")
 
 
-def verify(expected, root: Path, patterns=("**/*.json",)) -> list[str]:
+def verify(expected: Iterable[tuple[str, str]], root: Path,
+           patterns: Sequence[str] = ("**/*.json",)) -> list[str]:
     """Check an atlas against the files it describes, in both directions.
 
     An atlas and its payloads can drift with nothing noticing: a row pointing at a deleted

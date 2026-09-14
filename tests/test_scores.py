@@ -35,13 +35,11 @@ import pyarrow.parquet as pq
 
 _ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 _sys.path.insert(0, _ROOT)
-_sys.path.insert(0, _os.path.join(_ROOT, "scripts"))
 from omni_extract_bench import corpus as corpus_atlas                   # noqa: E402
 from omni_extract_bench.corpus import version as corpus_version         # noqa: E402
-from build_scores import KEY, check_dedup, scorer_version, survey       # noqa: E402
+from omni_extract_bench.run import scorer_version                       # noqa: E402
 
 FAILS = []
-BUILD = _os.path.join(_ROOT, "scripts", "build_scores.py")
 SCHEMA = {"type": "object", "properties": {"n": {"type": "number"}, "s": {"type": "string"}}}
 
 
@@ -80,19 +78,27 @@ class Bench:
                          "prediction_id": hashlib.sha256(raw).hexdigest(), "usable": True})
         pq.write_table(pa.Table.from_pylist(rows), vd / "predictions.parquet")
 
-    def build(self, *extra):
+    def build(self, *extra, source="acme", out=None):
         r = subprocess.run(
-            [_sys.executable, BUILD, "--corpus", str(self.corpus), "--vendors",
-             str(self.vendors), "--out", str(self.out), "--jobs", "1", *extra],
-            capture_output=True, text=True)
+            [_sys.executable, "-m", "omni_extract_bench.cli", "score",
+             "--corpus", str(self.corpus), "--predictions", str(self.vendors / source),
+             "--out", str(out or self.out / source), "--jobs", "1", *extra],
+            capture_output=True, text=True, cwd=_ROOT)
         return r.returncode, r.stdout + r.stderr
+
+    def dir_for(self, source="acme"):
+        return self.out / source
 
     @property
     def dir(self):
-        return next(p for p in (self.out / "scores").glob("*/dirty"))
+        return self.out / "acme"
 
-    def summary(self):
-        return pq.read_table(self.dir / "summary.parquet").to_pylist()
+    def summary(self, source="acme"):
+        return pq.read_table(self.out / source / "summary.parquet").to_pylist()
+
+    def stamp(self, source="acme"):
+        m = pq.read_schema(self.out / source / "summary.parquet").metadata
+        return {k.decode(): v.decode() for k, v in m.items()}
 
     def verdict_files(self):
         return {f.name: f.stat().st_mtime_ns
@@ -111,22 +117,33 @@ try:
     git("init", "-q"); git("config", "user.email", "t@t"); git("config", "user.name", "t")
     (tmp / "a.py").write_text("x = 1\n")
     git("add", "."); git("commit", "-qm", "one")
-    name, stamp = scorer_version(tmp)
-    report("a clean tree is named by its commit",
-           name == stamp["scorer_commit"] and len(name) == 40)
+    stamp = scorer_version(tmp)
+    report("a clean tree records its commit", len(stamp["scorer_commit"]) == 40)
+
+    report("a clean tree is recorded as clean", stamp["scorer_dirty"] == "False")
 
     (tmp / "a.py").write_text("x = 2\n")
-    dirty_name, _ = scorer_version(tmp)
-    report("a modified tree is named `dirty`, not a commit", dirty_name == "dirty")
+    report("an edited tree is recorded as dirty, not given a different name",
+           scorer_version(tmp)["scorer_dirty"] == "True")
+    note("a commit alone would be a claim the working tree cannot support")
 
     git("checkout", "--", "a.py")
     (tmp / "b.py").write_text("shadow = True\n")
-    report("an untracked file counts as dirty", scorer_version(tmp)[0] == "dirty")
+    report("an untracked file counts as dirty",
+           scorer_version(tmp)["scorer_dirty"] == "True")
     note("git diff cannot see it, but a stray module changes what gets imported")
 
-    again, _ = scorer_version(tmp)
-    report("the dirty name is stable across runs", again == "dirty")
-    note("a timestamp here meant nothing was ever current and incremental never engaged")
+    # Someone who vendors this into their own project, or commits their virtualenv, must not
+    # have every edit anywhere in their tree reported as a change to the scorer -- nor have
+    # merely importing it, which writes __pycache__, do the same.
+    from omni_extract_bench.run import _is_artifact
+    report("a .pyc is not a source change",
+           _is_artifact("?? vendor/omni_extract_bench/__pycache__/x.cpython-311.pyc")
+           and _is_artifact("?? pkg/x.pyc"))
+    report("...but a real file is",
+           not _is_artifact(" M vendor/omni_extract_bench/values.py"))
+    note("importing the package would otherwise mark it modified in any project "
+         "that has not ignored __pycache__")
 finally:
     shutil.rmtree(tmp)
 
@@ -138,51 +155,48 @@ try:
     b.vendor("acme", {"alpha": {"n": 1, "s": "x"}})
     b.vendor("brand", {"alpha": {"n": 1, "s": "WRONG"}})
     code, log = b.build()
-    report("a first run scores everything", code == 0 and len(b.summary()) == 2, log[-200:])
-    v1 = b.dir.parent.name
-    report("the corpus version is in the path", len(v1) == 16, v1)
+    report("a first run scores this source's predictions",
+           code == 0 and len(b.summary()) == 1, log[-200:])
+    v1 = b.stamp()["corpus_version"]
+    report("the corpus version is stamped on the table", len(v1) == 16, v1)
+    note("in the metadata, not the path: --out is exactly what you asked for")
 
     code, log = b.build()
-    report("the same corpus and scorer are not scored twice",
+    report("the same corpus, scorer and source are not scored twice",
            code == 1 and "already have an answer" in log, log[-200:])
-    note("a finished table is the answer; rescoring can only agree or reveal a bug")
+    note("one rule, no exception for dirty: iterating means pointing --out elsewhere")
 
-    code, log = b.build("--recheck")
-    report("--recheck reproduces it", code == 0 and "0 differ" in log, log[-200:])
+    # Scoring the same thing again is a second run and a join, not a verb on the tool.
+    code, log = b.build(out=b.out / "again")
+    first, again = b.summary(), b.summary("again")
+    report("scoring the same inputs twice gives the same numbers",
+           code == 0 and [r["accuracy"] for r in first] == [r["accuracy"] for r in again],
+           log[-200:])
+    note("comparing two runs is a join on (doc_id, prediction_id); there is no --recheck")
 
     b.doc("beta", {"n": 2, "s": "y"})            # no predictions for it yet
-    code, log = b.build()
-    v2 = sorted(p.name for p in (b.out / "scores").iterdir())
-    report("adding a document makes a different corpus version",
-           len(v2) == 2 and v1 in v2, str(v2))
-    report("...and the previous version is still there, untouched", (b.out / "scores" / v1).exists())
+    code, log = b.build(out=b.out / "v2")
+    v2 = b.stamp("v2")["corpus_version"] if (b.out / "v2" / "summary.parquet").exists() else None
+    report("adding a document makes a different corpus version", v2 not in (None, v1),
+           f"{v1} -> {v2}")
+    report("...and the previous run is still there, untouched",
+           b.stamp()["corpus_version"] == v1)
     note("versions are comparable within one and visibly incomparable across two")
 
     b.doc("alpha", {"n": 99, "s": "x"})          # the gold was wrong; fix it
-    code, log = b.build()
+    code, log = b.build(out=b.out / "v3")
     report("correcting a ground truth makes a different corpus version too",
-           len(list((b.out / "scores").iterdir())) == 3)
+           b.stamp("v3")["corpus_version"] not in (v1, v2))
 
     b.doc("alpha", {"n": 1, "s": "x"})           # put it back
-    b.doc("beta", {"n": 2, "s": "y"})
-    code, log = b.build()
-    report("restoring the corpus returns to its own version, already answered",
-           code == 1 and "already have an answer" in log, log[-160:])
+    code, log = b.build(out=b.out / "v4")
+    report("restoring the corpus returns to its own version",
+           b.stamp("v4")["corpus_version"] == v2, b.stamp("v4")["corpus_version"])
     note("the version is a hash of the contents, so it is a fact rather than a counter")
 
-    # ── genuine non-determinism IS caught ─────────────────────────────────────────────
-    d = b.out / "scores" / v1 / "dirty"
-    rows = pq.read_table(d / "summary.parquet").to_pylist()
-    rows[0]["accuracy"] = 12.5
-    pq.write_table(pa.Table.from_pylist(rows), d / "summary.parquet")
-    b.doc("alpha", {"n": 1, "s": "x"})
-    for extra in (b.corpus / "beta",):
-        shutil.rmtree(extra)
-    b.doc("alpha", {"n": 1, "s": "x"})           # back to exactly v1
-    code, log = b.build("--recheck")
-    report("--recheck catches a score that changed on identical inputs",
-           code == 1 and "NON-DETERMINISM" in log, log[-300:])
-    note("this is the check that would have caught the greedy order-sensitivity")
+    # Non-determinism itself is guarded where it can be guarded properly:
+    # tests/test_pairing_determinism.py shuffles both sides of 600 generated documents. A
+    # rescore-and-diff verb would only ever re-check what a run happened to cover.
 finally:
     shutil.rmtree(tmp)
 
@@ -205,42 +219,41 @@ report("CURATING A DOCUMENT OUT changes the version",
        corpus_version(a) != corpus_version(a[:1]))
 note("a filtered corpus is a different benchmark, and its scores belong somewhere else")
 
-# ── dedup, and the assumption under it ────────────────────────────────────────────────
+# ── one prediction set per run, and the path says which ──────────────────────────────
 tmp = Path(tempfile.mkdtemp())
 try:
     b = Bench(tmp)
-    b.doc("big", {"n": 1, "s": "x"})
-    b.doc("small", {"n": 2, "s": "y"})
-    for v in ("alpha", "beta"):
-        b.vendor(v, {"big": {"n": 1, "s": "x"}, "small": {"n": 9, "s": v}})
-    work, paths, _awaiting, _v, _s = survey(b.corpus, b.vendors)
-    total = sum(len(p) for p in paths.values())
-    distinct = sum(len(w.preds) for w in work)
-    report("two vendors emitting identical bytes are scored once",
-           total == 4 and distinct == 3, f"{distinct} of {total}")
-    report("work is grouped by document, not by prediction",
-           len(work) == 2 and all(isinstance(w.preds, tuple) for w in work))
-    note("the document is the unit: one parse of the gold, one verdict file, one journal batch")
-    report("byte-identical predictions under one key pass the dedup check",
-           check_dedup(paths) == 0)
+    b.doc("alpha", {"n": 1, "s": "x"})
+    b.vendor("acme", {"alpha": {"n": 1, "s": "x"}})
+    b.vendor("brand", {"alpha": {"n": 1, "s": "WRONG"}})
+    code, log = b.build(source="acme")
+    report("a run lands exactly where --out says", code == 0
+           and (b.out / "acme" / "summary.parquet").exists(), log[-200:])
 
-    (b.vendors / "beta" / "big.json").write_bytes(b'{"n": 1, "s":  "x"}')
-    _w, paths, _a, _v, _s = survey(b.corpus, b.vendors)
-    report("a key whose files are NOT identical is caught", check_dedup(paths) == 1)
-    note("without this, one vendor's score is attributed to another's prediction")
+    code, log = b.build(source="brand")
+    runs = sorted(p.name for p in b.out.iterdir())
+    report("a second prediction set is a second run, not a second column",
+           runs == ["acme", "brand"], str(runs))
+    note("all three things that decide a score are path components")
 
-    pq.write_table(pa.Table.from_pylist([
-        {"doc_id": "ghost", "prediction_id": "z" * 64, "usable": True}]),
-        b.vendors / "alpha" / "predictions.parquet")
-    _w, _p, _a, _v, skipped = survey(b.corpus, b.vendors)
-    report("a prediction whose document is not in the atlas is skipped, not fatal",
-           skipped == ["ghost"], str(skipped))
-    note("curating a document out leaves its predictions behind; that is normal")
+    a = pq.read_table(b.dir / "summary.parquet").to_pylist()
+    other = b.summary("brand")
+    report("the same document scores differently for different predictions",
+           a[0]["accuracy"] != other[0]["accuracy"],
+           f"{a[0]['accuracy']} vs {other[0]['accuracy']}")
+    report("no source column: the path carries it",
+           "source" not in a[0], str(sorted(a[0])[:6]))
+
+    # Identical bytes from two sources are scored twice, on purpose.
+    b.vendor("copy", {"alpha": {"n": 1, "s": "x"}})
+    code, log = b.build(source="copy")
+    c = b.summary("copy")
+    report("byte-identical predictions from two sources both get scored",
+           c[0]["prediction_id"] == a[0]["prediction_id"]
+           and c[0]["accuracy"] == a[0]["accuracy"])
+    note("deduplicating them saved 12.4% and cost a table where count(*) was not the count")
 finally:
     shutil.rmtree(tmp)
-
-report("the row key carries the gold and the schema, not just the prediction",
-       KEY == ("doc_id", "prediction_id", "gt_sha256", "schema_sha256"), str(KEY))
 
 print(f"\n{'SCORES TABLE HOLDS' if not FAILS else 'FAILURES:'}")
 for f in FAILS:

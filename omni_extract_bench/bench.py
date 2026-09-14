@@ -36,10 +36,10 @@ import difflib
 import hashlib
 import json
 from pathlib import Path
-from typing import Iterable, Iterator, NamedTuple
+from typing import Any, Iterable, Iterator, NamedTuple
 
 from . import corpus as corpus_atlas
-from .corpus import GROUND_TRUTH, SCHEMA, Stale
+from .corpus import GROUND_TRUTH, SCHEMA, Entry, Stale
 from .harness.dialects import resolve_refs, strip_benchmark_keys
 from .harness.prediction_io import usable
 from .score import grade, show
@@ -113,7 +113,7 @@ def prediction_id(result_bytes: bytes) -> str:
     return hashlib.sha256(result_bytes).hexdigest()
 
 
-def document(root: Path, entry) -> Document:
+def document(root: Path, entry: Entry) -> Document:
     """Load one document named by an atlas row, checking it is what the atlas says.
 
     Takes an entry rather than a bare id so a worker can load exactly what it was handed
@@ -163,6 +163,11 @@ def documents(root: Path) -> Iterator[Document]:
         yield document(root, entry)
 
 
+#: A prediction set may carry one of these beside its payloads. Optional: its columns are
+#: added to the rows for that source, and nothing needs it to be there.
+PREDICTION_META = "predictions.parquet"
+
+
 def predictions(root: Path) -> Iterator[tuple[str, bytes]]:
     """`<doc_id>.json` for each prediction, as bytes.
 
@@ -178,6 +183,51 @@ def predictions(root: Path) -> Iterator[tuple[str, bytes]]:
         raise NotADirectoryError(f"predictions {root} is not a directory")
     for f in sorted(root.glob("*.json")):
         yield f.stem, f.read_bytes()
+
+
+def prediction_meta(root: Path) -> tuple[dict, list[str]]:
+    """Whatever a prediction set records about its own predictions, by doc_id.
+
+    How long a vendor took, whether it was recovered after a timeout, what it cost: facts about
+    producing the prediction rather than about scoring it. They belong on the row, and nothing
+    here can compute them.
+
+    Optional by design. Our runs carry it because `build_vendors.py` writes one; someone
+    scoring a directory of JSON they just produced has nothing to carry and should not have to
+    invent a manifest to be scored.
+
+    Returns the metadata and the column names dropped for colliding with ours -- `error` means
+    the vendor's failure on one side and a scoring failure on the other, and silently letting
+    either win would make a column mean two things.
+    """
+    path = Path(root) / PREDICTION_META
+    if not path.exists():
+        return {}, []
+    import pyarrow.parquet as pq
+
+    rows = pq.read_table(path).to_pylist()
+    ours = set(SUMMARY_COLUMNS)
+    collided = sorted({k for r in rows for k in r} & ours - {"doc_id"})
+    return ({r["doc_id"]: {k: v for k, v in r.items() if k not in ours} for r in rows},
+            collided)
+
+
+def cost(node: Any) -> int:
+    """Roughly what a ground truth will cost to score: its longest array.
+
+    The scorer solves an assignment problem per array, so the biggest one dominates. Used to
+    schedule longest-first, because the spread is extreme -- a median document in the published
+    corpus has 6 array rows and the largest has 26,725, so any other order finishes the cheap
+    work and then waits on one straggler.
+
+    Computed from the JSON rather than read from an atlas column: it takes half a second across
+    660 documents, and an atlas that must carry it is an atlas anyone else has to produce.
+    """
+    if isinstance(node, dict):
+        return max((cost(v) for v in node.values()), default=0)
+    if isinstance(node, list):
+        return max(len(node), max((cost(v) for v in node), default=0))
+    return 0
 
 
 def cases(docs: Iterable[Document], preds: Iterable[tuple[str, bytes]]) -> Iterator[Case]:
@@ -229,6 +279,16 @@ def score(case: Case, verdicts: bool = True) -> Outcome:
         # Ours, not theirs: a schema this scorer cannot see through, or a bug here.
         return Outcome("failed", f"{type(exc).__name__}: {exc}", None, None)
     return Outcome("graded", None, result, result.pop("verdicts", None))
+
+
+#: Column names this module owns on a summary row. A prediction set's own metadata may not
+#: use them, because each would then mean two different things depending on the row.
+SUMMARY_COLUMNS = frozenset({
+    "doc_id", "prediction_id", "gt_sha256", "schema_sha256", "kind", "error",
+    "accuracy", "f1", "precision", "recall", "found", "read_right", "matched", "total",
+    "asserted", "misread", "unfound", "fabricated", "invented_item", "invented_field",
+    "gt_rows", "pred_rows", "matched_rows", "matching_exact",
+})
 
 
 def key_of(case: Case) -> dict:

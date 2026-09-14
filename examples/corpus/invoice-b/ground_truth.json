@@ -1,0 +1,9 @@
+{
+  "vendor": "Globex Ltd",
+  "invoice_date": "2024-02-29",
+  "total": 480.50,
+  "lines": [
+    {"sku": "B-7", "qty": 3, "price": 120.0},
+    {"sku": "B-8", "qty": 1, "price": 120.5}
+  ]
+}

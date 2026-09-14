@@ -1,0 +1,9 @@
+{
+  "vendor": "Acme Corp",
+  "invoice_date": "2024-01-15",
+  "total": 1250.00,
+  "lines": [
+    {"sku": "W-1", "qty": 2, "price": 500.0},
+    {"sku": "W-2", "qty": 1, "price": 250.0}
+  ]
+}
