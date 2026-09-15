@@ -237,9 +237,13 @@ def fetch(value: str, tmp: Path | None, name: str, wanted, endpoint: str | None)
     if not s3.is_uri(value):
         return Path(value)
     into = tmp / name
-    files, total = s3.download(value, into, wanted, endpoint)
-    print(f"  {name}: {files} files, {total / 1e6:.1f} MB from {value}")
-    return into
+    # `--corpus` may name ONE ATLAS rather than the directory holding it -- locally that is
+    # how a subset is run, and a prefix has to mean the same thing. The directory is what
+    # comes down either way, because an atlas names files beside itself.
+    prefix, atlas = value.rsplit("/", 1) if value.endswith(".parquet") else (value, None)
+    files, total = s3.download(prefix, into, wanted, endpoint)
+    print(f"  {name}: {files} files, {total / 1e6:.1f} MB from {prefix}")
+    return into / atlas if atlas else into
 
 
 def cmd_score(args: Namespace) -> int:

@@ -152,6 +152,26 @@ with mock_aws():
         report("but staging fetched 5 of the prefix's 7 objects, leaving both PDFs",
                "corpus: 5 files" in fetched, fetched.strip() or out.strip()[:300])
 
+        print("\nA PREFIX CAN NAME ONE ATLAS, THE WAY A LOCAL PATH CAN")
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from omni_extract_bench import corpus as corpus_atlas
+        full = pq.read_table(corpus / corpus_atlas.ATLAS).to_pylist()
+        pq.write_table(pa.Table.from_pylist([r for r in full if r["doc_id"] == "one"]),
+                       corpus / "just-one.parquet")
+        report("one file uploads to one key, rather than silently doing nothing",
+               s3.upload(corpus / "just-one.parquet",
+                         "s3://bench/corpus/just-one.parquet") == (1, (corpus / "just-one.parquet").stat().st_size))
+        code, out, err = run("score", "--corpus", "s3://bench/corpus/just-one.parquet",
+                             "--predictions", "s3://bench/preds/datalab",
+                             "--out", "s3://bench/runs/subset2", "--jobs", 1)
+        report("a filtered atlas in a bucket scores only its rows",
+               code == 0 and "1 documents in the atlas" in out, (out + err).strip()[:400])
+        report("and the prediction the atlas drops is skipped, not an error",
+               "1 prediction(s) skipped" in out, out.strip()[:400])
+        note("filtering the atlas is how a subset is chosen; a bucket must not change that")
+
         print("\nTHE ANSWER IS THE SAME ONE A LOCAL RUN GIVES")
         code, lout, _e = run("score", "--corpus", corpus, "--predictions", preds,
                              "--out", TMP / "local", "--source", "datalab", "--jobs", 1)
