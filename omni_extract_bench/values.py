@@ -322,7 +322,17 @@ def _canon_key_guarded(v, trace=None):
         return ""
     k = _canon_key_unguarded(v, trace)
     if k == "":
-        return re.sub(r"\s+", "", str(v).strip().lower())
+        restored = re.sub(r"\s+", "", str(v).strip().lower())
+        # Record the rescue, or the trace would end at "" while the key is the value -- an
+        # explanation contradicting its own result. Live for `()`, `,`, `"` and every other
+        # value built only from characters some fold strips.
+        if trace is not None:
+            trace["changes"].append(Change(
+                "value restored",
+                "No fold may consume a value. This one folded away to nothing, so the value "
+                "is compared as itself with whitespace removed.",
+                k, restored))
+        return restored
     return k
 
 

@@ -406,6 +406,26 @@ report(f"all {len(_WHY_CLAIMS)} examples promised in a step's `why` are true", n
 note("if this fails, the fold changed and the sentence a customer reads is now a lie.")
 note("fix the `why`, not the test.")
 
+# A TRACE MUST NEVER CONTRADICT ITS OWN KEY. `canon_trace` is shown to someone disagreeing
+# with a match, so a trace ending at "" beside a key of `()` is worse than no explanation.
+# That was live for every value built only from strippable characters until the no-consumed-
+# value guard started recording itself as a step.
+import random as _rnd_mod                                              # noqa: E402
+_r = _rnd_mod.Random(5)
+_ALPHA = "[]()0123456789abz .,-'\"/%$\u2022\u00b5\u00bd"
+_tprobes = ["[1]", "229 [1]", "1,000", "$5", "1.5 mg", "-", "--", "\u00bd", "()", ",", '"',
+            "\u2022", "2024-01-15", "02000", "N/A", "ACME CORP"]
+_tprobes += ["".join(_r.choice(_ALPHA) for _ in range(_r.randint(1, 8))) for _ in range(20000)]
+_liars = []
+for _v in _tprobes:
+    _t = canon_trace(_v)
+    if _t.changes and _t.changes[-1].after != _t.canon:
+        _liars.append((_v, _t.changes[-1].after, _t.canon))
+report(f"no trace of {len(_tprobes):,} contradicts its own key", not _liars,
+       "; ".join(f"{v!r} ends at {a!r} but keys as {c!r}" for v, a, c in _liars[:4]))
+note("a value the folds empty is restored by canon_key's guard, and the guard records that")
+note("as a `value restored` step -- otherwise the trace stops at '' and the key disagrees.")
+
 report(f"the pipeline is a list of {len(FOLDS)} named steps",
        len(FOLDS) >= 8 and all(f.name and f.why for f in FOLDS),
        f"{[f.name for f in FOLDS]}")
