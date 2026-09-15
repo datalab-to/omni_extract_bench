@@ -130,8 +130,10 @@ def _f_dash(s: str) -> str:
     return _Final("#ph_dash") if _DASH.fullmatch(re.sub(r"\s+", "", s)) else s
 
 
-#: A lone period between two digits is a decimal point. Several are separators (a phone
-#: number, a section id), and none at all is prose punctuation.
+#: A lone period between two digits is a decimal point. Several are separators -- a phone
+#: number, a section id, or a European thousands grouping, since a number cannot have two
+#: decimal points. That is why `1.000.000` already equals `1,000,000` and only the SINGLE
+#: dotted group `1.000` is ambiguous (one-with-three-decimals, or one thousand).
 _DECIMAL_POINT = re.compile(r"(?<=\d)\.(?=\d)")
 
 
@@ -149,9 +151,9 @@ def _f_punctuation(s: str) -> str:
     # more are separators (`512.784.7407`, `5.2.1.5`) and still fold.
     #
     # It picks a side rather than resolving the ambiguity: `1.250` is read as a decimal, not
-    # as European thousands. That is the safe side -- a false merge credits a wrong answer,
-    # a false split only withholds a right one -- and it costs 32 value-matches in this
-    # corpus, mostly European addresses (`1.250 BROADWAY`, `3.300 MCF/Day`).
+    # as European thousands. That is the safe side -- a false merge credits a wrong answer, a
+    # false split only withholds a right one. Cost is measured in TO_LOOK_AT item 31; the knob
+    # for reading dotted groups as thousands instead is the `== 1` test below.
     if len(_DECIMAL_POINT.findall(s)) == 1:
         s = _DECIMAL_POINT.sub("\x00", s)
     s = re.sub(r"[\s,\-.]", "", s)
