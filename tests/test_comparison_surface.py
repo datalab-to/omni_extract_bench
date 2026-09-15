@@ -239,4 +239,41 @@ report("canon_trace agrees with the Verdict on every raw value it carries",
            if r is not None))
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+print("\nA NUMBER TOO ABSURD TO BE PRINTED IS COMPARED AS TEXT")
+# `Decimal` has an unbounded exponent where `float` saturates, so `1.0e1000000000` parses
+# happily and `int()` of it then tries to materialise a billion digits -- it HANGS rather than
+# failing. The magnitude guard in `_asdecimal` is what stops that, and nothing tested it:
+# mutation-testing the recognisers removed the guard and the whole suite still passed.
+from omni_extract_bench.recognise import _asdecimal, _fraction_places   # noqa: E402
+from decimal import Decimal                                             # noqa: E402
+
+for _v in ("1.0e1000000000", "-1.0e1000000000", "1e400", "nan", "inf", "-inf", "NaN"):
+    report(f"{_v!r} is not a number to compare", _asdecimal(_v) is None,
+           f"_asdecimal returned {_asdecimal(_v)!r}")
+report("...and such a value still produces a short key, promptly",
+       all(isinstance(canon_key(v), str) and len(canon_key(v)) < 100
+           for v in ("1.0e1000000000", "nan", "inf")),
+       "a key of a billion digits means the guard stopped firing")
+note("they fall through to text comparison, which is exact and cheap. The failure this")
+note("prevents is a hang, not a wrong answer, so it cannot be caught by a score check.")
+
+print("\nPRECISION IS A PROPERTY OF THE FRACTION, NOT OF THE NUMBER")
+# Leading zeros after the point do not spend the 7-significant-digit budget. Documented in
+# `_fraction_places` and, until now, asserted nowhere.
+for _v, _want, _why in (("0.5", 7, "no leading zeros, 7 places"),
+                        ("0.0025", 9, "two leading zeros, so 7 significant digits start later"),
+                        ("9825.000082185", 11, "a wide integer part spends none of the budget"),
+                        ("123.4567890123", 7, "no leading zeros"),
+                        ("5.00", 0, "integral, nothing to round")):
+    report(f"{_v} keeps {_want} decimal places ({_why})",
+           _fraction_places(Decimal(_v)) == _want,
+           f"got {_fraction_places(Decimal(_v))}")
+report("so cents survive at any magnitude",
+       canon_key("123456.78") != canon_key("123456.79"))
+report("...while a re-derived rate agreeing to 7 figures still agrees",
+       canon_key("33.33333333") == canon_key("33.3333333"))
+
+
 _sys.exit(1 if FAILS else 0)
