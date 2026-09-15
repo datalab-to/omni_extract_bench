@@ -167,14 +167,24 @@ def _f_brackets(s: str) -> str:
 #: THE normalisation pipeline, in order. Adding a step here is the only way to change how
 #: values compare, and `canon_trace` will report it by name without further work.
 FOLDS: tuple[Fold, ...] = (
-    Fold("case", "Capitalisation is not part of a value: ACME CORP is Acme Corp.", _f_case),
+    Fold("case",
+         "Capitalisation and surrounding whitespace are not part of a value: ACME CORP, "
+         "Acme Corp and ' Acme Corp ' are one answer.", _f_case),
     Fold("accents",
-         "Accents and the micro sign fold to ASCII, so Muller matches M\u00fcller and ug matches \u00b5g.",
+         "Unicode is reduced to its plainest form: accents drop (M\u00fcller reads as Muller), "
+         "invisible characters like a zero-width space are removed, and anything Unicode "
+         "considers a styled form of plain text is unstyled -- \u00b5g reads as ug, \ufb01le as file, "
+         "\uff46\uff55\uff4c\uff4c as full, \u216b as XII, \u00bd as 1/2 and 10\u00b2 as 102. The last of those is the one "
+         "to know about: a superscript is treated as an ordinary digit.",
          _f_accents),
     Fold("footnote marker",
          "A short [1] or [a] reference marker attached to a value is dropped -- but never when "
          "it is the whole value.", _f_footnote),
-    Fold("typography", "Curly quotes and en/em dashes become their plain ASCII forms.",
+    Fold("typography",
+         "Characters that are an ASCII character in disguise are replaced by it. Every quote "
+         "form becomes ' or \", every dash form becomes -, and that includes the ones easily "
+         "mistaken for punctuation: the prime in 5\u2032, the true MINUS SIGN in 180 \u2212 121, and the "
+         "FRACTION SLASH that \u00bd decomposes into.",
          _f_typography),
     Fold("list marker",
          "A bullet at the START of a value is the page's formatting, not the value: "
@@ -187,9 +197,14 @@ FOLDS: tuple[Fold, ...] = (
     Fold("dash mark", "A run of dashes is one mark, so - and -- agree. It is not an empty cell.",
          _f_dash),
     Fold("punctuation",
-         "Whitespace, commas, hyphens and periods are removed from anywhere, so PO BOX 125 "
-         "matches P.O. BOX 125 and 31-1440073 matches 311440073.", _f_punctuation),
-    Fold("quotes and brackets", "Enclosing quotes, parentheses and slashes are removed.",
+         "Whitespace, commas and hyphens are removed from anywhere, so PO BOX 125 matches "
+         "P.O. BOX 125 and 31-1440073 matches 311440073. Periods go too, EXCEPT a single one "
+         "between digits, which is a decimal point and is kept: 1.5 mg is not 15 mg. Two or "
+         "more are separators rather than decimal points, so 1.000.000 matches 1,000,000 and "
+         "512.784.7407 matches 512-784-7407.", _f_punctuation),
+    Fold("quotes and brackets",
+         "Quotes around a value are removed, and parentheses and slashes are removed from "
+         "anywhere: A(B)C reads as ABC, and/or as andor, N/A as NA.",
          _f_brackets),
 )
 

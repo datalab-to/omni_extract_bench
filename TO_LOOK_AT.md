@@ -1535,3 +1535,50 @@ Fixing it means recognising a trailing `,DD` group as a decimal comma, which bel
 `recognise.py` (`_numeric_text` strips every comma before parsing) rather than in a fold, and
 it has to not collide with comma-stripping everywhere else. Unmeasured; no corpus case found
 yet, but a European financial corpus would hit it immediately.
+
+## 33. Step-back review: can we justify every rule to someone who disagrees?
+
+Read the whole fold pipeline as a customer would -- starting from the sentence they are shown
+when they object to a match. Three classes of problem, all now fixed.
+
+### The customer-facing sentences had drifted from the code
+
+`Fold.why` is what a reader sees when they disagree with a match. Three were false:
+
+| step | said | actually does |
+| --- | --- | --- |
+| `punctuation` | "periods are removed from anywhere" | a lone period between digits is KEPT, since the decimal fix |
+| `accents` | "accents and the micro sign fold to ASCII" | also strips invisible characters, and NFKD flattens superscripts (`10²`=`102`), ligatures, fullwidth forms and roman numerals |
+| `quotes and brackets` | "ENCLOSING quotes, parentheses and slashes" | only quotes are enclosing; parentheses and slashes strip from anywhere, so `and/or` = `andor` |
+
+`typography` and `case` were incomplete rather than wrong -- `typography` had grown from 6
+mappings to 15 without its sentence changing.
+
+**Now guarded.** `tests/test_canon_properties.py` P5 asserts all 24 examples any `why` promises,
+so a fold change that invalidates a sentence fails the suite. A stale explanation is worse than
+none: it is a confident answer that is wrong.
+
+### The two debt lists contradicted each other
+
+`KNOWN_COLLISIONS` is documented as "P1 violations nobody chose". Four of its seven entries were
+chosen, explicitly:
+
+* `Müller`=`Muller`, `Åse`=`Ase`, `İstanbul`=`Istanbul` are the `accents` fold doing its stated
+  job -- its own `why` gives `Müller reads as Muller` as the example.
+* `1.1`=`1.10` is trailing-zero folding, which METRIC_SPEC 2 chose and MUST_MATCH asserts via
+  `12.90`=`12.9`.
+
+A reader seeing "we deliberately fold accents" beside "Müller/Muller is a violation nobody
+chose" would not trust either statement. They are now in ACCEPTED_LENIENCY (12 entries) with
+the cost named -- including the sharp one: `Å` is a SEPARATE LETTER in Norwegian, not an
+accented `A`, so `Åse` and `Ase` are two names and one key.
+
+KNOWN_COLLISIONS is down to 3 genuinely unchosen: `½`=`1/2`=`12`, and a malformed date reaching
+the string fallback.
+
+### The distinction worth keeping
+
+The two lists answer different customer questions -- "what do you get wrong?" and "what did you
+decide to give up?" -- and an entry in the wrong one makes both answers untrustworthy. Anything
+a rule aims at belongs in ACCEPTED_LENIENCY however regrettable it looks; only side effects are
+debt.

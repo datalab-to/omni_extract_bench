@@ -519,10 +519,28 @@ It does pick a side on an ambiguity `1.250` cannot settle by itself — decimal,
 thousands. That is the safe side: a false merge credits a wrong answer, a false split only
 withholds a right one. Cost is measured in `TO_LOOK_AT.md` item 31.
 
-**The bill.** Four collisions, enumerated in `tests/test_canon_properties.py` under
-`ACCEPTED_LENIENCY`, where a test asserts they still behave as priced:
+**The bill.** Twelve merges, enumerated in `tests/test_canon_properties.py` under
+`ACCEPTED_LENIENCY`, where a test asserts they still behave as priced. They are *chosen*, which
+is the distinction that matters when reading them:
 
-`5.2.1.5` = `5215` · `#30-2` = `#302` · `RR-2` = `RR2` · `90-94` = `9094`
+| merge | the rule that chose it |
+| --- | --- |
+| `5.2.1.5` = `5215`, `#30-2` = `#302`, `RR-2` = `RR2`, `90-94` = `9094` | punctuation folds |
+| `see [1]` = `see [2]` | reference markers are dropped, so a bibliography entry matches with or without its number |
+| `N/A` = `NA` | slashes fold |
+| `$5` = `5%` = `50%` = `50` | the number fold strips currency and percent before reading |
+| `Müller` = `Muller`, `Åse` = `Ase`, `İstanbul` = `Istanbul` | accents fold |
+| `1.1` = `1.10` | trailing zeros fold, per §2 |
+
+The accent row is the one worth stating plainly rather than burying: folding diacritics is
+right for a transcription that dropped one, and its price is that alphabets where the accented
+form is a *separate letter* lose the distinction — `Å` is its own letter in Norwegian, not an
+`A` with a ring, so `Åse` and `Ase` are two names and one key.
+
+**Separately, `KNOWN_COLLISIONS` holds three merges nobody chose** — `½` = `1/2` = `12` (the
+slash fold was never aimed at fractions) and a malformed date reaching the string fallback.
+The two lists answer different questions — "what do you get wrong?" versus "what did you decide
+to give up?" — and mixing them would make both answers untrustworthy.
 
 **How little P1 this actually gives up** is the reason it is affordable. `1:00.50` and `1:50`
 stay distinct; so do `0.11%w/w` and `11%w/w`, `COM PAR $.001` and `COM PAR $.01`, and
