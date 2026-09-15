@@ -36,6 +36,10 @@ ROOT = "omni-extract-bench"
 VENDORS = ("azure-cu", "claude", "datalab", "extend", "gemini", "gpt", "llamaextract",
            "mistral", "reducto")
 
+#: The corpus to score against. Its last segment is the corpus version -- see `stamp`. Pass
+#: `--corpus` to score an older one, which is the only way to compare across a gold correction.
+DEFAULT_CORPUS = f"{ROOT}/corpus"
+
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install("scipy==1.17.1", "numpy==2.4.6", "pyarrow==25.0.1", "boto3>=1.34")
@@ -108,7 +112,7 @@ class Scorer:
 
 @app.function(secrets=[modal.Secret.from_name("oeb-r2")], cpu=0.25, memory=2048,
               timeout=7200, retries=0)
-def orchestrate(picked: list, limit: int, run: str) -> dict:
+def orchestrate(picked: list, limit: int, run: str, corpus: str) -> dict:
     """Choose the work, run it, write the summaries -- all of it inside Modal.
 
     This is the whole point of the module's shape. `modal run` ties an ephemeral app to the
@@ -127,7 +131,7 @@ def orchestrate(picked: list, limit: int, run: str) -> dict:
 
     local = pathlib.Path("/tmp/oeb")
     local.mkdir(parents=True, exist_ok=True)
-    S3.fetch_one(f"s3://{BUCKET}/{ROOT}/corpus/corpus.parquet", local / "corpus.parquet")
+    S3.fetch_one(f"s3://{BUCKET}/{corpus}/corpus.parquet", local / "corpus.parquet")
     doc_ids = [r["doc_id"] for r in pq.read_table(local / "corpus.parquet").to_pylist()]
     if limit:
         doc_ids = doc_ids[:limit]
@@ -177,19 +181,21 @@ def orchestrate(picked: list, limit: int, run: str) -> dict:
                 rs = rs + [json.loads((into / n).read_bytes()) for n in names]
         if not rs:
             continue
-        _write_vendor(pa, pq, S3, run, v, rs, local)
+        _write_vendor(pa, pq, S3, run, v, rs, local, stamp(corpus) if corpus else None)
         graded = [r for r in rs if r.get("kind") == "graded"]
         report[v] = {"rows": len(rs), "graded": len(graded),
                      "mean": round(sum(r["accuracy"] for r in graded) / len(graded), 2)
                              if graded else None,
                      "failed": [f"{r['doc_id']}: {r.get('error')}"
                                 for r in rs if r.get("kind") == "failed"]}
-    return {"run": run, "units": len(units), "secs": round(time.time() - started),
+    return {"run": run, "corpus": corpus, "units": len(units),
+            "secs": round(time.time() - started),
             "raised": raised, "vendors": report}
 
 
 @app.local_entrypoint()
-def main(vendors: str = ",".join(VENDORS), limit: int = 0, run: str = "", wait: bool = True):
+def main(vendors: str = ",".join(VENDORS), limit: int = 0, run: str = "",
+         corpus: str = "", wait: bool = True):
     """Spawn the run. Everything after this happens in Modal.
 
         modal run --detach scripts/score_modal.py::main --no-wait
@@ -200,9 +206,14 @@ def main(vendors: str = ",".join(VENDORS), limit: int = 0, run: str = "", wait: 
     rather than raising. `--detach` keeps the app alive; then this machine really is finished
     once it prints a call id.
     """
-    run = run or f"{ROOT}/scores/{time.strftime('%Y-%m-%dT%H-%M-%SZ', time.gmtime())}"
+    corpus = (corpus or DEFAULT_CORPUS).strip("/")
+    # Scores live under the corpus they were produced against: a number carried across a
+    # corrected ground truth is not comparable to one from before it.
+    run = run or (f"{ROOT}/scores/{corpus.rsplit('/', 1)[-1]}/"
+                  f"{time.strftime('%Y-%m-%dT%H-%M-%SZ', time.gmtime())}")
     picked = [v.strip() for v in vendors.split(",") if v.strip()]
-    call = orchestrate.spawn(picked, limit, run)
+    call = orchestrate.spawn(picked, limit, run, corpus)
+    print(f"  corpus     : s3://{BUCKET}/{corpus}")
     print(f"  run prefix : s3://{BUCKET}/{run}")
     print(f"  call id    : {call.object_id}")
     if not wait:
@@ -212,6 +223,36 @@ def main(vendors: str = ",".join(VENDORS), limit: int = 0, run: str = "", wait: 
               f"--call {call.object_id}")
         return
     show(call.get())
+
+
+@app.function(secrets=[modal.Secret.from_name("oeb-r2")], cpu=0.25, memory=2048,
+              timeout=3600)
+def assemble(picked: list, run: str, corpus: str) -> dict:
+    """Rebuild each vendor's summary from the rows already in the bucket, scoring nothing.
+
+    The rows are the durable thing -- every finished unit writes one before it returns -- so a
+    run whose orchestrator died has all of them and none of the summaries. This turns one into
+    the other. A Modal function rather than a local entrypoint because the credentials live
+    here, not on the machine that asks.
+    """
+    import sys as _sys
+    _sys.path.insert(0, "/root")
+    from omni_extract_bench import s3 as S3
+
+    local = pathlib.Path("/tmp/oeb-collect")
+    local.mkdir(parents=True, exist_ok=True)
+    report = write_summaries(S3, run, picked, local, corpus)
+    return {"run": run, "corpus": corpus, "units": 0, "secs": 0, "raised": [],
+            "vendors": report}
+
+
+@app.local_entrypoint()
+def collect(vendors: str = ",".join(VENDORS), run: str = "", corpus: str = ""):
+    """Assemble summaries for a run that already has its rows. Scores nothing."""
+    if not run:
+        raise SystemExit("collect needs --run, the run prefix under the bucket")
+    picked = [v.strip() for v in vendors.split(",") if v.strip()]
+    show(assemble.remote(picked, run.strip("/"), (corpus or DEFAULT_CORPUS).strip("/")))
 
 
 @app.local_entrypoint()
@@ -232,11 +273,12 @@ def show(out: dict):
     print(f"  s3://{BUCKET}/{out['run']}")
 
 
-def write_summaries(S3, run, picked, local):
+def write_summaries(S3, run, picked, local, corpus=None) -> dict:
     """One summary.parquet per vendor, from that vendor's rows in the bucket."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
+    report = {}
     for v in sorted(picked):
         names = [n for n in S3.names(f"s3://{BUCKET}/{run}/{v}")
                  if n.startswith("rows/") and n.endswith(".json")]
@@ -245,19 +287,44 @@ def write_summaries(S3, run, picked, local):
         into = local / run.replace("/", "_") / v
         S3.fetch(f"s3://{BUCKET}/{run}/{v}", into, names)
         rs = [json.loads((into / n).read_bytes()) for n in names]
-        _write_vendor(pa, pq, S3, run, v, rs, local)
+        _write_vendor(pa, pq, S3, run, v, rs, local, stamp(corpus) if corpus else None)
+        graded = [r for r in rs if r.get("kind") == "graded"]
+        report[v] = {"rows": len(rs), "graded": len(graded),
+                     "mean": round(sum(r["accuracy"] for r in graded) / len(graded), 2)
+                             if graded else None,
+                     "failed": [f"{r['doc_id']}: {r.get('error')}"
+                                for r in rs if r.get("kind") == "failed"]}
+    return report
 
 
-def _write_vendor(pa, pq, S3, run, v, rs, local):
+def stamp(corpus: str) -> dict:
+    """What produced these numbers. `oeb score` records the same, and so must this.
+
+    A score means nothing without the corpus and the scorer behind it. The last segment of the
+    corpus prefix IS the corpus version -- a hash over every listed document's contents, so a
+    corrected ground truth publishes a new one rather than changing an old one in place.
+    Anyone can re-derive it with `corpus.version()` and check the path was not just asserted.
+    """
+    import sys as _sys
+    _sys.path.insert(0, "/root")
+    from omni_extract_bench.run import environment, scorer_version
+    return {"corpus": corpus, "corpus_version": corpus.rstrip("/").rsplit("/", 1)[-1],
+            **scorer_version(), **environment()}
+
+
+def _write_vendor(pa, pq, S3, run, v, rs, local, meta=None):
     fields = list(dict.fromkeys(k for r in rs for k in r))
     blank = {k: None for k in fields}
-    table = pa.Table.from_pylist([{**blank, **r} for r in rs])
+    kinds = {}
+    for r in rs:
+        kinds[r.get("kind")] = kinds.get(r.get("kind"), 0) + 1
+    table = pa.Table.from_pylist([{**blank, **r} for r in rs]).replace_schema_metadata(
+        {**{k: str(x) for k, x in (meta or {}).items()}, "source": v, "rows": str(len(rs)),
+         "kinds": json.dumps(dict(sorted(kinds.items(), key=lambda kv: str(kv[0])))),
+         "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     out = local / f"{v}.parquet"
     pq.write_table(table, out, compression="zstd")
     S3.upload(out, f"s3://{BUCKET}/{run}/{v}/summary.parquet")
     graded = [r for r in rs if r.get("kind") == "graded"]
     mean = sum(r["accuracy"] for r in graded) / len(graded) if graded else 0.0
-    kinds = {}
-    for r in rs:
-        kinds[r.get("kind")] = kinds.get(r.get("kind"), 0) + 1
     print(f"  {v:<14} {len(rs):>4} rows   mean {mean:>6.2f} over {len(graded)}   {kinds}")
