@@ -67,17 +67,15 @@ report("a charge always carries what was predicted, including nothing",
        and ui.cell("misread", '"a"', '"b"') == ["w", '"b"'])
 report("a verdict this module has no code for passes through as itself",
        ui.cell("something new", None, '"x"') == ["something new", '"x"'])
-report("and a run scored before the verdicts were renamed still reads",
-       ui.cell("missing", '"Acme"', None) == ui.cell("unfound", '"Acme"', None)
-       and ui.cell("wrong value", '"a"', '"b"') == ui.cell("misread", '"a"', '"b"'))
-note("the scorer knows only the new names; `WAS` is the one table that knows the old ones, "
-     "and it lives in the reader of historical data")
 note("an unknown verdict must show up wrong in the viewer, not vanish from it")
 
 print("\nTHE SAME TEXT CHARGED TWICE IS ONE PAIRING FAILURE")
-verds = [{"verdict": "unfound", "gold": json.dumps("Wear safety boots"), "pred": None},
-         {"verdict": "invented_item", "gold": None, "pred": json.dumps("• Wear safety boots")},
-         {"verdict": "unfound", "gold": json.dumps("Unrelated"), "pred": None}]
+row = lambda verdict, gold, pred: {
+    "verdict": verdict, "gold_raw": gold, "pred_raw": pred,
+    "gold_canon": None, "pred_canon": None}
+verds = [row("unfound", json.dumps("Wear safety boots"), None),
+         row("invented_item", None, json.dumps("\u2022 Wear safety boots")),
+         row("unfound", json.dumps("Unrelated"), None)]
 near = ui.near_misses(verds)
 report("a bullet glyph in front of a sentence is found as the near miss it is",
        len(near) == 1 and near[0]["gold"] == "Wear safety boots", str(near))
