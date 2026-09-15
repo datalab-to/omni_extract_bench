@@ -153,6 +153,42 @@ report("a document whose every row is nested still scores 100 after reordering",
 report("and the scalar function was still called for those pairs",
        calls["n"] > 0, f"{calls['n']} calls")
 
+print("\nNESTING ONE SIDE NEVER HAD IS NOT NESTING")
+# `_worth_if_paired` walks `set(pred.arrays) | set(gold.arrays)` and descends into
+# `_best_pairing`, which returns immediately when either side is empty. So a predicted row
+# nesting something the gold never nested adds nothing, and the product already has the
+# answer. Asking only "does this row have arrays?" would send those pairs down the slow path
+# to add zero -- which on the corpus's three largest arrays is 95%, 99.98% and 76% of
+# 704, 379 and 342 million pairs respectively.
+addr_tag = (("k", "tag"),)
+inner = sc.Row(named={(("k", "z"),): "v"}, arrays={}, key=())
+gold_rows = {i: sc.Row(named={addr_tag: f"g{i}"}, arrays={}, key=(f"g{i}",))
+             for i in range(6)}
+pred_rows = {i: sc.Row(named={addr_tag: f"g{i}"},
+                       arrays={(("k", "extra"),): {0: inner}}, key=(f"g{i}",))
+             for i in range(6)}
+calls = {"n": 0}
+real_worth = sc._worth_if_paired
+def counted(*a, **k):
+    calls["n"] += 1
+    return real_worth(*a, **k)
+saved = sc.MIN_VECTOR_CELLS
+sc.MIN_VECTOR_CELLS = 1
+sc._worth_if_paired = counted
+try:
+    w = sc._pair_weights(pred_rows, gold_rows, list(range(6)), list(range(6)), 97, None)
+finally:
+    sc._worth_if_paired = real_worth
+    sc.MIN_VECTOR_CELLS = saved
+report("a block whose predictions nest and whose gold does not is fully vectorised",
+       w is not None and calls["n"] == 0, f"{calls['n']} fallback calls")
+ok = True
+for i in range(6):
+    for j in range(6):
+        mt, sh = real_worth(pred_rows[i], gold_rows[j], 97)
+        ok &= float(w[i, j]) == float(mt * 97 + sh if mt else 0)
+report("and every one of its weights is still exactly right", ok)
+
 print("\nTHE SAME GRADE, VECTORISED OR NOT")
 same = differing = 0
 for seed in range(160):
