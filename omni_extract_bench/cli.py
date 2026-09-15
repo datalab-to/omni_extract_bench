@@ -17,10 +17,9 @@ benchmark, and pointing it elsewhere is how you score against your own ground tr
 
 `score-one` is the escape hatch for a single pair, when there is no benchmark involved at all.
 
-`score`'s three paths each take a local directory or an `s3://` prefix, which is how a run
-happens next to the predictions instead of on a laptop that has to download them first. A
-bucket is staged to a temporary directory and scored exactly as a local one is; `s3.py` says
-why that rather than a streamed filesystem. Needs `pip install 'omni-extract-bench[s3]'`.
+Every command here takes local paths. Running against a bucket is `remote.py`'s business --
+it stages what the atlas names and calls the same scorer -- so that nothing about scoring
+depends on where the bytes came from.
 
 A schema is required, and is passed through `strip_benchmark_keys` and `resolve_refs` first --
 the scorer refuses a schema it cannot see through.
@@ -138,15 +137,11 @@ def main(argv=None):
     c.set_defaults(fn=_run.cmd_build_corpus)
 
     n = sub.add_parser("score", help="score a directory of predictions against a corpus")
-    n.add_argument("--predictions", required=True,
-                   help="directory of <doc_id>.json, or an s3:// prefix of them")
-    n.add_argument("--corpus", help="corpus directory, a specific atlas parquet in it, or an "
-                                    "s3:// prefix; default: the published benchmark")
+    n.add_argument("--predictions", required=True, help="directory of <doc_id>.json")
+    n.add_argument("--corpus", help="corpus directory, or a specific atlas parquet in it; "
+                                    "default: download the published benchmark")
     n.add_argument("--out", required=True,
-                   help="the run directory, or an s3:// prefix: summary.parquet and "
-                        "verdicts/ land there")
-    n.add_argument("--endpoint-url",
-                   help="S3-compatible endpoint (R2, MinIO); default: $AWS_ENDPOINT_URL")
+                   help="the run directory: summary.parquet and verdicts/ land here")
     n.add_argument("--source", help="what to call these predictions; default: the directory name")
     n.add_argument("--jobs", type=int, default=1,
                    help="worker processes, one document each")
