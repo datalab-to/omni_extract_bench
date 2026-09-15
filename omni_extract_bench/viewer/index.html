@@ -552,7 +552,7 @@ function drawDocs() {
       `<span class="name">${esc(d.doc_id)}</span>` +
       (v ? `<span class="acc">${v.accuracy.toFixed(1)}</span>` +
            `<span class="meta">${v.bad} of ${v.seen} values disagree` +
-           (v.near.length ? ` &middot; ${v.near.length} near-duplicate` : "") + `</span>` +
+           (v.near ? ` &middot; ${v.near.n} near-duplicate` : "") + `</span>` +
            `<span class="bar"><i style="width:${v.accuracy}%"></i></span>`
          : `<span class="acc none">&mdash;</span>` +
            `<span class="meta">${esc(source)} did not grade this one</span>`);
@@ -621,13 +621,13 @@ function drawValue() {
 
   const n = el("notice");
   n.innerHTML = "";
-  const near = at(current)?.near ?? [];
-  if (near.length) {
+  const near = at(current)?.near;
+  if (near) {
     n.innerHTML =
-      `<p class="notice"><b>${near.length} of these are the same text twice.</b> ` +
+      `<p class="notice"><b>${near.n} of these are the same text twice.</b> ` +
       `A value counted <em>missing</em> and another counted <em>invented</em> differ only in ` +
-      `punctuation, so they never paired &mdash; <code>${esc(near[0].gold.slice(0, 32))}…` +
-      `</code> against <code>${esc(near[0].pred.slice(0, 32))}…</code>. ` +
+      `punctuation, so they never paired &mdash; <code>${esc(near.gold.slice(0, 32))}…` +
+      `</code> against <code>${esc(near.pred.slice(0, 32))}…</code>. ` +
       `That is a pairing failure, not an extraction error.</p>`;
   }
 
