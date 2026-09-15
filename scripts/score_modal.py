@@ -96,6 +96,13 @@ class Scorer:
             self.s3.upload_file(str(tmp), BUCKET,
                                 f"{run}/{vendor}/verdicts/{doc_id}.parquet")
             tmp.unlink()
+
+        # The row goes to the bucket as well as back through the map. A run that dies -- and
+        # the first one did, when the laptop holding its heartbeat went to sleep -- then loses
+        # nothing: every finished unit is on disk somewhere durable, `collect` assembles the
+        # summaries afterwards, and starting again skips what is already there.
+        self.s3.put_object(Bucket=BUCKET, Key=f"{run}/{vendor}/rows/{doc_id}.json",
+                           Body=json.dumps(row).encode())
         return row
 
 
@@ -148,44 +155,88 @@ def main(vendors: str = ",".join(VENDORS), limit: int = 0, run: str = ""):
         doc_ids = doc_ids[:limit]
     print(f"  {len(doc_ids)} documents in the atlas, {len(picked)} vendors")
 
-    units = []
+    units, resumed = [], 0
     for v in picked:
         held = {n[:-5] for n in S3.names(f"s3://{BUCKET}/{ROOT}/vendors/{v}")
                 if n.endswith(".json") and "/" not in n}
-        take = [d for d in doc_ids if d in held]
-        print(f"    {v:<14} {len(take):>4} predictions")
+        done = {n[len("rows/"):-5] for n in S3.names(f"s3://{BUCKET}/{run}/{v}")
+                if n.startswith("rows/") and n.endswith(".json")}
+        take = [d for d in doc_ids if d in held and d not in done]
+        resumed += len(done)
+        print(f"    {v:<14} {len(take):>4} to score" +
+              (f", {len(done)} already done" if done else ""))
         units += [(v, d, run) for d in take]
-    print(f"  {len(units)} (vendor, document) units\n", flush=True)
+    print(f"  {len(units)} (vendor, document) units"
+          + (f", resuming over {resumed} finished earlier" if resumed else "") + "\n",
+          flush=True)
+    if not units:
+        print("  nothing to do; run `modal run scripts/score_modal.py::collect` to assemble")
+        return
 
     started = time.time()
-    rows, failed, done = [], [], 0
+    rows, failed, seen = [], [], 0
     for result in Scorer().one.map(units, order_outputs=False, return_exceptions=True):
-        done += 1
+        seen += 1
         if isinstance(result, dict):
             rows.append(result)
         else:
             failed.append(repr(result)[:200])
-        if done % 250 == 0 or done == len(units):
-            print(f"    {done}/{len(units)}  {time.time() - started:.0f}s", flush=True)
+        if seen % 250 == 0 or seen == len(units):
+            print(f"    {seen}/{len(units)}  {time.time() - started:.0f}s", flush=True)
 
-    by_vendor = {}
-    for r in rows:
-        by_vendor.setdefault(r["vendor"], []).append(r)
     print()
-    for v, rs in sorted(by_vendor.items()):
-        fields = list(dict.fromkeys(k for r in rs for k in r))
-        blank = {k: None for k in fields}
-        table = pa.Table.from_pylist([{**blank, **r} for r in rs])
-        out = local / f"{v}.parquet"
-        pq.write_table(table, out, compression="zstd")
-        S3.upload(out, f"s3://{BUCKET}/{run}/{v}/summary.parquet")
-        graded = [r for r in rs if r.get("kind") == "graded"]
-        mean = sum(r["accuracy"] for r in graded) / len(graded) if graded else 0.0
-        kinds = {}
-        for r in rs:
-            kinds[r.get("kind")] = kinds.get(r.get("kind"), 0) + 1
-        print(f"  {v:<14} {len(rs):>4} rows   mean {mean:>6.2f} over {len(graded)}   {kinds}")
+    write_summaries(S3, run, picked, local)
     print(f"\n  {time.time() - started:.0f}s wall, {len(failed)} raised")
     for f in failed[:5]:
         print("   ", f)
     print(f"  s3://{BUCKET}/{run}")
+
+
+@app.local_entrypoint()
+def collect(vendors: str = ",".join(VENDORS), run: str = ""):
+    """Assemble each vendor's summary.parquet from the rows already in the bucket.
+
+    Separate from `main` because the rows are the durable thing: a run that was interrupted
+    has all of them and none of the summaries, and this turns one into the other without
+    scoring anything again.
+    """
+    sys.path.insert(0, str(REPO))
+    load_credentials()
+    from omni_extract_bench import s3 as S3
+
+    if not run:
+        raise SystemExit("collect needs --run, the run prefix under the bucket")
+    local = pathlib.Path("/tmp/oeb-modal")
+    local.mkdir(parents=True, exist_ok=True)
+    write_summaries(S3, run, [v.strip() for v in vendors.split(",") if v.strip()], local)
+
+
+def write_summaries(S3, run, picked, local):
+    """One summary.parquet per vendor, from that vendor's rows in the bucket."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    for v in sorted(picked):
+        names = [n for n in S3.names(f"s3://{BUCKET}/{run}/{v}")
+                 if n.startswith("rows/") and n.endswith(".json")]
+        if not names:
+            continue
+        into = local / run.replace("/", "_") / v
+        S3.fetch(f"s3://{BUCKET}/{run}/{v}", into, names)
+        rs = [json.loads((into / n).read_bytes()) for n in names]
+        _write_vendor(pa, pq, S3, run, v, rs, local)
+
+
+def _write_vendor(pa, pq, S3, run, v, rs, local):
+    fields = list(dict.fromkeys(k for r in rs for k in r))
+    blank = {k: None for k in fields}
+    table = pa.Table.from_pylist([{**blank, **r} for r in rs])
+    out = local / f"{v}.parquet"
+    pq.write_table(table, out, compression="zstd")
+    S3.upload(out, f"s3://{BUCKET}/{run}/{v}/summary.parquet")
+    graded = [r for r in rs if r.get("kind") == "graded"]
+    mean = sum(r["accuracy"] for r in graded) / len(graded) if graded else 0.0
+    kinds = {}
+    for r in rs:
+        kinds[r.get("kind")] = kinds.get(r.get("kind"), 0) + 1
+    print(f"  {v:<14} {len(rs):>4} rows   mean {mean:>6.2f} over {len(graded)}   {kinds}")
