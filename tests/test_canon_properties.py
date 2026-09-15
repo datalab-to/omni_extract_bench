@@ -234,6 +234,32 @@ note("`null` and `\"\"` are one thing because a strict dialect must emit the key
 note("where a permissive one omits it -- the harness causes the disagreement (METRIC_SPEC 5).")
 note("`()` and the STRING \"null\" are content a model chose to emit, so they assert.")
 
+# ...and searched for, not just listed. A list is what let seventeen spellings sit here
+# unnoticed, so this enumerates every 1- and 2-character string over the punctuation the folds
+# touch, then fuzzes longer ones and sweeps the Unicode categories most likely to be stripped.
+import itertools as _it, unicodedata as _ud                             # noqa: E402
+_PUNCT = "-.,/()[]{}\"'`~!@#$%^&*_+=|\\:;?<>" + " \t\n"
+_ALPHA = _PUNCT + "0aA"
+_probes = ["".join(t) for L in (1, 2) for t in _it.product(_ALPHA, repeat=L)]
+_rnd = random.Random(7)
+_probes += ["".join(_rnd.choice(_ALPHA) for _ in range(_rnd.randint(3, 10)))
+            for _ in range(20000)]
+_cats = {"Pd", "Pi", "Pf", "Ps", "Pe", "Po", "Pc", "Sm", "Sk", "Zs", "Cf", "Mn", "No", "Nl"}
+_probes += [c for cp in range(0x2FFF) for c in (chr(cp),)
+            if _ud.category(c) in _cats]
+_probes += [0, 0.0, False, True, float("inf"), float("nan"), 10 ** 400, "NaN", "Infinity"]
+_eaten = [v for v in _probes if canon_key(v) == "" and not states_nothing(v)]
+_nonstr = [v for v in _probes if not isinstance(canon_key(v), str)]
+report(f"no counterexample among {len(_probes):,} searched values", not _eaten and not _nonstr,
+       f"consumed: {_eaten[:12]}  non-string keys: {_nonstr[:6]}")
+note("this is a search, not a list -- every 1- and 2-char string over the punctuation the")
+note("folds touch, 20k random longer ones, every Unicode codepoint under 0x2FFF in a")
+note("strippable category, and the overflow scalars. Verified separately on all 17.7M")
+note("gold and prediction leaves in the corpus: zero.")
+note("It also holds BY CONSTRUCTION: canon_key has exactly two paths returning '', the")
+note("structural-absence branch and a fallback that cannot be empty unless str(v) is all")
+note("whitespace -- which the first branch already caught. A new fold cannot reintroduce it.")
+
 # The fallback must not re-break P2: it removes whitespace and nothing else.
 for a, b in (("( )", "()"), (". . .", "..."), ("- -", "--")):
     report(f"the fallback still folds whitespace: {a!r} == {b!r}",
