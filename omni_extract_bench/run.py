@@ -353,16 +353,10 @@ def cmd_explain(args: Namespace) -> int:
         raise FileNotFoundError(
             f"{args.doc} was graded but has no verdicts at {verdicts}; "
             f"the run was made with --no-verdicts")
-    from .bench import verdict as verdict_name
-
     for v in pq.read_table(verdicts).to_pylist():
-        name = verdict_name(v["verdict"])
-        if args.all or name != "matched":
-            # `gold`/`pred` are what a run written before the columns were split by form
-            # called them; see `bench.RENAMED` for the same story about the verdict names.
-            gold = v.get("gold_raw", v.get("gold"))
-            pred = v.get("pred_raw", v.get("pred"))
-            print(f"  {v['address']:<44}{name:<16}gold={gold}  pred={pred}")
+        if args.all or v["verdict"] != "matched":
+            print(f"  {v['address']:<44}{v['verdict']:<16}"
+                  f"gold={v['gold_raw']}  pred={v['pred_raw']}")
     print(f"\n  accuracy {row['accuracy']:.2f}")
     return 0
 

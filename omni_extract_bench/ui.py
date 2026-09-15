@@ -107,7 +107,7 @@ def near_misses(verds: list[dict]) -> list[dict]:
     """
     unpaired: dict[str, str] = {}
     for v in verds:
-        if _renamed(v["verdict"]) == "unfound":
+        if v["verdict"] == "unfound":
             key = loose(decode(side(v, "gold")))
             if key:
                 unpaired.setdefault(key, decode(side(v, "gold")))
@@ -115,7 +115,7 @@ def near_misses(verds: list[dict]) -> list[dict]:
         return []
     out = []
     for v in verds:
-        if _renamed(v["verdict"]) in EXTRA:
+        if v["verdict"] in EXTRA:
             pred = decode(side(v, "pred"))
             key = loose(pred)
             if key and key in unpaired:
@@ -153,28 +153,14 @@ def read_summary(run: Path) -> tuple[str, dict[str, dict]]:
     return meta.get("source") or run.name, {r["doc_id"]: r for r in table.to_pylist()}
 
 
-def _renamed(name: str) -> str:
-    """A verdict under its current name, whatever the run that wrote it called it."""
-    from .bench import verdict
-    return verdict(name)
-
-
-#: A verdict row's four value columns, and what a run written before they were split by form
-#: called the two it had. Reading through this is how an older run still opens.
-RAW = {"gold": "gold_raw", "pred": "pred_raw"}
-
-
 def side(row: dict, which: str, form: str = "raw") -> str | None:
     """One side of a verdict row -- `raw` as stored, or `canon` as the scorer compared it.
 
     The canonical forms are READ, never recomputed. `canon_key` is the one rule that decides
     whether two values are equal, and running it again here would be a second place that
-    answers the same question -- exactly the divergence its docstring exists to prevent. A run
-    from before the columns existed simply has no canon, and the viewer says so.
+    answers the same question -- exactly the divergence its docstring exists to prevent.
     """
-    if form == "canon":
-        return row.get(f"{which}_canon")
-    return row.get(RAW[which], row.get(which))
+    return row[f"{which}_{form}"]
 
 
 def cell(verdict: str, gold: str | None, pred: str | None) -> list:
@@ -188,7 +174,7 @@ def cell(verdict: str, gold: str | None, pred: str | None) -> list:
     the gold's. Together they answer "why did these count as equal" -- or as different --
     without a second opinion about what equal means.
     """
-    code = CODE.get(_renamed(verdict), _renamed(verdict))
+    code = CODE.get(verdict, verdict)
     if code == "m" and pred == gold:
         return [code]
     return [code, pred]
