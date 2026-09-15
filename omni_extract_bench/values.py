@@ -39,7 +39,7 @@ import re
 import unicodedata
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
-from typing import Any
+from typing import Any, Callable, NamedTuple
 
 Json = Any  # parsed-JSON value: dict / list / scalar
 
@@ -59,118 +59,205 @@ _DASH = re.compile(r"-+")
 _DATALAB_SIDECAR_SUFFIXES = ("_citations", "_meta")
 
 
-def _fold_cosmetic(v: Json) -> str:
-    """Fold cosmetic noise in ONE value -- never real content.
+class Change(NamedTuple):
+    """One normalisation step that actually altered a value. Returned by `canon_trace`."""
 
-    Started as `canonical` from the upstream grader (MIT, (c) Micro1; see NOTICE) and has
-    since diverged in the two places marked below. The name changed with the body: calling it
-    `_upstream_canonical` while it no longer matches upstream would be the worst of both, a
-    claim of fidelity over code that does not have it.
+    step: str
+    why: str
+    before: str
+    after: str
 
-    Original docstring follows.
 
-    Canonicalize ONE value so only cosmetic noise is folded — never real content.
-    1. None -> "" ; lowercase ; strip.
-    2. Typography: smart quotes/apostrophes/dashes -> ascii.
-    3. Numbers compared numerically (`1,000`==`1000`, `100.0`==`100`, `$5`==`5`).
-    4. Absence markers (`..`, `...`, `null`) -> "" . DIVERGES: upstream also folded `-`,
-       `--`, `n/a`, `na` and `none` here, making all five one another's equals AND equal to
-       an empty cell. Those are words a page PRINTS, and different ones: on an adverse-event
-       form `None` (no action was taken) and `N/A` (the question does not apply) are
-       different answers. Worse, `NA` is not even reliably a placeholder -- in Nike's 10-Q it
-       sits in `segment_name` beside `North America` and `Greater China`, and in Cisco's
-       beside `EMEA`, where it plainly abbreviates the region; all 2,546 of them used to key
-       as empty. Which meaning applies depends on the FIELD, and P4 forbids reading the field,
-       so the only field-independent answer is to stop calling them placeholders: `n/a`, `na`
-       and `none` are now ordinary text and each keys as itself. A dash run is the exception,
-       folded to one token by rule 4b because it is a mark rather than a word.
-    5. Strip ALL whitespace + commas + hyphens + periods
-       (`Inst itutional`==`Institutional`, `Table B-1.`==`Table B-1`). Numbers are
-       already handled by the numeric path above, so period-stripping here only
-       folds cosmetic punctuation on non-numeric strings.
-    6. Strip leading zeros inside digit runs (`09. Mai`==`9. Mai`).
+class Fold(NamedTuple):
+    """One normalisation step, named so that a reader can object to it BY NAME.
+
+    The point of naming them is downstream. A customer looking at a match and thinking "you
+    should not have folded that" needs to know which rule to argue with; `31-1440073` folding
+    to `311440073` is not an answer, "the punctuation rule removed the hyphen" is. `why` is
+    written for that reader, not for us.
     """
-    # Empty equivalence: None / [] / {} / blank string all mean "absent" — fold
-    # them together so null-vs-empty-list representation differences aren't errors.
-    if v is None or v == [] or v == {}:
-        return ""
-    s = str(v).strip().lower()
-    # 1b. Unicode fold: decompose + drop combining accents (ö->o), then map the
-    #     micro sign / greek mu to ascii (µg == ug). Pure cosmetic, never content.
+
+    name: str
+    why: str
+    run: Callable[[str], str]
+
+
+class _Final(str):
+    """A step's result when it decides the key outright and the pipeline should stop."""
+
+
+def _f_case(s: str) -> str:
+    return s.strip().lower()
+
+
+def _f_accents(s: str) -> str:
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
-    s = s.replace("µ", "u").replace("μ", "u")
-    # 1c. Strip short footnote / reference markers like "229 [1]", "x [x]" — only
-    #     1-2 digit or single-letter brackets so real bracketed content (e.g. years
-    #     "[2024]", codes) is preserved.
-    # ...but only when something is LEFT. This rule exists to drop a marker APPENDED to a
-    # value (`229 [1]` -> `229`); when the value IS the marker it erased the whole thing. In
-    # `internal/...eu_einvoice_standard_160p__s5` the gold `bibliography_entries[].ref_number`
-    # is literally `[1]` through `[14]`, and all fourteen keyed as the empty string -- so they
-    # were equal to each other, and reversing every reference number scored 100.00. A fold may
-    # remove an annotation; it may never consume the value.
-    _unmarked = re.sub(r"\s*\[\s*(?:\d{1,2}|[a-z])\s*\]", "", s)
-    if _unmarked.strip():
-        s = _unmarked
-    for a, b in (
-        ("’", "'"),
-        ("‘", "'"),
-        ("“", '"'),
-        ("”", '"'),
-        ("–", "-"),
-        ("—", "-"),
-    ):
+    return s.replace("\u00b5", "u").replace("\u03bc", "u")
+
+
+_FOOTNOTE = re.compile(r"\s*\[\s*(?:\d{1,2}|[a-z])\s*\]")
+
+
+def _f_footnote(s: str) -> str:
+    # Only 1-2 digit or single-letter brackets, so real bracketed content (`[2024]`, codes)
+    # survives -- and only when something is LEFT. This drops a marker APPENDED to a value
+    # (`229 [1]` -> `229`); when the value IS the marker it used to erase the whole thing. In
+    # `internal/...eu_einvoice_standard_160p__s5` gold `bibliography_entries[].ref_number` is
+    # literally `[1]` through `[14]`, and all fourteen keyed as the empty string, so reversing
+    # every reference number scored 100.00. A fold may remove an annotation; never the value.
+    out = _FOOTNOTE.sub("", s)
+    return out if out.strip() else s
+
+
+#: Characters that ARE an ASCII character, spelled in Unicode. Folding them is not a policy
+#: choice, it is finishing the job `unicodedata` starts -- NFKD leaves all of these alone.
+#: The four dash forms below were missing and it showed: `Pascual\u2010Montano` did not fold like
+#: `Pascual-Montano`, and `180,476,646.08 \u2212 121,058,316.40` kept a minus sign the arithmetic
+#: fields elsewhere write as `-`. 994 values in the corpus carry one.
+_TYPOGRAPHY = (("\u2019", "'"), ("\u2018", "'"), ("\u201c", '"'), ("\u201d", '"'),
+               ("\u2013", "-"),        # en dash
+               ("\u2014", "-"),        # em dash
+               ("\u2010", "-"),        # HYPHEN -- the Unicode one, not hyphen-minus
+               ("\u2011", "-"),        # non-breaking hyphen
+               ("\u2212", "-"),        # MINUS SIGN
+               ("\u00ad", ""),         # soft hyphen: an invisible line-break hint, not ink
+               )
+
+
+def _f_typography(s: str) -> str:
+    for a, b in _TYPOGRAPHY:
         s = s.replace(a, b)
-    num = s.replace(",", "").replace("$", "").replace("%", "")
+    return s
+
+
+#: A list marker is furniture the page prints to start a bullet, not part of the value. It is
+#: stripped only as the FIRST character, which is the only position where it is unambiguously
+#: furniture -- an interior one may be a separator that carries meaning, so
+#: `MITTAL COURT \u2219 NARIMAN POINT` keeps its dot. The corpus is why this is a position rule
+#: rather than a plain character class:
+#:
+#:   \u25a0\u25a0\u25a0-\u25a0\u25a0-\u25a0\u25a0\u25a0\u25a0   a redacted SSN. Stripping \u25a0 everywhere makes every redaction
+#:                  block the same key, and `---` then folds to the dash mark on top.
+#:   \u25cf            appears ALONE as a value, a filled checkbox meaning "yes". Stripping empties
+#:                  it, and `canon_key`'s guard restores it, so it survives either way.
+#:
+#: Two characters that look like they belong here are excluded, with the reason recorded:
+#:   \u00b7  MIDDLE DOT is a unit separator. `N\u00b7m` is a newton-metre; folding it gives `nm`,
+#:       which is a nanometre. Different quantity, same key -- exactly a P1 false merge.
+#:   \u00bb  is a quotation mark, not a bullet. The Greek filings use \u00ab\u2026\u00bb around auditor names.
+_LIST_MARKER = re.compile(r"^[\u2022\u2023\u25e6\u25aa\u25b6\u2219\u25cf\u25a0](?=\s|$)")
+
+
+def _f_list_marker(s: str) -> str:
+    return _LIST_MARKER.sub("", s)
+
+
+_ZERO_PADDED = re.compile(r"-?0\d")
+
+
+def _f_number(s: str) -> str:
     # DIVERGENCE FROM UPSTREAM: a zero-PADDED integer is not a number here, it is an
     # identifier. `02000` and `2000` are different postal codes, `06` and `6` different state
     # codes; padding is how a document says which. `0` and `0.5` are unaffected -- the guard
-    # is a leading zero followed by another digit.
-    if not re.match(r"-?0\d", num.strip()):
-        try:
-            f = float(num)
-            return str(int(f)) if f == int(f) else str(f)
-        except ValueError:
-            pass
-    if _DASH.fullmatch(re.sub(r"\s+", "", s)):
-        return "#ph_dash"
-    # LENIENT, AND ON PURPOSE. Whitespace, commas, hyphens and periods all fold, from
-    # anywhere in the value -- upstream's rule, kept. It is the wrong rule in principle:
-    # `5.2.1.5` and `5215` are two different section identifiers and this makes them one.
-    # It is the right rule in practice, and the corpus is what decided it.
+    # is a leading zero followed by another digit. Upstream also stripped leading zeros inside
+    # every digit run, which made `INV-007` == `INV-7`, `arXiv:2405.06211v3` ==
+    # `arXiv:2405.6211v3` and `wenqifan03@gmail.com` == `wenqifan3@gmail.com`.
+    num = s.replace(",", "").replace("$", "").replace("%", "")
+    if _ZERO_PADDED.match(num.strip()):
+        return s
+    try:
+        f = float(num)
+    except ValueError:
+        return s
+    return _Final(str(int(f)) if f == int(f) else str(f))
+
+
+def _f_dash(s: str) -> str:
+    return _Final("#ph_dash") if _DASH.fullmatch(re.sub(r"\s+", "", s)) else s
+
+
+def _f_punctuation(s: str) -> str:
+    # LENIENT, AND ON PURPOSE. Whitespace, commas, hyphens and periods all fold, from anywhere
+    # in the value -- upstream's rule, kept. It is the wrong rule in principle: `5.2.1.5` and
+    # `5215` are two different section identifiers and this makes them one. It is the right
+    # rule in practice, and the corpus is what decided it.
     #
-    # Measured over all 660 documents and nine vendors: folding periods recovers 1,607
-    # value matches, 1,532 of which differ by punctuation ALONE (`PO BOX 125` /
-    # `P.O. BOX 125`, `FT LAUDERDALE` / `FT. LAUDERDALE`, `100 F STREET, NE` /
-    # `100 F. STREET NE`). The remaining 75 are bibliography entries where the model kept
-    # the `[4] ` citation number -- the same reference either way. Not one of the 1,607 is
-    # a wrong value credited as right. On the other side, of the gold values this merges
-    # within a single field, ZERO change the digit string: all 215 are the same fact
-    # spelled twice. Hyphens tell the same story more sharply -- keeping them cost 526
-    # matches in a single Schedule I return, where gold writes EINs and ZIP+4s bare
-    # (`311440073`) and every model hyphenates (`31-1440073`).
+    # Measured over all 660 documents and nine vendors: folding periods recovers 1,607 value
+    # matches, 1,532 of which differ by punctuation ALONE (`PO BOX 125` / `P.O. BOX 125`,
+    # `FT LAUDERDALE` / `FT. LAUDERDALE`). The remaining 75 are bibliography entries where the
+    # model kept the `[4] ` citation number -- the same reference either way. Not one of the
+    # 1,607 is a wrong value credited as right. Of the gold values this merges within a single
+    # field, ZERO change the digit string: all 215 are the same fact spelled twice. Hyphens
+    # tell it more sharply -- keeping them cost 526 matches in a single Schedule I return,
+    # where gold writes EINs and ZIP+4s bare (`311440073`) and every model hyphenates.
     #
-    # This is a benchmark of extraction, not of punctuation, so where the evidence is this
-    # one-sided the benchmark gives the models the benefit of the doubt. What that costs is
-    # not hidden: `5.2.1.5` == `5215`, `1.1%w/w` == `11%w/w`, `RR-2` == `RR2`, `#30-2` ==
-    # `#302`, and a range `90-94` milled to `9094`. Each is listed in
-    # `tests/test_canon_properties.py` ACCEPTED_LENIENCY so it is a recorded price rather
-    # than a surprise, and METRIC_SPEC 5.3 states the policy.
-    #
-    # Note how little of P1 this actually gives up: `1:00.50` != `1:50`, `0.11%w/w` !=
-    # `11%w/w`, `COM PAR $.001` != `COM PAR $.01` and `arXiv:2405.06211v3` !=
-    # `arXiv:2405.6211v3` all still hold. They are protected by the leading-zero rule
-    # below, not by punctuation -- which is why that one divergence is worth keeping and
-    # these are not.
-    s = re.sub(r"[\s,\-.]", "", s)
-    # DIVERGENCE FROM UPSTREAM: this line was
-    # `re.sub(r"\d+", lambda m: str(int(m.group())), s)`, stripping leading zeros inside every
-    # digit run. Upstream's reason was `09. Mai` == `9. Mai`, and the cost of keeping it is
-    # `INV-007` == `INV-7`, `arXiv:2405.06211v3` == `arXiv:2405.6211v3`,
-    # `COM PAR $.001` == `COM PAR $.01`. Padding is how a document distinguishes identifiers,
-    # so P1 outranks the one rendering case it was serving -- and that case is a date our
-    # recognisers do not parse anyway (a day and a month name, no year).
-    return s
+    # What it costs is not hidden: `5.2.1.5` == `5215`, `1.1%w/w` == `11%w/w`, `RR-2` == `RR2`,
+    # `#30-2` == `#302`, `90-94` milled to `9094`. Each is in ACCEPTED_LENIENCY, and
+    # METRIC_SPEC 5.3 states the policy. Note how little P1 it gives up: `1:00.50` != `1:50`,
+    # `0.11%w/w` != `11%w/w`, `COM PAR $.001` != `COM PAR $.01` and `arXiv:2405.06211v3` !=
+    # `arXiv:2405.6211v3` all still hold -- protected by `number` keeping leading zeros, not
+    # by punctuation, which is why that divergence is worth keeping and these are not.
+    return re.sub(r"[\s,\-.]", "", s)
+
+
+def _f_brackets(s: str) -> str:
+    return s.strip("\"'").replace("(", "").replace(")", "").replace("/", "")
+
+
+#: THE normalisation pipeline, in order. Adding a step here is the only way to change how
+#: values compare, and `canon_trace` will report it by name without further work.
+FOLDS: tuple[Fold, ...] = (
+    Fold("case", "Capitalisation is not part of a value: ACME CORP is Acme Corp.", _f_case),
+    Fold("accents",
+         "Accents and the micro sign fold to ASCII, so Muller matches M\u00fcller and ug matches \u00b5g.",
+         _f_accents),
+    Fold("footnote marker",
+         "A short [1] or [a] reference marker attached to a value is dropped -- but never when "
+         "it is the whole value.", _f_footnote),
+    Fold("typography", "Curly quotes and en/em dashes become their plain ASCII forms.",
+         _f_typography),
+    Fold("list marker",
+         "A bullet at the START of a value is the page's formatting, not the value: "
+         "\u2022 Maintain a safe work environment is the same answer as Maintain a safe work "
+         "environment. A bullet anywhere else is kept, in case it separates two things.",
+         _f_list_marker),
+    Fold("number",
+         "Read as a number, so 1,000 = 1000, $5 = 5 and 12.90 = 12.9. Zero-padded integers are "
+         "exempt: 02000 is an identifier, not the number 2000.", _f_number),
+    Fold("dash mark", "A run of dashes is one mark, so - and -- agree. It is not an empty cell.",
+         _f_dash),
+    Fold("punctuation",
+         "Whitespace, commas, hyphens and periods are removed from anywhere, so PO BOX 125 "
+         "matches P.O. BOX 125 and 31-1440073 matches 311440073.", _f_punctuation),
+    Fold("quotes and brackets", "Enclosing quotes, parentheses and slashes are removed.",
+         _f_brackets),
+)
+
+
+def _run_folds(s: str, record: list | None = None) -> str:
+    """Run `FOLDS` in order. If `record` is given, append a `Change` per step that changed."""
+    for fold in FOLDS:
+        out = fold.run(s)
+        if record is not None and out != s:
+            record.append(Change(fold.name, fold.why, s, str(out)))
+        s = out
+        if isinstance(out, _Final):
+            break
+    return str(s)
+
+
+def _fold_cosmetic(v: Json, record: list | None = None) -> str:
+    """Fold cosmetic noise in ONE value -- never real content.
+
+    Started as `canonical` from the upstream grader (MIT, (c) Micro1; see NOTICE) and has since
+    diverged; the divergences are marked on the steps that carry them. This is now only the
+    driver -- the rules live in `FOLDS`, one named function each, so that they can be listed,
+    explained and pointed at from a UI instead of being read out of one long function.
+    """
+    if v is None or v == [] or v == {}:
+        return ""
+    return _run_folds(str(v), record)
 
 
 def unwrap(o: Json) -> Json:
@@ -215,18 +302,12 @@ def _drop_datalab_sidecars(obj: Json) -> Json:
 
 # ── this repo's own ──────────────────────────────────────────────────────────────
 def canonical(v):
-    """Canonical form of a value, with enclosing quotes and bracket punctuation folded.
-
-    Overflow-safe: a model can emit `Infinity`, `NaN`, or a numeric string too large for the
-    upstream `int(float(...))`, which raises rather than returning a value.
-    """
+    """`_fold_cosmetic`, overflow-safe. A model can emit `Infinity`, `NaN`, or a numeric
+    string too large for `int(float(...))`, which raises rather than returning a value."""
     try:
-        s = _fold_cosmetic(v)
+        return _fold_cosmetic(v)
     except (OverflowError, ValueError):
         return str(v)[:64]
-    if isinstance(s, str):
-        s = s.strip("\"'").replace("(", "").replace(")", "").replace("/", "")
-    return s
 
 
 def prep_prediction(obj):
@@ -653,6 +734,71 @@ def canon_key(v):
     if k == "":
         return re.sub(r"\s+", "", str(v).strip().lower())
     return k
+
+
+class Trace(NamedTuple):
+    """Why one value compares the way it does. For a UI, not for scoring."""
+
+    value: Any              # exactly what was in the document / the prediction
+    key: str                # what it was compared AS -- `canon_key(value)`
+    route: str              # absent | boolean | number | date | time | text
+    changes: list           # list[Change], in order, only the steps that altered it
+
+    def __str__(self) -> str:
+        if not self.changes:
+            return f"{self.value!r} compared as {self.key!r} (unchanged, {self.route})"
+        arrows = " -> ".join([repr(self.changes[0].before)]
+                             + [repr(c.after) for c in self.changes])
+        return (f"{arrows}   [{', '.join(c.step for c in self.changes)}]")
+
+
+def canon_trace(v) -> Trace:
+    """`canon_key`, plus every step that changed the value and a sentence about each.
+
+    The scorer never calls this -- `canon_key` is the hot path and stays a single pass. This
+    exists so a reader can be shown WHY two values matched, in terms they can disagree with:
+
+    >>> t = canon_trace("31-1440073")
+    >>> t.key
+    '311440073'
+    >>> [c.step for c in t.changes]
+    ['punctuation']
+    >>> print(t.changes[0].why)
+    Whitespace, commas, hyphens and periods are removed from anywhere, so PO BOX 125 matches P.O. BOX 125 and 31-1440073 matches 311440073.
+
+    A value can also take a non-text route, in which case no fold ran at all:
+
+    >>> canon_trace("01/15/2024").route
+    'date'
+    >>> canon_trace("01/15/2024").key
+    '#d2024-01-15'
+    """
+    key = canon_key(v)
+    if v is None or v == [] or v == {} or (isinstance(v, str) and not v.strip()):
+        return Trace(v, key, "absent", [])
+    if isinstance(v, bool):
+        return Trace(v, key, "boolean", [])
+    if _asdecimal(v) is not None:
+        route = "number"
+    elif _asdate(v):
+        return Trace(v, key, "date", [])
+    elif _astime(v):
+        return Trace(v, key, "time", [])
+    else:
+        route = "text"
+    # Re-run the folds over whatever the numeric/text path hands to `canonical`, recording.
+    changes: list = []
+    _fold_cosmetic(_defrac(str(_canon_source(v))), changes)
+    return Trace(v, key, route, changes)
+
+
+def _canon_source(v):
+    """The string the folds actually see -- `canon_key` normalises numbers before folding."""
+    d = _asdecimal(v)
+    if d is None:
+        return v
+    q = _round_fraction(d)
+    return int(q) if q == q.to_integral_value() else f"{q.normalize():f}"
 
 
 def cmp_leaf(pred, gold) -> float:

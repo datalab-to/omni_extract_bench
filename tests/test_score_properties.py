@@ -312,7 +312,7 @@ r = ACC({"rows": none_pair}, {"rows": gold_rows})
 report("when no predicted row pairs, gold and predicted leaves are all charged",
        r["matched"] == 0 and r["total"] == 10,
        f"matched {r['matched']} (want 0), denominator {r['total']} (want 4 gold + 6 spurious = 10)")
-addrs = {k[1][1] for k, _, _, _ in explain({"rows": none_pair}, {"rows": gold_rows})}
+addrs = {v.address[1][1] for v in explain({"rows": none_pair}, {"rows": gold_rows})}
 report("fabricated rows occupy addresses disjoint from gold's indices",
        addrs == {0, 1, "p0", "p1", "p2"}, f"addresses {sorted(addrs, key=str)}")
 
@@ -496,7 +496,8 @@ report("every address it found, it read correctly: the loss is entirely structur
        f"structure {rn['found']:.4f} x value {rn['read_right']:.4f}")
 
 verdicts = {"".join(f"[{st[1]!r}]" for st in k): v
-            for k, _g, _p, v in explain(copy.deepcopy(NEST_PRED), copy.deepcopy(NEST_GOLD))}
+            for k, v in ((x.address, x.verdict) for x in
+                         explain(copy.deepcopy(NEST_PRED), copy.deepcopy(NEST_GOLD)))}
 expected = {
     # the reordered-but-correct row: every quarter lands on gold's address
     "['segments'][1]['name']": "match",

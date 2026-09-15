@@ -1196,3 +1196,59 @@ and whitespace-only strings; and the fallback, which returns `re.sub(r"\s+", "",
 str(v).strip().lower())` and can only be empty if `str(v)` is all whitespace -- which the first
 branch already caught. The guard sits AFTER every fold at the single public entry point, so a
 fold added later cannot reintroduce the bug without going through it.
+
+## 27. Normalisation is a named pipeline now, and the names found two coverage gaps
+
+**Refactored.** `_fold_cosmetic` was one function of eight sequential mutations of a local `s`,
+with three early returns in the middle and a docstring whose numbered steps no longer matched
+the code order. It is now `values.FOLDS`, an ordered tuple of `Fold(name, why, run)`:
+
+`case` -> `accents` -> `footnote marker` -> `typography` -> `list marker` -> `number` ->
+`dash mark` -> `punctuation` -> `quotes and brackets`
+
+**Proven byte-identical**: 17,716,739 corpus values (gold + all nine vendors), 0 keys changed.
+
+**Why names, not just structure.** A customer looking at a match and thinking "you should not
+have folded that" needs to know WHICH rule to argue with. `31-1440073` -> `311440073` is not an
+answer; "the punctuation rule removed the hyphen" is. Each step's `why` is written for that
+reader. `tests/test_canon_properties.py` P5 asserts every step has one.
+
+**What the UI gets.**
+
+* `Verdict` gained `gold_key` / `pred_key` -- the raw values AND what they were compared as, so
+  a match between two visibly different strings explains itself.
+* `values.canon_trace(value)` -> `Trace(value, key, route, changes)`. `route` is
+  `absent|boolean|number|date|time|text`; `changes` is the ordered list of steps that altered
+  the value, each with its sentence. Computed ON DEMAND, not stored per `Verdict` -- `explain`
+  runs over every address and a trace is only wanted for the few a reader clicks.
+
+**DECIDED: thrown-out addresses stay absent from `explain`.** A field `null`/`""`/absent on both
+sides gets no `Verdict`. It is not scored, so it has no verdict, and including it would swamp
+the view -- `extractbench/short__H9-53-24_24` has 52 scored addresses and 321 blank ones.
+
+**The gaps the naming exposed**, both found by asking "which step should have handled this?"
+and finding none did:
+
+1. **Unicode spellings of ASCII characters** (994 corpus values). `typography` mapped `–` and
+   `—` but not `‐` U+2010 HYPHEN (759), `−` U+2212 MINUS SIGN (176), `‑` U+2011 non-breaking
+   hyphen (4), and did not delete `\xad` U+00AD SOFT HYPHEN (55), which is an invisible
+   line-break hint. So `Pascual‐Montano` did not fold like `Pascual-Montano`, and
+   `180,476,646.08 − 121,058,316.40` kept a minus the arithmetic fields write as `-`.
+2. **Leading list markers.** A `•` starting a value is the page's bullet, not the value.
+
+**The list-marker rule is a POSITION rule, and both restrictions are load-bearing.** It strips
+only the FIRST character, and only when whitespace or end-of-value follows. Counterexamples
+from the corpus, each of which a plain character class would have broken:
+
+| value | why the restriction matters |
+| --- | --- |
+| `■■■-■■-■■■■` | a redacted SSN -- stripping `■` freely makes every redaction one key, and `---` then folds to the dash mark |
+| `●` | appears ALONE as a filled checkbox meaning "yes"; the `canon_key` guard restores it |
+| `MITTAL COURT ∙ NARIMAN POINT` | an interior marker may be separating two things |
+
+**Two characters excluded on evidence**, though they look like they belong:
+
+* `·` U+00B7 MIDDLE DOT is a unit separator. `N·m` is a newton-metre; folding gives `nm`, a
+  nanometre. Different quantity, same key -- a textbook P1 false merge.
+* `»` U+00BB is a quotation mark, not a bullet. The Greek filings use `«…»` around auditor
+  names.
