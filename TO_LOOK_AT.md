@@ -1582,3 +1582,39 @@ The two lists answer different customer questions -- "what do you get wrong?" an
 decide to give up?" -- and an entry in the wrong one makes both answers untrustworthy. Anything
 a rule aims at belongs in ACCEPTED_LENIENCY however regrettable it looks; only side effects are
 debt.
+
+## 34. Tried and rejected: keeping a lone hyphen between numbers
+
+`90-94` == `9094` is the weakest entry in ACCEPTED_LENIENCY, so the decimal-point rule was
+tried in the same shape for hyphens. It does not work, and the reason is worth keeping.
+
+**A plain "one hyphen between digits" rule fails immediately.** It is the shape of the values
+hyphen-folding exists for:
+
+    90-94        one hyphen between digits    want KEPT      an age range
+    31-1440073   one hyphen between digits    want STRIPPED  an EIN, gold writes it bare
+    44308-1801   one hyphen between digits    want STRIPPED  a ZIP+4
+    23-11132     one hyphen between digits    want STRIPPED  a case number
+
+The decimal rule worked because a number cannot have two decimal points -- a fact about
+arithmetic, carried in the value. Hyphens have no equivalent.
+
+**A recogniser gets the classification right and the outcome wrong.** "Both sides at most three
+digits and left < right" does separate the EIN (2-7), case number (2-5) and ZIP+4 (5-4,
+descending) from `90-94` and `1-10`. But it is guessing INTENT rather than reading structure,
+and the corpus shows the guess failing at scale:
+
+* It claims **2,694 gold values**, the largest group being **1,312
+  `zoning_attribute_records[].zbl`** -- zoning bylaw numbers in year-sequence form, top value
+  `08-20`, leading zero and all.
+* Measured blast radius: **118 value-matches lost across 23 documents**, against 32 for the
+  decimal rule.
+* Worst of all, it misfires INSIDE values the hyphen fold was protecting. `512-784-7407` has
+  `512-784` claimed as a range, so the phone number keeps its first hyphen and stops matching
+  the dotted form we deliberately preserved. `1-27` (a page reference) stops matching `127`.
+  Even `2024-01-15` has `01-15` claimed, though the date recogniser catches it first.
+
+**Conclusion: keep `90-94` == `9094`.** It is one entry, with no observed corpus collision, and
+the alternative trades it for a semantic guess in a function whose entire design property is
+that it reads the value and nothing else. This is the same trap as the `_FIXED_FORMAT_NUMERIC`
+whitelist rejected earlier: a rule that classifies by shape and gets a whole field wrong.
