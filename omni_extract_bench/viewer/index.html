@@ -111,11 +111,17 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; letter-spacing: -.01em; text-
 /* ── document sidebar ───────────────────────────────────── */
 .side { position: sticky; top: 16px; }
 .docs { display: flex; flex-direction: column; max-height: 76vh; overflow-y: auto; }
+.sift { display: flex; align-items: stretch; border-bottom: 1px solid var(--line-soft); }
 .find {
-  width: 100%; box-sizing: border-box; border: 0; border-bottom: 1px solid var(--line-soft);
+  flex: 1; min-width: 0; box-sizing: border-box; border: 0;
   background: var(--surface); color: var(--ink);
   font: 400 12.5px/1 "IBM Plex Mono", monospace; padding: 9px 14px;
 }
+.sort {
+  border: 0; border-left: 1px solid var(--line-soft); border-radius: 0;
+  font-size: 11px; padding: 6px 8px; color: var(--ink-3); background: var(--surface);
+}
+.sort:hover { color: var(--accent); }
 .find::placeholder { color: var(--ink-3); font-family: "IBM Plex Sans", sans-serif; }
 .find:focus { outline: 0; background: var(--sunk); }
 .doc .acc.none { color: var(--ink-3); font-weight: 400; }
@@ -295,6 +301,18 @@ table.grid tr.allbad:hover { background: var(--missing-soft); }
   text-transform: none; white-space: nowrap;
 }
 .empty { padding: 28px 14px; color: var(--ink-3); font-size: 13px; text-align: center; }
+.rowwrap { display: contents; }
+.detail { padding: 10px 14px 12px 14px; background: var(--sunk);
+          border-bottom: 1px solid var(--line-soft); }
+.detail dl { display: grid; grid-template-columns: max-content minmax(0, 1fr);
+             gap: 3px 12px; margin: 0; }
+.detail dt { font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+             color: var(--ink-3); padding-top: 2px; }
+.detail dd { margin: 0; font: 400 12px/1.45 "IBM Plex Mono", monospace; color: var(--ink);
+             overflow-wrap: anywhere; }
+.detail dd.canon { color: var(--accent); }
+.detail dd.none { color: var(--ink-3); font-style: italic; }
+.foldnote { margin: 8px 0 0; font-size: 11.5px; color: var(--ink-3); }
 
 @media (max-width: 1100px) {
   table.grid td.val { max-width: 160px; }
@@ -373,8 +391,16 @@ table.grid tr.allbad:hover { background: var(--missing-soft); }
       <div class="panel">
         <h2>Documents <span class="count" id="doc-count"></span>
             <span class="copied" id="copied-doc"></span></h2>
-        <input class="find" id="f-docs" type="search" autocomplete="off"
-               placeholder="Filter by name or suite">
+        <div class="sift">
+          <input class="find" id="f-docs" type="search" autocomplete="off"
+                 placeholder="Filter by name or suite">
+          <select class="chip sort" id="f-sort" title="Order the list">
+            <option value="name">A&ndash;Z</option>
+            <option value="worst">worst first</option>
+            <option value="best">best first</option>
+            <option value="bad">most disagreements</option>
+          </select>
+        </div>
         <div class="docs" id="docs"></div>
       </div>
     </aside>
@@ -448,26 +474,25 @@ const clip = (s) => s.length > 150 ? s.slice(0, 150) + "…" : s;
 let source = sources[0], view = "value", current = null;
 const at = (d) => d.by_source[source];
 
-/* A match is FOLDED when the two values differ literally and `canon_key` folded them to the
-   same thing -- a date written another way, a number as a string. Worth its own bucket: it is
-   the one place where the metric, not the vendor, is what you are checking. */
+/* A fold -- the two values differing literally and `canon_key` folding them to the same thing
+   -- is a MATCH, and is bucketed as one. It used to have a section of its own, which put a
+   third of a good vendor's rows under a heading that reads like a problem. Expanding a row is
+   how you see whether it folded, and what it folded to. */
 function kindOf(cell) {
   if (!cell) return null;
-  if (cell[0] !== "m") return VERDICT[cell[0]] || cell[0];
-  // `["m"]` is a literal match; `["m", pred]` is one `canon_key` folded, and the generator
-  // only spends the second slot when the two values actually differ.
-  return cell.length < 2 ? "match" : "folded";
+  return cell[0] === "m" ? "match" : (VERDICT[cell[0]] || cell[0]);
 }
+const folded = (cell) => cell && cell[0] === "m" && cell.length > 1;
 
 const BUCKETS = [
   ["wrong value", "b-wrong"], ["missing", "b-missing"], ["invented item", "b-invented"],
   ["invented field", "b-invented"], ["fabricated", "b-fabricated"],
-  ["skipped (open map)", "b-plain"], ["folded", "b-folded"], ["match", "b-matched"],
+  ["skipped (open map)", "b-plain"], ["match", "b-matched"],
 ];
 const TAGCLASS = {
   "wrong value": "t-wrong", "missing": "t-missing", "invented item": "t-invented",
   "invented field": "t-invented", "fabricated": "t-fabricated",
-  "skipped (open map)": "t-wrong", "folded": "t-wrong",
+  "skipped (open map)": "t-wrong",
 };
 
 /* ── header ─────────────────────────────────────────────── */
@@ -526,11 +551,27 @@ const draw = () => {
 /* ── documents ──────────────────────────────────────────── */
 /* The list is every document in the run -- 660 of them for the full corpus -- so the filter is
    how you get to one, and the rows are built only for what survives it. */
+/* Sorting is by the CURRENT vendor's score, so switching vendor reorders the list -- which is
+   the point: "which documents is this one worst at" is the question you open this with. A
+   document the vendor never graded has no place in that order and goes last, whichever way
+   round the sort runs. */
+const ORDER = {
+  name: null,
+  worst: (d) => at(d)?.accuracy ?? Infinity,
+  best: (d) => -(at(d)?.accuracy ?? -Infinity),
+  bad: (d) => -(at(d)?.bad ?? -Infinity),
+};
+
 const matching = () => {
   const q = el("f-docs").value.trim().toLowerCase();
-  if (!q) return docs;
-  return docs.filter((d) =>
-    d.doc_id.toLowerCase().includes(q) || (d.suite || "").toLowerCase().includes(q));
+  const kept = q
+    ? docs.filter((d) => d.doc_id.toLowerCase().includes(q)
+                      || (d.suite || "").toLowerCase().includes(q))
+    : docs;
+  const key = ORDER[el("f-sort").value];
+  if (!key) return kept;
+  // Ties break on name, so the order is stable and does not shuffle as you switch vendors.
+  return [...kept].sort((a, b) => key(a) - key(b) || a.doc_id.localeCompare(b.doc_id));
 };
 
 function drawDocs() {
@@ -563,6 +604,7 @@ function drawDocs() {
 }
 
 el("f-docs").addEventListener("input", drawDocs);
+el("f-sort").addEventListener("change", drawDocs);
 
 /* One document's addresses are fetched when you open it, and at most a handful are kept: the
    whole run is ~0.2 GB of them and this is a browser. */
@@ -608,12 +650,15 @@ function drawValue() {
   if (view !== "value") return;
   const onlyBad = el("f-value").value === "bad";
   const groups = new Map();
-  for (const [addr, gold, v] of current.addrs) {
+  for (const r of current.addrs) {
+    const [addr, gold, v] = r;
     const kind = kindOf(v[source]);
     if (!kind) continue;
     if (onlyBad && (kind === "match")) continue;
     if (!groups.has(kind)) groups.set(kind, []);
-    groups.get(kind).push({ addr, gold, pred: v[source][1], kind });
+    groups.get(kind).push({ addr, gold, pred: v[source][1], kind,
+                            goldCanon: r[3], predCanon: v[source][2],
+                            folded: folded(v[source]) });
   }
   const shown = [...groups.values()].reduce((n, g) => n + g.length, 0);
   const answered = at(current) ? at(current).seen : 0;
@@ -650,19 +695,46 @@ function drawValue() {
   }
 }
 
+/* What the scorer actually compared. `canon_key` is the one rule that decides whether two
+   values are equal, so showing its output beside the raw text is the only way to answer "why
+   did this count" without inventing a second opinion about what equal means. */
+function detail(r, _gold, _pred) {
+  // The RAW rows print the stored JSON verbatim, not a value round-tripped through the
+  // browser. `JSON.parse("5450.0")` is the number 5450 and stringifies back as "5450", so a
+  // fold between `5450.0` and `5450` rendered as two identical lines under a note saying they
+  // differed -- the one thing this panel exists to show. Quotes on strings are the honest
+  // form: it is what the verdict table holds.
+  const gold = r.gold, pred = r.pred;
+  const row = (label, value, cls) =>
+    `<dt>${label}</dt><dd class="${value === null || value === undefined ? "none" : (cls || "")}">` +
+    `${value === null || value === undefined ? "nothing" : esc(value)}</dd>`;
+  const canonKnown = r.goldCanon !== undefined || r.predCanon !== undefined;
+  return `<div class="detail"><dl>` +
+    row("gold", gold) + row("gold canon", canonKnown ? r.goldCanon : gold, "canon") +
+    row("pred", pred) + row("pred canon", canonKnown ? r.predCanon : gold, "canon") +
+    `</dl>` +
+    (r.folded ? `<p class="foldnote">These differ as written and are equal once canonicalised, ` +
+                `so this counts as a match.</p>` : "") +
+    (canonKnown ? "" : `<p class="foldnote">Both sides matched literally, so no canonical ` +
+                       `form was stored.</p>`) + `</div>`;
+}
+
 function rowNode(r) {
   const gold = show(parse(r.gold)), pred = show(parse(r.pred));
+  const wrap = document.createElement("div");
+  wrap.className = "rowwrap";
   const b = document.createElement("button");
   b.type = "button";
   b.dataset.addr = r.addr;
   if (r.kind === "match") {
-    // Nothing to compare: one line, and the value once.
+    // Nothing to compare at a glance: one line, and the value once.
     b.className = "line";
     // Both columns clip with an ellipsis, so the full text lives in the tooltip.
     b.title = `${r.addr}\n${gold ?? ""}`;
     b.innerHTML = `<span class="addr">${esc(r.addr)}</span>` +
       `<span class="v">${gold === null ? "" : esc(gold)}</span>` +
-      `<span class="tick">&#10003;</span>`;
+      `<span class="tick">${r.folded ? "&#8776;" : "&#10003;"}</span>`;
+    if (r.folded) b.title += "\nfolded — differs as written, equal once canonicalised";
   } else {
     b.className = "row";
     b.innerHTML =
@@ -674,15 +746,23 @@ function rowNode(r) {
       `<dt>pred</dt><dd class="${pred === null ? "none" : ""}">` +
       `${pred === null ? "nothing" : esc(pred)}</dd></dl>`;
   }
+  const panel = document.createElement("div");
+  panel.hidden = true;
+  wrap.appendChild(b);
+  wrap.appendChild(panel);
   b.addEventListener("click", () => {
     [...el("rows").querySelectorAll("[aria-current]")].forEach((c) =>
       c.removeAttribute("aria-current"));
     b.setAttribute("aria-current", "true");
+    if (panel.hidden && !panel.innerHTML) panel.innerHTML = detail(r, gold, pred);
+    panel.hidden = !panel.hidden;
+    // Copying stays on the same click: finding the value in the PDF is what this pane is for,
+    // and an expander that also cost you the clipboard would be two clicks for one intent.
     const value = gold ?? pred;
     if (value) copy(value, "copied-row", gold !== null ? "gold" : "predicted",
                     " — ⌘F to find it");
   });
-  return b;
+  return wrap;
 }
 
 /* ── Compare: every vendor, bucketed by how many missed it ─

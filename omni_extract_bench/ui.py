@@ -152,13 +152,33 @@ def read_summary(run: Path) -> tuple[str, dict[str, dict]]:
     return meta.get("source") or run.name, {r["doc_id"]: r for r in table.to_pylist()}
 
 
+def canon(raw: str | None) -> str | None:
+    """A stored value's canonical form -- what the scorer actually compared.
+
+    `canon_key` is THE comparison rule, and calling it is the only honest way to show why two
+    values were or were not equal: a second notion of canonical form is exactly the divergence
+    its docstring is about. (Once the verdict table carries `gold_canon`/`pred_canon` this
+    should read them instead of recomputing -- same function, one less place to run it.)
+    """
+    if raw is None:
+        return None
+    from .values import canon_key
+    try:
+        return canon_key(decode(raw))
+    except Exception:                                                # noqa: BLE001
+        return None
+
+
 def cell(verdict: str, gold: str | None, pred: str | None) -> list:
     """One vendor's answer at one address, as the viewer reads it.
 
-    `["m"]` means it matched the gold literally; `["m", pred]` means `canon_key` folded the two
-    -- a date written another way, a number as a string -- which is the one bucket where what
-    you are checking is the metric rather than the vendor. Dropping the repeated value on a
+    `["m"]` means it matched the gold literally; `["m", pred]` means `canon_key` folded the
+    two -- a date written another way, a number as a string. Dropping the repeated value on a
     literal match is most of the file: at nine vendors, most addresses match all nine.
+
+    A third slot, where present, is the prediction's canonical form, and the address carries
+    the gold's. Together they answer "why did these count as equal" -- or as different --
+    without a second opinion about what equal means.
     """
     code = CODE.get(verdict, verdict)
     if code == "m" and pred == gold:
@@ -176,6 +196,7 @@ def document_rows(doc_id: str, runs: list[tuple[str, Path]]) -> tuple[list, dict
     import pyarrow.parquet as pq
 
     merged: dict[str, list] = {}
+    interesting: set[str] = set()
     near = {}
     for source, run in runs:
         path = run / VERDICTS / f"{doc_id}.parquet"
@@ -186,9 +207,24 @@ def document_rows(doc_id: str, runs: list[tuple[str, Path]]) -> tuple[list, dict
             slot = merged.setdefault(v["address"], [v["address"], v["gold"], {}])
             if slot[1] is None:
                 slot[1] = v["gold"]
-            slot[2][source] = cell(v["verdict"], v["gold"], v["pred"])
+            c = cell(v["verdict"], v["gold"], v["pred"])
+            slot[2][source] = c
+            # The canonical forms are what says WHY a pair did or did not agree, so they are
+            # kept only where that is a question. A value matching its gold literally has no
+            # question to answer, and it is the overwhelming majority of every document.
+            if len(c) > 1:
+                interesting.add(v["address"])
+                if v["pred"] is not None:
+                    c.append(canon(v["pred"]))
         near[source] = near_misses(verds)
-    return [merged[a] for a in sorted(merged, key=natural)], near
+
+    rows = []
+    for a in sorted(merged, key=natural):
+        row = merged[a]
+        if a in interesting:
+            row.append(canon(row[1]))
+        rows.append(row)
+    return rows, near
 
 
 def link(target: Path, at: Path) -> None:
@@ -229,7 +265,7 @@ def build(runs: list[tuple[str, Path]], summaries: list[dict[str, dict]],
             row = summary.get(doc_id)
             if row is None or row.get("kind") != "graded":
                 continue
-            answered = [v[source] for _a, _g, v in addrs if source in v]
+            answered = [row[2][source] for row in addrs if source in row[2]]
             by_source[source] = {"accuracy": round(row["accuracy"], 2),
                                  "bad": sum(1 for c in answered if c[0] != "m"),
                                  "seen": len(answered),
