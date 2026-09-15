@@ -153,6 +153,39 @@ def read(target: Path) -> list[Entry]:
     return out
 
 
+#: How much of the digest to keep. Sixteen hex characters is 64 bits -- far past collision
+#: for a handful of corpora, and short enough to read in a path and say out loud.
+VERSION_CHARS = 16
+
+
+def version(target: Path) -> str:
+    """Which corpus this is: one identifier over every listed document's identity and contents.
+
+    A score means nothing without the corpus that produced it, and "the corpus" cannot be a
+    name or a date -- correcting one ground truth makes a different benchmark, and a number
+    carried across that boundary is not comparable. So the identifier is derived from what is
+    actually in the corpus, and changes when anything does.
+
+    Every listed document counts, including ones no prediction covers: this identifies the
+    corpus, not the subset someone happened to score. Removing a row changes it too, which is
+    right -- a filtered corpus is a different benchmark.
+
+    **Computed from the files, not from the atlas's hash columns.** Those columns exist as
+    evidence that a table scored the corpus its path claims; deriving the version from them
+    would make them the claim instead, and a stale one would name the wrong corpus with
+    nothing left to catch it. Reading 660 documents costs a few seconds, once per run.
+    """
+    root, path = locate(Path(target))
+    digest = hashlib.sha256()
+    for e in sorted(read(path), key=lambda e: e.doc_id):
+        digest.update(e.doc_id.encode())
+        for rel in (e.ground_truth_path, e.schema_path):
+            digest.update(b"\0")
+            digest.update(hashlib.sha256((root / rel).read_bytes()).digest())
+        digest.update(b"\n")
+    return digest.hexdigest()[:VERSION_CHARS]
+
+
 def extras(target: Path) -> dict:
     """Columns an existing atlas carries that the contract does not define, by doc_id.
 
