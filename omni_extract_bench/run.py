@@ -42,10 +42,11 @@ import json
 import sys
 import time
 from argparse import Namespace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterator
 
 from . import corpus as corpus_atlas
+from . import s3
 from .bench import predictions
 from .corpus import Entry
 
@@ -217,16 +218,74 @@ def _report(rows: list[dict]) -> int:
     return 1 if failed else 0
 
 
+def source_name(value: str) -> str:
+    """What to call a prediction set that was not given a `--source`.
+
+    The last segment either way, so `s3://bench/preds/datalab` is `datalab` and not the
+    temporary directory it was staged into. The stamp is what labels a column in the viewer
+    and what tells two runs apart; deriving it from a path of ours would be a silent rename.
+    """
+    return PurePosixPath(value.rstrip("/")).name
+
+
+def fetch(value: str, tmp: Path | None, name: str, wanted, endpoint: str | None) -> Path:
+    """A local directory for a `--corpus` or `--predictions`, downloading it if it is a bucket.
+
+    A local path is returned untouched -- `tmp` is not even looked at -- so nothing about
+    local scoring goes near the S3 code.
+    """
+    if not s3.is_uri(value):
+        return Path(value)
+    into = tmp / name
+    files, total = s3.download(value, into, wanted, endpoint)
+    print(f"  {name}: {files} files, {total / 1e6:.1f} MB from {value}")
+    return into
+
+
 def cmd_score(args: Namespace) -> int:
-    """Score a directory of predictions against a corpus."""
+    """Score a directory of predictions against a corpus.
+
+    `--corpus`, `--predictions` and `--out` each take a local directory or an `s3://` prefix.
+    A bucket is staged to a temporary directory, scored exactly as a local corpus is, and the
+    finished run uploaded -- see `s3.py` for why that rather than a streamed filesystem.
+    """
+    import tempfile
+
+    # A staging directory only when something is remote, and removed however the run ends.
+    if not any(s3.is_uri(v) for v in (args.corpus, args.predictions, args.out)):
+        return _score(args, None)
+    with tempfile.TemporaryDirectory(prefix="oeb-") as tmp:
+        return _score(args, Path(tmp))
+
+
+def _score(args: Namespace, tmp: Path | None) -> int:
+    """`cmd_score` proper, with somewhere to stage into if anything needed staging."""
     from .bench import PREDICTION_META, cost, document, prediction_meta
 
-    corpus, atlas = corpus_atlas.locate(Path(args.corpus) if args.corpus
-                                        else published_corpus())
-    preds = Path(args.predictions)
+    endpoint = getattr(args, "endpoint_url", None)
+
+    # The run is written locally whatever `--out` says: `write_run` renames a temporary file
+    # into place, and an object store has no rename. A complete run is uploaded at the end.
+    out_uri = args.out if s3.is_uri(args.out) else None
+    out = tmp / "run" if out_uri else Path(args.out)
+
+    # A finished run is that corpus, scorer and source's answer, and there is only one. Asked
+    # FIRST: neither an hour of scoring nor a hundred megabytes of staging should end at a
+    # name that was already taken.
+    where = f"{out_uri.rstrip('/')}/{SUMMARY}" if out_uri else out / SUMMARY
+    if s3.exists(str(where), endpoint) if out_uri else Path(where).exists():
+        print(f"  {where} exists; this corpus, scorer and source already have an "
+              f"answer.\n  To score it again, name a different --out; comparing two runs "
+              f"is a join on (doc_id, prediction_id).", file=sys.stderr)
+        return 1
+
+    corpus_arg = (fetch(args.corpus, tmp, "corpus", s3.corpus_wanted, endpoint)
+                  if args.corpus else published_corpus())
+    corpus, atlas = corpus_atlas.locate(Path(corpus_arg))
+    preds = fetch(args.predictions, tmp, "predictions", s3.predictions_wanted, endpoint)
     entries = {e.doc_id: e for e in corpus_atlas.read(atlas)}
-    stamp = {"source": args.source or preds.name, **scorer_version(), **environment()}
-    out = Path(args.out)
+    stamp = {"source": args.source or source_name(args.predictions),
+             **scorer_version(), **environment()}
 
     carried, collided = prediction_meta(preds)
     if collided:
@@ -244,13 +303,6 @@ def cmd_score(args: Namespace) -> int:
               f"{', '.join(sorted(skipped)[:5])}"
               + (f" and {len(skipped) - 5} more" if len(skipped) > 5 else ""))
 
-    # A finished run is that corpus, scorer and source's answer, and there is only one.
-    if (out / SUMMARY).exists():
-        print(f"  {out / SUMMARY} exists; this corpus, scorer and source already have an "
-              f"answer.\n  To score it again, name a different --out; comparing two runs "
-              f"is a join on (doc_id, prediction_id).", file=sys.stderr)
-        return 1
-
     # Longest first: the cost spread is extreme -- a median document has 6 array rows against a
     # largest of 26,725 -- so any other order finishes the cheap work and waits on a straggler.
     ordered = sorted(jobs, key=lambda d: -cost(document(corpus, entries[d]).gt))
@@ -266,6 +318,9 @@ def cmd_score(args: Namespace) -> int:
 
     code = _report(rows)
     write_run(out, rows, by_doc, stamp)
+    if out_uri:
+        files, total = s3.upload(out, out_uri, endpoint)
+        print(f"  uploaded {files} files, {total / 1e6:.1f} MB -> {out_uri}")
     return code
 
 
