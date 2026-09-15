@@ -1500,3 +1500,38 @@ weekly` and `Ormelytide 3.0 mg once weekly`, but no 15 mg or 30 mg arm, so nothi
 today. A dose-ranging study with 1.5 mg and 15 mg arms is ordinary, and on that corpus the two
 would have been one key -- which is the point: a scorer others aim at their own documents
 cannot ship a rule that is only accidentally safe.
+
+
+## 32. Dot-vs-comma: what is already right, the one ambiguous shape, and one real gap
+
+**Multi-group separators already work and need nothing.** Two or more dots between digits mean
+separators, because a number cannot have two decimal points:
+
+    1.000.000      == 1,000,000
+    1.234.567      == 1,234,567
+    12.345.678 EUR == 12,345,678 EUR
+
+This falls out of the same clause that keeps `512.784.7407` matching a hyphenated phone number.
+
+**Exactly one shape is ambiguous: a SINGLE dotted group.** `1.000` is one-with-three-decimals
+in US/SI notation and one thousand in German, and nothing in the value resolves it. We read it
+as a decimal -- the safe side, because a false merge credits a wrong answer while a false split
+only withholds a right one.
+
+**The knob, if a future corpus makes leniency worth it**, is the `== 1` test in
+`_f_punctuation`. Replacing it with a rule that strips a dot followed by exactly three digits
+would buy `1.000 notes` == `1,000 notes` and would cost `1.000 kg` == `1,000 kg` -- a
+thousandfold merge on any three-decimal-place value. Given multi-group already works, the slice
+it buys is thin and the price is concentrated on the one shape where the error is largest.
+Recommend leaving it strict.
+
+**A REAL GAP, not yet fixed.** A German decimal comma is stripped like a thousands separator,
+so the same amount in two notations does not match:
+
+    '1.000.000,50' -> '100000050'
+    '1,000,000.50' -> '1000000.5'
+
+Fixing it means recognising a trailing `,DD` group as a decimal comma, which belongs in
+`recognise.py` (`_numeric_text` strips every comma before parsing) rather than in a fold, and
+it has to not collide with comma-stripping everywhere else. Unmeasured; no corpus case found
+yet, but a European financial corpus would hit it immediately.

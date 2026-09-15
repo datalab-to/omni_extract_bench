@@ -109,6 +109,11 @@ MUST_MATCH = [
     ("phone, dotted",         "713.203.6913",           "713-203-6913"),
     # two or more dots between digits are separators, not a decimal point, so they still fold
     ("dotted phone, 3 groups", "512.784.7407",          "512-784-7407"),
+    # Two or more dots cannot be decimal points, so a European thousands grouping folds to the
+    # US one with no ambiguity. Only the SINGLE dotted group `1.000` is undecidable.
+    ("European millions",     "1.000.000",              "1,000,000"),
+    ("European millions, 7",  "1.234.567",              "1,234,567"),
+    ("with a unit",           "12.345.678 EUR",         "12,345,678 EUR"),
     ("post box",              "P.O. BOX 125",           "PO BOX 125"),
     ("abbreviated street",    "100 F STREET, NE",       "100 F. STREET NE"),
     ("abbreviated city",      "FT LAUDERDALE",          "FT. LAUDERDALE"),
