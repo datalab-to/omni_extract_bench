@@ -28,28 +28,15 @@ _ENVELOPE_METADATA = frozenset({
 
 
 def unwrap(o: Json) -> Json:
-    """Strip a metadata envelope so a cited field becomes its bare value, recursively.
+    """Strip a {value, metadata} envelope down to the value, recursively.
 
-    An object is an envelope when it has a `value` key, at least one recognised metadata key,
-    and NOTHING ELSE. That last clause is the whole difficulty, because `value` is also an
-    ordinary field name and a row that merely contains one must not be gutted:
+    An envelope has a "value" key, at least one metadata key, and nothing else. The last
+    clause matters: "value" is also an ordinary field name, and rows like
+    {"value": 12.4, "unit": "USD"} must survive intact -- 7,130 of them in the corpus.
+    Matching on which keys are present rather than how many is what distinguishes
+    {"value": x, "citations": [...]} from {"value": x, "citations": [...], "unit": "USD"}.
 
-        {"value": 12.4, "citations": ["p3"]}                      envelope -- unwrap to 12.4
-        {"value": 12.4, "data_period": "FY25", "unit": "USD"}     a row -- 7,130 of these, keep
-        {"value": 12.4, "label": "Revenue"}                       a row -- 21,792 of these, keep
-
-    Naming the metadata is what makes that possible. Counting keys instead -- "a `value`, a
-    `citations`, and not too many others" -- cannot tell these apart:
-
-        {"value": 12.4, "citations": ["p3"]}                 envelope
-        {"value": 12.4, "citations": ["p3"], "unit": "USD"}  a row that cites its source
-
-    and unwrapping the second discards `unit` without trace. What the other keys ARE is the
-    question; how many there are never was.
-
-    This fires zero times on the present corpus: no vendor here emits the shape. It is kept
-    because vendors do emit it, and a benchmark that silently scored an envelope object as a
-    wrong answer would be reporting a fact about the response format as a fact about reading.
+    Fires zero times on the present corpus; kept because vendors do emit envelopes.
     """
     if isinstance(o, dict):
         others = set(o) - {"value"}
@@ -62,19 +49,13 @@ def unwrap(o: Json) -> Json:
 
 
 def _drop_field_sidecars(obj: Json) -> Json:
-    """Drop per-field metadata siblings, so provenance is never charged as a predicted value.
+    """Drop per-field provenance siblings so they are not charged as predicted values.
 
-    Some extractors decorate each field `X` with siblings `X_citations` (provenance block ids)
-    and `X_meta` (extraction status, reasoning, verification). That metadata is in neither the
-    schema nor the ground truth, so counting it would penalise a provider for being informative.
+    A key is dropped only if it ends in a sidecar suffix AND its base name is a sibling in the
+    same object. That protects a real field that merely ends the same way: `regulatory_citations`
+    survives unless `regulatory` sits beside it.
 
-    A key is dropped ONLY when it ends in a sidecar suffix AND its base name is also a sibling
-    in the SAME object. That pairing is what identifies a sidecar, and it protects a real field
-    that happens to end the same way: a genuine `regulatory_citations` whose base `regulatory`
-    is absent survives, while `regulatory_citations_citations` (whose base IS present) does not.
-
-    Applied to every vendor's output identically -- the rule is about the SHAPE, not about who
-    produced it, even though today only one provider emits it.
+    Applied to every vendor identically; the rule is about shape, not origin.
     """
     if isinstance(obj, dict):
         out: dict[str, Json] = {}
