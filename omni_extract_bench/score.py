@@ -623,9 +623,9 @@ def _resolve_order(order_matters: Iterable[str], schema: Any,
                    documents: Iterable[Any]) -> frozenset:
     """Turn the caller's array names into the keys the scorer matches against.
 
-    A name that fits no array is an error, not a no-op. Getting it wrong used to be silent:
-    a typo left the array order-free, which is the default, so the run finished and reported
-    a number that looked entirely fine.
+    A name that fits no array is an error, not a no-op. Silence would be worse than useless
+    here: a typo leaves the array order-free, which is the default, so the run finishes and
+    reports a number that looks entirely fine.
 
     A name counts if the schema declares it, or if any of `documents` contains it. Both are
     needed, and so is being generous about which documents. The schema covers a table that
@@ -699,10 +699,10 @@ def _both(pred: Any, gt: Any, schema: Any,
             "additionalProperties object behind a ref would be graded, while the same object "
             "written inline is skipped."
         )
-    raw_gt, raw_pred = gt or {}, pred or {}
+    raw_gt, pred_raw = gt or {}, pred or {}
     gt = prep_ground_truth(raw_gt)
-    pred = prep_prediction(raw_pred)
-    ordered = _resolve_order(order_matters, schema, (raw_gt, raw_pred, gt, pred))
+    pred = prep_prediction(pred_raw)
+    ordered = _resolve_order(order_matters, schema, (raw_gt, pred_raw, gt, pred))
     skipped: list[Address] = []
     gold_leaves = flatten(gt, schema, skipped=skipped)
     pred_leaves, inexact = align(gold_leaves, flatten(pred, schema, skipped=skipped), ordered)
@@ -829,21 +829,39 @@ def grade(pred: Any, gt: Any, schema: Any,
 class Verdict(NamedTuple):
     """What happened at one address. Returned by `explain`, one per address.
 
-    `gold`/`pred` are the RAW values, exactly as they appeared in the document and the
-    prediction. `gold_key`/`pred_key` are what they were actually compared AS. Carrying both
-    is the point: a reader who sees `31-1440073` and `311440073` recorded as a match can tell
-    that a fold did the work, and can disagree with it. `values.canon_trace(value)` then names
-    the step responsible -- it is computed on demand rather than stored here, because `explain`
-    runs over every address and the trace is only wanted for the handful someone clicks on.
+    Each side is carried twice, raw and canonical, and that is the point: a reader who sees
+    `31-1440073` and `311440073` recorded as a match can tell that a fold did the work, and can
+    disagree with it. `values.canon_trace(raw)` then names the step responsible -- computed on
+    demand rather than stored here, because `explain` runs over every address and a trace is
+    wanted only for the handful someone clicks on.
+
+    `_canon` rather than `_key` because `key` already means something else in this scorer:
+    `Row.key` is a row's identity for pairing, not a canonicalised value.
+
+    WHEN A SIDE IS `None`. All six fields are always present -- this is a NamedTuple -- but a
+    side is `None` when that side has nothing at this address:
+
+        missing                 pred_raw, pred_canon are None
+        fabricated              gold_raw, gold_canon are None
+        invented field/item     gold_raw, gold_canon are None
+        skipped (open map)      all four are None; only address and verdict mean anything
+        match, wrong value      all six are set
+
+    `None` is UNAMBIGUOUS here, which is worth relying on. `flatten` gates on `states_nothing`
+    before an address exists, so a value that reaches a `Verdict` is never `null`, never `""`,
+    never whitespace-only -- `None` therefore means "no value at this address", never "a value
+    that happened to be empty". `canon_key`'s invariant extends it: a canon that is set is
+    never `""`. So `gold_raw is None`, `gold_canon is None` and "gold said nothing here" are
+    the same test, and the two always agree. Asserted in `tests/test_comparison_surface.py`.
     """
 
     address: Address
-    gold: Any
-    pred: Any
+    gold_raw: Any                   # exactly as the document wrote it
+    pred_raw: Any                   # exactly as the model returned it
     verdict: str        # match | wrong value | missing | skipped (open map)
                         # fabricated | invented item | invented field
-    gold_key: str | None = None     # canon_key(gold), or None where there is no gold
-    pred_key: str | None = None     # canon_key(pred), or None where there is no prediction
+    gold_canon: str | None = None   # what gold was compared AS; None where there is no gold
+    pred_canon: str | None = None   # what the prediction was compared AS; None if none given
 
 
 def explain(pred: Any, gt: Any, schema: Any,
@@ -861,7 +879,7 @@ def explain(pred: Any, gt: Any, schema: Any,
     >>> schema = {"properties": {"a": {"type": "number"}, "b": {"type": "number"},
     ...                          "c": {"type": "number"}}}
     >>> for v in explain({"a": 1, "c": 3}, {"a": 2, "b": 9}, schema):
-    ...     print(f"{show(v.address):4} {str(v.gold):5} {str(v.pred):5} {v.verdict}")
+    ...     print(f"{show(v.address):4} {str(v.gold_raw):5} {str(v.pred_raw):5} {v.verdict}")
     a    2     1     wrong value
     b    9     None  missing
     c    None  3     fabricated
@@ -892,15 +910,15 @@ def explain(pred: Any, gt: Any, schema: Any,
     slots = _schema_leaves(schema)
     out = [Verdict(a, None, None, "skipped (open map)") for a in skipped]
     for a in sorted(set(gold) | set(pred_addr), key=_reading_order):
-        gk = canon_key(gold[a]) if a in gold else None
-        pk = canon_key(pred_addr[a]) if a in pred_addr else None
+        gc = canon_key(gold[a]) if a in gold else None
+        pc = canon_key(pred_addr[a]) if a in pred_addr else None
         if a in gold and a in pred_addr:
-            verdict = "match" if gk == pk else "wrong value"
+            verdict = "match" if gc == pc else "wrong value"
         elif a in gold:
             verdict = "missing"
         else:
             verdict = _classify_extra(a, slots)
-        out.append(Verdict(a, gold.get(a), pred_addr.get(a), verdict, gk, pk))
+        out.append(Verdict(a, gold.get(a), pred_addr.get(a), verdict, gc, pc))
     return out
 
 
@@ -926,6 +944,7 @@ if __name__ == "__main__":
     print(f"\naccuracy {r['accuracy']:.2f}  "
           f"= found {r['found']:.4f} x read_right {r['read_right']:.4f}")
     for v in explain(PRED, GOLD, SCHEMA):
-        print(f"  {show(v.address):24} gold={v.gold!r:12} pred={v.pred!r:12} {v.verdict}")
+        print(f"  {show(v.address):24} gold={v.gold_raw!r:12} "
+              f"pred={v.pred_raw!r:12} {v.verdict}")
     assert failures == 0
     print("\nok")

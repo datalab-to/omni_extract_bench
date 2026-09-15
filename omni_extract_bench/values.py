@@ -10,25 +10,8 @@ put integers and decimals in different namespaces, so `5` and `5.0` stopped pair
 provider's recall went to 0.000 across two subsets. With a single function a disagreement is
 not a bug to be caught by testing -- it cannot be written down.
 
-The same argument is why `normalize.py` was folded into this file. That module existed to hold
-what had been vendored from the upstream grader and to patch it at import; once the vendor tree
-was removed and three functions moved in verbatim, the split was by PROVENANCE rather than by
-concern, and canonicalising one value took four hops across two modules. Both halves of every
-concern now sit together: comparing values, preparing a document to be compared, and the two
-schema questions the scorer asks.
-
-    canon_key / cmp_leaf              are these two values the same value
-    states_nothing                    does this value claim anything at all
-    prep_prediction / prep_ground_truth
-                                      what to strip before any of that
-    is_open_map / unwrap_schema       the only two things the scorer asks a schema
-
-Three functions are taken verbatim from the `longextract_bench` grader (MIT, (c) Micro1; see
-`NOTICE`) and are marked as such below. Keeping them byte-for-byte is deliberate: `canonical`
-decides equality for every leaf this benchmark scores, so a paraphrase would be a silent change
-to every number, and a diff against upstream should stay readable. What is NOT folded is as
-load-bearing as what is -- the placeholder WORDS are content, because a page can print them;
-see METRIC_SPEC section 5 and `states_nothing` for the empty-string rule that does fold.
+Both halves of every concern sit together: comparing values, preparing a document to be
+compared, and the two schema questions the scorer asks.
 
 This module depends on nothing else in the package, so a scorer can be built on it without
 pulling in a grader.
@@ -44,11 +27,18 @@ from typing import Any, Callable, NamedTuple
 Json = Any  # parsed-JSON value: dict / list / scalar
 
 
-# ── upstream, verbatim (MIT, (c) Micro1 -- see NOTICE) ───────────────────────────
-# NOTE: there is no placeholder set any more. There used to be -- `{"", "..", "...", "null"}`
-# folded to the empty string. `""` never reaches this function (`flatten` gates on
-# `states_nothing` first, so canon_key is only ever called on values that already have an
-# address), and the other three are assertions: see `canon_key`'s closing guard.
+# ── the fold pipeline ────────────────────────────────────────────────────────────
+# `canon_key` is the only thing here anyone calls. Everything above it builds the answer to
+# one question -- "are these two values the same fact?" -- and the order of this file is the
+# order that answer is assembled:
+#
+#   FOLDS               the named, ordered string rules, one function each
+#   unwrap / sidecars   envelope and metadata removal, before any value is looked at
+#   _asdate / _asdecimal / _astime     the non-text routes a value can take instead
+#   canon_key           the entry point: routes, runs the folds, guards the result
+#   canon_trace         the same thing, narrated, for a reader who wants to disagree
+#   states_nothing      the other half of the absence rule; `flatten` gates on it FIRST,
+#                       so canon_key never sees a value that asserts nothing
 
 #: A run of dashes is one printed answer: the clerk's mark for "nothing in this cell". `-` and
 #: `--` are the same mark, so they share a key -- but they are NOT absence, and they are not
@@ -56,7 +46,7 @@ Json = Any  # parsed-JSON value: dict / list / scalar
 #: punctuation strip further down would otherwise erase `-` to `""` and silently restore the
 #: very folding this exists to prevent.
 _DASH = re.compile(r"-+")
-_DATALAB_SIDECAR_SUFFIXES = ("_citations", "_meta")
+_SIDECAR_SUFFIXES = ("_citations", "_meta")
 
 
 class Change(NamedTuple):
@@ -101,11 +91,11 @@ _FOOTNOTE = re.compile(r"\s*\[\s*(?:\d{1,2}|[a-z])\s*\]")
 
 def _f_footnote(s: str) -> str:
     # Only 1-2 digit or single-letter brackets, so real bracketed content (`[2024]`, codes)
-    # survives -- and only when something is LEFT. This drops a marker APPENDED to a value
-    # (`229 [1]` -> `229`); when the value IS the marker it used to erase the whole thing. In
-    # `internal/...eu_einvoice_standard_160p__s5` gold `bibliography_entries[].ref_number` is
-    # literally `[1]` through `[14]`, and all fourteen keyed as the empty string, so reversing
-    # every reference number scored 100.00. A fold may remove an annotation; never the value.
+    # survives -- and only when something is LEFT. The marker can BE the value: gold
+    # `bibliography_entries[].ref_number` in `internal/...eu_einvoice_standard_160p__s5` is
+    # literally `[1]` through `[14]`. Strip those and all fourteen become one key, which makes
+    # reversing every reference number score 100. A fold may remove an annotation, never the
+    # value.
     out = _FOOTNOTE.sub("", s)
     return out if out.strip() else s
 
@@ -157,12 +147,12 @@ _ZERO_PADDED = re.compile(r"-?0\d")
 
 
 def _f_number(s: str) -> str:
-    # DIVERGENCE FROM UPSTREAM: a zero-PADDED integer is not a number here, it is an
-    # identifier. `02000` and `2000` are different postal codes, `06` and `6` different state
-    # codes; padding is how a document says which. `0` and `0.5` are unaffected -- the guard
-    # is a leading zero followed by another digit. Upstream also stripped leading zeros inside
-    # every digit run, which made `INV-007` == `INV-7`, `arXiv:2405.06211v3` ==
-    # `arXiv:2405.6211v3` and `wenqifan03@gmail.com` == `wenqifan3@gmail.com`.
+    # A zero-PADDED integer is an identifier, not a number: `02000` and `2000` are different
+    # postal codes, `06` and `6` different state codes, and padding is how a document says
+    # which. Reading them numerically also merges `INV-007` with `INV-7`,
+    # `arXiv:2405.06211v3` with `arXiv:2405.6211v3`, and `wenqifan03@gmail.com` with
+    # `wenqifan3@gmail.com`. `0` and `0.5` are unaffected -- the guard needs a leading zero
+    # followed by another digit.
     num = s.replace(",", "").replace("$", "").replace("%", "")
     if _ZERO_PADDED.match(num.strip()):
         return s
@@ -178,10 +168,10 @@ def _f_dash(s: str) -> str:
 
 
 def _f_punctuation(s: str) -> str:
-    # LENIENT, AND ON PURPOSE. Whitespace, commas, hyphens and periods all fold, from anywhere
-    # in the value -- upstream's rule, kept. It is the wrong rule in principle: `5.2.1.5` and
-    # `5215` are two different section identifiers and this makes them one. It is the right
-    # rule in practice, and the corpus is what decided it.
+    # LENIENT, AND ON PURPOSE. Whitespace, commas, hyphens and periods fold from anywhere in
+    # the value. It is the wrong rule in principle -- `5.2.1.5` and `5215` are two different
+    # section identifiers and this makes them one -- and the right rule in practice, and the
+    # corpus is what decided it.
     #
     # Measured over all 660 documents and nine vendors: folding periods recovers 1,607 value
     # matches, 1,532 of which differ by punctuation ALONE (`PO BOX 125` / `P.O. BOX 125`,
@@ -250,21 +240,53 @@ def _run_folds(s: str, record: list | None = None) -> str:
 def _fold_cosmetic(v: Json, record: list | None = None) -> str:
     """Fold cosmetic noise in ONE value -- never real content.
 
-    Started as `canonical` from the upstream grader (MIT, (c) Micro1; see NOTICE) and has since
-    diverged; the divergences are marked on the steps that carry them. This is now only the
-    driver -- the rules live in `FOLDS`, one named function each, so that they can be listed,
-    explained and pointed at from a UI instead of being read out of one long function.
+    This is only the driver: the rules live in `FOLDS`, one named function each, so they can be
+    listed, explained, and pointed at from a UI instead of being read out of one long function.
     """
     if v is None or v == [] or v == {}:
         return ""
     return _run_folds(str(v), record)
 
 
+# ── envelopes and sidecars: removed before any value is compared ─────────────────
+
+#: Keys that can legitimately keep `value` company inside a METADATA ENVELOPE. An envelope is
+#: a wrapper a vendor puts around an answer to attach provenance to it; the answer is
+#: `["value"]` and everything else describes it.
+_ENVELOPE_METADATA = frozenset({
+    "citations", "citation", "confidence", "score", "reasoning", "evidence", "provenance",
+    "source", "sources", "page", "pages", "bbox", "span", "spans", "offset", "offsets",
+    "extraction_status", "status", "meta",
+})
+
+
 def unwrap(o: Json) -> Json:
-    """Strip a {value, citations} envelope so a cited field becomes its bare value,
-    recursively. No-op for plain output."""
+    """Strip a metadata envelope so a cited field becomes its bare value, recursively.
+
+    An object is an envelope when it has a `value` key, at least one recognised metadata key,
+    and NOTHING ELSE. That last clause is the whole difficulty, because `value` is also an
+    ordinary field name and a row that merely contains one must not be gutted:
+
+        {"value": 12.4, "citations": ["p3"]}                      envelope -- unwrap to 12.4
+        {"value": 12.4, "data_period": "FY25", "unit": "USD"}     a row -- 7,130 of these, keep
+        {"value": 12.4, "label": "Revenue"}                       a row -- 21,792 of these, keep
+
+    Naming the metadata is what makes that possible. Counting keys instead -- "a `value`, a
+    `citations`, and not too many others" -- cannot tell these apart:
+
+        {"value": 12.4, "citations": ["p3"]}                 envelope
+        {"value": 12.4, "citations": ["p3"], "unit": "USD"}  a row that cites its source
+
+    and unwrapping the second discards `unit` without trace. What the other keys ARE is the
+    question; how many there are never was.
+
+    This fires zero times on the present corpus: no vendor here emits the shape. It is kept
+    because vendors do emit it, and a benchmark that silently scored an envelope object as a
+    wrong answer would be reporting a fact about the response format as a fact about reading.
+    """
     if isinstance(o, dict):
-        if "value" in o and ("citations" in o or "confidence" in o) and len(o) <= 6:
+        others = set(o) - {"value"}
+        if "value" in o and others and others <= _ENVELOPE_METADATA:
             return unwrap(o["value"])
         return {k: unwrap(v) for k, v in o.items()}
     if isinstance(o, list):
@@ -272,42 +294,32 @@ def unwrap(o: Json) -> Json:
     return o
 
 
-def _drop_datalab_sidecars(obj: Json) -> Json:
-    """Recursively strip Datalab's per-field metadata sidecars. Datalab decorates each
-    extracted field X with sibling keys `X_citations` (provenance block IDs) and `X_meta`
-    (extraction_status / reasoning / verification) — metadata no other system emits and
-    that is absent from the schema and ground truth. We keep them in the stored output
-    but ignore them when scoring so they do not count as extra predicted leaves.
+def _drop_field_sidecars(obj: Json) -> Json:
+    """Drop per-field metadata siblings, so provenance is never charged as a predicted value.
 
-    A key K is dropped ONLY when it ends in a sidecar suffix AND its base name (K minus
-    that suffix) is also a sibling key in the SAME object — the signature of a Datalab
-    sidecar. This protects a genuine field that merely ends in such a suffix: a real
-    `regulatory_citations` field whose base `regulatory` is NOT a sibling is kept, while
-    Datalab's own `regulatory_citations_citations`/`_meta` (base `regulatory_citations`
-    IS a sibling) are dropped. Pure load-time normalization — no extracted value is
-    altered."""
+    Some extractors decorate each field `X` with siblings `X_citations` (provenance block ids)
+    and `X_meta` (extraction status, reasoning, verification). That metadata is in neither the
+    schema nor the ground truth, so counting it would penalise a provider for being informative.
+
+    A key is dropped ONLY when it ends in a sidecar suffix AND its base name is also a sibling
+    in the SAME object. That pairing is what identifies a sidecar, and it protects a real field
+    that happens to end the same way: a genuine `regulatory_citations` whose base `regulatory`
+    is absent survives, while `regulatory_citations_citations` (whose base IS present) does not.
+
+    Applied to every vendor's output identically -- the rule is about the SHAPE, not about who
+    produced it, even though today only one provider emits it.
+    """
     if isinstance(obj, dict):
         out: dict[str, Json] = {}
         for k, v in obj.items():
-            is_sidecar = any(
-                k.endswith(s) and k[: -len(s)] in obj for s in _DATALAB_SIDECAR_SUFFIXES
-            )
-            if not is_sidecar:
-                out[k] = _drop_datalab_sidecars(v)
+            sidecar = any(k.endswith(suf) and k[: -len(suf)] in obj
+                          for suf in _SIDECAR_SUFFIXES)
+            if not sidecar:
+                out[k] = _drop_field_sidecars(v)
         return out
     if isinstance(obj, list):
-        return [_drop_datalab_sidecars(x) for x in obj]
+        return [_drop_field_sidecars(x) for x in obj]
     return obj
-
-
-# ── this repo's own ──────────────────────────────────────────────────────────────
-def canonical(v):
-    """`_fold_cosmetic`, overflow-safe. A model can emit `Infinity`, `NaN`, or a numeric
-    string too large for `int(float(...))`, which raises rather than returning a value."""
-    try:
-        return _fold_cosmetic(v)
-    except (OverflowError, ValueError):
-        return str(v)[:64]
 
 
 def prep_prediction(obj):
@@ -320,7 +332,7 @@ def prep_prediction(obj):
     """
     obj = unwrap(obj)
     if isinstance(obj, dict):
-        obj = _drop_datalab_sidecars(obj)
+        obj = _drop_field_sidecars(obj)
     return obj if isinstance(obj, dict) else {}
 
 
@@ -627,8 +639,14 @@ def _round_fraction(d: Decimal) -> Decimal:
 
 # ── leaf comparators -> 1.0 (match) or 0.0 ───────────────────────────────────────
 def _canon(v):
+    """`_fold_cosmetic`, made total. A model can emit `Infinity`, `NaN`, or a number too large
+    for `int(float(...))`, and a fold can raise on input nobody anticipated. Either way this
+    must return a key rather than propagate: one unparseable value would otherwise fail a whole
+    document. The truncation bounds a pathological value without merging it with anything."""
     try:
-        return canonical(v)
+        return _fold_cosmetic(v)
+    except (OverflowError, ValueError):
+        return str(v)[:64]
     except Exception:
         return str(v).lower()
 
@@ -672,14 +690,14 @@ def _canon_key_unguarded(v):
     if d is not None:
         q = _round_fraction(d)
         # An integral value is an integer and must key as one, whether it arrived as `5.0`
-        # or rounded up to it. Only text containing a "." is parsed at all, which is what
-        # keeps an ID exact -- but a vendor emitting that same ID as a JSON float used to
-        # have it rounded: 8303911426.0 keyed as 8303911000, so a correct account number
-        # scored as wrong and two IDs differing in their last three digits scored as equal.
+        # or rounded up to it. Only text containing a "." is parsed at all, which keeps an ID
+        # exact -- but a vendor can emit that same ID as a JSON float, and without this branch
+        # `8303911426.0` keys as `8303911000`: a correct account number scores wrong, and two
+        # IDs differing in their last three digits score as equal.
         if q == q.to_integral_value():
             return _canon(int(q))
-        # Fixed-point text rather than scientific, so the value handed to `canonical` reads
-        # the way the document printed it. `canonical` has its own numeric path and will
+        # Fixed-point text rather than scientific, so the value handed to the folds reads
+        # the way the document printed it. `_f_number` will
         # re-parse this as a float, which is where the last of the precision goes: two keys
         # agreeing past the seventeenth significant digit collapse together. That needs an
         # integer part of ten digits AND a seven-digit fraction to reach, and it is shared
@@ -701,9 +719,8 @@ def canon_key(v):
     thrown out. A thrown-out value has no address at all -- `flatten` gates on `states_nothing`
     before this function is ever called, so `null`, `""`, whitespace and empty containers never
     reach it. A value that keys as `""` DOES have an address, is scored, and equals every other
-    value some fold happened to empty. Seventeen spellings used to land there: `()`, `,`, `/`,
-    `"`, `. . .`, `..`, `...`, `null`, and the `[1]`-shaped values that made fourteen distinct
-    bibliography reference numbers one key.
+    value some fold happened to empty -- `()`, `,`, `/`, `"`, `. . .`, `..`, `null` and every
+    `[1]`-shaped value would otherwise share one key with each other.
 
     Which is right, and why it is not a judgement call. `null` and `""` are both STRUCTURALLY
     empty JSON, and the harness itself causes vendors to disagree about which to send -- a
@@ -739,14 +756,14 @@ def canon_key(v):
 class Trace(NamedTuple):
     """Why one value compares the way it does. For a UI, not for scoring."""
 
-    value: Any              # exactly what was in the document / the prediction
-    key: str                # what it was compared AS -- `canon_key(value)`
+    raw: Any                # exactly what was in the document / the prediction
+    canon: str              # what it was compared AS -- `canon_key(raw)`
     route: str              # absent | boolean | number | date | time | text
     changes: list           # list[Change], in order, only the steps that altered it
 
     def __str__(self) -> str:
         if not self.changes:
-            return f"{self.value!r} compared as {self.key!r} (unchanged, {self.route})"
+            return f"{self.raw!r} compared as {self.canon!r} (unchanged, {self.route})"
         arrows = " -> ".join([repr(self.changes[0].before)]
                              + [repr(c.after) for c in self.changes])
         return (f"{arrows}   [{', '.join(c.step for c in self.changes)}]")
@@ -759,7 +776,7 @@ def canon_trace(v) -> Trace:
     exists so a reader can be shown WHY two values matched, in terms they can disagree with:
 
     >>> t = canon_trace("31-1440073")
-    >>> t.key
+    >>> t.canon
     '311440073'
     >>> [c.step for c in t.changes]
     ['punctuation']
@@ -770,26 +787,26 @@ def canon_trace(v) -> Trace:
 
     >>> canon_trace("01/15/2024").route
     'date'
-    >>> canon_trace("01/15/2024").key
+    >>> canon_trace("01/15/2024").canon
     '#d2024-01-15'
     """
-    key = canon_key(v)
+    canon = canon_key(v)
     if v is None or v == [] or v == {} or (isinstance(v, str) and not v.strip()):
-        return Trace(v, key, "absent", [])
+        return Trace(v, canon, "absent", [])
     if isinstance(v, bool):
-        return Trace(v, key, "boolean", [])
+        return Trace(v, canon, "boolean", [])
     if _asdecimal(v) is not None:
         route = "number"
     elif _asdate(v):
-        return Trace(v, key, "date", [])
+        return Trace(v, canon, "date", [])
     elif _astime(v):
-        return Trace(v, key, "time", [])
+        return Trace(v, canon, "time", [])
     else:
         route = "text"
-    # Re-run the folds over whatever the numeric/text path hands to `canonical`, recording.
+    # Re-run the folds over whatever the numeric or text route hands them, recording.
     changes: list = []
     _fold_cosmetic(_defrac(str(_canon_source(v))), changes)
-    return Trace(v, key, route, changes)
+    return Trace(v, canon, route, changes)
 
 
 def _canon_source(v):
@@ -847,24 +864,3 @@ def states_nothing(value) -> bool:
     [True, True, True, False, False, False, False]
     """
     return value is None or (isinstance(value, str) and not value.strip())
-
-
-# ── why there is no row-level dropping here ──────────────────────────────────────
-# There used to be. `drop_empty_gt_rows` deleted whole array rows whose "payload" fields all
-# asserted nothing, where payload meant every key that did not look like a dimension -- a
-# hardcoded list of substrings (`period`, `id`, `name`, `date`, ...) matched against field
-# NAMES. It is gone, and both halves of that are the reason.
-#
-# It was inconsistent. The payload set was read off the row in hand, so `{"id": "1"}` had no
-# payload and survived as an "all-dimension row", while `{"id": "1", "action": null}` had a
-# payload asserting nothing and was DELETED -- taking a correct `id` with it. Two spellings
-# of "row 1, no action stated", scored 62.50 and 25.00. METRIC_SPEC 5 says `null`, `""` and
-# an absent key are one thing; this was the one place that was not true.
-#
-# It was also unnecessary, which is what makes deleting it rather than repairing it right.
-# `flatten` already skips every leaf that `states_nothing`, so a row that asserts nothing
-# contributes no addresses, and a row that contributes no addresses cannot be matched, missed
-# or charged. Blank rows on EITHER side are inert without any help: a blank gold row scores
-# 100 against a prediction that omits it, and a blank predicted row scores 100 against gold
-# that omits it. The row rule was solving a problem the leaf rule had already solved, and
-# paying for it with a field-name heuristic that P4 exists to forbid.

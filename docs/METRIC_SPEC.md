@@ -523,9 +523,17 @@ each step carrying a `why` written for someone who disagrees with it:
 This exists for the reader, not the scorer. `31-1440073` folding to `311440073` does not tell
 anyone which rule to argue with; "the punctuation rule removed the hyphen" does.
 
-* **`Verdict` carries both.** `gold`/`pred` are the raw values as they appeared; `gold_key`/
-  `pred_key` are what they were compared *as*. A match between two visibly different strings is
-  therefore self-explaining.
+* **`Verdict` carries both forms of each side** — `gold_raw`/`gold_canon` and `pred_raw`/
+  `pred_canon`. The raw pair is what the document and the model wrote; the canon pair is what
+  they were compared *as*. A match between two visibly different strings is self-explaining.
+  (`_canon`, not `_key`: `Row.key` already means a row's pairing identity.)
+* **`None` on a side means that side said nothing at this address, and nothing else.** A
+  `missing` verdict has no `pred_*`; `fabricated` and the two `invented` verdicts have no
+  `gold_*`; `skipped (open map)` has neither. `None` cannot mean "a value that happened to be
+  empty", because `flatten` gates on `states_nothing` before an address exists — so a value
+  reaching a `Verdict` is never `null`, `""`, or whitespace. `canon_key`'s invariant extends
+  it: a canon that is set is never `""`. The raw and canon of one side are always `None`
+  together.
 * **`values.canon_trace(value)`** returns the route taken (`absent`, `boolean`, `number`,
   `date`, `time`, `text`) and every step that changed the value, in order. It is computed on
   demand rather than stored on each `Verdict`, because `explain` runs over every address and a
