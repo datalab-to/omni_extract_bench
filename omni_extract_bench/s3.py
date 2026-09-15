@@ -166,17 +166,27 @@ def download(uri: str, into: Path, wanted: Callable[[str], bool] | None = None,
 
 
 def upload(local: Path, uri: str, endpoint: str | None = None) -> tuple[int, int]:
-    """Copy a finished directory to a prefix, keeping its shape. Returns `(files, bytes)`.
+    """Copy a directory to a prefix, or one file to a key. Returns `(files, bytes)`.
 
     Called once, on a run that is already complete. There is no partial state to reason about:
     either the scoring finished and this uploads it, or it did not and nothing was written.
+
+    Raises:
+        FileNotFoundError: when there is nothing to send. Returning `(0, 0)` for a path that
+            does not exist, or a directory holding no files, reports a silent no-op as a
+            successful upload -- and the caller has already thrown away what it meant to send.
     """
     s3 = client(endpoint)
     bucket, prefix = parse(uri)
-    files = total = 0
-    for path in sorted(p for p in local.rglob("*") if p.is_file()):
+    if local.is_file():
+        s3.upload_file(str(local), bucket, prefix)
+        return 1, local.stat().st_size
+    paths = sorted(p for p in local.rglob("*") if p.is_file()) if local.is_dir() else []
+    if not paths:
+        raise FileNotFoundError(f"nothing to upload at {local}")
+    total = 0
+    for path in paths:
         rel = path.relative_to(local).as_posix()
         s3.upload_file(str(path), bucket, f"{prefix}/{rel}" if prefix else rel)
-        files += 1
         total += path.stat().st_size
-    return files, total
+    return len(paths), total
