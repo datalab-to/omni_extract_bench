@@ -63,6 +63,22 @@ Not the solve. The COST MATRIX, which is O(n*m) whatever solves it: the largest 
 here is 26,725 rows, 714 million cells, 5.7 GB as float64. Past the ceiling below the choice
 is greedy or an out-of-memory, so greedy stays -- and reports itself (`exact=False`) rather
 than pretending optimality. Three documents in this corpus take that path.
+
+Its SIZE bounds exactness. Its FILL no longer bounds the clock. Pricing every cell by calling
+back into the scorer was 74% of a heavy document's time -- 11.8 million interpreted calls on
+one 3,437-row block -- so `optimal_pairs` now takes an optional precomputed matrix, and
+`score._pair_weights` builds it with two sparse products in 236 ms instead of 20.6 s. Same
+numbers: `weight` is still what decides whether a solved pair is kept, so a matrix that
+disagreed with it would be caught rather than believed.
+
+That changes what the ceilings are protecting. They were always about memory -- eight bytes a
+cell -- and the time argument that used to stand beside them is mostly gone. It does NOT
+follow that they should move: 714 million cells is still 5.7 GB. What it does suggest is that
+the interesting fix for the largest block is not a bigger budget but a sparse one. That block
+is 1.74% dense (12.5 million positive pairs), which is 50 MB rather than 5.7 GB, and scipy
+carries `min_weight_full_bipartite_matching` for exactly that shape. The obstacle is that it
+solves a PERFECT matching and this problem must leave rows unpaired, so it is a real piece of
+work rather than a substitution -- but it is the direction in which greedy stops being needed.
 """
 from __future__ import annotations
 
@@ -162,13 +178,20 @@ def _exact_ok(n, m, positives=None):
     return cells * EXACT_BYTES_PER_CELL <= positives * GREEDY_BYTES_PER_PAIR
 
 
-def optimal_pairs(pred_rows, gt_rows, weight):
+def optimal_pairs(pred_rows, gt_rows, weight, weights=None):
     """Maximum-weight pairing of pred_rows to gt_rows.
 
     weight(p, g) -> number of matching leaves (higher is better).
     Returns (pairs, unmatched_pred, unmatched_gt) with pairs = [(p_row, g_row), ...].
     Only positive-weight pairs are kept: pairing two rows that share nothing is not a
     "match", it would just relabel two misses as one bad pair.
+
+    `weights` is an optional precomputed array of the same numbers `weight` returns, shaped
+    (len(pred_rows), len(gt_rows)). The caller may know how to produce the whole matrix at
+    once -- `score._pair_weights` does it with two sparse products -- and filling it here one
+    interpreted call at a time is what a heavy document spends most of its time on. It is only
+    ever the same numbers: `weight` is still what decides whether a solved pair is kept, so a
+    matrix that disagreed with it would be caught rather than believed.
     """
     if not pred_rows or not gt_rows:
         return [], list(pred_rows), list(gt_rows)
@@ -179,11 +202,14 @@ def optimal_pairs(pred_rows, gt_rows, weight):
     # a list of lists costs ~4x the array in float objects and list slots before scipy sees any
     # of it. The O(n*m) matrix is what bounds exactness once the solve is compiled, so it is
     # worth not doubling it.
-    cost = _np.empty((len(A), len(B)), dtype=float)
-    for ia, a in enumerate(A):
-        row = cost[ia]
-        for jb, b in enumerate(B):
-            row[jb] = -(weight(a, b) if not transposed else weight(b, a))
+    if weights is not None:
+        cost = _np.negative(weights.T if transposed else weights)
+    else:
+        cost = _np.empty((len(A), len(B)), dtype=float)
+        for ia, a in enumerate(A):
+            row = cost[ia]
+            for jb, b in enumerate(B):
+                row[jb] = -(weight(a, b) if not transposed else weight(b, a))
     # scipy solves the rectangular problem directly, returning row/column index arrays rather
     # than a per-row assignment vector.
     rows, cols = _lsa(cost)
@@ -207,7 +233,7 @@ def optimal_pairs(pred_rows, gt_rows, weight):
     return pairs, up, ug
 
 
-def match_rows(pred_rows, gt_rows, weight, positives=None):
+def match_rows(pred_rows, gt_rows, weight, positives=None, weights=None):
     """Optimal matching over every candidate pair. Returns (pairs, up, ug, exact_flag).
 
     Every predicted row is priced against every gold row: no partitioning, no key, no
@@ -217,13 +243,15 @@ def match_rows(pred_rows, gt_rows, weight, positives=None):
 
     positives: upper bound on pairs that can carry positive weight, for the exact-vs-greedy
     memory comparison in `_exact_ok`.
+    weights: an optional precomputed weight matrix; see `optimal_pairs`. Ignored on the greedy
+    path, which does not build a matrix at all.
     """
     if not pred_rows or not gt_rows:
         return [], list(pred_rows), list(gt_rows), True
     if not _exact_ok(len(pred_rows), len(gt_rows), positives):
         p2, u2, g2 = _greedy(pred_rows, gt_rows, weight)
         return p2, u2, g2, False
-    p2, u2, g2 = optimal_pairs(pred_rows, gt_rows, weight)
+    p2, u2, g2 = optimal_pairs(pred_rows, gt_rows, weight, weights)
     return p2, u2, g2, True
 
 
