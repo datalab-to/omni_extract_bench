@@ -127,6 +127,23 @@ spent: 43.8s against 41.4s on an 89,000-leaf document, where asking for both sep
 90.9s. They do cost memory -- one record per address, and the largest document in the corpus
 has 410,012 -- so `--no-verdicts` turns them off.
 
+### Or beside the page it was read from
+
+```bash
+oeb ui --run run/ --run run-other/ --corpus my-benchmark/ --out site/
+python -m http.server -d site/
+```
+
+Every address of a document, next to the PDF, with the browser's own find working on the page
+-- which is how you tell "the vendor misread this" from "the value is not in the document".
+Repeat `--run` to put vendors side by side; each run is one prediction set, and the column is
+labelled with its `--source`.
+
+The site is an index plus one file per document, because the whole run does not fit in a page.
+The corpus at nine vendors is ~1.1 GB of addresses; what a browser loads is a 420 KB index over
+all 660 documents, then ~1.7 MB for the one you opened. The PDFs are symlinked, so the corpus's
+774 MB of them cost nothing.
+
 Full guide: [`docs/USING.md`](docs/USING.md).
 
 ## Three outcomes, kept apart

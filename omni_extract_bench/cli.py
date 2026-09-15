@@ -3,6 +3,7 @@
     oeb build-corpus --corpus DIR
     oeb score        --predictions preds/ --out run/ [--corpus DIR] [--jobs N]
     oeb explain      --run run/ --doc <doc_id>
+    oeb ui           --run run/ [--run run2/ ...] --out site/ [--corpus DIR]
     oeb verify       --corpus DIR
     oeb score-one    --pred p.json --gt g.json --schema s.json
 
@@ -125,6 +126,7 @@ def main(argv=None):
     # holding ground_truth.json and schema.json -- rather than the flat per-type directories
     # the three commands above take.
     from . import run as _run
+    from . import ui as _ui
 
     c = sub.add_parser("build-corpus", help="write the atlas that says what a corpus contains")
     c.add_argument("--corpus", required=True, help="the corpus directory")
@@ -148,6 +150,14 @@ def main(argv=None):
     e.add_argument("--doc", required=True)
     e.add_argument("--all", action="store_true", help="include addresses that matched")
     e.set_defaults(fn=_run.cmd_explain)
+
+    u = sub.add_parser("ui", help="write a browsable site for one or more runs")
+    u.add_argument("--run", action="append", required=True, metavar="RUN",
+                   help="a run directory; repeat it to put several vendors side by side")
+    u.add_argument("--corpus", help="corpus directory, or a specific atlas parquet in it; "
+                                    "default: download the published benchmark")
+    u.add_argument("--out", required=True, help="the site directory")
+    u.set_defaults(fn=_ui.cmd_ui)
 
     v = sub.add_parser("verify", help="check a corpus directory against the contract")
     v.add_argument("--corpus", required=True,
