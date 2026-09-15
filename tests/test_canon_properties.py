@@ -88,6 +88,18 @@ MUST_MATCH = [
     # Punctuation folds from anywhere -- see ACCEPTED_LENIENCY below for the price and the
     # measurement that set it. These are the cases it buys, and they are the common ones:
     # 1,532 of the 1,607 matches it recovers differ by punctuation alone.
+    # Unicode spellings of ASCII characters. NFKD leaves all of these alone, so they had to be
+    # named -- 994 corpus values carry one, and `Pascual\u2010Montano` did not fold like
+    # `Pascual-Montano` until they were.
+    ("unicode HYPHEN",        "Pascual\u2010Montano",        "Pascual-Montano"),
+    ("non-breaking hyphen",   "asset\u2011backed",           "asset-backed"),
+    ("minus sign",            "180.08 \u2212 121.40",        "180.08 - 121.40"),
+    ("soft hyphen is invisible", "Bras\u00adilia",           "Brasilia"),
+    # A list marker at the START of a value is the page's bullet, not the value.
+    ("leading bullet",        "\u2022 Maintain a safe work environment",
+                              "Maintain a safe work environment"),
+    ("leading black square",  "\u25a0 MAHOGANY HOUSE",       "MAHOGANY HOUSE"),
+    ("leading arrow",         "\u25b6 USA",                  "USA"),
     ("dash runs are one mark", "-",                     "--"),
     ("longer dash run",       "---",                    "-"),
     ("em dash",               "\u2014",                     "-"),
@@ -122,6 +134,17 @@ MUST_DIFFER = [
     # A fold may remove an annotation; it may never CONSUME the value. The footnote rule used
     # to erase `[1]` entirely, so the fourteen `ref_number` values in the EU e-invoice
     # bibliography all keyed as empty and reversing every one of them scored 100.00.
+    # ...but only at the start. An interior marker may be separating two things, and the
+    # corpus has the cases that make each exclusion necessary.
+    ("interior bullet kept",  "MITTAL COURT \u2219 NARIMAN POINT", "MITTAL COURT NARIMAN POINT"),
+    ("interior arrow kept",   "country \u25b6 USA",          "country USA"),
+    # MIDDLE DOT is a unit separator: N\u00b7m is a newton-metre, nm is a nanometre.
+    ("middle dot is a unit",  "N\u00b7m",                    "Nm"),
+    # \u00ab\u2026\u00bb are quotation marks in the Greek filings, not bullets.
+    ("guillemets are quotes", "\u00ab\u039d\u03b9\u03ba\u03cc\u03bb\u03b1\u03bf\u03c2\u00bb",            "\u039d\u03b9\u03ba\u03cc\u03bb\u03b1\u03bf\u03c2"),
+    # A redaction block is content; stripping \u25a0 everywhere would make every one alike.
+    ("redaction blocks differ", "\u25a0\u25a0\u25a0-\u25a0\u25a0-\u25a0\u25a0\u25a0\u25a0",      "\u25a0\u25a0-\u25a0\u25a0\u25a0\u25a0"),
+    ("redaction is not a dash", "\u25a0\u25a0\u25a0-\u25a0\u25a0-\u25a0\u25a0\u25a0\u25a0",      "-"),
     ("bracket ref numbers",   "[1]",                    "[2]"),
     ("bracket vs empty",      "[1]",                    ""),
     ("bracket vs ellipsis",   "[1]",                    "..."),
@@ -275,6 +298,34 @@ report("a malformed date does not become a valid one",
 note("recognition, not type, is what protects a value: anything date-SHAPED that fails to")
 note("parse gets the full string treatment. `2025-01-2025` is milled to '2025012025', which")
 note("is also what the unrelated string `20250120 25` becomes -- see KNOWN_COLLISIONS.")
+
+print("\nP5  THE PIPELINE IS ENUMERABLE, AND SAYS WHY")
+# Normalisation used to be one long function of sequential mutations. It is now an ordered
+# list of named steps, because a customer who disagrees with a match needs to know WHICH rule
+# to argue with -- `31-1440073` -> `311440073` is not an answer, "the punctuation rule removed
+# the hyphen" is.
+from omni_extract_bench.values import FOLDS, canon_trace                # noqa: E402
+report(f"the pipeline is a list of {len(FOLDS)} named steps",
+       len(FOLDS) >= 8 and all(f.name and f.why for f in FOLDS),
+       f"{[f.name for f in FOLDS]}")
+report("every step explains itself in a full sentence",
+       all(f.why.endswith(".") and len(f.why) > 30 for f in FOLDS),
+       f"{[f.name for f in FOLDS if not (f.why.endswith('.') and len(f.why) > 30)]}")
+note("steps: " + " -> ".join(f.name for f in FOLDS))
+
+_t = canon_trace("31-1440073")
+report("a trace names the step that did the folding",
+       [c.step for c in _t.changes] == ["punctuation"] and _t.key == "311440073",
+       f"{_t}")
+_t2 = canon_trace("\u2022 Maintain a safe work environment")
+report("...and reports several in order when several fire",
+       [c.step for c in _t2.changes] == ["case", "list marker", "punctuation"], f"{_t2}")
+report("a value that takes the date route reports it and folds nothing",
+       canon_trace("01/15/2024").route == "date" and not canon_trace("01/15/2024").changes,
+       f"{canon_trace('01/15/2024')}")
+report("the trace agrees with canon_key on every MUST_MATCH and MUST_DIFFER value",
+       all(canon_trace(v).key == canon_key(v)
+           for _n, a, b in MUST_MATCH + MUST_DIFFER for v in (a, b)))
 
 print("\nP4  THE KEY IS A FUNCTION OF THE VALUE ALONE")
 import inspect                                                          # noqa: E402

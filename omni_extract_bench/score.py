@@ -827,13 +827,23 @@ def grade(pred: Any, gt: Any, schema: Any,
     
 
 class Verdict(NamedTuple):
-    """What happened at one address. Returned by `explain`, one per address."""
+    """What happened at one address. Returned by `explain`, one per address.
+
+    `gold`/`pred` are the RAW values, exactly as they appeared in the document and the
+    prediction. `gold_key`/`pred_key` are what they were actually compared AS. Carrying both
+    is the point: a reader who sees `31-1440073` and `311440073` recorded as a match can tell
+    that a fold did the work, and can disagree with it. `values.canon_trace(value)` then names
+    the step responsible -- it is computed on demand rather than stored here, because `explain`
+    runs over every address and the trace is only wanted for the handful someone clicks on.
+    """
 
     address: Address
     gold: Any
     pred: Any
     verdict: str        # match | wrong value | missing | skipped (open map)
                         # fabricated | invented item | invented field
+    gold_key: str | None = None     # canon_key(gold), or None where there is no gold
+    pred_key: str | None = None     # canon_key(pred), or None where there is no prediction
 
 
 def explain(pred: Any, gt: Any, schema: Any,
@@ -882,13 +892,15 @@ def explain(pred: Any, gt: Any, schema: Any,
     slots = _schema_leaves(schema)
     out = [Verdict(a, None, None, "skipped (open map)") for a in skipped]
     for a in sorted(set(gold) | set(pred_addr), key=_reading_order):
+        gk = canon_key(gold[a]) if a in gold else None
+        pk = canon_key(pred_addr[a]) if a in pred_addr else None
         if a in gold and a in pred_addr:
-            verdict = "match" if cmp_leaf(pred_addr[a], gold[a]) >= 1.0 else "wrong value"
+            verdict = "match" if gk == pk else "wrong value"
         elif a in gold:
             verdict = "missing"
         else:
             verdict = _classify_extra(a, slots)
-        out.append(Verdict(a, gold.get(a), pred_addr.get(a), verdict))
+        out.append(Verdict(a, gold.get(a), pred_addr.get(a), verdict, gk, pk))
     return out
 
 

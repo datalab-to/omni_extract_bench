@@ -512,6 +512,60 @@ stay distinct; so do `0.11%w/w` and `11%w/w`, `COM PAR $.001` and `COM PAR $.01`
 them are protected by keeping leading zeros -- which is why that divergence earns its place and
 the punctuation ones did not.
 
+### 5.4 Reading a comparison back: what folded, and why
+
+Normalisation is an ordered list of named steps, not one function. `values.FOLDS` is that list,
+each step carrying a `why` written for someone who disagrees with it:
+
+`case` → `accents` → `footnote marker` → `typography` → `list marker` → `number` → `dash mark`
+→ `punctuation` → `quotes and brackets`
+
+This exists for the reader, not the scorer. `31-1440073` folding to `311440073` does not tell
+anyone which rule to argue with; "the punctuation rule removed the hyphen" does.
+
+* **`Verdict` carries both.** `gold`/`pred` are the raw values as they appeared; `gold_key`/
+  `pred_key` are what they were compared *as*. A match between two visibly different strings is
+  therefore self-explaining.
+* **`values.canon_trace(value)`** returns the route taken (`absent`, `boolean`, `number`,
+  `date`, `time`, `text`) and every step that changed the value, in order. It is computed on
+  demand rather than stored on each `Verdict`, because `explain` runs over every address and a
+  trace is only wanted for the few a reader clicks.
+
+```
+canon_trace("• Maintain a safe work environment")
+  '• Maintain a safe work environment' -> '• maintain a safe work environment'
+  -> ' maintain a safe work environment' -> 'maintainasafeworkenvironment'
+  [case, list marker, punctuation]
+```
+
+**Two things `explain` deliberately does not return.**
+
+*Addresses that were thrown out.* A field that is `null`, `""` or absent on both sides produces
+no `Verdict`. It is not scored, so it has no verdict to give, and including it would swamp the
+view: one small document has 52 scored addresses and 321 blank ones. The schema remains the
+place to see what was asked for.
+
+*The trace on every row.* See above — on demand, not stored.
+
+**What the named steps bought immediately.** Splitting the fold into steps made two coverage
+gaps visible that a single function had hidden, both found by asking "which step should have
+handled this?" and finding that none did:
+
+* **Unicode spellings of ASCII characters.** `typography` mapped `–` and `—` to `-` but not
+  `‐` (U+2010 HYPHEN), `‑` (non-breaking hyphen) or `−` (MINUS SIGN), and did not remove the
+  soft hyphen, which is an invisible line-break hint rather than ink. So `Pascual‐Montano` did
+  not fold like `Pascual-Montano`. 994 corpus values carry one.
+* **List markers.** A leading `•` is the page's bullet, not the value, and nothing folded it.
+
+The list-marker rule strips only the **first** character, and only when whitespace or the end
+follows. Both restrictions are load-bearing, and the corpus supplies the counterexamples:
+`■■■-■■-■■■■` is a redacted SSN, so stripping `■` freely would make every redaction the same
+key; `●` appears alone as a filled checkbox, which the `canon_key` guard restores; an interior
+`∙` in `MITTAL COURT ∙ NARIMAN POINT` may be separating two things. Two characters that look
+like they belong are excluded, with reasons: `·` (U+00B7) is a unit separator — `N·m` is a
+newton-metre and folding gives `nm`, a nanometre — and `»` is a quotation mark, used as `«…»`
+around auditor names in the Greek filings.
+
 ## 6. Ground truth adjustments
 
 Applied uniformly, before scoring, to every vendor alike.
