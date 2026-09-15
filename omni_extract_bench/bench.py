@@ -303,16 +303,21 @@ def summary_row(case: Case, outcome: Outcome) -> dict:
 def verdict_rows(case: Case, outcome: Outcome) -> list[dict]:
     """One row per address: what the gold had, what the prediction had, and the verdict.
 
-    Values are JSON-encoded, not `str()`. `None` and the string `"None"` must not collapse
-    into the same cell, and a float must come back as the number it was -- an audit trail that
-    cannot be compared byte-for-byte is decoration.
+    Each side twice, raw and canonical. The raw values are JSON-encoded, not `str()`: `None`
+    and the string `"None"` must not collapse into the same cell, and a float must come back as
+    the number it was -- an audit trail that cannot be compared byte-for-byte is decoration.
+    The canonical values are `canon_key`'s own output, already strings, and are what says WHY
+    two values counted as equal. Storing them is what stops a reader having to recompute them
+    and risk a second opinion about what equal means.
     """
     if not outcome.verdicts:
         return []
     key = key_of(case)
     return [{**key,
              "address": show(v.address),
-             "gold": None if v.gold is None else json.dumps(v.gold),
-             "pred": None if v.pred is None else json.dumps(v.pred),
+             "gold_raw": None if v.gold_raw is None else json.dumps(v.gold_raw),
+             "gold_canon": v.gold_canon,
+             "pred_raw": None if v.pred_raw is None else json.dumps(v.pred_raw),
+             "pred_canon": v.pred_canon,
              "verdict": v.verdict}
             for v in outcome.verdicts]

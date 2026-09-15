@@ -260,5 +260,4 @@ The transforms and what each prevents: [`docs/DIALECTS.md`](docs/DIALECTS.md).
 
 Apache 2.0 — see [`LICENSE`](LICENSE).
 
-Value canonicalisation builds on the `longextract_bench` grader (MIT, © Micro1), vendored under
-`omni_extract_bench/vendor/` with its licence intact. See [`NOTICE`](NOTICE).
+All code here is Datalab's own.

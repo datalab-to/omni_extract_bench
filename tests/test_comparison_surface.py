@@ -157,4 +157,86 @@ note("only values containing a '.' are parsed as decimals, so IDs cannot be fuzz
 print(f"\n{'COMPARISON SURFACE IS AS DOCUMENTED' if not FAILS else 'FAILURES:'}")
 for f in FAILS:
     print(f"   {f}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+print("\nA VERDICT CARRIES BOTH FORMS, AND `None` MEANS ONE THING")
+# The surface a UI reads. `gold_raw`/`pred_raw` are what the document and the model wrote;
+# `gold_canon`/`pred_canon` are what they were compared AS. A match between two visibly
+# different strings is then self-explaining, and `values.canon_trace(raw)` names the step.
+from omni_extract_bench.score import explain, show, Verdict          # noqa: E402
+from omni_extract_bench.values import states_nothing, canon_trace, canon_key    # noqa: E402
+
+_SCH = {"type": "object", "properties": {
+    "a": {"type": "string"}, "b": {"type": "string"}, "c": {"type": "string"},
+    "g": {"type": "object", "additionalProperties": {"type": "string"}}}}
+_V = {v.verdict: v for v in explain({"a": "X", "c": "Z", "g": {"k": "v"}},
+                                    {"a": "X", "b": "Y", "g": {"k": "v"}}, _SCH)}
+
+report("Verdict carries raw and canon for each side",
+       Verdict._fields == ("address", "gold_raw", "pred_raw", "verdict",
+                           "gold_canon", "pred_canon"), f"{Verdict._fields}")
+report("a missing address has no pred side",
+       _V["unfound"].pred_raw is None and _V["unfound"].pred_canon is None
+       and _V["unfound"].gold_raw == "Y")
+report("a fabricated address has no gold side",
+       _V["fabricated"].gold_raw is None and _V["fabricated"].gold_canon is None
+       and _V["fabricated"].pred_raw == "Z")
+report("a skipped open map carries neither side",
+       all(x is None for x in (_V["skipped_open_map"].gold_raw,
+                               _V["skipped_open_map"].pred_raw,
+                               _V["skipped_open_map"].gold_canon,
+                               _V["skipped_open_map"].pred_canon)))
+
+# The property that lets a caller test `is None` and be done: nothing that states nothing ever
+# reaches a Verdict, so None cannot mean "an empty value" -- only "no value here".
+_cases = [({"a": "X", "c": "Z"}, {"a": "X", "b": "Y"}),
+          ({"a": None, "b": ""}, {"a": "Y", "b": "Z"}),
+          ({"a": "  ", "b": []}, {"a": "Y", "b": {}}),
+          ({}, {"a": "Y"}), ({"a": "Y"}, {})]
+_bad = []
+for _p, _g in _cases:
+    for v in explain(_p, _g, _SCH):
+        if (v.gold_raw is None) != (v.gold_canon is None): _bad.append(("gold disagree", v))
+        if (v.pred_raw is None) != (v.pred_canon is None): _bad.append(("pred disagree", v))
+        if v.gold_raw is not None and states_nothing(v.gold_raw): _bad.append(("gold blank", v))
+        if v.pred_raw is not None and states_nothing(v.pred_raw): _bad.append(("pred blank", v))
+        if v.gold_canon == "" or v.pred_canon == "": _bad.append(("canon empty", v))
+report("raw and canon are None together, and a set value is never blank", not _bad,
+       f"{_bad[:3]}")
+note("`flatten` gates on states_nothing before an address exists, so None on a Verdict means")
+note("'no value at this address' -- never 'a value that happened to be empty'.")
+
+# THE CARRY-THROUGH ITSELF: the canon a Verdict reports must be the canon the scorer used.
+# A UI that showed a different one would be explaining a comparison that never happened.
+_carry = []
+for _p, _g in _cases + [
+        ({"a": "31-1440073", "b": "\u2022 x", "c": "03/31/2024"},
+         {"a": "311440073", "b": "x", "c": "2024-03-31"}),
+        ({"a": "NIKE, Inc.", "b": "12.90", "c": "\u00bd"},
+         {"a": "Nike", "b": "12.9", "c": "1/2"})]:
+    for v in explain(_p, _g, _SCH):
+        if v.gold_raw is not None and v.gold_canon != canon_key(v.gold_raw):
+            _carry.append(("gold", v.gold_raw, v.gold_canon, canon_key(v.gold_raw)))
+        if v.pred_raw is not None and v.pred_canon != canon_key(v.pred_raw):
+            _carry.append(("pred", v.pred_raw, v.pred_canon, canon_key(v.pred_raw)))
+        # and the verdict must follow from the two canons, not from anything else
+        if v.gold_raw is not None and v.pred_raw is not None:
+            want = "matched" if v.gold_canon == v.pred_canon else "misread"
+            if v.verdict != want:
+                _carry.append(("verdict", v.address, v.verdict, want))
+report("gold_canon/pred_canon are exactly canon_key of the raw values", not _carry,
+       f"{_carry[:3]}")
+report("...and the verdict follows from comparing them", not [c for c in _carry if c[0] == "verdict"])
+
+_m = _V["matched"]
+report("canon_trace explains a match between two raw forms",
+       canon_trace(_m.pred_raw).canon == _m.pred_canon == _m.gold_canon,
+       f"{canon_trace(_m.pred_raw)}")
+report("canon_trace agrees with the Verdict on every raw value it carries",
+       all(canon_trace(r).canon == c
+           for _p, _g in _cases for v in explain(_p, _g, _SCH)
+           for r, c in ((v.gold_raw, v.gold_canon), (v.pred_raw, v.pred_canon))
+           if r is not None))
+
+
 _sys.exit(1 if FAILS else 0)

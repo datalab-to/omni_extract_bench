@@ -256,7 +256,7 @@ says `null` scores exactly as one that omits the key.
 **The empty string is a third spelling of the same thing.** A document can *print* `N/A`; it
 cannot print emptiness, so `""` is what a blank cell becomes on the way into JSON — exactly
 what `null` means. `null`, `""`, whitespace and an absent key therefore all score alike, on
-both sides, and a gold row whose payload is only `""` is dropped like an all-null one.
+both sides -- at every level, including inside an array row (see below).
 
 The rule stops there, and the corpus is why. The placeholder *words* are ink on the page:
 `N/A`, `None`, `-` and `not applicable` appear as real gold values **24,980 times**, and 67
@@ -264,6 +264,74 @@ documents hold both those strings and `null` in the same file — the annotation
 "the page printed N/A" from "the page is silent", so folding them would delete answers. `""`
 carries no such risk: all **1,369** gold empty strings in the corpus are blank cells, 1,196 of
 them a single empty column in one check register.
+
+**And the placeholder words are not each other, either.** `canon_key` used to fold `-`, `--`,
+`n/a`, `na` and `none` to the empty key — making all five equal to one another *and* to a blank
+cell. They are different answers. On an adverse-event form `None` means no action was taken and
+`N/A` means the question does not apply; `action_taken` alone carries 1,223 of the first. The
+decisive case is `NA`: in Nike's 10-Q it sits in `segment_name` beside `North America` and
+`Greater China`, and in Cisco's beside `EMEA`, where it is plainly the region — yet all **2,546**
+of them keyed as empty. Which meaning applies depends on the field, and §5.2 forbids reading the
+field, so the only field-independent answer is to stop calling them placeholders at all: `n/a`,
+`na` and `none` are ordinary text and each keys as itself.
+
+Two exceptions, both deliberate. A run of dashes is a *mark* rather than a word, so `-`, `--`
+and `---` share one key — but not the empty key. And `canonical` strips `/` (the same fold that
+makes `1/2` equal `12`), so `N/A` keys as `NA`; exactly one gold field in 660 documents holds
+both spellings, a contract-number field where both mean "not applicable".
+
+**There are no other absence markers.** `..`, `...` and the literal string `"null"` used to
+fold to the empty key as well; they no longer do, and the reason generalises. `null` and `""`
+are both *structurally* empty JSON, and the harness itself makes vendors disagree about which
+to send — `to_strict_dialect` requires a strict vendor to emit the key with `null` where a
+permissive one omits it — so they must score alike. `()`, `,` and the string `"null"` are
+content a model chose to emit; nothing in the harness induces them. Treating them as absence
+would make them free, and a model could write `()` in every field it could not read and pay
+nothing, which is the hole just closed for `-`.
+
+**A fold may trim a value; it may never consume one.** Keying as `""` is not the same as being
+thrown out. A thrown-out value has no address at all — `flatten` gates on `states_nothing`
+*before* `canon_key` is ever called, so a null never reaches it. A value that keys as `""` does
+have an address, is scored, and equals every *other* value some fold emptied.
+
+Seventeen spellings used to land there. The footnote rule was the worst:
+`re.sub(r"\s*\[\s*(?:\d{1,2}|[a-z])\s*\]", "", s)` exists to drop a marker appended to a value
+(`229 [1]` → `229`), but when the value *is* the marker it erased everything. In
+`internal/…eu_einvoice_standard_160p__s5` the gold `bibliography_entries[].ref_number` values
+are literally `[1]` through `[14]`, so all fourteen were one key — **reversing every reference
+number scored 100.00**, as did replacing them all with `...`. The rest were anything built only
+from characters some fold strips: `()`, `,`, `/`, `"`, `. . .`, `..`, `...`, `"null"`. The set
+was arbitrary — `,` emptied but `;` did not, `()` emptied but `[]` did not.
+
+The rule is now stated once, as an invariant on the single public entry point:
+
+> `canon_key(v) == ""` **implies** `states_nothing(v)`
+
+`canon_key` runs the folds and compares: if the result is empty and the input had
+non-whitespace content, the folds ate it, and the value falls back to its lowercased form with
+whitespace removed. The test is exact rather than heuristic — no field is consulted, so §5.2
+and P4 hold — and whitespace is the one fold that cannot destroy content, so `( )` still agrees
+with `()` and `. . .` with `...`. `229 [1]` still folds to `229`, because that is trimming, not
+consuming.
+
+The same guard fixes a latent bug: `str(None)` is the four characters `"None"`, so a raw null
+keyed as `none` — the same key as the *printed* word `None`, which is a real answer on an
+adverse-event form. Structural emptiness is now resolved before anything stringifies the value.
+
+After the fix **no gold value in the corpus keys as the empty string**, and
+`tests/test_canon_properties.py` P1b asserts it by construction over 128 probe values rather
+than by a list, since a list is what let the seventeen sit unnoticed. Cost: no document-vendor
+pair moves.
+
+This is a tightening, so it can only lower scores — and it costs almost nothing, because
+models rarely answer one placeholder where the gold prints another. It reaches 15 of 660
+documents, of which **three document-vendor pairs out of 5,940 actually move**, the largest by
+0.039. Corpus mean is 0.0000 for every vendor. Its value is in what it forecloses rather than
+what it corrects: under the old rule a model could write `-` in every field it could not read
+and collect all 22,632 placeholder slots for free. On a four-row form whose gold reads
+`None / N/A / Dose reduced / --`, writing `-` in every cell used to score 87.50; it now scores
+62.50, which is exactly what omitting those cells scores. That is the property worth having:
+guessing a placeholder is worth no more than admitting you did not read the cell.
 
 Without this rule the score moved with a vendor's serialization habit rather than with what it
 read: one provider's house style of `""` for blank cost it **7.92 points on `longarray`** while
@@ -289,10 +357,40 @@ keyword, so a strict vendor receives a bare `{"type":"object"}` and has nothing 
 with. Grading it would score a request the harness never made. Skipped on both sides,
 reported in `skipped_open_maps`, and detected from *explicit* presence of the keyword.
 
-**Rows that assert nothing are dropped, on both sides.** A gold row whose payload is entirely
-`null` or `""` asserts no fact, so charging a vendor for omitting it would penalise everyone
-for an unstated convention. The same filter runs over the prediction, so an invented empty row is free —
-consistent with scoring facts, but it does mean output bloat is not measured here.
+**Rows are never deleted; only leaves are.** There is no row-level filter, and there used to
+be. `drop_empty_gt_rows` removed any array row whose *payload* fields all asserted nothing,
+where payload meant every key that did not look like a dimension — decided by matching a
+hardcoded list of substrings (`period`, `id`, `name`, `date`, `unit`, …) against the field
+NAME. It was introduced for a real reason: the 10-Q ground truth carries rows like
+`{"data_period": "FY2025 Q2", "segment_type": "company", "value": null}`, which state no fact
+and which no extractor produces, so scoring them charged every vendor for an unstated
+annotation convention.
+
+It was removed anyway, for two reasons.
+
+*It contradicted this very section.* The payload set was read off the row in hand, so
+`{"id": "1"}` had no payload at all and survived as an "all-dimension row", while
+`{"id": "1", "action": null}` had a payload asserting nothing and was deleted — **taking a
+correct `id` with it**. The same prediction scored 62.50 or 25.00 depending only on which of
+the three equivalent spellings of absence it used. 132 of the 174 rows the rule dropped had
+exactly one payload key, so a single `null` deleted them; 116 of them carried five other
+values that went with the row.
+
+*It was unnecessary.* `flatten` already skips every leaf that asserts nothing, so a row
+asserting nothing contributes no addresses, and a row with no addresses cannot be matched,
+missed or charged. Blank rows are inert on either side with no rule at all: a blank gold row
+scores 100 against a prediction that omits it, and a blank predicted row scores 100 against
+gold that omits it. The row rule was solving a problem the leaf rule had already solved, and
+paying for it with a field-name heuristic that §5.2 and P4 exist to forbid.
+
+**What that costs, and where the cost belongs.** 174 gold rows across 43 documents now
+contribute their coordinate leaves. Measured over nine vendors this is −0.03 to −0.06 corpus
+mean for each, uniform enough to change no ordering, though individual documents move up to
+±5. Those rows are a GROUND TRUTH question, not a scoring one: if a 10-Q truly has no such
+line, the gold is wrong and belongs in the audit that `TO_LOOK_AT.md` items 19–21 describe,
+where it can be fixed once instead of being hidden by a scorer rule on every run. Note also
+that an invented empty row in a prediction remains free — it asserts nothing — so output bloat
+is still not measured here.
 
 **What this does and does not cost.** `{"b": null}` and `{}` are indistinguishable — but they
 are the same behaviour, so nothing is lost. Abstaining *is* producing no value at an address,
@@ -367,6 +465,150 @@ Two consequences worth naming:
   `XXX-XX-XXXX` and a gold value with five X's is a mechanical catch, and that exact error
   occurs sixteen times in this corpus. Their value is in checking the answer key, not in
   scoring the answer.
+
+### 5.3 Where the fold is lenient on purpose, and what that costs
+
+§5.1 says rendering folds and content does not. This says where that line was drawn *generously*,
+because a reader who finds `5.2.1.5` scoring equal to `5215` deserves to find it written down
+here rather than discover it in a number.
+
+**The policy.** Normalisation changes only where the current behaviour is egregious. Everywhere
+else this metric folds what the upstream metric folds, and the benefit of the doubt goes to the
+model. The reason is that this benchmark measures extraction, and a fold that is wrong in
+principle but harmless in this corpus costs the reader nothing while its removal costs real
+matches. Only one fold met the bar for removal:
+
+* **Leading zeros are kept.** Upstream strips them inside every digit run, making `INV-007` the
+  same as `INV-7`, `02000` the same as `2000`, and `wenqifan03@gmail.com` the same as
+  `wenqifan3@gmail.com`. Zero-padding is how a document says which identifier it means, so this
+  one is not a rendering difference at all -- it is content, and it is the one divergence.
+
+**What stays lenient, measured.** Whitespace, commas, hyphens and periods fold from anywhere in a
+value. That is wrong in principle -- two section identifiers can differ only by their dots -- and
+right here. Measured over all 660 documents against nine vendors:
+
+| | |
+| --- | --- |
+| value matches the punctuation fold recovers | 1,607 |
+| ...that differ by punctuation **alone** (`PO BOX 125` / `P.O. BOX 125`) | 1,532 |
+| ...that are the same bibliography entry with a `[4] ` citation number | 75 |
+| ...that credit a **wrong** value as right | 0 |
+| gold values it merges inside one field | 215 |
+| ...whose digit strings differ | 0 |
+
+The hyphen half of that was found the expensive way: keeping hyphens broke 526 matches in a
+single Schedule I return, where the gold writes EINs and ZIP+4s bare (`311440073`) and every
+model hyphenates them (`31-1440073`), costing three vendors roughly fifteen points on that
+document for nothing.
+
+**One exception, because it changes a number rather than a spelling.** A period between two
+digits, and only when it is the *only* one in the value, is a decimal point and is kept.
+Deleting it turned `1.5 mg` into `15mg`, so a 1.5 mg and a 15 mg dose arm shared a key —
+`_f_number` protects a value that is entirely a numeral, so anything carrying a unit (`mg`,
+`kg`, `mL`, `mg/day`) was exposed. Two or more dots are separators, not a decimal point, so
+`512.784.7407` and `5.2.1.5` still fold.
+
+Commas are untouched by this — they strip as they always did.
+
+**This is a consistency fix rather than new policy.** §2's number rule already read a lone
+`1.000` as the number one and `1,000` as one thousand. The punctuation strip was overriding
+that whenever a word was attached, so `1.000` alone meant one while `1.000 notes` meant one
+thousand notes. Attaching a unit should not change what a number means.
+
+It does pick a side on an ambiguity `1.250` cannot settle by itself — decimal, not European
+thousands. That is the safe side: a false merge credits a wrong answer, a false split only
+withholds a right one. Cost is measured in `TO_LOOK_AT.md` item 31.
+
+**The bill.** Twelve merges, enumerated in `tests/test_canon_properties.py` under
+`ACCEPTED_LENIENCY`, where a test asserts they still behave as priced. They are *chosen*, which
+is the distinction that matters when reading them:
+
+| merge | the rule that chose it |
+| --- | --- |
+| `5.2.1.5` = `5215`, `#30-2` = `#302`, `RR-2` = `RR2`, `90-94` = `9094` | punctuation folds |
+| `see [1]` = `see [2]` | reference markers are dropped, so a bibliography entry matches with or without its number |
+| `N/A` = `NA` | slashes fold |
+| `$5` = `5%` = `50%` = `50` | the number fold strips currency and percent before reading |
+| `Müller` = `Muller`, `Åse` = `Ase`, `İstanbul` = `Istanbul` | accents fold |
+| `1.1` = `1.10` | trailing zeros fold, per §2 |
+
+The accent row is the one worth stating plainly rather than burying: folding diacritics is
+right for a transcription that dropped one, and its price is that alphabets where the accented
+form is a *separate letter* lose the distinction — `Å` is its own letter in Norwegian, not an
+`A` with a ring, so `Åse` and `Ase` are two names and one key.
+
+**Separately, `KNOWN_COLLISIONS` holds three merges nobody chose** — `½` = `1/2` = `12` (the
+slash fold was never aimed at fractions) and a malformed date reaching the string fallback.
+The two lists answer different questions — "what do you get wrong?" versus "what did you decide
+to give up?" — and mixing them would make both answers untrustworthy.
+
+**How little P1 this actually gives up** is the reason it is affordable. `1:00.50` and `1:50`
+stay distinct; so do `0.11%w/w` and `11%w/w`, `COM PAR $.001` and `COM PAR $.01`, and
+`arXiv:2405.06211v3` and `arXiv:2405.6211v3`. None of them is protected by punctuation. All of
+them are protected by keeping leading zeros -- which is why that divergence earns its place and
+the punctuation ones did not.
+
+### 5.4 Reading a comparison back: what folded, and why
+
+Normalisation is an ordered list of named steps, not one function. `values.FOLDS` is that list,
+each step carrying a `why` written for someone who disagrees with it:
+
+`case` → `accents` → `footnote marker` → `typography` → `list marker` → `number` → `dash mark`
+→ `punctuation` → `quotes and brackets`
+
+This exists for the reader, not the scorer. `31-1440073` folding to `311440073` does not tell
+anyone which rule to argue with; "the punctuation rule removed the hyphen" does.
+
+* **`Verdict` carries both forms of each side** — `gold_raw`/`gold_canon` and `pred_raw`/
+  `pred_canon`. The raw pair is what the document and the model wrote; the canon pair is what
+  they were compared *as*. A match between two visibly different strings is self-explaining.
+  (`_canon`, not `_key`: `Row.key` already means a row's pairing identity.)
+* **`None` on a side means that side said nothing at this address, and nothing else.** A
+  `missing` verdict has no `pred_*`; `fabricated` and the two `invented` verdicts have no
+  `gold_*`; `skipped (open map)` has neither. `None` cannot mean "a value that happened to be
+  empty", because `flatten` gates on `states_nothing` before an address exists — so a value
+  reaching a `Verdict` is never `null`, `""`, or whitespace. `canon_key`'s invariant extends
+  it: a canon that is set is never `""`. The raw and canon of one side are always `None`
+  together.
+* **`values.canon_trace(value)`** returns the route taken (`absent`, `boolean`, `number`,
+  `date`, `time`, `text`) and every step that changed the value, in order. It is computed on
+  demand rather than stored on each `Verdict`, because `explain` runs over every address and a
+  trace is only wanted for the few a reader clicks.
+
+```
+canon_trace("• Maintain a safe work environment")
+  '• Maintain a safe work environment' -> '• maintain a safe work environment'
+  -> ' maintain a safe work environment' -> 'maintainasafeworkenvironment'
+  [case, list marker, punctuation]
+```
+
+**Two things `explain` deliberately does not return.**
+
+*Addresses that were thrown out.* A field that is `null`, `""` or absent on both sides produces
+no `Verdict`. It is not scored, so it has no verdict to give, and including it would swamp the
+view: one small document has 52 scored addresses and 321 blank ones. The schema remains the
+place to see what was asked for.
+
+*The trace on every row.* See above — on demand, not stored.
+
+**What the named steps bought immediately.** Splitting the fold into steps made two coverage
+gaps visible that a single function had hidden, both found by asking "which step should have
+handled this?" and finding that none did:
+
+* **Unicode spellings of ASCII characters.** `typography` mapped `–` and `—` to `-` but not
+  `‐` (U+2010 HYPHEN), `‑` (non-breaking hyphen) or `−` (MINUS SIGN), and did not remove the
+  soft hyphen, which is an invisible line-break hint rather than ink. So `Pascual‐Montano` did
+  not fold like `Pascual-Montano`. 994 corpus values carry one.
+* **List markers.** A leading `•` is the page's bullet, not the value, and nothing folded it.
+
+The list-marker rule strips only the **first** character, and only when whitespace or the end
+follows. Both restrictions are load-bearing, and the corpus supplies the counterexamples:
+`■■■-■■-■■■■` is a redacted SSN, so stripping `■` freely would make every redaction the same
+key; `●` appears alone as a filled checkbox, which the `canon_key` guard restores; an interior
+`∙` in `MITTAL COURT ∙ NARIMAN POINT` may be separating two things. Two characters that look
+like they belong are excluded, with reasons: `·` (U+00B7) is a unit separator — `N·m` is a
+newton-metre and folding gives `nm`, a nanometre — and `»` is a quotation mark, used as `«…»`
+around auditor names in the Greek filings.
 
 ## 6. Ground truth adjustments
 

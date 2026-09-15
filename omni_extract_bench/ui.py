@@ -108,15 +108,15 @@ def near_misses(verds: list[dict]) -> list[dict]:
     unpaired: dict[str, str] = {}
     for v in verds:
         if _renamed(v["verdict"]) == "unfound":
-            key = loose(decode(v["gold"]))
+            key = loose(decode(side(v, "gold")))
             if key:
-                unpaired.setdefault(key, decode(v["gold"]))
+                unpaired.setdefault(key, decode(side(v, "gold")))
     if not unpaired:
         return []
     out = []
     for v in verds:
         if _renamed(v["verdict"]) in EXTRA:
-            pred = decode(v["pred"])
+            pred = decode(side(v, "pred"))
             key = loose(pred)
             if key and key in unpaired:
                 out.append({"gold": unpaired[key], "pred": pred})
@@ -159,21 +159,22 @@ def _renamed(name: str) -> str:
     return verdict(name)
 
 
-def canon(raw: str | None) -> str | None:
-    """A stored value's canonical form -- what the scorer actually compared.
+#: A verdict row's four value columns, and what a run written before they were split by form
+#: called the two it had. Reading through this is how an older run still opens.
+RAW = {"gold": "gold_raw", "pred": "pred_raw"}
 
-    `canon_key` is THE comparison rule, and calling it is the only honest way to show why two
-    values were or were not equal: a second notion of canonical form is exactly the divergence
-    its docstring is about. (Once the verdict table carries `gold_canon`/`pred_canon` this
-    should read them instead of recomputing -- same function, one less place to run it.)
+
+def side(row: dict, which: str, form: str = "raw") -> str | None:
+    """One side of a verdict row -- `raw` as stored, or `canon` as the scorer compared it.
+
+    The canonical forms are READ, never recomputed. `canon_key` is the one rule that decides
+    whether two values are equal, and running it again here would be a second place that
+    answers the same question -- exactly the divergence its docstring exists to prevent. A run
+    from before the columns existed simply has no canon, and the viewer says so.
     """
-    if raw is None:
-        return None
-    from .values import canon_key
-    try:
-        return canon_key(decode(raw))
-    except Exception:                                                # noqa: BLE001
-        return None
+    if form == "canon":
+        return row.get(f"{which}_canon")
+    return row.get(RAW[which], row.get(which))
 
 
 def cell(verdict: str, gold: str | None, pred: str | None) -> list:
@@ -204,6 +205,7 @@ def document_rows(doc_id: str, runs: list[tuple[str, Path]]) -> tuple[list, dict
 
     merged: dict[str, list] = {}
     interesting: set[str] = set()
+    canons: dict[str, str | None] = {}
     near = {}
     for source, run in runs:
         path = run / VERDICTS / f"{doc_id}.parquet"
@@ -211,25 +213,26 @@ def document_rows(doc_id: str, runs: list[tuple[str, Path]]) -> tuple[list, dict
             continue
         verds = pq.read_table(path).to_pylist()
         for v in verds:
-            slot = merged.setdefault(v["address"], [v["address"], v["gold"], {}])
+            gold_raw = side(v, "gold")
+            slot = merged.setdefault(v["address"], [v["address"], gold_raw, {}])
             if slot[1] is None:
-                slot[1] = v["gold"]
-            c = cell(v["verdict"], v["gold"], v["pred"])
+                slot[1] = gold_raw
+            c = cell(v["verdict"], gold_raw, side(v, "pred"))
             slot[2][source] = c
             # The canonical forms are what says WHY a pair did or did not agree, so they are
             # kept only where that is a question. A value matching its gold literally has no
             # question to answer, and it is the overwhelming majority of every document.
             if len(c) > 1:
                 interesting.add(v["address"])
-                if v["pred"] is not None:
-                    c.append(canon(v["pred"]))
+                c.append(side(v, "pred", "canon"))
+                canons.setdefault(v["address"], side(v, "gold", "canon"))
         near[source] = near_misses(verds)
 
     rows = []
     for a in sorted(merged, key=natural):
         row = merged[a]
         if a in interesting:
-            row.append(canon(row[1]))
+            row.append(canons.get(a))
         rows.append(row)
     return rows, near
 
@@ -262,11 +265,6 @@ def build(runs: list[tuple[str, Path]], summaries: list[dict[str, dict]],
     index, bytes_written, linked_pdfs, ungraded, silent = [], 0, 0, 0, 0
     for doc_id in doc_ids:
         addrs, near = document_rows(doc_id, runs)
-        # A run written with `--no-verdicts` has scores and no addresses. There is nothing to
-        # look at, and a document drawn with none would read as one where everything matched.
-        if not addrs:
-            silent += 1
-            continue
         by_source = {}
         for (source, _run), summary in zip(runs, summaries):
             row = summary.get(doc_id)
@@ -277,8 +275,15 @@ def build(runs: list[tuple[str, Path]], summaries: list[dict[str, dict]],
                                  "bad": sum(1 for c in answered if c[0] != "m"),
                                  "seen": len(answered),
                                  "near": compact(near.get(source, []))}
+        # Asked in this order, because a document can be missing its addresses for two very
+        # different reasons and the message has to say the right one. A prediction nothing
+        # could be scored from has no verdicts BECAUSE it was never graded; only a document
+        # that WAS graded and still has none was scored with `--no-verdicts`.
         if not by_source:
             ungraded += 1
+            continue
+        if not addrs:
+            silent += 1
             continue
 
         payload = json.dumps({"addrs": addrs}, ensure_ascii=False, separators=(",", ":"))
