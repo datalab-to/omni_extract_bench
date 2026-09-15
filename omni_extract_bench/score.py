@@ -36,8 +36,8 @@ from collections.abc import Hashable, Iterable
 from typing import Any, Literal, NamedTuple
 
 from . import matching as OM
-from .values import (canon_key, cmp_leaf, is_open_map,
-                     prep_ground_truth, prep_prediction, states_nothing, unwrap_schema)
+from .prepare import is_open_map, prep_ground_truth, prep_prediction, unwrap_schema
+from .values import canon_key, cmp_leaf, states_nothing
 
 # An address is a tuple of steps. Each step is tagged, because a document may contain the key
 # "0" and ("k", "0") must not join ("i", 0).

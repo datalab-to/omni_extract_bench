@@ -1252,3 +1252,47 @@ from the corpus, each of which a plain character class would have broken:
   nanometre. Different quantity, same key -- a textbook P1 false merge.
 * `»` U+00BB is a quotation mark, not a bullet. The Greek filings use `«…»` around auditor
   names.
+
+## 28. DISCLOSE: the list-marker fold helps datalab ~30x more than anyone else
+
+**Measured, corpus-wide, nine vendors.** Adding the unicode-dash and leading-list-marker folds
+(item 27) moves 23 document-vendor pairs of ~5,940. Corpus mean per vendor:
+
+| vendor | corpus mean |
+| --- | --- |
+| **datalab** | **+0.0549** |
+| reducto | +0.0018 |
+| llamaextract | +0.0018 |
+| extend | +0.0009 |
+| gemini | +0.0009 |
+| gpt | +0.0009 |
+| azure-cu | +0.0005 |
+| claude | +0.0005 |
+| mistral | +0.0004 |
+
+**Nearly all of datalab's gain is ONE document.** `internal/...health_safety_handbook_26p__s3`
+goes 61.82 -> 97.78 (+35.96), which is +0.0545 of the +0.0549. On that document every other
+vendor moves +0.00, because datalab is the only extractor that preserves the bullet glyph;
+the rest strip it upstream.
+
+**Why it is +35.96 from ten values.** The bullet cost twice. Ten bulleted rows failed to pair,
+so each produced an unfound gold leaf AND an orphaned predicted row inflating the denominator:
+`34/55, unfound 10` became `44/45, unfound 0`.
+
+**This must be stated wherever the board is published.** It is a change to the metric, made by
+datalab, that in practice benefits datalab. Absolute size is negligible (+0.055 on a 0-100
+scale reorders nothing) but the ASYMMETRY is 30-100x and that is the fact a reader deserves.
+
+**What makes it defensible, and both halves should be published too:**
+
+1. The rule was specified BEFORE this document was measured -- leading position only,
+   whitespace-or-end required.
+2. The exclusions were chosen AGAINST interest on corpus evidence: `·` (N·m is a newton-metre,
+   folding gives nm, a nanometre), `»` (Greek guillemets around auditor names), repeated `■`
+   (redacted SSNs) and standalone `●` (a filled checkbox) all stay unfolded.
+3. It is symmetric: any vendor that emitted bullets would gain identically. Every vendor's
+   delta is >= 0, because a leniency cannot cost anyone.
+
+**The general point for the writeup.** A benchmark author scoring their own product must report
+per-vendor effects of every metric change, not just the corpus mean -- the mean here looks
+like nothing, and the asymmetry underneath it is the story.

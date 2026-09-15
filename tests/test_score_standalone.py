@@ -27,8 +27,19 @@ _ROOT = Path(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 _sys.path.insert(0, str(_ROOT))
 
 PKG = _ROOT / "omni_extract_bench"
-SCORING_PATH = {"matching", "values"}
+#: Every module a grade is allowed to depend on. Four, each with one subject:
+#:   matching    optimal row assignment
+#:   values      the comparison rule -- folds, canon_key, states_nothing
+#:   recognise   is this text a date, a time, a number
+#:   prepare     shaping a document and reading a schema, before any value is compared
+#: The set is the point, not its size: nothing here reaches a transport, a vendor dialect or
+#: an envelope convention, so a score cannot move when one of those changes.
+SCORING_PATH = {"matching", "values", "recognise", "prepare"}
 FAILS = []
+
+
+def note(text):
+    print(f"          {text}")
 
 
 def report(name, ok, detail=""):
@@ -81,12 +92,23 @@ def closure(start):
 print("\nTHE SCORING PATH IS CLOSED")
 direct = imports_of(PKG / "score.py")
 reach = closure(direct)
-report("score.py imports only matching and values",
-       direct == SCORING_PATH, f"imports {sorted(direct)}")
-report("...and nothing they pull in widens that",
+report("score.py imports nothing outside the scoring path",
+       direct <= SCORING_PATH, f"imports {sorted(direct)}")
+report("...and the closure is exactly the scoring path, nothing wider",
        reach == SCORING_PATH, f"closure {sorted(reach)}")
+note(f"score.py reaches {sorted(direct)} directly; `recognise` arrives through `values`")
 report("values.py, the shared layer, stays below the scorer",
        "score" not in imports_of(PKG / "values.py"),
+       f"values imports {sorted(imports_of(PKG / 'values.py'))}")
+# The split is only worth having if the pieces stay separable. `recognise` and `prepare` each
+# answer a question that has nothing to do with the other two, so neither may reach back up.
+for low, subject in (("recognise", "is this text a date / a number"),
+                     ("prepare", "shaping a document")):
+    report(f"{low}.py depends on nothing in the package ({subject})",
+           not imports_of(PKG / f"{low}.py"),
+           f"{low} imports {sorted(imports_of(PKG / f'{low}.py'))}")
+report("values.py reaches recognise but not prepare",
+       imports_of(PKG / "values.py") == {"recognise"},
        f"values imports {sorted(imports_of(PKG / 'values.py'))}")
 # Implied by the closure above, but named so the directory's purpose survives a reader who
 # does not derive it from a set equality: a grade must not come to depend on a transport, a

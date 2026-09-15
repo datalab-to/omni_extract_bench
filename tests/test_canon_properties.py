@@ -305,6 +305,22 @@ print("\nP5  THE PIPELINE IS ENUMERABLE, AND SAYS WHY")
 # to argue with -- `31-1440073` -> `311440073` is not an answer, "the punctuation rule removed
 # the hyphen" is.
 from omni_extract_bench.values import FOLDS, canon_trace                # noqa: E402
+# ORDER IN `FOLDS` IS BEHAVIOUR, not presentation. `fractions` must precede `accents`, whose
+# NFKD pass decomposes \u00bd into `1\u20442` -- a form the fraction table no longer matches, so a
+# later `fractions` silently stops working. Pinned here because the failure is invisible: the
+# key still looks plausible, it is merely a different one.
+_names = [f.name for f in FOLDS]
+report("`fractions` runs before `accents`",
+       _names.index("fractions") < _names.index("accents"), f"{_names}")
+report("...and the fold it protects still works", canon_key("\u00bd") == canon_key("1/2"),
+       f"{canon_key(chr(0xbd))!r} vs {canon_key('1/2')!r}")
+report("`dash mark` runs before `punctuation`",
+       _names.index("dash mark") < _names.index("punctuation"),
+       "otherwise the punctuation strip erases a dash run to nothing first")
+report("`number` runs after the typography that feeds it",
+       _names.index("typography") < _names.index("number"),
+       "a minus sign must already be ASCII before the value is read as a number")
+
 report(f"the pipeline is a list of {len(FOLDS)} named steps",
        len(FOLDS) >= 8 and all(f.name and f.why for f in FOLDS),
        f"{[f.name for f in FOLDS]}")

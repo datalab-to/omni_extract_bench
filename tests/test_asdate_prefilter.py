@@ -28,7 +28,8 @@ import sys as _sys
 from datetime import date, datetime
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench import values as V                              # noqa: E402
+from omni_extract_bench import recognise as V                           # noqa: E402
+from omni_extract_bench.values import canon_key                         # noqa: E402
 
 FAILS = []
 
