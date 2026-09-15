@@ -1141,3 +1141,45 @@ mean 0.0000 for all nine vendors. No vendor was benefiting -- the fix is prevent
 **Found by** auditing what `canon_key` returns for every surviving gold leaf, rather than by a
 failing score. Worth repeating whenever a fold changes: `canon_key(v) == "" and not
 states_nothing(v)` is a one-line query and it has now caught two bugs (this and the dash fold).
+
+## 26. One invariant replaces the placeholder set: a fold may trim, never consume
+
+**Changed.** `_PLACEHOLDERS` is gone. In its place `canon_key` carries a single guard, and the
+rule is stated once rather than maintained as a list:
+
+> `canon_key(v) == ""`  implies  `states_nothing(v)`
+
+**What was wrong.** Keying as `""` is not the same as being thrown out. A thrown-out value has
+no address (`flatten` gates on `states_nothing` BEFORE `canon_key` is ever called -- verified by
+instrumenting a real `grade()`: canon_key saw only the surviving values, never a null). A value
+that keys as `""` HAS an address, is scored, and equals every other value some fold emptied.
+**17 spellings** landed there: `()`, `( )`, `(())`, `,`, `,,`, `/`, `//`, `"`, `""`, `'`,
+`. . .`, `. , .`, `..`, `...`, `...............`, `null`, and `[1]`-shaped values. The set was
+arbitrary -- `,` emptied but `;` did not; `()` emptied but `[]` did not.
+
+**The principle that decides it.** `null` and `""` are both STRUCTURALLY empty JSON, and the
+harness itself causes vendors to disagree about which to send (`to_strict_dialect` makes a
+strict vendor emit the key with `null` where a permissive one omits it), so they must score
+alike. `()` and the STRING `"null"` are content a model chose to emit; nothing in the harness
+induces them. Treating them as absence makes them free, and a model could write `()` in every
+field it cannot read and pay nothing -- the hole closed for `-` in item 24.
+
+**Not a heuristic, which was the worry.** The check does not ask what `()` means. It runs the
+folds and compares: result empty + input had non-whitespace content = the folds ate it. Total,
+deterministic, blind to field and document (P4 holds). Fallback is the lowercased original with
+whitespace removed -- whitespace being the one fold that cannot destroy content -- so `( )`
+still equals `()`, `. . .` equals `...`, and `- -` equals `--`. `229 [1]` still folds to `229`,
+because that is trimming.
+
+**A latent bug fixed by the same guard.** `str(None)` is the four characters `"None"`, so a raw
+null keyed as `none` -- identical to the PRINTED word `None`, a real answer on an adverse-event
+form. Invisible only because `flatten` never hands a null to `canon_key`. Structural emptiness
+is now resolved at the top of `canon_key`, before anything stringifies the value.
+
+**Cost: none.** Gold has 0 values keying as empty, so nothing a prediction does here could ever
+have matched gold; these values were already charged. 85 documents contain such predictions
+(1,226 of them the string `"null"`, from models whose serializer emits the word).
+
+**The test changed shape too.** P1b now asserts the invariant by CONSTRUCTION over 128 probes --
+every punctuation character alone, doubled and tripled, plus the shapes the folds trim -- rather
+than by a hardcoded list. A list is what let the 17 sit unnoticed.

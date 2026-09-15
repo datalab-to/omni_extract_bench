@@ -45,10 +45,10 @@ Json = Any  # parsed-JSON value: dict / list / scalar
 
 
 # ── upstream, verbatim (MIT, (c) Micro1 -- see NOTICE) ───────────────────────────
-#: Markers that mean "no value", as opposed to words a document PRINTS. A document cannot
-#: print emptiness, and the literal string `null` is a serialisation artifact rather than ink,
-#: so these fold to absence. Nothing else does -- see `_DASH` and METRIC_SPEC 5.
-_PLACEHOLDERS = {"", "..", "...", "null"}
+# NOTE: there is no placeholder set any more. There used to be -- `{"", "..", "...", "null"}`
+# folded to the empty string. `""` never reaches this function (`flatten` gates on
+# `states_nothing` first, so canon_key is only ever called on values that already have an
+# address), and the other three are assertions: see `canon_key`'s closing guard.
 
 #: A run of dashes is one printed answer: the clerk's mark for "nothing in this cell". `-` and
 #: `--` are the same mark, so they share a key -- but they are NOT absence, and they are not
@@ -132,9 +132,7 @@ def _fold_cosmetic(v: Json) -> str:
             return str(int(f)) if f == int(f) else str(f)
         except ValueError:
             pass
-    if re.sub(r"\s+", " ", s) in _PLACEHOLDERS:
-        return ""
-    if _DASH.fullmatch(s):
+    if _DASH.fullmatch(re.sub(r"\s+", "", s)):
         return "#ph_dash"
     # LENIENT, AND ON PURPOSE. Whitespace, commas, hyphens and periods all fold, from
     # anywhere in the value -- upstream's rule, kept. It is the wrong rule in principle:
@@ -553,7 +551,7 @@ def _canon(v):
     except Exception:
         return str(v).lower()
 
-def canon_key(v):
+def _canon_key_unguarded(v):
     """THE canonical form of a value. Two values are equal iff their keys are equal.
 
     This is the whole comparison rule. There is exactly one of these functions, and both jobs
@@ -613,6 +611,48 @@ def canon_key(v):
     if t:
         return f"#t{t}"
     return _canon(_defrac(str(v)))
+
+
+def canon_key(v):
+    """`_canon_key_unguarded`, plus the one invariant every fold must respect.
+
+    A FOLD MAY TRIM A VALUE; IT MAY NEVER CONSUME ONE. Keying as `""` is not the same as being
+    thrown out. A thrown-out value has no address at all -- `flatten` gates on `states_nothing`
+    before this function is ever called, so `null`, `""`, whitespace and empty containers never
+    reach it. A value that keys as `""` DOES have an address, is scored, and equals every other
+    value some fold happened to empty. Seventeen spellings used to land there: `()`, `,`, `/`,
+    `"`, `. . .`, `..`, `...`, `null`, and the `[1]`-shaped values that made fourteen distinct
+    bibliography reference numbers one key.
+
+    Which is right, and why it is not a judgement call. `null` and `""` are both STRUCTURALLY
+    empty JSON, and the harness itself causes vendors to disagree about which to send -- a
+    strict dialect must emit the key with `null` where a permissive one omits it -- so they
+    have to score alike (METRIC_SPEC 5). `()` and the string `"null"` are content a model
+    chose to emit; nothing in the harness induces them. Treating them as absence would make
+    them free, and a model could write `()` in every field it could not read and pay nothing --
+    the hole just closed for `-`. So: structurally empty is absence, everything else asserts.
+
+    The test is exact rather than heuristic, which is what makes this safe. Run the folds and
+    compare: if the result is empty and the input had non-whitespace content, the folds ate it.
+    No field is consulted, so P4 holds. The fallback removes whitespace and nothing else --
+    whitespace being the one fold that cannot destroy content -- so `( )` still agrees with
+    `()` and `. . .` with `...`.
+
+    The invariant, asserted in tests/test_canon_properties.py P1b:
+
+        canon_key(v) == ""   implies   states_nothing(v)
+    """
+    # Structural emptiness is handled HERE, before anything stringifies it. `str(None)` is
+    # the four characters "None", so without this a raw null keyed as `none` -- the same key
+    # as the printed word `None`, which is a real answer on an adverse-event form. `flatten`
+    # gates on `states_nothing` and so never hands a null to this function, which is the only
+    # reason that was invisible rather than wrong.
+    if v is None or v == [] or v == {} or (isinstance(v, str) and not v.strip()):
+        return ""
+    k = _canon_key_unguarded(v)
+    if k == "":
+        return re.sub(r"\s+", "", str(v).strip().lower())
+    return k
 
 
 def cmp_leaf(pred, gold) -> float:

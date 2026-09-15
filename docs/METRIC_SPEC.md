@@ -280,20 +280,48 @@ and `---` share one key — but not the empty key. And `canonical` strips `/` (t
 makes `1/2` equal `12`), so `N/A` keys as `NA`; exactly one gold field in 660 documents holds
 both spellings, a contract-number field where both mean "not applicable".
 
-The absence markers that remain are `""`, whitespace, `..`, `...` and the literal string
-`null` — a serialisation artifact rather than ink, and absent from gold entirely.
+**There are no other absence markers.** `..`, `...` and the literal string `"null"` used to
+fold to the empty key as well; they no longer do, and the reason generalises. `null` and `""`
+are both *structurally* empty JSON, and the harness itself makes vendors disagree about which
+to send — `to_strict_dialect` requires a strict vendor to emit the key with `null` where a
+permissive one omits it — so they must score alike. `()`, `,` and the string `"null"` are
+content a model chose to emit; nothing in the harness induces them. Treating them as absence
+would make them free, and a model could write `()` in every field it could not read and pay
+nothing, which is the hole just closed for `-`.
 
 **A fold may trim a value; it may never consume one.** Keying as `""` is not the same as being
-thrown out. A thrown-out value has no address at all; a value that keys as `""` still has an
-address, is still scored, and equals every *other* value some fold also emptied. The footnote
-rule broke this: `re.sub(r"\s*\[\s*(?:\d{1,2}|[a-z])\s*\]", "", s)` exists to drop a marker
-appended to a value (`229 [1]` → `229`), but when the value *is* the marker it erased
-everything. In `internal/…eu_einvoice_standard_160p__s5` the gold
-`bibliography_entries[].ref_number` values are literally `[1]` through `[14]`, so all fourteen
-keyed as empty — **reversing every reference number scored 100.00**, as did replacing them all
-with `...`. The rule now applies only when something survives it. After the fix, **no gold
-value in the corpus keys as the empty string**, and `tests/test_canon_properties.py` P1b asserts
-it stays that way. Cost: one document can move, no document-vendor pair actually does.
+thrown out. A thrown-out value has no address at all — `flatten` gates on `states_nothing`
+*before* `canon_key` is ever called, so a null never reaches it. A value that keys as `""` does
+have an address, is scored, and equals every *other* value some fold emptied.
+
+Seventeen spellings used to land there. The footnote rule was the worst:
+`re.sub(r"\s*\[\s*(?:\d{1,2}|[a-z])\s*\]", "", s)` exists to drop a marker appended to a value
+(`229 [1]` → `229`), but when the value *is* the marker it erased everything. In
+`internal/…eu_einvoice_standard_160p__s5` the gold `bibliography_entries[].ref_number` values
+are literally `[1]` through `[14]`, so all fourteen were one key — **reversing every reference
+number scored 100.00**, as did replacing them all with `...`. The rest were anything built only
+from characters some fold strips: `()`, `,`, `/`, `"`, `. . .`, `..`, `...`, `"null"`. The set
+was arbitrary — `,` emptied but `;` did not, `()` emptied but `[]` did not.
+
+The rule is now stated once, as an invariant on the single public entry point:
+
+> `canon_key(v) == ""` **implies** `states_nothing(v)`
+
+`canon_key` runs the folds and compares: if the result is empty and the input had
+non-whitespace content, the folds ate it, and the value falls back to its lowercased form with
+whitespace removed. The test is exact rather than heuristic — no field is consulted, so §5.2
+and P4 hold — and whitespace is the one fold that cannot destroy content, so `( )` still agrees
+with `()` and `. . .` with `...`. `229 [1]` still folds to `229`, because that is trimming, not
+consuming.
+
+The same guard fixes a latent bug: `str(None)` is the four characters `"None"`, so a raw null
+keyed as `none` — the same key as the *printed* word `None`, which is a real answer on an
+adverse-event form. Structural emptiness is now resolved before anything stringifies the value.
+
+After the fix **no gold value in the corpus keys as the empty string**, and
+`tests/test_canon_properties.py` P1b asserts it by construction over 128 probe values rather
+than by a list, since a list is what let the seventeen sit unnoticed. Cost: no document-vendor
+pair moves.
 
 This is a tightening, so it can only lower scores — and it costs almost nothing, because
 models rarely answer one placeholder where the gold prints another. It reaches 15 of 660
