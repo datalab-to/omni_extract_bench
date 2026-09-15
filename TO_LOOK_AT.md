@@ -1357,13 +1357,16 @@ bibliography entry with its `[4]` and one without are the same entry, and that i
 The price is that two values differing ONLY by the marker collapse -- `see [1]` == `see [2]`.
 No corpus field does that; recorded in ACCEPTED_LENIENCY rather than left as an open defect.
 
-**4. Currency and percent are both deleted before parsing, so `$5` == `5%` == `5`.** STILL
-OPEN. A different quantity with the same key. It is also inconsistent: the number fold strips
-`,$%` and then reads a numeral, so a value it CLAIMS loses its unit, while one it declines
-keeps it -- `$1,234` keys as `1234` but `1,234 Notes` keys as `1234notes`, and `5% Notes` is
-not `5 Notes`. 13 gold fields hold both a percent and a currency value, with no collision
-today. Fixing it means deciding whether `50%` should equal `50` at all, which
-`("percent symbol", "50%", "50")` currently asserts as MUST_MATCH -- a spec question.
+**4. Currency and percent are both deleted before parsing, so `$5` == `5%` == `5`. ACCEPTED.**
+The number fold strips `,` `$` `%` before reading a numeral, so a value it claims loses its
+unit and a currency amount shares a key with a percentage. The alternative is deciding that
+`50%` != `50`, and a page writing a bare `50` in a rate column means what a page writing `50%`
+means -- so the merge stays. 13 gold fields hold both a percent and a currency value; none
+collides today. In ACCEPTED_LENIENCY.
+
+The asymmetry it implies is pinned rather than left to be rediscovered: the rule applies only
+to a value the number fold CLAIMS. One it declines keeps its symbols, so `$5` == `5%` while
+`5% Notes` != `5 Notes`. That looks like half a fix and is the whole intended shape.
 
 ### Checked and found correct
 
@@ -1417,39 +1420,76 @@ every other unit -- mg, kg, mL, mg/day -- is not, so the value falls to the text
 punctuation fold eats its point.
 
 **The rule.** A period between two digits is kept when it is the ONLY one in the value. Two or
-more are separators, so `512.784.7407` and `5.2.1.5` still fold.
+more are separators, so `512.784.7407` and `5.2.1.5` still fold. Commas are untouched -- they
+strip as they always did.
+
+**It is a CONSISTENCY fix, not new policy, and that is the cleanest way to see it.** The number
+route has always read a lone `1.000` as the number one and `1,000` as one thousand:
+
+    '1.000'         -> '1'          one
+    '1,000'         -> '1000'       one thousand        already differed, before any of this
+
+The punctuation strip was quietly overriding that whenever a word was attached, so `1.000`
+alone meant one while `1.000 notes` meant one thousand notes:
+
+    '1.000 notes'   -> '1000notes'  before        '1.000notes'  after
+    '1,000 notes'   -> '1000notes'  before        '1000notes'   after
+
+Attaching a unit should not change what a number means. After the fix the embedded case agrees
+with the standalone case that was already there.
 
 **It picks a side rather than resolving the ambiguity.** `1.250` is either a decimal or
 European thousands and nothing in the value says which; this reads it as a decimal. That is the
 safe side: a false MERGE credits a wrong answer, a false SPLIT only withholds a right one, and
 a benchmark should fail toward under-crediting.
 
-**Cost: 32 value-matches across 17 documents, 0 gained -- and NONE of them is a model being
-charged for accuracy.** A prediction identical to gold always matches, whatever the fold does,
-so every lost pair is one where gold and the prediction DISAGREE about a character and the old
-rule folded the disagreement away. At most one side matches the page:
+**Cost, scored with `grade()` over the 1,506 tractable document-vendor pairs that can move:**
 
-| predicted | gold | who inserted it |
-| --- | --- | --- |
-| `1.250 BROADWAY 7TH FLOOR` | `1250 BROADWAY 7TH FLOOR` | model -- 1250 Broadway, NYC |
-| `94.305-2004` | `94305-2004` | model -- a ZIP+4 |
-| `3.300 MCF/Day` | `3300 MCF/Day` | model |
-| `1.2m` | `12m` | model |
-| `8-44.420 9/26/60` | `8-44,420 9/26/60` | disagree, `.` vs `,` |
-| `LEE GARDEN 3.1 SUNNING ROAD` | `LEE GARDEN 3,1 SUNNING ROAD` | disagree, `.` vs `,` |
-| `3.5 RIVINGTON ST` | `3 5 RIVINGTON ST` | disagree, `.` vs space |
-| `391A Orchard Road #16.00` | `391A Orchard Road #16-00` | disagree, `.` vs `-` |
-| `27 MADISON BUILDING` | `2.7 MADISON BUILDING` | **gold** |
-| `33-01, LINGKARAN SYED PUTRA` | `33.01, LINGKARAN SYED PUTRA` | **gold** |
-| `zip 17201,000` | `zip 17201.000` | **gold** |
+| vendor | pairs | mean delta | worst |
+| --- | --- | --- | --- |
+| reducto | 157 | -0.0253 | -2.000 |
+| gemini | 132 | -0.0223 | -2.941 |
+| mistral | 158 | -0.0180 | -1.961 |
+| datalab | 257 | -0.0171 | -3.333 |
+| extend | 156 | -0.0155 | -1.449 |
+| azure-cu | 180 | -0.0126 | -1.786 |
+| llamaextract | 155 | -0.0083 | -1.282 |
+| gpt | 163 | -0.0011 | -0.176 |
+| **claude** | 148 | **0.0000** | 0.000 |
 
-Nearly all sit in `creditors[].address_1 / address_2 / postal_code / zip` -- OCR-noisy address
-text. The fold was not forgiving a rendering difference there, it was scoring a disagreement as
-agreement.
+**16 pairs of 1,506 actually move**, and no vendor gains -- a tightening can only remove
+matches, so this cannot have been shaped to favour anyone. Claude moves 0.0000 across 148
+pairs, which is its own signal: it does not produce the decimal/comma confusions being charged.
+61 expensive pairs (>5s to grade, the giant creditor lists) are excluded and counted, not
+dropped silently: 13 each for datalab, reducto, extend and llamaextract, 1-3 for the rest.
 
-**Three gold suspects fall out of it**, worth adding to the audit: `2.7 MADISON BUILDING`
-(model reads `27`), `33.01, LINGKARAN SYED PUTRA` (model reads `33-01`, and `33-01` is the
-standard Malaysian unit format), and `zip 17201.000`.
+Two of the three documents that dominate the list -- `short__H9-53-319_311` and
+`short__08-15427 H-12` -- are Texas Railroad Commission forms, and the first is where all nine
+vendors read `3.300 MCF/Day` against gold's `3,300`. So part of this measured cost is the fix
+correctly charging vendors against a gold value that is probably wrong; fixing that entry
+returns most of it.
+
+**A measurement mistake worth recording, because it is easy to repeat.** The first attempt used
+a proxy -- "is this predicted value's key present anywhere in gold's key set?" -- which is
+invalid on large repetitive arrays. In `long__real_ftx_full_corrupted` (6,724 creditors) a
+predicted `1.250 BROADWAY 7TH FLOOR` at `creditors[6724]` counted as matching a gold
+`1250 BROADWAY 7TH FLOOR` belonging to a DIFFERENT creditor, while the gold at that address is
+`BAIC 16A GLADSTONE ROAD`. Value-set membership is not a scored match; only `grade()` is. The
+proxy reported 32 lost matches and a gold-vs-pred table that was mislabelled throughout.
+
+**What the lost values actually are** -- and the answer is not "models reformat numbers":
+
+* `3.300 MCF/Day` (`short__H9-53-319_311`, `.maximum_escape_volume`). Gold says
+  `3,300 MCF/Day`. **All nine vendors read a period.** Nine independent systems do not share an
+  OCR hallucination, so the page almost certainly prints `3.300` and the GOLD IS WRONG. Clean
+  consensus gold-error candidate.
+* `8-44.420 9/26/60`. Six vendors read `,` with gold, three read `.`. Genuine comma/period
+  confusion on a 1960 scan -- a few pixels apart.
+* `1.2m` against gold `12.4`. Only extend and llamaextract; datalab and reducto both read
+  `12.4`. A misread.
+* `1.250 BROADWAY 7TH FLOOR`, `94.305-2004`, `391A Orchard Road #16.00`. All extend, all in the
+  deliberately CORRUPTED FTX and iMedia filings, where every vendor returns something different
+  at those indices. A vendor failing on corrupted input, not a formatting habit.
 
 **It also un-merged a priced collision**, which is how the change announced itself: the
 `ACCEPTED_LENIENCY` guard failed on `1.1%w/w` == `11%w/w`, that entry is promoted to
