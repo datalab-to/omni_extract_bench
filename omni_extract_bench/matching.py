@@ -83,7 +83,9 @@ work rather than a substitution -- but it is the direction in which greedy stops
 from __future__ import annotations
 
 import numpy as _np
+import scipy.sparse as _sp
 from scipy.optimize import linear_sum_assignment as _lsa
+from scipy.sparse.csgraph import min_weight_full_bipartite_matching as _sparse_lsa
 #: Ceilings on solving one block exactly. Both bound the COST MATRIX rather than the solve,
 #: because with a compiled solver the matrix is what costs: 250 million cells is ~2 GB as
 #: float64. A dimension cap as well as a cell cap, so a wildly rectangular problem cannot slip
@@ -178,6 +180,44 @@ def _exact_ok(n, m, positives=None):
     return cells * EXACT_BYTES_PER_CELL <= positives * GREEDY_BYTES_PER_PAIR
 
 
+def sparse_pairs(pred_rows, gt_rows, weights):
+    """Maximum-weight pairing from a SPARSE weight matrix, exactly, without a dense one.
+
+    The dense solver needs n*m float64 -- 5.7 GB on the largest array here -- which is the
+    whole reason `_greedy` exists. When the weights are sparse they are 50 MB instead, and
+    scipy's sparse assignment solves them exactly.
+
+    **The escape columns are what make it the same problem.** `_sparse_lsa` finds a FULL
+    matching: every row on the smaller side must be assigned. This metric must be free to
+    leave a row unpaired -- pairing two rows that share nothing is not a match -- and forcing
+    a full matching answers a different, worse question. On a 2x2 where one row can only reach
+    the column another row is worth 10 on, the full matching scores 2 against the correct 10.
+
+    So every row is given its own private column, worth less than any real edge can be: real
+    weights are scaled by `n + m + 1`, escapes are worth 1, and a matching's escapes can never
+    outweigh a single real unit. Taking an escape IS being unmatched. It costs `n` further
+    entries, so the sparsity that made this possible survives.
+    """
+    n, m = weights.shape
+    W = weights.tocsr()
+    W.eliminate_zeros()
+    if W.nnz == 0:
+        return [], list(pred_rows), list(gt_rows)
+    escape = _sp.csr_matrix((_np.ones(n), (_np.arange(n), _np.arange(n))), shape=(n, n))
+    aug = _sp.hstack([W.astype(_np.float64) * (n + m + 1), escape], format="csr")
+    rows, cols = _sparse_lsa(aug, maximize=True)
+
+    rows, cols = rows[cols < m], cols[cols < m]
+    if len(rows):
+        kept = _np.asarray(W[rows, cols]).ravel() > 0
+        rows, cols = rows[kept], cols[kept]
+    taken_p, taken_g = set(rows.tolist()), set(cols.tolist())
+    pairs = [(pred_rows[int(i)], gt_rows[int(j)]) for i, j in zip(rows, cols)]
+    up = [r for i, r in enumerate(pred_rows) if i not in taken_p]
+    ug = [r for j, r in enumerate(gt_rows) if j not in taken_g]
+    return pairs, up, ug
+
+
 def optimal_pairs(pred_rows, gt_rows, weight, weights=None):
     """Maximum-weight pairing of pred_rows to gt_rows.
 
@@ -195,6 +235,8 @@ def optimal_pairs(pred_rows, gt_rows, weight, weights=None):
     """
     if not pred_rows or not gt_rows:
         return [], list(pred_rows), list(gt_rows)
+    if weights is not None and _sp.issparse(weights):
+        return sparse_pairs(pred_rows, gt_rows, weights)
     transposed = len(pred_rows) > len(gt_rows)
     A, B = (gt_rows, pred_rows) if transposed else (pred_rows, gt_rows)
     # cost = -weight, because both solvers minimise
@@ -248,6 +290,12 @@ def match_rows(pred_rows, gt_rows, weight, positives=None, weights=None):
     """
     if not pred_rows or not gt_rows:
         return [], list(pred_rows), list(gt_rows), True
+    # A sparse matrix is already small enough to hold, so the ceilings that exist to bound a
+    # DENSE one have nothing to say about it. This is the path on which greedy stops being
+    # needed: exact, and 50 MB where the dense form would be 5.7 GB.
+    if weights is not None and _sp.issparse(weights):
+        p2, u2, g2 = sparse_pairs(pred_rows, gt_rows, weights)
+        return p2, u2, g2, True
     if not _exact_ok(len(pred_rows), len(gt_rows), positives):
         p2, u2, g2 = _greedy(pred_rows, gt_rows, weight)
         return p2, u2, g2, False
