@@ -1068,3 +1068,41 @@ rule as `GOLD_REVIEW.md`. 43 documents; the 121-row cluster is in `contextual/10
 to restore row-dropping with the payload key set computed from the UNION of keys across the
 array instead of per row. That fixes the null-vs-omitted asymmetry while keeping the leniency,
 but it keeps the field-name heuristic and still discards correct dimension values.
+
+## 24. Placeholder words are text now, not absence -- and `NA` was never a placeholder
+
+**Changed.** `_PLACEHOLDERS` folded `""`, `..`, `...`, `-`, `--`, `n/a`, `na`, `none` and
+`null` to one empty key, making all nine equal to each other AND to a blank cell. It now holds
+only the markers that are never ink: `""`, `..`, `...`, `null`.
+
+**Why the words had to come out.** They are printed answers, and different ones. On an
+adverse-event form `None` means no action was taken and `N/A` means the question does not
+apply; `adverse_events[].action_taken` alone carries 1,223 of the first. Gold placeholder
+counts: `n/a` 13,874, `none` 4,904, `na` 2,546, `--` 1,090, `-` 218.
+
+**The case that decided the shape of the fix.** `NA` is not reliably a placeholder at all. In
+`10kq__nke_10q_fy2025q2` it sits in `segment_name` beside `North America` and `Greater China`;
+in `10kq__csco_10q_fy2025q2` beside `EMEA`; in `10kq__wdc_10q_fy2025q2` beside `Asia`. It is
+the region. Meanwhile `na` in the EIA `naics_energy_use_*` tables (1,248 values) does mean "not
+available". **Which meaning applies depends on the FIELD**, and P4 forbids reading the field --
+so no placeholder token can be correct for it. The only field-independent answer is to stop
+calling these placeholders: `n/a`, `na` and `none` are ordinary text and key as themselves.
+
+**Two consequences, both recorded in `ACCEPTED_LENIENCY`.**
+
+* A run of dashes is a mark rather than a word, so `-`, `--`, `---` and an em dash share one
+  key `#ph_dash`. It is a TAGGED token deliberately: the punctuation strip would otherwise
+  erase `-` to `""` and silently restore the folding this removes.
+* `canonical` strips `/` -- the same fold behind `1/2` == `12` -- so `N/A` keys as `NA`.
+  Checked rather than assumed: exactly ONE gold field in 660 documents holds both spellings
+  (`Contracts_Awarded`, `contracts[].standing_offer_or_supply_arrangement_number`), where both
+  mean "not applicable".
+
+**Cost: none worth reporting.** 15 of 660 documents can move; 3 document-vendor pairs of 5,940
+actually do, the largest by 0.039 (azure-cu, `longarray/cae_v2_08_n446`). Corpus mean 0.0000
+for all nine vendors.
+
+**The point was never the cost, it was the gaming surface.** On a four-row form whose gold
+reads `None / N/A / Dose reduced / --`, a model writing `-` in every cell scored 87.50. It now
+scores 62.50 -- identical to omitting those cells. Guessing a placeholder is worth no more than
+admitting the cell was not read, which is the property the benchmark wants.
