@@ -154,6 +154,8 @@ try:
                          (("score", "--predictions", "p"), "--out"),
                          (("build-corpus",), "--corpus"),
                          (("explain", "--run", "r"), "--doc"),
+                         (("ui", "--run", "r"), "--out"),
+                         (("ui", "--out", "s"), "--run"),
                          (("verify",), "--corpus")):
         code, _o, _e = run(*cmd)
         report(f"`{cmd[0]}` refuses to run without {missing}", code == 2, f"exit {code}")

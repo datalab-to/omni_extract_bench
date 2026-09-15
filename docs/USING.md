@@ -171,6 +171,62 @@ record per address, and the largest document in the corpus has 410,012 of them.
 
 ---
 
+## Reading a run beside the document
+
+```bash
+oeb ui --run run/ --corpus my-benchmark/ --out site/
+python -m http.server -d site/
+```
+
+A static directory, not a server. It opens from a laptop, from behind `http.server`, or from a
+bucket, and there is no state for any of them to disagree about.
+
+Two views. **Value** is one vendor's addresses grouped by what kind of mistake each was, beside
+the PDF the document was read from -- the browser's own find works on the page, so checking
+whether a value is really there takes a keystroke. **Compare** is every vendor at every
+address, grouped by how many of them disagreed: a value all nine get "wrong" is evidence about
+the ground truth, not about any of them.
+
+One run is one prediction set, so several vendors means several `--run`:
+
+```bash
+oeb ui --run run-datalab/ --run run-reducto/ --run run-azure/ \
+       --corpus my-benchmark/ --out site/
+```
+
+Each column is labelled with the run's `--source`, which is why two runs may not share one.
+
+### What it writes, and why it is split
+
+```
+site/index.html            the viewer
+site/index.js              one line per document: accuracy and disagreements per source
+site/doc/<doc_id>.json     that document's addresses, fetched when you open it
+site/schema/<doc_id>.json  a symlink into the corpus
+site/pdf/<doc_id>.pdf      a symlink to document.pdf, when the corpus has one
+```
+
+The same split as the run itself, for the same reason: choosing a document needs one number per
+vendor for all of them, and reading a document needs every address of that one and of no other.
+
+|  | whole corpus, 9 vendors |
+| --- | --- |
+| `index.js` -- loaded once | **420 KB** over all 660 documents |
+| `doc/<doc_id>.json` -- loaded per document | **~1.7 MB**, of ~1.1 GB on disk |
+
+A page that inlined both would not open, which is exactly what the first version of this viewer
+did; it stopped being usable somewhere past forty documents. Most of the per-vendor cost is the
+predicted value at each address, which is why a literal match stores no value at all.
+
+The PDFs are symlinked rather than copied: the corpus has 774 MB of them and the viewer opens
+one at a time. `http.server` follows a symlink, and so do `zip` and `tar -h` if you want to
+hand someone the directory.
+
+A run made with `--no-verdicts` has no addresses to show, so there is nothing to build a site
+from.
+
+---
+
 ## Reading the summary
 
 `kind` is `graded` or `unusable`, and it is not decoration.
