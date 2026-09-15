@@ -213,4 +213,27 @@ note(f"{N:,} fuzz inputs, {positives:,} of them real dates")
 print(f"\n{'ASDATE PREFILTER HOLDS' if not FAILS else 'FAILURES:'}")
 for f in FAILS:
     print(f"   {f}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+print("\nAMBIGUOUS DATES RESOLVE BY SEPARATOR, DELIBERATELY")
+# 01/02/2024 and 01.02.2024 are each two possible dates. Which one wins is decided by the
+# order of _DATEFMTS, so it is pinned here rather than left to whoever edits the list next.
+for _v, _want, _why in (
+        ("01/02/2024", "2024-01-02", "slash: month first, US convention"),
+        ("01-02-2024", "2024-01-02", "hyphen: month first"),
+        ("01.02.2024", "2024-02-01", "dot: DAY first, European convention"),
+        ("6.12.2013",  "2013-12-06", "dot: day first"),
+):
+    report(f"{_v} -> {_want}  ({_why})", V._asdate(_v) == _want, f"got {V._asdate(_v)}")
+# An impossible month falls through to the next format, so only genuinely ambiguous dates
+# turn on the order at all.
+for _v, _want in (("31.07.2024", "2024-07-31"), ("25.12.2024", "2024-12-25"),
+                  ("12/31/2024", "2024-12-31")):
+    report(f"unambiguous dates parse the same either way: {_v}", V._asdate(_v) == _want,
+           f"got {V._asdate(_v)}")
+note("dots are day-first because they are European: of 425 dot-dates in the corpus, 155 prove")
+note("day-first (first component > 12) and none proves month-first. Making them month-first")
+note("would be uniform and would misread all 270 ambiguous ones.")
+
+
 _sys.exit(1 if FAILS else 0)

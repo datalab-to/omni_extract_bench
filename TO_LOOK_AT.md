@@ -1296,3 +1296,109 @@ scale reorders nothing) but the ASYMMETRY is 30-100x and that is the fact a read
 **The general point for the writeup.** A benchmark author scoring their own product must report
 per-vendor effects of every metric change, not just the corpus mean -- the mean here looks
 like nothing, and the asymmetry underneath it is the story.
+
+## 29. Review of the fold pipeline and the recognisers
+
+Read rule by rule, testing each hypothesis rather than eyeballing. Correctness is judged
+independently of this corpus -- a benchmark others point at their own documents cannot ship a
+rule that happens to be harmless here.
+
+### Fixed
+
+**Invisible formatting characters made identical-looking values differ.** `Ac<ZWSP>me` and
+`Acme` were different keys. Six characters did this -- ZERO WIDTH SPACE, ZWNJ, ZWJ, BOM, WORD
+JOINER, MONGOLIAN VOWEL SEPARATOR -- and only the soft hyphen was handled, by a hand-written
+entry. All seven are Unicode category `Cf`, so the `accents` step now drops the category and
+the special case is gone. A stray zero-width character is invisible on the page and must be
+invisible to the comparison.
+
+**The vulgar-fraction table was hand-written and 12 of 20 complete.** `¾` folded to `34`,
+`⅗` keyed as `3⁄5` -- carrying a FRACTION SLASH that nothing strips -- so `⅗` != `3/5` while
+`¾` == `3/4`. NFKD already decomposes EVERY vulgar fraction to `N + U+2044 + M`, so mapping
+U+2044 to `/` in `typography` covers all twenty. `_FRAC`, `_defrac` and the `fractions` fold
+step are deleted: less code, complete coverage.
+
+**The overflow fallback returned raw text.** A value that tripped `OverflowError` skipped every
+fold, so `Infinity` and `infinity` were different keys -- a value lands in the strangest path
+in the system and also loses case folding. It now lowercases and collapses whitespace before
+truncating.
+
+**Typography was missing characters that ARE an ASCII character.** Added PRIME and DOUBLE PRIME
+(feet and inches: `5′` did not match `5'`), the German low-9 quotes, and HORIZONTAL BAR.
+
+**Dead code.** `.replace("µ", "u")` could never fire: NFKD maps U+00B5 to U+03BC before it
+runs, and the U+03BC replace does the work.
+
+### Not fixed -- these need a decision, not a patch
+
+**1. `float()` was reading identifiers as scientific notation. FIXED.** The biggest finding,
+and the corpus measurement is what surfaced it. METRIC_SPEC 2 says a value is numeric only if
+its text contains a `.`; `_asdecimal` honours that, but `_f_number` called bare `float()`,
+which accepts exponents. So the CUSIP `46138E62` became 4.6138e66 and keyed as a 67-digit
+number, and `46138E628` overflowed into the exception path. **1,014 CUSIPs** in
+`holdings[].cusip` and `transactions[].cusip` were affected, against **zero** legitimate
+scientific-notation values anywhere in the corpus. `_f_number` now requires a plain numeral.
+
+A first attempt at this restricted it to plain INTEGERS and broke sign fidelity -- `-98.2` and
+`98.2` both keyed as `982`. The reason is worth recording: `canon_key` hands the folds the
+normalised TEXT of a Decimal, and `_f_number` re-consuming it as `_Final` is what stops
+`punctuation` eating the sign and the point. The test suite caught it.
+
+**2. Ambiguous dates resolve by separator -- deliberate, now documented.** `/` and `-` are
+month-first, `.` is day-first. That looked accidental so it was measured: of 425 dot-dates,
+**155 prove day-first** (first component above 12) and **none proves month-first**, and they
+come from a German bank statement and a German medical guideline. Dots are the European
+convention. Making them month-first would be uniform and would misread all 270 ambiguous ones,
+so the order stays and is pinned in `tests/test_asdate_prefilter.py`. An impossible month falls
+through, so unambiguous dates parse the same either way.
+
+**3. The footnote rule strips reference markers wherever they appear. ACCEPTED.** A
+bibliography entry with its `[4]` and one without are the same entry, and that is worth having.
+The price is that two values differing ONLY by the marker collapse -- `see [1]` == `see [2]`.
+No corpus field does that; recorded in ACCEPTED_LENIENCY rather than left as an open defect.
+
+**4. Currency and percent are both deleted before parsing, so `$5` == `5%` == `5`.** STILL
+OPEN. A different quantity with the same key. It is also inconsistent: the number fold strips
+`,$%` and then reads a numeral, so a value it CLAIMS loses its unit, while one it declines
+keeps it -- `$1,234` keys as `1234` but `1,234 Notes` keys as `1234notes`, and `5% Notes` is
+not `5 Notes`. 13 gold fields hold both a percent and a currency value, with no collision
+today. Fixing it means deciding whether `50%` should equal `50` at all, which
+`("percent symbol", "50%", "50")` currently asserts as MUST_MATCH -- a spec question.
+
+### Checked and found correct
+
+`float` accepting Arabic-Indic and Devanagari digits (`١٢٣` == `123`) is right -- same number,
+another script. `1_000` == `1000` is a Python artifact no document prints; harmless. NFKD
+folding superscripts (`10²` == `102`) and Cyrillic (`й` == `и`, `ё` == `е`) and Greek tonos is
+real over-reach, but inseparable from the accent folding that NFKD is there for; recorded here
+so the next reader does not have to rediscover it.
+
+### Corpus data problem, not a code problem
+
+**Mojibake in gold.** 209 gold and 419 predicted values carry UTF-8 misdecoded as Latin-1:
+`AsunciÃ³n` for `Asunción`, `San CristÃ³bal`, `BayamÃ³n`. These key as `asuncia3n` and match
+nothing. Belongs with the gold audit, not the folds.
+
+## 30. GOLD, TOP PRIORITY: mojibake in the ground truth
+
+**209 gold values and 419 predicted values are UTF-8 misdecoded as Latin-1.** `AsunciÃ³n` for
+`Asunción`, `San CristÃ³bal`, `BayamÃ³n`, `LeÃ³n`. They canonicalise to `asuncia3n`,
+`sancrista3bal` -- which match nothing, in either direction.
+
+**Why this is a gold bug and not a fold bug.** No normalisation should repair it. A fold that
+guessed at mojibake would have to decide that `Ã³` means `ó` rather than being two real
+characters, and it would do that on every corpus, including ones where those characters are
+genuine. The damage is in the data.
+
+**Where it costs.** A gold value nothing can match is an unfound slot for every vendor on
+every run -- the whole `found` term for that address is lost, for all nine, forever. It is the
+cheapest class of gold error to fix and the most certainly wrong: there is no judgement call,
+`AsunciÃ³n` is not a place.
+
+**How to fix.** `s.encode("latin-1").decode("utf-8")` recovers it where it round-trips, and
+fails loudly where the text is genuinely Latin-1. Worth running over the whole gold corpus as a
+lint, not just these values -- the same import bug will have hit any non-ASCII text.
+
+**Check the predictions too.** 419 predicted values carry it as well, which suggests some of it
+is in the source documents or in a shared ingestion path rather than in the annotation step.
+Worth knowing which before fixing only one side.
