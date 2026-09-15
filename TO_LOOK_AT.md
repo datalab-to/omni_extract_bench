@@ -1424,8 +1424,32 @@ European thousands and nothing in the value says which; this reads it as a decim
 safe side: a false MERGE credits a wrong answer, a false SPLIT only withholds a right one, and
 a benchmark should fail toward under-crediting.
 
-**Cost: 32 value-matches across 17 documents, 0 gained.** Mostly European thousands separators
-in addresses -- `1.250 BROADWAY 7TH FLOOR`, `3.300 MCF/Day`, `LEE GARDEN 3.1 SUNNING ROAD`.
+**Cost: 32 value-matches across 17 documents, 0 gained -- and NONE of them is a model being
+charged for accuracy.** A prediction identical to gold always matches, whatever the fold does,
+so every lost pair is one where gold and the prediction DISAGREE about a character and the old
+rule folded the disagreement away. At most one side matches the page:
+
+| predicted | gold | who inserted it |
+| --- | --- | --- |
+| `1.250 BROADWAY 7TH FLOOR` | `1250 BROADWAY 7TH FLOOR` | model -- 1250 Broadway, NYC |
+| `94.305-2004` | `94305-2004` | model -- a ZIP+4 |
+| `3.300 MCF/Day` | `3300 MCF/Day` | model |
+| `1.2m` | `12m` | model |
+| `8-44.420 9/26/60` | `8-44,420 9/26/60` | disagree, `.` vs `,` |
+| `LEE GARDEN 3.1 SUNNING ROAD` | `LEE GARDEN 3,1 SUNNING ROAD` | disagree, `.` vs `,` |
+| `3.5 RIVINGTON ST` | `3 5 RIVINGTON ST` | disagree, `.` vs space |
+| `391A Orchard Road #16.00` | `391A Orchard Road #16-00` | disagree, `.` vs `-` |
+| `27 MADISON BUILDING` | `2.7 MADISON BUILDING` | **gold** |
+| `33-01, LINGKARAN SYED PUTRA` | `33.01, LINGKARAN SYED PUTRA` | **gold** |
+| `zip 17201,000` | `zip 17201.000` | **gold** |
+
+Nearly all sit in `creditors[].address_1 / address_2 / postal_code / zip` -- OCR-noisy address
+text. The fold was not forgiving a rendering difference there, it was scoring a disagreement as
+agreement.
+
+**Three gold suspects fall out of it**, worth adding to the audit: `2.7 MADISON BUILDING`
+(model reads `27`), `33.01, LINGKARAN SYED PUTRA` (model reads `33-01`, and `33-01` is the
+standard Malaysian unit format), and `zip 17201.000`.
 
 **It also un-merged a priced collision**, which is how the change announced itself: the
 `ACCEPTED_LENIENCY` guard failed on `1.1%w/w` == `11%w/w`, that entry is promoted to
