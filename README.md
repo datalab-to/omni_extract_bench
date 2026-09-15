@@ -177,6 +177,21 @@ the rate is contract-specific. `usage_from_records` keeps the vendor's own field
 conversion happens by accident, and `dialects.cost_from_response` converts only where the unit
 is known (a field named in cents reported as dollars overstates by 100x).
 
+## Generating predictions
+
+The scorer grades predictions; `harness/` produces them, with the run rules that make the
+comparison fair (one timeout, maximum tier per vendor, the same schema, retries only for
+infrastructure failures, every raw response kept) applied to every provider by one code path.
+
+```bash
+pip install -e ".[harness]"
+python -m harness.run_provider datalab --data-root data/ --out-root predictions/
+omni-extract-bench leaderboard --pred-root predictions/ --data-root data/ --workers 8
+```
+
+See [`harness/README.md`](harness/README.md) for the provider list, credentials, what each run
+records, and how to resume or recover a timed-out document.
+
 ## Providers and schema dialects
 
 Every vendor accepts a different subset of JSON Schema, and the strict ones reject what the
