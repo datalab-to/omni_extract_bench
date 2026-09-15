@@ -486,6 +486,13 @@ function kindOf(cell) {
 }
 const folded = (cell) => cell && cell[0] === "m" && cell.length > 1;
 
+/* Rows built into the page at once. The corpus has a document with 89,061 addresses, and at
+   nine vendors 87,110 of them have someone disagreeing -- so "show everything" is half a
+   million DOM nodes in Value and about a million table cells in Compare. The browser does not
+   slow down at that size, it stops. Buckets are filled worst-first, so a cap keeps what you
+   came to look at and drops the tail. */
+const MAX_ROWS = 1200;
+
 const BUCKETS = [
   ["wrong value", "b-wrong"], ["missing", "b-missing"], ["invented item", "b-invented"],
   ["invented field", "b-invented"], ["fabricated", "b-fabricated"],
@@ -686,6 +693,7 @@ function drawValue() {
       : `${esc(source)} did not grade this document.`) + `</p>`;
     return;
   }
+  let budget = MAX_ROWS;
   for (const [kind, klass] of BUCKETS) {
     const rows = groups.get(kind);
     if (!rows) continue;
@@ -693,7 +701,17 @@ function drawValue() {
     h.className = `bucket ${klass}`;
     h.innerHTML = `${kind === "match" ? "matched" : kind}<span class="n">${rows.length}</span>`;
     box.appendChild(h);
-    for (const r of rows) box.appendChild(rowNode(r));
+    for (const r of rows.slice(0, budget)) box.appendChild(rowNode(r));
+    budget -= rows.length;
+    if (budget <= 0) break;
+  }
+  if (shown > MAX_ROWS) {
+    const more = document.createElement("p");
+    more.className = "empty";
+    more.innerHTML = `Showing the first <b>${MAX_ROWS.toLocaleString()}</b> of ` +
+      `<b>${shown.toLocaleString()}</b>. The rest are in ` +
+      `<code>verdicts/${esc(current.doc_id)}.parquet</code>.`;
+    box.appendChild(more);
   }
 }
 
@@ -802,12 +820,14 @@ function drawCompare() {
       `</span></th>`).join("") + `</tr></thead>`;
 
   let body = "";
+  let budget = MAX_ROWS;
   for (const [n, label, klass] of consensusBuckets()) {
     const rows = groups.get(n);
     if (!rows || !rows.length) continue;
+    if (budget <= 0) break;
     body += `<tr class="group"><th colspan="${sources.length + 2}" class="${klass}">` +
       `${label}<span class="n"> ${rows.length}</span></th></tr>`;
-    for (const r of rows) {
+    for (const r of rows.slice(0, budget)) {
       const gold = show(parse(r.gold));
       const cells = sources.map((s, i) => {
         const kind = r.kinds[i];
@@ -824,6 +844,11 @@ function drawCompare() {
         `<td class="val">${gold === null ? `<span class="none-val">nothing</span>`
                                          : esc(clip(gold))}</td>${cells}</tr>`;
     }
+    budget -= rows.length;
+  }
+  if (shown > MAX_ROWS) {
+    body += `<tr><td colspan="${sources.length + 2}"><p class="empty">Showing the first ` +
+      `<b>${MAX_ROWS.toLocaleString()}</b> of <b>${shown.toLocaleString()}</b>.</p></td></tr>`;
   }
   el("matrix").innerHTML = head + `<tbody>${body ||
     `<tr><td colspan="${sources.length + 2}"><p class="empty">` +
