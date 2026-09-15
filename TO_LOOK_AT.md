@@ -1618,3 +1618,45 @@ and the corpus shows the guess failing at scale:
 the alternative trades it for a semantic guess in a function whose entire design property is
 that it reads the value and nothing else. This is the same trap as the `_FIXED_FORMAT_NUMERIC`
 whitelist rejected earlier: a rule that classifies by shape and gets a whole field wrong.
+
+## 35. Mutation-tested the folds; one gap led to a live bug in the trace
+
+Broke each rule in turn and ran the whole suite. A suite that does not notice is not covering
+the rule.
+
+**12 of 13 mutations caught.** Stop lowercasing, stop stripping combining marks and invisibles,
+drop MINUS SIGN from typography, stop stripping bullets, strip leading zeros again, let
+`float()` read scientific notation, delete the decimal point again, make a dash mark empty,
+drop either `canon_key` guard, flip dot-dates to month-first, parse IDs without a dot -- every
+one fails at least one test file, usually `canon_properties`.
+
+**The one that got through was worth following.** Letting a footnote marker consume its value
+(`[1]` -> `""`) changed no key, because `canon_key`'s no-consumed-value guard restores it.
+Verified over 60,013 probes: with or without the fold's own guard, every key is identical. So
+the inner guard looked redundant.
+
+**It is not, and the reason is the trace.** Without it `canon_trace("[1]")` reports
+`'[1]' -> ''  [footnote marker]` while the key is `'[1]'` -- an explanation contradicting its
+own result, shown to the reader who is disputing a match.
+
+**Following that found the same bug already live**, not hypothetically. 2,034 of 40,013 probe
+values -- `()`, `,`, `"`, `•`, anything built only from strippable characters -- had a trace
+ending at `""` beside a key of the original value. The guard was doing its job and not saying
+so.
+
+**Fixed:** the guard records itself as a `value restored` step. `canon_trace("()")` now reads
+`quotes and brackets -> value restored`, and a test asserts over 20,016 probes that no trace
+ends anywhere other than its own key.
+
+**Also from this pass:**
+
+* `unwrap_schema` propagated `evaluation_config` through union branches -- a concept that was
+  rejected, that `dialects.BENCHMARK_ONLY_KEYS` strips before a vendor sees a schema, and that
+  nothing in `score.py`, `values.py` or `recognise.py` ever reads. Deleted; the function is
+  four lines.
+* `allOf` was resolved and asserted nowhere. Now covered alongside `anyOf`/`oneOf`, plus
+  `is_open_map`'s explicit-only detection and its union-branch case.
+
+**Method note.** Mutation testing found in one pass what reading could not: the gap was not a
+missing assertion about the fold, it was a missing assertion about the EXPLANATION. Worth
+repeating whenever a fold is added.

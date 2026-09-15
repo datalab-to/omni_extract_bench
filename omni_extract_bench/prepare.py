@@ -119,8 +119,5 @@ def unwrap_schema(node):
     for br in ("anyOf", "oneOf", "allOf"):
         for sub in node.get(br, []) or []:
             if isinstance(sub, dict) and sub.get("type") != "null":
-                merged = dict(sub)
-                if "evaluation_config" in node and "evaluation_config" not in merged:
-                    merged["evaluation_config"] = node["evaluation_config"]
-                return merged
+                return sub
     return node

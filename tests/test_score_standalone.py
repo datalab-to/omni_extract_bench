@@ -117,6 +117,26 @@ report("nothing the scorer reaches lives under harness/",
        not any(m.startswith("harness") for m in reach),
        f"closure {sorted(reach)}")
 
+print("\nTHE TWO SCHEMA QUESTIONS THE SCORER ASKS")
+# `unwrap_schema` resolves a union to its non-null branch. `allOf` was handled and asserted
+# nowhere; `evaluation_config` used to be carried through it, propagating a concept the
+# harness strips before a vendor ever sees a schema and that nothing here reads.
+from omni_extract_bench.prepare import is_open_map, unwrap_schema      # noqa: E402
+for _br in ("anyOf", "oneOf", "allOf"):
+    report(f"{_br} resolves to the non-null branch",
+           unwrap_schema({_br: [{"type": "null"}, {"type": "string"}]}) == {"type": "string"},
+           f"{unwrap_schema({_br: [{'type': 'null'}, {'type': 'string'}]})}")
+report("a plain node is returned unchanged",
+       unwrap_schema({"type": "string"}) == {"type": "string"})
+report("a non-dict is not a schema", unwrap_schema("nope") == {} and unwrap_schema(None) == {})
+report("open maps are detected from EXPLICIT additionalProperties only",
+       is_open_map({"additionalProperties": True})
+       and is_open_map({"additionalProperties": {"type": "string"}})
+       and not is_open_map({"type": "object", "properties": {}}),
+       "default-true semantics would make every object an open map")
+report("...and through a union branch",
+       is_open_map({"anyOf": [{"type": "null"}, {"additionalProperties": True}]}))
+
 print("\nTHERE IS EXACTLY ONE GRADER")
 graders = sorted(p.relative_to(PKG).as_posix() for p in PKG.rglob("*.py")
                  if "grad" in p.stem.lower() or "scor" in p.stem.lower())
