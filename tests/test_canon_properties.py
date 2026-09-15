@@ -199,20 +199,45 @@ note(f"{len(still_broken)} of {len(KNOWN_COLLISIONS)} still collide; "
      f"every one reaches the string fallback (P3)")
 
 print("\nP1b  A FOLD MAY TRIM A VALUE, NEVER CONSUME IT")
-# Keying as "" is not the same as being thrown out. A thrown-out value (`null`, `""`, `[]`)
-# has no address at all. A value that keys as "" still HAS an address and is scored -- and
-# equals every other value that keyed as "". So a fold that empties a value does not make it
-# disappear, it makes it match anything else the folds emptied.
-eaten = [v for v in ("[1]", "[a]", "229 [1]", "-", "--", "N/A", "NA", "None", "0", "false",
-                     "(1)", "1/2", "Q1", "n.a.", "[12]")
-         if canon_key(v) == ""]
-report("no value carrying content keys as the empty string", not eaten,
-       f"these were consumed by a fold: {eaten}")
-note("the ones that SHOULD key as empty are absence markers only: '', '..', '...', 'null' --")
-note("and they are the only strings in _PLACEHOLDERS for exactly that reason.")
-report("...and the absence markers still do", 
-       all(canon_key(v) == "" for v in ("", "  ", "..", "...", "null")),
-       f"{[(v, canon_key(v)) for v in ('', '  ', '..', '...', 'null')]}")
+# Keying as "" is not the same as being thrown out. A thrown-out value has no address at all
+# (`flatten` gates on `states_nothing`, so canon_key never even sees one). A value that keys
+# as "" HAS an address, is scored, and equals every other value some fold emptied.
+#
+# The invariant, stated once:        canon_key(v) == ""  implies  states_nothing(v)
+#
+# Asserted below by construction rather than by a list, because a list is what let seventeen
+# spellings sit here unnoticed -- `()`, `,`, `/`, `"`, `. . .`, `..`, `...`, `null`, and the
+# `[1]`-shaped values that made fourteen bibliography reference numbers a single key.
+from omni_extract_bench.values import states_nothing                    # noqa: E402
+
+PUNCT = "-.,/()[]{}\"'`~!@#$%^&*_+=|\\:;?<> \t"
+probes = [
+    # every single punctuation character, alone and doubled
+    *[c for c in PUNCT], *[c * 2 for c in PUNCT], *[c * 3 for c in PUNCT],
+    # the shapes the folds are built to trim, standing alone
+    "[1]", "[a]", "[12]", "(1)", "..", "...", "...............", "../../..", ". . .",
+    "null", "Null", "NULL", "- -", "-- --", "( )", "(())", '""', "''", "  .  ",
+    # and a few that must keep working
+    "229 [1]", "Table B-1.", "Inst itutional", "0", "false", "N/A", "None",
+]
+consumed = [v for v in probes if canon_key(v) == "" and not states_nothing(v)]
+report(f"none of {len(probes)} probe values is consumed by a fold", not consumed,
+       f"these key as the empty string with content on the way in: {consumed}")
+
+# The other half: the values that SHOULD key empty still do, and they are exactly the
+# structurally-empty ones -- the ones the harness itself makes vendors disagree about.
+structural = [None, "", "   ", "\t\n", [], {}]
+report("structurally empty values still key empty",
+       all(canon_key(v) == "" for v in structural),
+       f"{[(v, canon_key(v)) for v in structural if canon_key(v) != '']}")
+note("`null` and `\"\"` are one thing because a strict dialect must emit the key with null")
+note("where a permissive one omits it -- the harness causes the disagreement (METRIC_SPEC 5).")
+note("`()` and the STRING \"null\" are content a model chose to emit, so they assert.")
+
+# The fallback must not re-break P2: it removes whitespace and nothing else.
+for a, b in (("( )", "()"), (". . .", "..."), ("- -", "--")):
+    report(f"the fallback still folds whitespace: {a!r} == {b!r}",
+           canon_key(a) == canon_key(b), f"{canon_key(a)!r} vs {canon_key(b)!r}")
 
 print("\nP3  THE FALLBACK IS THE FLOOR")
 # A value that fails its recogniser lands in the string path. That must not be a trapdoor:
