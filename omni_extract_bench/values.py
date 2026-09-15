@@ -130,13 +130,32 @@ def _f_dash(s: str) -> str:
     return _Final("#ph_dash") if _DASH.fullmatch(re.sub(r"\s+", "", s)) else s
 
 
+#: A lone period between two digits is a decimal point. Several are separators (a phone
+#: number, a section id), and none at all is prose punctuation.
+_DECIMAL_POINT = re.compile(r"(?<=\d)\.(?=\d)")
+
+
 def _f_punctuation(s: str) -> str:
     # Deliberately lenient, and it does merge things it should not: 5.2.1.5 == 5215. Kept
     # because the corpus says the trade is one-sided -- it recovers 1,607 matches, of which
     # 1,532 differ by punctuation alone, and credits no wrong value as right. Keeping hyphens
     # instead cost 526 matches in one Schedule I return. Price listed in
     # tests/test_canon_properties.py ACCEPTED_LENIENCY; policy in METRIC_SPEC 5.3.
-    return re.sub(r"[\s,\-.]", "", s)
+    #
+    # A DECIMAL POINT IS THE EXCEPTION, because deleting it does not fold a spelling, it
+    # changes the number: `1.5 mg` became `15mg`, so a 1.5 mg and a 15 mg dose arm were one
+    # key. `_f_number` only protects a value that is ENTIRELY a numeral, so anything carrying
+    # a unit -- mg, kg, mL, mg/day -- was exposed. A lone dot between digits is kept; two or
+    # more are separators (`512.784.7407`, `5.2.1.5`) and still fold.
+    #
+    # It picks a side rather than resolving the ambiguity: `1.250` is read as a decimal, not
+    # as European thousands. That is the safe side -- a false merge credits a wrong answer,
+    # a false split only withholds a right one -- and it costs 32 value-matches in this
+    # corpus, mostly European addresses (`1.250 BROADWAY`, `3.300 MCF/Day`).
+    if len(_DECIMAL_POINT.findall(s)) == 1:
+        s = _DECIMAL_POINT.sub("\x00", s)
+    s = re.sub(r"[\s,\-.]", "", s)
+    return s.replace("\x00", ".")
 
 
 def _f_brackets(s: str) -> str:

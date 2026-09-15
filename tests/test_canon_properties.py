@@ -107,6 +107,8 @@ MUST_MATCH = [
     ("ZIP+4",                 "44308-1801",             "443081801"),
     ("phone",                 "713-203-6913",           "7132036913"),
     ("phone, dotted",         "713.203.6913",           "713-203-6913"),
+    # two or more dots between digits are separators, not a decimal point, so they still fold
+    ("dotted phone, 3 groups", "512.784.7407",          "512-784-7407"),
     ("post box",              "P.O. BOX 125",           "PO BOX 125"),
     ("abbreviated street",    "100 F STREET, NE",       "100 F. STREET NE"),
     ("abbreviated city",      "FT LAUDERDALE",          "FT. LAUDERDALE"),
@@ -159,6 +161,14 @@ MUST_DIFFER = [
     ('swim time, precision', '1:03.28', '1:3.28'),
     ('drug concentration', '0.11%w/w', '11%w/w'),
     ('share class', 'COM PAR $.001', 'COM PAR $.01'),
+    # A decimal point inside a longer value is content, not punctuation. Deleting it turned
+    # `1.5 mg` into `15mg`, so a 1.5 mg and a 15 mg dose arm were one key. `_f_number` only
+    # protects a value that is ENTIRELY a numeral, so anything carrying a unit was exposed.
+    ('dose', '1.5 mg', '15 mg'),
+    ('dose, trailing zero', '5.00 kg', '500 kg'),
+    ('dose with a rate', '12.5 mg/day', '125 mg/day'),
+    ('trial arm', 'Ormelytide 1.5 mg once weekly', 'Ormelytide 15 mg once weekly'),
+    ('concentration', '0.5 mL', '05 mL'),
 ]
 
 #: LENIENCY WE CHOSE, not debt. Each is a real P1 violation, and each is the price of a
@@ -170,7 +180,6 @@ ACCEPTED_LENIENCY = [
     # which 1,532 differ by punctuation alone and 0 credit a wrong value as right; of the
     # gold values it merges inside one field, all 215 have identical digit strings.
     ('section identifier',  '5.2.1.5',      '5215'),
-    ('drug concentration',  '1.1%w/w',      '11%w/w'),
     ('address unit',        '#30-2',        '#302'),
     ('zone code',           'RR-2',         'RR2'),
     ('age range',           '90-94',        '9094'),
