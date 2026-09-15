@@ -283,6 +283,18 @@ both spellings, a contract-number field where both mean "not applicable".
 The absence markers that remain are `""`, whitespace, `..`, `...` and the literal string
 `null` — a serialisation artifact rather than ink, and absent from gold entirely.
 
+**A fold may trim a value; it may never consume one.** Keying as `""` is not the same as being
+thrown out. A thrown-out value has no address at all; a value that keys as `""` still has an
+address, is still scored, and equals every *other* value some fold also emptied. The footnote
+rule broke this: `re.sub(r"\s*\[\s*(?:\d{1,2}|[a-z])\s*\]", "", s)` exists to drop a marker
+appended to a value (`229 [1]` → `229`), but when the value *is* the marker it erased
+everything. In `internal/…eu_einvoice_standard_160p__s5` the gold
+`bibliography_entries[].ref_number` values are literally `[1]` through `[14]`, so all fourteen
+keyed as empty — **reversing every reference number scored 100.00**, as did replacing them all
+with `...`. The rule now applies only when something survives it. After the fix, **no gold
+value in the corpus keys as the empty string**, and `tests/test_canon_properties.py` P1b asserts
+it stays that way. Cost: one document can move, no document-vendor pair actually does.
+
 This is a tightening, so it can only lower scores — and it costs almost nothing, because
 models rarely answer one placeholder where the gold prints another. It reaches 15 of 660
 documents, of which **three document-vendor pairs out of 5,940 actually move**, the largest by

@@ -84,6 +84,7 @@ MUST_MATCH = [
     ("timestamp at midnight", "2024-10-31T00:00:00Z",   "2024-10-31"),
     ("integral float ID",     "8303911426.0",           "8303911426"),
     ("footnote marker",       "229 [1]",                "229"),
+    ("footnote marker, letter","Total [a]",              "Total"),
     # Punctuation folds from anywhere -- see ACCEPTED_LENIENCY below for the price and the
     # measurement that set it. These are the cases it buys, and they are the common ones:
     # 1,532 of the 1,607 matches it recovers differ by punctuation alone.
@@ -118,6 +119,12 @@ MUST_DIFFER = [
     # empty keyed 2,546 values as nothing.
     ("NA is not empty",       "NA",                     ""),
     ("NA vs None",            "NA",                     "None"),
+    # A fold may remove an annotation; it may never CONSUME the value. The footnote rule used
+    # to erase `[1]` entirely, so the fourteen `ref_number` values in the EU e-invoice
+    # bibliography all keyed as empty and reversing every one of them scored 100.00.
+    ("bracket ref numbers",   "[1]",                    "[2]"),
+    ("bracket vs empty",      "[1]",                    ""),
+    ("bracket vs ellipsis",   "[1]",                    "..."),
     # promoted from KNOWN_COLLISIONS once the fold that merged them was narrowed
     ('zero-padded identifier', 'INV-007', 'INV-7'),
     ('zero-padded postal', '02000', '2000'),
@@ -190,6 +197,22 @@ if fixed:
         print(f"          {n}: {a!r} vs {b!r}")
 note(f"{len(still_broken)} of {len(KNOWN_COLLISIONS)} still collide; "
      f"every one reaches the string fallback (P3)")
+
+print("\nP1b  A FOLD MAY TRIM A VALUE, NEVER CONSUME IT")
+# Keying as "" is not the same as being thrown out. A thrown-out value (`null`, `""`, `[]`)
+# has no address at all. A value that keys as "" still HAS an address and is scored -- and
+# equals every other value that keyed as "". So a fold that empties a value does not make it
+# disappear, it makes it match anything else the folds emptied.
+eaten = [v for v in ("[1]", "[a]", "229 [1]", "-", "--", "N/A", "NA", "None", "0", "false",
+                     "(1)", "1/2", "Q1", "n.a.", "[12]")
+         if canon_key(v) == ""]
+report("no value carrying content keys as the empty string", not eaten,
+       f"these were consumed by a fold: {eaten}")
+note("the ones that SHOULD key as empty are absence markers only: '', '..', '...', 'null' --")
+note("and they are the only strings in _PLACEHOLDERS for exactly that reason.")
+report("...and the absence markers still do", 
+       all(canon_key(v) == "" for v in ("", "  ", "..", "...", "null")),
+       f"{[(v, canon_key(v)) for v in ('', '  ', '..', '...', 'null')]}")
 
 print("\nP3  THE FALLBACK IS THE FLOOR")
 # A value that fails its recogniser lands in the string path. That must not be a trapdoor:

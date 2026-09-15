@@ -103,7 +103,15 @@ def _fold_cosmetic(v: Json) -> str:
     # 1c. Strip short footnote / reference markers like "229 [1]", "x [x]" — only
     #     1-2 digit or single-letter brackets so real bracketed content (e.g. years
     #     "[2024]", codes) is preserved.
-    s = re.sub(r"\s*\[\s*(?:\d{1,2}|[a-z])\s*\]", "", s)
+    # ...but only when something is LEFT. This rule exists to drop a marker APPENDED to a
+    # value (`229 [1]` -> `229`); when the value IS the marker it erased the whole thing. In
+    # `internal/...eu_einvoice_standard_160p__s5` the gold `bibliography_entries[].ref_number`
+    # is literally `[1]` through `[14]`, and all fourteen keyed as the empty string -- so they
+    # were equal to each other, and reversing every reference number scored 100.00. A fold may
+    # remove an annotation; it may never consume the value.
+    _unmarked = re.sub(r"\s*\[\s*(?:\d{1,2}|[a-z])\s*\]", "", s)
+    if _unmarked.strip():
+        s = _unmarked
     for a, b in (
         ("’", "'"),
         ("‘", "'"),
