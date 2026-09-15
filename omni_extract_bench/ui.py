@@ -122,6 +122,19 @@ def near_misses(verds: list[dict]) -> list[dict]:
     return out
 
 
+def compact(misses: list[dict]) -> dict | None:
+    """A near-miss list reduced to what the viewer actually shows: a count and one example.
+
+    The index is the file every reader loads before seeing anything, so nothing belongs in it
+    that is not needed to choose a document. Keeping the full lists made it 4.5 MB on the real
+    corpus -- 82,113 entries, 93% of the file, one (document, vendor) pair worth 1.8 MB -- to
+    render a number and a fragment clipped to 32 characters. Without them it is 339 KB.
+    """
+    if not misses:
+        return None
+    return {"n": len(misses), "gold": misses[0]["gold"][:80], "pred": misses[0]["pred"][:80]}
+
+
 def read_summary(run: Path) -> tuple[str, dict[str, dict]]:
     """A run's summary: what to call its predictions, and its rows by document.
 
@@ -220,7 +233,7 @@ def build(runs: list[tuple[str, Path]], summaries: list[dict[str, dict]],
             by_source[source] = {"accuracy": round(row["accuracy"], 2),
                                  "bad": sum(1 for c in answered if c[0] != "m"),
                                  "seen": len(answered),
-                                 "near": near.get(source, [])}
+                                 "near": compact(near.get(source, []))}
         if not by_source:
             ungraded += 1
             continue
