@@ -202,15 +202,25 @@ ACCEPTED_LENIENCY = [
     # means the same thing as one writing `50%`.
     ('currency vs percent',  '$5',          '5%'),
     ('percent vs bare',      '50%',         '50'),
+    # The `accents` fold exists to do this and says so in its `why`: a transcription that
+    # dropped a diacritic is the same name. The price is that alphabets where an accented
+    # form is a SEPARATE LETTER lose the distinction -- Å is its own letter in Norwegian, not
+    # an A with a ring, so `Åse` and `Ase` are two names and one key.
+    ('German umlaut',       'Müller',       'Muller'),
+    ('Nordic ring',         'Åse',          'Ase'),
+    ('Turkish dotted I',    'İstanbul',     'Istanbul'),
+    # Trailing zeros fold because `12.90` and `12.9` are one printed rate at two precisions
+    # (METRIC_SPEC 2, asserted in MUST_MATCH). A version number pays for it: v1.1 and v1.10
+    # are different releases and one key.
+    ('version number',      '1.1',          '1.10'),
 ]
 
-#: DEBT: P1 violations nobody chose, each reaching the string fallback (P3). Fix a fold,
-#: move the pair up into MUST_DIFFER, and this list shrinks.
+#: DEBT: P1 violations nobody chose -- no rule was aiming at these, they are side effects.
+#: Anything caused deliberately belongs in ACCEPTED_LENIENCY above, however regrettable it
+#: looks; the two lists answer different customer questions ("what do you get wrong?" versus
+#: "what did you decide to give up?") and mixing them makes both answers untrustworthy.
+#: Fix a fold, move the pair up into MUST_DIFFER, and this list shrinks.
 KNOWN_COLLISIONS = [
-    ('version number', '1.1', '1.10'),
-    ('German umlaut', 'Müller', 'Muller'),
-    ('Nordic ring', 'Åse', 'Ase'),
-    ('Turkish dotted I', 'İstanbul', 'Istanbul'),
     ('vulgar fraction', '½', '12'),
     ('written fraction', '1/2', '12'),
     ('malformed date', '2025-01-2025', '20250120 25'),
@@ -364,6 +374,37 @@ report("`dash mark` runs before `punctuation`",
 report("`number` runs after the typography that feeds it",
        _names.index("typography") < _names.index("number"),
        "a minus sign must already be ASCII before the value is read as a number")
+
+# EVERY EXAMPLE A FOLD PROMISES IN ITS `why` MUST BE TRUE. `why` is what a customer reads when
+# they disagree with a match, so a stale one is worse than none. Three had already drifted:
+# `punctuation` still said periods strip from anywhere after the decimal-point rule landed,
+# `accents` claimed only accents while NFKD also flattens superscripts and ligatures, and
+# `quotes and brackets` said "enclosing" when parentheses and slashes strip from anywhere.
+_WHY_CLAIMS = [
+    ("case", "ACME CORP", "Acme Corp", True), ("case", " Acme Corp ", "Acme Corp", True),
+    ("accents", "M\u00fcller", "Muller", True), ("accents", "\u00b5g", "ug", True),
+    ("accents", "\ufb01le", "file", True), ("accents", "\uff46\uff55\uff4c\uff4c", "full", True),
+    ("accents", "\u216b", "XII", True), ("accents", "10\u00b2", "102", True),
+    ("accents", "Ac\u200bme", "Acme", True),
+    ("typography", "5\u2032", "5'", True), ("typography", "180 \u2212 121", "180 - 121", True),
+    ("number", "1,000", "1000", True), ("number", "$5", "5", True),
+    ("number", "12.90", "12.9", True), ("number", "02000", "2000", False),
+    ("dash mark", "-", "--", True),
+    ("punctuation", "PO BOX 125", "P.O. BOX 125", True),
+    ("punctuation", "31-1440073", "311440073", True),
+    ("punctuation", "1.5 mg", "15 mg", False),
+    ("punctuation", "1.000.000", "1,000,000", True),
+    ("punctuation", "512.784.7407", "512-784-7407", True),
+    ("quotes and brackets", "A(B)C", "ABC", True),
+    ("quotes and brackets", "and/or", "andor", True),
+    ("quotes and brackets", "N/A", "NA", True),
+]
+_broken = [(n, a, b, want) for n, a, b, want in _WHY_CLAIMS
+           if (canon_key(a) == canon_key(b)) is not want]
+report(f"all {len(_WHY_CLAIMS)} examples promised in a step's `why` are true", not _broken,
+       "; ".join(f"{n}: {a!r} {'!=' if w else '=='} {b!r}" for n, a, b, w in _broken))
+note("if this fails, the fold changed and the sentence a customer reads is now a lie.")
+note("fix the `why`, not the test.")
 
 report(f"the pipeline is a list of {len(FOLDS)} named steps",
        len(FOLDS) >= 8 and all(f.name and f.why for f in FOLDS),
