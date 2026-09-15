@@ -315,7 +315,7 @@ note("steps: " + " -> ".join(f.name for f in FOLDS))
 
 _t = canon_trace("31-1440073")
 report("a trace names the step that did the folding",
-       [c.step for c in _t.changes] == ["punctuation"] and _t.key == "311440073",
+       [c.step for c in _t.changes] == ["punctuation"] and _t.canon == "311440073",
        f"{_t}")
 _t2 = canon_trace("\u2022 Maintain a safe work environment")
 report("...and reports several in order when several fire",
@@ -324,7 +324,7 @@ report("a value that takes the date route reports it and folds nothing",
        canon_trace("01/15/2024").route == "date" and not canon_trace("01/15/2024").changes,
        f"{canon_trace('01/15/2024')}")
 report("the trace agrees with canon_key on every MUST_MATCH and MUST_DIFFER value",
-       all(canon_trace(v).key == canon_key(v)
+       all(canon_trace(v).canon == canon_key(v)
            for _n, a, b in MUST_MATCH + MUST_DIFFER for v in (a, b)))
 
 print("\nP4  THE KEY IS A FUNCTION OF THE VALUE ALONE")

@@ -3,7 +3,7 @@
 
 This test used to say "`score.py` must not depend on `grading.py`", so that deleting the old
 paired walker would stay a one-line change rather than an archaeology exercise. That worked:
-`grading.py` and the vendored `longextract_bench` grader are both gone, and this file is what
+`grading.py` and the vendored upstream grader are both gone, and this file is what
 kept the path clear enough to remove them in one go.
 
 What it guards now is the state that made the removal possible, so it cannot quietly erode:
