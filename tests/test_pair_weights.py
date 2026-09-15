@@ -209,12 +209,30 @@ note("not just accuracy: matched, total, matching_exact, approximated, all of th
 print("\nIT DECLINES WHAT IT CANNOT DO, RATHER THAN RAISING")
 report("a block smaller than the threshold is not vectorised",
        sc._pair_weights({}, {}, [], [], 3, None) is None)
-sc.MAX_VECTOR_CELLS = 0
+# Past the DENSE ceiling the matrix cannot be held, and the sparse form is offered instead --
+# but only when no pair needs the recursion, because corrections write individual cells.
+import scipy.sparse as _sp                                                  # noqa: E402
+
+flat_p = {i: sc.Row(named={(("k", "t"),): f"v{i%3}"}, arrays={}, key=(i,)) for i in range(6)}
+flat_g = {i: sc.Row(named={(("k", "t"),): f"v{i%3}"}, arrays={}, key=(i,)) for i in range(6)}
+nest_p = {i: sc.Row(named={(("k", "t"),): f"v{i%3}"},
+                    arrays={(("k", "x"),): {0: sc.Row(named={(("k", "z"),): "1"},
+                                                      arrays={}, key=())}}, key=(i,))
+          for i in range(6)}
+saved_max, saved_min = sc.MAX_VECTOR_CELLS, sc.MIN_VECTOR_CELLS
+sc.MAX_VECTOR_CELLS, sc.MIN_VECTOR_CELLS = 0, 1
 try:
-    report("a block past the cell ceiling is not vectorised",
-           sc._pair_weights({}, {}, [1], [1], 3, None) is None)
+    got = sc._pair_weights(flat_p, flat_g, list(range(6)), list(range(6)), 97, None)
+    report("past the dense ceiling a flat block comes back SPARSE, not None",
+           got is not None and _sp.issparse(got), repr(type(got)))
+    both = sc._pair_weights(nest_p, nest_p, list(range(6)), list(range(6)), 97, None)
+    report("but a block where both sides nest at one path declines instead",
+           both is None, repr(type(both)))
+    note("a correction writes single cells, which a sparse matrix cannot absorb cheaply and "
+         "may need cells the product does not have; declining sends the block where it went "
+         "before")
 finally:
-    sc.MAX_VECTOR_CELLS = 64 * 10**6
+    sc.MAX_VECTOR_CELLS, sc.MIN_VECTOR_CELLS = saved_max, saved_min
 
 # A vocabulary needs hashable features. Leaves are scalars today, so this is a guard against a
 # future where one is not -- and the point is that it declines rather than taking the whole

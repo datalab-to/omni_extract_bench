@@ -474,8 +474,7 @@ def _pair_weights(pred: dict[Hashable, Row], gold: dict[Hashable, Row],
     so this can decline any input it does not like.
     """
     n, m = len(pi), len(gi)
-    cells = n * m
-    if cells < MIN_VECTOR_CELLS or cells > MAX_VECTOR_CELLS:
+    if n * m < MIN_VECTOR_CELLS:
         return None
 
     import numpy as np
@@ -513,14 +512,9 @@ def _pair_weights(pred: dict[Hashable, Row], gold: dict[Hashable, Row],
         return sp.csr_matrix((np.ones(len(idx), np.int32), np.array(idx, np.int32),
                               np.array(ptr, np.int64)), shape=(rows, width))
 
-    matched = (csr(pv, n, len(values)) @ csr(gv, m, len(values)).T).toarray()
-    shared = (csr(pa, n, len(addresses)) @ csr(ga, m, len(addresses)).T).toarray()
-
-    weights = matched.astype(np.float64)
-    weights *= scale
-    weights += shared
-    weights[matched == 0] = 0.0          # the same bar `cost` applies: no match, no pair
-    del shared
+    matched_sp = (csr(pv, n, len(values)) @ csr(gv, m, len(values)).T).tocsr()
+    shared_sp = (csr(pa, n, len(addresses)) @ csr(ga, m, len(addresses)).T).tocsr()
+    matched_sp.eliminate_zeros()
 
     # Rows carrying their own arrays are worth what their sub-pairings are worth. Price those
     # pairs with the function that knows how, and leave the rest read off the product.
@@ -536,6 +530,27 @@ def _pair_weights(pred: dict[Hashable, Row], gold: dict[Hashable, Row],
     deep_g = {j: {a for a, sub in gold[k].arrays.items() if sub} for j, k in enumerate(gi)}
     shared_paths = set().union(*deep_p.values()) & set().union(*deep_g.values()) \
         if deep_p and deep_g else set()
+
+    # Past the dense ceiling the matrix cannot be held at all, and only the sparse form is
+    # possible. Corrections write individual cells, which a sparse matrix cannot absorb
+    # cheaply and which may need cells the product does not have -- so the sparse form is
+    # offered only when no pair needs one. Declining sends the block where it went before.
+    if n * m > MAX_VECTOR_CELLS:
+        if shared_paths:
+            return None
+        mask = matched_sp.copy()
+        mask.data[:] = 1
+        return (matched_sp * scale + shared_sp.multiply(mask)).tocsr()
+
+    weights = matched_sp.toarray()
+    shared = shared_sp.toarray()
+    nonzero = weights != 0
+    weights = weights.astype(np.float64)
+    weights *= scale
+    weights += shared
+    weights[~nonzero] = 0.0              # the same bar `cost` applies: no match, no pair
+    del shared, nonzero
+
     if shared_paths:
         left = [i for i, paths in deep_p.items() if paths & shared_paths]
         right = [j for j, paths in deep_g.items() if paths & shared_paths]
