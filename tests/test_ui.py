@@ -122,9 +122,15 @@ try:
     got = {a[0]: a[2] for a in doc["addrs"]}
     report("a document's file holds every address, with each source's answer",
            set(got) == {"name", "n"}, str(sorted(got)))
-    report("the vendor that matched stores one slot, the one that did not stores two",
-           got["n"]["alpha"] == ["m"] and got["n"]["beta"] == ["w", "9"], str(got["n"]))
+    report("a literal match stores one slot; a charge stores the value and its canonical form",
+           got["n"]["alpha"] == ["m"] and got["n"]["beta"][:2] == ["w", "9"]
+           and len(got["n"]["beta"]) == 3, str(got["n"]))
     note("at nine vendors most addresses match all nine; repeating the value is most of the file")
+    only_match = next(r for r in doc["addrs"] if r[0] == "name")
+    report("and an address every vendor matched literally carries no canonical form either",
+           len(only_match) == 3, str(only_match))
+    note("the canonical forms answer 'why did these count as equal'; where nothing disagreed "
+         "there is no question to answer")
 
     print("\nTWO RUNS CANNOT BOTH BE 'alpha'")
     code, out, err = run("ui", "--run", TMP / "run-a", "--run", TMP / "run-a",
