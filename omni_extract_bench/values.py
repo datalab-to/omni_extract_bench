@@ -51,9 +51,13 @@ def _f_case(s: str) -> str:
 
 
 def _f_accents(s: str) -> str:
+    # Cf is the whole invisible-formatting category: soft hyphen, zero-width space, ZWNJ/ZWJ,
+    # word joiner, BOM. They render as nothing, so two identical-looking values must not differ
+    # because one carries a stray one.
     s = unicodedata.normalize("NFKD", s)
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    return s.replace("\u00b5", "u").replace("\u03bc", "u")
+    s = "".join(c for c in s
+                if not unicodedata.combining(c) and unicodedata.category(c) != "Cf")
+    return s.replace("\u03bc", "u")   # NFKD has already mapped U+00B5 to this
 
 
 _FOOTNOTE = re.compile(r"\s*\[\s*(?:\d{1,2}|[a-z])\s*\]")
@@ -67,23 +71,18 @@ def _f_footnote(s: str) -> str:
     return out if out.strip() else s
 
 
-_FRAC = {"½": "1/2", "¼": "1/4", "¾": "3/4", "⅓": "1/3", "⅔": "2/3", "⅛": "1/8",
-         "⅜": "3/8", "⅝": "5/8", "⅞": "7/8", "⅕": "1/5", "⅙": "1/6", "⅐": "1/7"}
-def _defrac(s: str) -> str:
-    for u, a in _FRAC.items():
-        s = s.replace(u, a)
-    return s
-
-
 # Unicode spellings of ASCII characters. NFKD leaves these alone, so they are listed by hand;
 # 994 corpus values carry one.
-_TYPOGRAPHY = (("\u2019", "'"), ("\u2018", "'"), ("\u201c", '"'), ("\u201d", '"'),
-               ("\u2013", "-"),        # en dash
-               ("\u2014", "-"),        # em dash
-               ("\u2010", "-"),        # HYPHEN -- the Unicode one, not hyphen-minus
-               ("\u2011", "-"),        # non-breaking hyphen
-               ("\u2212", "-"),        # MINUS SIGN
-               ("\u00ad", ""),         # soft hyphen: an invisible line-break hint, not ink
+_TYPOGRAPHY = (("\u2019", "'"), ("\u2018", "'"),           # curly single quotes
+               ("\u201c", '"'), ("\u201d", '"'),           # curly double quotes
+               ("\u201a", ","), ("\u201e", '"'),           # low-9 quotes (German)
+               ("\u2032", "'"), ("\u2033", '"'),           # prime, double prime (feet/inches)
+               ("\u2013", "-"), ("\u2014", "-"),           # en dash, em dash
+               ("\u2010", "-"), ("\u2011", "-"),           # HYPHEN, non-breaking hyphen
+               ("\u2212", "-"), ("\u2015", "-"),           # MINUS SIGN, horizontal bar
+               ("\u2044", "/"),                            # FRACTION SLASH -- what NFKD
+                                                            # decomposes \u00bd \u00be \u2157 ... into, so
+                                                            # this one line covers all twenty
                )
 
 
@@ -107,18 +106,23 @@ def _f_list_marker(s: str) -> str:
 
 
 _ZERO_PADDED = re.compile(r"-?0\d")
+#: A plain numeral. `float()` is far more permissive -- it reads scientific notation, so it
+#: turned the CUSIP `46138E62` into 4.6138e66 and keyed a security identifier as a 67-digit
+#: number. 1,014 CUSIPs in the corpus were being read as floats. Exponents are the only thing
+#: excluded: a decimal point must still be accepted here, because `canon_key` hands the folds
+#: the normalised text of a Decimal and this step is what stops `punctuation` eating its sign.
+_PLAIN_NUM = re.compile(r"[+-]?\d+(?:\.\d+)?")
 
 
 def _f_number(s: str) -> str:
+    num = s.replace(",", "").replace("$", "").replace("%", "").strip()
+    if not _PLAIN_NUM.fullmatch(num):
+        return s
     # A zero-padded integer is an identifier, not a number: 02000 and 2000 are different
     # postal codes. Guard needs a leading zero followed by a digit, so 0 and 0.5 still parse.
-    num = s.replace(",", "").replace("$", "").replace("%", "")
-    if _ZERO_PADDED.match(num.strip()):
+    if _ZERO_PADDED.match(num):
         return s
-    try:
-        f = float(num)
-    except ValueError:
-        return s
+    f = float(num)
     return _Final(str(int(f)) if f == int(f) else str(f))
 
 
@@ -142,10 +146,6 @@ def _f_brackets(s: str) -> str:
 #: THE normalisation pipeline, in order. Adding a step here is the only way to change how
 #: values compare, and `canon_trace` will report it by name without further work.
 FOLDS: tuple[Fold, ...] = (
-    # FIRST, and it has to be: `accents` runs NFKD, which decomposes \u00bd into `1\u20442` -- a form
-    # the fraction table no longer recognises. Order in this list is behaviour.
-    Fold("fractions", "A single-character fraction is written out, so \u00bd reads as 1/2.",
-         _defrac),
     Fold("case", "Capitalisation is not part of a value: ACME CORP is Acme Corp.", _f_case),
     Fold("accents",
          "Accents and the micro sign fold to ASCII, so Muller matches M\u00fcller and ug matches \u00b5g.",
@@ -202,10 +202,11 @@ def _canon(v, record=None):
     document. The truncation bounds a pathological value without merging it with anything."""
     try:
         return run_folds(v, record)
-    except (OverflowError, ValueError):
-        return str(v)[:64]
     except Exception:
-        return str(v).lower()
+        # Still fold what is safe to fold. Returning the raw text here made `Infinity` and
+        # `infinity` different keys -- a value that trips this path should not also lose case
+        # folding. Truncated so a pathological value is bounded, not merged.
+        return " ".join(str(v).split()).lower()[:64]
 
 def _canon_key_unguarded(v, trace=None):
     """Route a value and return its key. Tried in order: boolean, number, date, time, text.

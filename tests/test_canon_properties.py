@@ -174,6 +174,10 @@ ACCEPTED_LENIENCY = [
     ('address unit',        '#30-2',        '#302'),
     ('zone code',           'RR-2',         'RR2'),
     ('age range',           '90-94',        '9094'),
+    # Reference markers are stripped wherever they appear, which is wanted -- a bibliography
+    # entry with its `[4]` and one without are the same entry. The price is that two values
+    # differing ONLY by the marker collapse together. No corpus field does that today.
+    ('reference marker',    'see [1]',      'see [2]'),
     # `canonical` strips `/` (which is also why `1/2` == `12` below). `N/A` therefore keys as
     # `NA`. Checked rather than assumed: exactly ONE gold field in 660 documents holds both
     # spellings, a contract-number field where both mean "not applicable".
@@ -305,15 +309,17 @@ print("\nP5  THE PIPELINE IS ENUMERABLE, AND SAYS WHY")
 # to argue with -- `31-1440073` -> `311440073` is not an answer, "the punctuation rule removed
 # the hyphen" is.
 from omni_extract_bench.values import FOLDS, canon_trace                # noqa: E402
-# ORDER IN `FOLDS` IS BEHAVIOUR, not presentation. `fractions` must precede `accents`, whose
-# NFKD pass decomposes \u00bd into `1\u20442` -- a form the fraction table no longer matches, so a
-# later `fractions` silently stops working. Pinned here because the failure is invisible: the
-# key still looks plausible, it is merely a different one.
+# ORDER IN `FOLDS` IS BEHAVIOUR, not presentation. Pinned here because the failures are
+# invisible: the key still looks plausible, it is merely a different one.
 _names = [f.name for f in FOLDS]
-report("`fractions` runs before `accents`",
-       _names.index("fractions") < _names.index("accents"), f"{_names}")
-report("...and the fold it protects still works", canon_key("\u00bd") == canon_key("1/2"),
-       f"{canon_key(chr(0xbd))!r} vs {canon_key('1/2')!r}")
+report("`accents` runs before `typography`",
+       _names.index("accents") < _names.index("typography"),
+       "NFKD decomposes every vulgar fraction to N + U+2044 + M, and typography is what maps "
+       "U+2044 to '/'. Reverse them and no fraction folds.")
+report("...so every vulgar fraction folds, not just the ones someone listed",
+       all(canon_key(c) == canon_key(t) for c, t in
+           (("\u00bd", "1/2"), ("\u00be", "3/4"), ("\u2157", "3/5"), ("\u2152", "1/10"))),
+       f"{[(c, canon_key(c)) for c in chr(0xbd) + chr(0xbe) + chr(0x2157)]}")
 report("`dash mark` runs before `punctuation`",
        _names.index("dash mark") < _names.index("punctuation"),
        "otherwise the punctuation strip erases a dash run to nothing first")

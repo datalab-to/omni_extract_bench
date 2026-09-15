@@ -14,6 +14,20 @@ from typing import Any
 Json = Any  # parsed-JSON value: dict / list / scalar
 
 
+# ORDER RESOLVES AMBIGUITY, so it is deliberate: 01/02/2024 and 01.02.2024 are each two
+# possible dates and the first format that parses wins.
+#
+#   / and -   month first (US convention)
+#   .         DAY first (European convention)
+#
+# That looks inconsistent and is not. Dot-separated dates are European: of the 425 in this
+# corpus, 155 prove day-first by having a first component above 12 and NOT ONE proves
+# month-first, and they come from a German bank statement and a German medical guideline.
+# Reading them month-first would be uniform and would misread all 270 ambiguous ones.
+#
+# An impossible month falls through to the next format, so unambiguous dates parse correctly
+# either way -- 31.07.2024 is 31 July regardless. Only the genuinely ambiguous ones turn on
+# this order. Pinned in tests/test_asdate_prefilter.py.
 _DATEFMTS = ["%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%B %d, %Y", "%b %d, %Y",
              "%d %B %Y", "%d-%b-%Y", "%d%b%Y", "%m/%d/%y", "%Y/%m/%d", "%d.%m.%Y",
              "%m.%d.%Y", "%b %d %Y", "%B %d %Y"]
