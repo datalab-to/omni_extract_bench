@@ -1106,3 +1106,38 @@ for all nine vendors.
 reads `None / N/A / Dose reduced / --`, a model writing `-` in every cell scored 87.50. It now
 scores 62.50 -- identical to omitting those cells. Guessing a placeholder is worth no more than
 admitting the cell was not read, which is the property the benchmark wants.
+
+## 25. A fold may trim a value, never consume it -- the `[1]`..`[14]` collapse
+
+**Fixed.** The footnote-marker rule `re.sub(r"\s*\[\s*(?:\d{1,2}|[a-z])\s*\]", "", s)` now
+applies only when something survives it.
+
+**What it did.** The rule drops a marker APPENDED to a value (`229 [1]` -> `229`). When the
+value IS the marker it erased the whole thing, so the value kept its address but keyed as the
+empty string -- and every value that keys as empty equals every other one. In
+`internal/2026-05-13T02-14-01__eu_einvoice_standard_160p__s5`, gold
+`bibliography_entries[].ref_number` is literally `[1]` through `[14]`. All fourteen were one
+key. Demonstrated on a five-row cut of that shape:
+
+| prediction | before | after |
+| --- | --- | --- |
+| exact | 100.00 | 100.00 |
+| every `ref_number` REVERSED | **100.00** | 60.00 |
+| every `ref_number` replaced with `...` | **100.00** | 50.00 |
+
+**The distinction this turns on, which is worth keeping straight.** *Thrown out* means no
+address exists -- `null`, `""`, whitespace, `[]`, `{}`, and any container whose leaves are all
+of those. *Keys as empty* means the address exists and is scored, but its key is `""`, so it
+matches anything else a fold emptied. The first is the null rule working; the second is a bug
+every time it is not an absence marker.
+
+**After the fix, zero gold values in 660 documents key as empty.** `tests/test_canon_properties.py`
+P1b asserts no value carrying content is ever consumed, and that the four real absence markers
+(`""`, `..`, `...`, `null`) still are.
+
+**Cost: none.** One document can move; zero document-vendor pairs of 5,940 actually do; corpus
+mean 0.0000 for all nine vendors. No vendor was benefiting -- the fix is preventive.
+
+**Found by** auditing what `canon_key` returns for every surviving gold leaf, rather than by a
+failing score. Worth repeating whenever a fold changes: `canon_key(v) == "" and not
+states_nothing(v)` is a one-line query and it has now caught two bugs (this and the dash fold).
