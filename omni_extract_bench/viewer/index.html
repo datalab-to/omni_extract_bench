@@ -280,7 +280,8 @@ table.grid tr.allbad:hover { background: var(--missing-soft); }
 .found .yes { color: var(--accent); }
 .found .no { color: var(--missing); }
 .pages { max-height: 620px; overflow-y: auto; background: var(--sunk); padding: 12px; display: grid; gap: 12px; justify-items: center; }
-.page { position: relative; line-height: 0; box-shadow: var(--shadow); background: #fff; }
+.page { position: relative; line-height: 0; box-shadow: var(--shadow); background: #fff;
+        width: 100%; }
 .page canvas { display: block; max-width: 100%; height: auto; }
 /* A transparent layer of real text over the canvas: what makes the browser's own
    find (⌘F / Ctrl-F) work, and the text selectable and copyable. */
@@ -434,6 +435,7 @@ table.grid tr.allbad:hover { background: var(--missing-soft); }
             <div class="finder">
               <span class="found">Text is selectable &mdash; use <b>&#8984;F</b> to search the page.</span>
             </div>
+            <div id="notice-pdf"></div>
             <div class="pages" id="pages"></div>
           </div>
           <pre class="schema" id="pane-schema" hidden></pre>
@@ -890,8 +892,27 @@ async function showSchema() {
   el("pane-schema").textContent = schemaText;
 }
 
+/* Pages rendered up front. Below this every page is in the document, so the browser's own
+   find reaches all of it -- which is what this pane is for. Above it that stops being
+   affordable: a canvas at this scale is ~5.9 MB, and the corpus holds a 436-page budget
+   schedule, which is ~2.6 GB of canvas. That does not slow a tab down, it ends it. */
+const EAGER_PAGES = 24;
+
+/* Rendered pages kept around the one you are reading, once rendering is lazy. Enough that
+   scrolling rarely waits, few enough that memory stays flat however far you scroll. */
+const KEEP_RENDERED = 10;
+
+const PAGE_SCALE = 1.35;
+
+let drawn = [];          /* rendered pages, oldest first, so the furthest can be given back */
+let watcher = null;
+
 async function loadPdf(docId) {
-  el("pages").innerHTML = `<p class="empty">Loading ${esc(docId)}…</p>`;
+  el("pages").innerHTML = `<p class="empty">Loading ${esc(docId)}&hellip;</p>`;
+  el("notice-pdf").innerHTML = "";
+  watcher?.disconnect();
+  watcher = null;
+  drawn = [];
   pdfStatus = "loading…";
   if (tab === "pdf") el("pane-status").textContent = pdfStatus;
   try {
@@ -902,34 +923,79 @@ async function loadPdf(docId) {
     if (tab === "pdf") el("pane-status").textContent = pdfStatus;
     return;
   }
-  pdfStatus = `${pdf.numPages} page${pdf.numPages > 1 ? "s" : ""}`;
-  if (tab === "pdf") el("pane-status").textContent = pdfStatus;
-  el("pages").innerHTML = "";
-  // Every page: the browser's find only reaches what is in the document, so a page left
-  // unrendered is a page the search cannot see.
   const mine = pdf;
-  for (let p = 1; p <= mine.numPages; p++) {
-    if (pdf !== mine) return;
-    await renderPage(mine, p);
+  const eager = mine.numPages <= EAGER_PAGES;
+  pdfStatus = `${mine.numPages} page${mine.numPages > 1 ? "s" : ""}` +
+    (eager ? "" : " · drawn as you scroll");
+  if (tab === "pdf") el("pane-status").textContent = pdfStatus;
+
+  // Every page gets its box before any page gets its picture, so the scrollbar is honest
+  // straight away and nothing jumps as pages fill in. Page 1's shape stands in for all of
+  // them: asking each page for its own would be a worker round trip per page before anything
+  // is on screen, and a page that turns out to differ corrects itself as it draws.
+  const shape = (await mine.getPage(1)).getViewport({ scale: PAGE_SCALE });
+  if (pdf !== mine) return;
+  el("pages").innerHTML = "";
+  const holders = [];
+  for (let n = 1; n <= mine.numPages; n++) {
+    const holder = document.createElement("div");
+    holder.className = "page";
+    holder.dataset.page = String(n);
+    holder.style.aspectRatio = `${shape.width} / ${shape.height}`;
+    holder.style.maxWidth = `${shape.width}px`;
+    el("pages").appendChild(holder);
+    holders.push(holder);
   }
+
+  if (eager) {
+    for (const holder of holders) {
+      if (pdf !== mine) return;
+      await fillPage(mine, holder);
+    }
+    return;
+  }
+  el("notice-pdf").innerHTML =
+    `<p class="notice">${mine.numPages} pages, so they are drawn as you reach them. ` +
+    `<b>&#8984;F only finds pages that have been drawn</b> — scroll through the part you ` +
+    `care about first.</p>`;
+  watcher = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting && pdf === mine) fillPage(mine, e.target);
+    }
+  // A screen and a half either side, so a page is usually ready by the time it is reached.
+  }, { root: el("pages"), rootMargin: "150% 0px" });
+  for (const h of holders) watcher.observe(h);
 }
 
-async function renderPage(doc, num) {
+function release(holder) {
+  fitters.unobserve(holder);
+  holder._fit = null;
+  holder.innerHTML = "";
+  delete holder.dataset.drawn;
+}
+
+async function fillPage(doc, holder) {
+  if (holder.dataset.drawn) return;
+  holder.dataset.drawn = "1";                 // claimed before the first await, or a fast
+  const num = Number(holder.dataset.page);    // scroll draws the same page twice over
   const page = await doc.getPage(num);
-  const viewport = page.getViewport({ scale: 1.35 });
-  const holder = document.createElement("div");
-  holder.className = "page";
+  if (pdf !== doc || !holder.dataset.drawn) return;
+  const viewport = page.getViewport({ scale: PAGE_SCALE });
+  holder.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
+  holder.style.maxWidth = `${viewport.width}px`;
+
   const canvas = document.createElement("canvas");
   canvas.width = viewport.width;
   canvas.height = viewport.height;
   canvas.style.width = viewport.width + "px";
   holder.appendChild(canvas);
-  el("pages").appendChild(holder);
   await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+  if (pdf !== doc || !holder.dataset.drawn) return;
 
   // A transparent layer of real text over the picture: what makes the browser's own find
   // work, and the text selectable.
   const content = await page.getTextContent();
+  if (pdf !== doc || !holder.dataset.drawn) return;
   const layer = document.createElement("div");
   layer.className = "textLayer";
   layer.style.width = viewport.width + "px";
@@ -947,6 +1013,13 @@ async function renderPage(doc, num) {
     if (want > 0 && got > 0) span.style.transform = `scaleX(${want / got})`;
   }
   fit(holder, layer, viewport.width);
+
+  // Only the lazy path evicts. A document small enough to draw whole stays whole.
+  if (watcher) {
+    drawn = drawn.filter((d) => d !== holder);
+    drawn.push(holder);
+    while (drawn.length > KEEP_RENDERED) release(drawn.shift());
+  }
 }
 
 /* The canvas is scaled down by CSS to fit the pane, so the text layer has to be scaled by the
