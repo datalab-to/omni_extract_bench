@@ -1180,6 +1180,19 @@ is now resolved at the top of `canon_key`, before anything stringifies the value
 have matched gold; these values were already charged. 85 documents contain such predictions
 (1,226 of them the string `"null"`, from models whose serializer emits the word).
 
-**The test changed shape too.** P1b now asserts the invariant by CONSTRUCTION over 128 probes --
-every punctuation character alone, doubled and tripled, plus the shapes the folds trim -- rather
-than by a hardcoded list. A list is what let the 17 sit unnoticed.
+**The test searches rather than lists.** A list is what let the 17 sit unnoticed, so P1b now
+enumerates every 1- and 2-character string over the punctuation the folds touch, fuzzes 20k
+longer ones, sweeps every Unicode codepoint under 0x2FFF in a strippable category, and includes
+the overflow scalars -- 24,184 values per run, no counterexample.
+
+**Checked exhaustively once, outside the test:** 264,449 fuzzed values (adding 3-character
+exhaustive and 200k random) and **all 17.7M gold and prediction leaves in the corpus**
+(2,884,138 gold + 14,832,306 predicted). Zero values with content key as empty; zero
+non-string keys; zero exceptions.
+
+**And it holds BY CONSTRUCTION, which is the part that matters.** `canon_key` has exactly two
+paths that return `""`: the structural-absence branch, which fires only for `None`, `[]`, `{}`
+and whitespace-only strings; and the fallback, which returns `re.sub(r"\s+", "",
+str(v).strip().lower())` and can only be empty if `str(v)` is all whitespace -- which the first
+branch already caught. The guard sits AFTER every fold at the single public entry point, so a
+fold added later cannot reintroduce the bug without going through it.
