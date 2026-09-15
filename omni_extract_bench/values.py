@@ -45,7 +45,17 @@ Json = Any  # parsed-JSON value: dict / list / scalar
 
 
 # ── upstream, verbatim (MIT, (c) Micro1 -- see NOTICE) ───────────────────────────
-_PLACEHOLDERS = {"", "..", "...", "-", "--", "n/a", "na", "none", "null"}
+#: Markers that mean "no value", as opposed to words a document PRINTS. A document cannot
+#: print emptiness, and the literal string `null` is a serialisation artifact rather than ink,
+#: so these fold to absence. Nothing else does -- see `_DASH` and METRIC_SPEC 5.
+_PLACEHOLDERS = {"", "..", "...", "null"}
+
+#: A run of dashes is one printed answer: the clerk's mark for "nothing in this cell". `-` and
+#: `--` are the same mark, so they share a key -- but they are NOT absence, and they are not
+#: each other's neighbours `N/A` or `None` either. It returns a TAGGED token because the
+#: punctuation strip further down would otherwise erase `-` to `""` and silently restore the
+#: very folding this exists to prevent.
+_DASH = re.compile(r"-+")
 _DATALAB_SIDECAR_SUFFIXES = ("_citations", "_meta")
 
 
@@ -63,7 +73,17 @@ def _fold_cosmetic(v: Json) -> str:
     1. None -> "" ; lowercase ; strip.
     2. Typography: smart quotes/apostrophes/dashes -> ascii.
     3. Numbers compared numerically (`1,000`==`1000`, `100.0`==`100`, `$5`==`5`).
-    4. Placeholder markers (`..`, `-`, `n/a`, ...) -> "" (treated as empty/null).
+    4. Absence markers (`..`, `...`, `null`) -> "" . DIVERGES: upstream also folded `-`,
+       `--`, `n/a`, `na` and `none` here, making all five one another's equals AND equal to
+       an empty cell. Those are words a page PRINTS, and different ones: on an adverse-event
+       form `None` (no action was taken) and `N/A` (the question does not apply) are
+       different answers. Worse, `NA` is not even reliably a placeholder -- in Nike's 10-Q it
+       sits in `segment_name` beside `North America` and `Greater China`, and in Cisco's
+       beside `EMEA`, where it plainly abbreviates the region; all 2,546 of them used to key
+       as empty. Which meaning applies depends on the FIELD, and P4 forbids reading the field,
+       so the only field-independent answer is to stop calling them placeholders: `n/a`, `na`
+       and `none` are now ordinary text and each keys as itself. A dash run is the exception,
+       folded to one token by rule 4b because it is a mark rather than a word.
     5. Strip ALL whitespace + commas + hyphens + periods
        (`Inst itutional`==`Institutional`, `Table B-1.`==`Table B-1`). Numbers are
        already handled by the numeric path above, so period-stripping here only
@@ -106,6 +126,8 @@ def _fold_cosmetic(v: Json) -> str:
             pass
     if re.sub(r"\s+", " ", s) in _PLACEHOLDERS:
         return ""
+    if _DASH.fullmatch(s):
+        return "#ph_dash"
     # LENIENT, AND ON PURPOSE. Whitespace, commas, hyphens and periods all fold, from
     # anywhere in the value -- upstream's rule, kept. It is the wrong rule in principle:
     # `5.2.1.5` and `5215` are two different section identifiers and this makes them one.

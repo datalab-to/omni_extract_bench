@@ -265,6 +265,34 @@ documents hold both those strings and `null` in the same file — the annotation
 carries no such risk: all **1,369** gold empty strings in the corpus are blank cells, 1,196 of
 them a single empty column in one check register.
 
+**And the placeholder words are not each other, either.** `canon_key` used to fold `-`, `--`,
+`n/a`, `na` and `none` to the empty key — making all five equal to one another *and* to a blank
+cell. They are different answers. On an adverse-event form `None` means no action was taken and
+`N/A` means the question does not apply; `action_taken` alone carries 1,223 of the first. The
+decisive case is `NA`: in Nike's 10-Q it sits in `segment_name` beside `North America` and
+`Greater China`, and in Cisco's beside `EMEA`, where it is plainly the region — yet all **2,546**
+of them keyed as empty. Which meaning applies depends on the field, and §5.2 forbids reading the
+field, so the only field-independent answer is to stop calling them placeholders at all: `n/a`,
+`na` and `none` are ordinary text and each keys as itself.
+
+Two exceptions, both deliberate. A run of dashes is a *mark* rather than a word, so `-`, `--`
+and `---` share one key — but not the empty key. And `canonical` strips `/` (the same fold that
+makes `1/2` equal `12`), so `N/A` keys as `NA`; exactly one gold field in 660 documents holds
+both spellings, a contract-number field where both mean "not applicable".
+
+The absence markers that remain are `""`, whitespace, `..`, `...` and the literal string
+`null` — a serialisation artifact rather than ink, and absent from gold entirely.
+
+This is a tightening, so it can only lower scores — and it costs almost nothing, because
+models rarely answer one placeholder where the gold prints another. It reaches 15 of 660
+documents, of which **three document-vendor pairs out of 5,940 actually move**, the largest by
+0.039. Corpus mean is 0.0000 for every vendor. Its value is in what it forecloses rather than
+what it corrects: under the old rule a model could write `-` in every field it could not read
+and collect all 22,632 placeholder slots for free. On a four-row form whose gold reads
+`None / N/A / Dose reduced / --`, writing `-` in every cell used to score 87.50; it now scores
+62.50, which is exactly what omitting those cells scores. That is the property worth having:
+guessing a placeholder is worth no more than admitting you did not read the cell.
+
 Without this rule the score moved with a vendor's serialization habit rather than with what it
 read: one provider's house style of `""` for blank cost it **7.92 points on `longarray`** while
 a provider writing `null` for the same blanks paid nothing.

@@ -87,6 +87,9 @@ MUST_MATCH = [
     # Punctuation folds from anywhere -- see ACCEPTED_LENIENCY below for the price and the
     # measurement that set it. These are the cases it buys, and they are the common ones:
     # 1,532 of the 1,607 matches it recovers differ by punctuation alone.
+    ("dash runs are one mark", "-",                     "--"),
+    ("longer dash run",       "---",                    "-"),
+    ("em dash",               "\u2014",                     "-"),
     ("EIN",                   "31-1440073",             "311440073"),
     ("ZIP+4",                 "44308-1801",             "443081801"),
     ("phone",                 "713-203-6913",           "7132036913"),
@@ -101,6 +104,20 @@ MUST_MATCH = [
 MUST_DIFFER = [
     ("arXiv id",              "arXiv:2405.06211v3",     "arXiv:2405.6211v3"),
     ("controlled vocab",      "None",                   "Not applicable"),
+    # Placeholder WORDS are ink, and different words are different answers. On an
+    # adverse-event form `None` (no action was taken) and `N/A` (does not apply) are not the
+    # same reply, and a dash is a third thing. None of them is an empty cell either: absence
+    # has no address at all, so it cannot be confused with a printed mark.
+    ("printed None vs N/A",   "None",                   "N/A"),
+    ("printed None vs dash",  "None",                   "-"),
+    ("printed N/A vs dash",   "N/A",                    "--"),
+    ("printed word vs empty", "None",                   ""),
+    ("dash vs empty",         "-",                      ""),
+    # `NA` is not reliably a placeholder: in Nike's 10-Q `segment_name` it sits beside
+    # `North America` and `Greater China`, where it abbreviates the region. Folding it to
+    # empty keyed 2,546 values as nothing.
+    ("NA is not empty",       "NA",                     ""),
+    ("NA vs None",            "NA",                     "None"),
     # promoted from KNOWN_COLLISIONS once the fold that merged them was narrowed
     ('zero-padded identifier', 'INV-007', 'INV-7'),
     ('zero-padded postal', '02000', '2000'),
@@ -127,6 +144,10 @@ ACCEPTED_LENIENCY = [
     ('address unit',        '#30-2',        '#302'),
     ('zone code',           'RR-2',         'RR2'),
     ('age range',           '90-94',        '9094'),
+    # `canonical` strips `/` (which is also why `1/2` == `12` below). `N/A` therefore keys as
+    # `NA`. Checked rather than assumed: exactly ONE gold field in 660 documents holds both
+    # spellings, a contract-number field where both mean "not applicable".
+    ('slash stripped',      'N/A',          'NA'),
 ]
 
 #: DEBT: P1 violations nobody chose, each reaching the string fallback (P3). Fix a fold,
@@ -136,7 +157,6 @@ KNOWN_COLLISIONS = [
     ('German umlaut', 'Müller', 'Muller'),
     ('Nordic ring', 'Åse', 'Ase'),
     ('Turkish dotted I', 'İstanbul', 'Istanbul'),
-    ('controlled vocab N/A', 'None', 'N/A'),
     ('vulgar fraction', '½', '12'),
     ('written fraction', '1/2', '12'),
     ('malformed date', '2025-01-2025', '20250120 25'),
