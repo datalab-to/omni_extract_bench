@@ -963,9 +963,708 @@ omitted slots in item 19, nor `meta.company` shortening `NIKE, Inc.` to `Nike` -
 well-formed values that are simply wrong. Consensus finds those; a linter finds the ones the
 schema already knows how to describe. The two audits are complements.
 
+## 22. Normalisation policy: change only what is egregious, and publish the leniency
+
+**Settled.** `canon_key` diverges from the upstream fold in exactly ONE place, and everything
+else upstream folds, this folds too.
+
+**The one divergence: leading zeros are kept.** Upstream runs
+`re.sub(r"\d+", lambda m: str(int(m.group())), s)`, stripping leading zeros inside every digit
+run. That is not a rendering difference, it is content:
+
+| | |
+| --- | --- |
+| `INV-007` == `INV-7` | two different invoices |
+| `02000` == `2000` | two different postal codes |
+| `06` == `6` | two different state codes |
+| `arXiv:2405.06211v3` == `arXiv:2405.6211v3` | two different papers |
+| `wenqifan03@gmail.com` == `wenqifan3@gmail.com` | two different people |
+
+Upstream's reason for the fold was `09. Mai` == `9. Mai` -- a day and a month name with no
+year, which our date recognisers do not parse anyway. Blast radius of removing it: **34 of 660
+documents** can move.
+
+**What was tried and reverted.** Keeping hyphens and internal periods looked principled and was
+measured to be wrong for this corpus:
+
+* **Hyphens.** Broke 526 matches in one Schedule I return alone
+  (`sched_i__akron_community_foundation`: 335 EINs, 187 ZIP+4s), costing three vendors ~15
+  points, because the gold writes them bare (`311440073`) and every model hyphenates
+  (`31-1440073`). A whitelist of fixed numeric formats was tried next and rejected: it missed
+  `case_number` (6,933 values), `rrc_id` (2,419) and `account_number` (486), and would need
+  extending for every format the corpus grows. It also could not tell `90-94` (2,163 range
+  values) from an identifier.
+* **Periods.** Folding them recovers **1,607** value matches across 660 documents and nine
+  vendors. 1,532 differ by punctuation ALONE (`PO BOX 125` / `P.O. BOX 125`, `FT LAUDERDALE` /
+  `FT. LAUDERDALE`); the other 75 are bibliography entries where the model kept its `[4] `
+  citation number. **Zero** credit a wrong value as right. Of the gold values the fold merges
+  inside a single field, all 215 have identical digit strings -- **zero** change a digit.
+
+**Why so little P1 is lost.** The protections worth having survive without punctuation, because
+they come from the leading-zero rule: `1:00.50` != `1:50`, `0.11%w/w` != `11%w/w`,
+`COM PAR $.001` != `COM PAR $.01`, `arXiv:2405.06211v3` != `arXiv:2405.6211v3`.
+
+**The bill, published.** Five collisions, listed in `tests/test_canon_properties.py` under
+`ACCEPTED_LENIENCY`, with a test asserting they still behave as priced:
+`5.2.1.5` = `5215` · `1.1%w/w` = `11%w/w` · `#30-2` = `#302` · `RR-2` = `RR2` · `90-94` = `9094`.
+
+That file now separates **leniency we chose** (`ACCEPTED_LENIENCY`, measured and priced) from
+**debt nobody chose** (`KNOWN_COLLISIONS`, 8 entries, all reaching the string fallback). Policy
+is stated in METRIC_SPEC 5.3; the upstream relationship is stated in `NOTICE`.
+
+**Method note.** The hyphen regression was caught only because all vendors dropped identically
+on the same documents -- a normalisation tightening that helps nobody and hurts everyone equally
+is the signature of a broken fold, not a stricter one. Worth checking for on any future change.
+
+## 23. Row-level dropping is gone; the 174 rows it hid are now a GOLD question
+
+**Changed.** `drop_empty_gt_rows` and `_DIMENSION_HINTS` are deleted. Only leaves are dropped
+now, by `states_nothing`, on both sides.
+
+**What the rule was, and why it existed.** It removed any array row whose *payload* fields all
+asserted nothing, where payload was every key that did not look like a dimension -- decided by
+matching the substrings `period, segment, type, name, id, label, category, unit, scale, date,
+quarter, year` against the field NAME. The initial-release comment states the reason honestly:
+10-Q gold carries rows like `{"data_period": "FY2025 Q2", "segment_type": "company", "value":
+null}` that state no fact and that no extractor returns, so scoring them charged every vendor
+for an unstated annotation convention.
+
+**Why it went anyway.**
+
+1. **It contradicted METRIC_SPEC 5.** Payload was read off the row in hand, so `{"id": "1"}`
+   had no payload and survived as an "all-dimension row", while `{"id": "1", "action": null}`
+   had a payload asserting nothing and was DELETED -- discarding a correct `id`. Identical
+   predictions scored **62.50 or 25.00** depending only on which spelling of absence was used.
+   132 of the 174 dropped rows had exactly ONE payload key, so a single `null` deleted them;
+   116 of those carried five other values that went with the row.
+2. **It was unnecessary.** `flatten` already skips nothing-asserting leaves, so such a row
+   contributes no addresses and cannot be matched, missed or charged. Blank rows are inert on
+   both sides with no rule: verified 100/100 in `tests/test_score_properties.py`.
+3. **It was a field-name heuristic**, which is the thing METRIC_SPEC 5.2 and property P4 exist
+   to forbid.
+
+**Measured cost.** 174 rows across 43 documents. Corpus mean per vendor: datalab -0.051,
+gpt -0.056, claude -0.050, extend -0.042, azure-cu -0.039, llamaextract -0.030, reducto -0.030,
+gemini -0.028, mistral -0.004. Uniform enough to change no ordering. Individual documents move
+both ways, up to -6.78 (azure-cu, `short__P18-28-50_51`) and +4.90 (reducto,
+`10kq__nke_10q_fy2025q2`) -- it moves UP where a model emitted the blank rows and used to have
+them deleted along with its correct dimensions.
+
+**THE OPEN QUESTION, and it is a gold question.** Are those 174 rows real blank lines in the
+document, or annotation artifacts? Mechanical check: none of them duplicates the coordinate of
+a row that HAS a value, so they are not obvious dedup noise. But a row like
+
+```json
+{"data_period": "FY2025 Q2", "metric_type": "actual", "segment_type": "company",
+ "segment_name": "NA", "unit": "NA", "scale": null, "value": null}
+```
+
+names no metric, and two of its five "values" are the placeholder word `NA`. If the 10-Q has no
+such line, the GOLD is wrong and should be fixed in the item 19-21 audit -- once, rather than
+hidden by a scorer rule on every run. **Needs eyes on the PDFs before any gold edit**, same
+rule as `GOLD_REVIEW.md`. 43 documents; the 121-row cluster is in `contextual/10kq__*`.
+
+**If the audit says they are artifacts and you would rather not edit gold**, the alternative is
+to restore row-dropping with the payload key set computed from the UNION of keys across the
+array instead of per row. That fixes the null-vs-omitted asymmetry while keeping the leniency,
+but it keeps the field-name heuristic and still discards correct dimension values.
+
+## 24. Placeholder words are text now, not absence -- and `NA` was never a placeholder
+
+**Changed.** `_PLACEHOLDERS` folded `""`, `..`, `...`, `-`, `--`, `n/a`, `na`, `none` and
+`null` to one empty key, making all nine equal to each other AND to a blank cell. It now holds
+only the markers that are never ink: `""`, `..`, `...`, `null`.
+
+**Why the words had to come out.** They are printed answers, and different ones. On an
+adverse-event form `None` means no action was taken and `N/A` means the question does not
+apply; `adverse_events[].action_taken` alone carries 1,223 of the first. Gold placeholder
+counts: `n/a` 13,874, `none` 4,904, `na` 2,546, `--` 1,090, `-` 218.
+
+**The case that decided the shape of the fix.** `NA` is not reliably a placeholder at all. In
+`10kq__nke_10q_fy2025q2` it sits in `segment_name` beside `North America` and `Greater China`;
+in `10kq__csco_10q_fy2025q2` beside `EMEA`; in `10kq__wdc_10q_fy2025q2` beside `Asia`. It is
+the region. Meanwhile `na` in the EIA `naics_energy_use_*` tables (1,248 values) does mean "not
+available". **Which meaning applies depends on the FIELD**, and P4 forbids reading the field --
+so no placeholder token can be correct for it. The only field-independent answer is to stop
+calling these placeholders: `n/a`, `na` and `none` are ordinary text and key as themselves.
+
+**Two consequences, both recorded in `ACCEPTED_LENIENCY`.**
+
+* A run of dashes is a mark rather than a word, so `-`, `--`, `---` and an em dash share one
+  key `#ph_dash`. It is a TAGGED token deliberately: the punctuation strip would otherwise
+  erase `-` to `""` and silently restore the folding this removes.
+* `canonical` strips `/` -- the same fold behind `1/2` == `12` -- so `N/A` keys as `NA`.
+  Checked rather than assumed: exactly ONE gold field in 660 documents holds both spellings
+  (`Contracts_Awarded`, `contracts[].standing_offer_or_supply_arrangement_number`), where both
+  mean "not applicable".
+
+**Cost: none worth reporting.** 15 of 660 documents can move; 3 document-vendor pairs of 5,940
+actually do, the largest by 0.039 (azure-cu, `longarray/cae_v2_08_n446`). Corpus mean 0.0000
+for all nine vendors.
+
+**The point was never the cost, it was the gaming surface.** On a four-row form whose gold
+reads `None / N/A / Dose reduced / --`, a model writing `-` in every cell scored 87.50. It now
+scores 62.50 -- identical to omitting those cells. Guessing a placeholder is worth no more than
+admitting the cell was not read, which is the property the benchmark wants.
+
+## 25. A fold may trim a value, never consume it -- the `[1]`..`[14]` collapse
+
+**Fixed.** The footnote-marker rule `re.sub(r"\s*\[\s*(?:\d{1,2}|[a-z])\s*\]", "", s)` now
+applies only when something survives it.
+
+**What it did.** The rule drops a marker APPENDED to a value (`229 [1]` -> `229`). When the
+value IS the marker it erased the whole thing, so the value kept its address but keyed as the
+empty string -- and every value that keys as empty equals every other one. In
+`internal/2026-05-13T02-14-01__eu_einvoice_standard_160p__s5`, gold
+`bibliography_entries[].ref_number` is literally `[1]` through `[14]`. All fourteen were one
+key. Demonstrated on a five-row cut of that shape:
+
+| prediction | before | after |
+| --- | --- | --- |
+| exact | 100.00 | 100.00 |
+| every `ref_number` REVERSED | **100.00** | 60.00 |
+| every `ref_number` replaced with `...` | **100.00** | 50.00 |
+
+**The distinction this turns on, which is worth keeping straight.** *Thrown out* means no
+address exists -- `null`, `""`, whitespace, `[]`, `{}`, and any container whose leaves are all
+of those. *Keys as empty* means the address exists and is scored, but its key is `""`, so it
+matches anything else a fold emptied. The first is the null rule working; the second is a bug
+every time it is not an absence marker.
+
+**After the fix, zero gold values in 660 documents key as empty.** `tests/test_canon_properties.py`
+P1b asserts no value carrying content is ever consumed, and that the four real absence markers
+(`""`, `..`, `...`, `null`) still are.
+
+**Cost: none.** One document can move; zero document-vendor pairs of 5,940 actually do; corpus
+mean 0.0000 for all nine vendors. No vendor was benefiting -- the fix is preventive.
+
+**Found by** auditing what `canon_key` returns for every surviving gold leaf, rather than by a
+failing score. Worth repeating whenever a fold changes: `canon_key(v) == "" and not
+states_nothing(v)` is a one-line query and it has now caught two bugs (this and the dash fold).
+
+## 26. One invariant replaces the placeholder set: a fold may trim, never consume
+
+**Changed.** `_PLACEHOLDERS` is gone. In its place `canon_key` carries a single guard, and the
+rule is stated once rather than maintained as a list:
+
+> `canon_key(v) == ""`  implies  `states_nothing(v)`
+
+**What was wrong.** Keying as `""` is not the same as being thrown out. A thrown-out value has
+no address (`flatten` gates on `states_nothing` BEFORE `canon_key` is ever called -- verified by
+instrumenting a real `grade()`: canon_key saw only the surviving values, never a null). A value
+that keys as `""` HAS an address, is scored, and equals every other value some fold emptied.
+**17 spellings** landed there: `()`, `( )`, `(())`, `,`, `,,`, `/`, `//`, `"`, `""`, `'`,
+`. . .`, `. , .`, `..`, `...`, `...............`, `null`, and `[1]`-shaped values. The set was
+arbitrary -- `,` emptied but `;` did not; `()` emptied but `[]` did not.
+
+**The principle that decides it.** `null` and `""` are both STRUCTURALLY empty JSON, and the
+harness itself causes vendors to disagree about which to send (`to_strict_dialect` makes a
+strict vendor emit the key with `null` where a permissive one omits it), so they must score
+alike. `()` and the STRING `"null"` are content a model chose to emit; nothing in the harness
+induces them. Treating them as absence makes them free, and a model could write `()` in every
+field it cannot read and pay nothing -- the hole closed for `-` in item 24.
+
+**Not a heuristic, which was the worry.** The check does not ask what `()` means. It runs the
+folds and compares: result empty + input had non-whitespace content = the folds ate it. Total,
+deterministic, blind to field and document (P4 holds). Fallback is the lowercased original with
+whitespace removed -- whitespace being the one fold that cannot destroy content -- so `( )`
+still equals `()`, `. . .` equals `...`, and `- -` equals `--`. `229 [1]` still folds to `229`,
+because that is trimming.
+
+**A latent bug fixed by the same guard.** `str(None)` is the four characters `"None"`, so a raw
+null keyed as `none` -- identical to the PRINTED word `None`, a real answer on an adverse-event
+form. Invisible only because `flatten` never hands a null to `canon_key`. Structural emptiness
+is now resolved at the top of `canon_key`, before anything stringifies the value.
+
+**Cost: none.** Gold has 0 values keying as empty, so nothing a prediction does here could ever
+have matched gold; these values were already charged. 85 documents contain such predictions
+(1,226 of them the string `"null"`, from models whose serializer emits the word).
+
+**The test searches rather than lists.** A list is what let the 17 sit unnoticed, so P1b now
+enumerates every 1- and 2-character string over the punctuation the folds touch, fuzzes 20k
+longer ones, sweeps every Unicode codepoint under 0x2FFF in a strippable category, and includes
+the overflow scalars -- 24,184 values per run, no counterexample.
+
+**Checked exhaustively once, outside the test:** 264,449 fuzzed values (adding 3-character
+exhaustive and 200k random) and **all 17.7M gold and prediction leaves in the corpus**
+(2,884,138 gold + 14,832,306 predicted). Zero values with content key as empty; zero
+non-string keys; zero exceptions.
+
+**And it holds BY CONSTRUCTION, which is the part that matters.** `canon_key` has exactly two
+paths that return `""`: the structural-absence branch, which fires only for `None`, `[]`, `{}`
+and whitespace-only strings; and the fallback, which returns `re.sub(r"\s+", "",
+str(v).strip().lower())` and can only be empty if `str(v)` is all whitespace -- which the first
+branch already caught. The guard sits AFTER every fold at the single public entry point, so a
+fold added later cannot reintroduce the bug without going through it.
+
+## 27. Normalisation is a named pipeline now, and the names found two coverage gaps
+
+**Refactored.** `_fold_cosmetic` was one function of eight sequential mutations of a local `s`,
+with three early returns in the middle and a docstring whose numbered steps no longer matched
+the code order. It is now `values.FOLDS`, an ordered tuple of `Fold(name, why, run)`:
+
+`case` -> `accents` -> `footnote marker` -> `typography` -> `list marker` -> `number` ->
+`dash mark` -> `punctuation` -> `quotes and brackets`
+
+**Proven byte-identical**: 17,716,739 corpus values (gold + all nine vendors), 0 keys changed.
+
+**Why names, not just structure.** A customer looking at a match and thinking "you should not
+have folded that" needs to know WHICH rule to argue with. `31-1440073` -> `311440073` is not an
+answer; "the punctuation rule removed the hyphen" is. Each step's `why` is written for that
+reader. `tests/test_canon_properties.py` P5 asserts every step has one.
+
+**What the UI gets.**
+
+* `Verdict` gained `gold_key` / `pred_key` -- the raw values AND what they were compared as, so
+  a match between two visibly different strings explains itself.
+* `values.canon_trace(value)` -> `Trace(value, key, route, changes)`. `route` is
+  `absent|boolean|number|date|time|text`; `changes` is the ordered list of steps that altered
+  the value, each with its sentence. Computed ON DEMAND, not stored per `Verdict` -- `explain`
+  runs over every address and a trace is only wanted for the few a reader clicks.
+
+**DECIDED: thrown-out addresses stay absent from `explain`.** A field `null`/`""`/absent on both
+sides gets no `Verdict`. It is not scored, so it has no verdict, and including it would swamp
+the view -- `extractbench/short__H9-53-24_24` has 52 scored addresses and 321 blank ones.
+
+**The gaps the naming exposed**, both found by asking "which step should have handled this?"
+and finding none did:
+
+1. **Unicode spellings of ASCII characters** (994 corpus values). `typography` mapped `–` and
+   `—` but not `‐` U+2010 HYPHEN (759), `−` U+2212 MINUS SIGN (176), `‑` U+2011 non-breaking
+   hyphen (4), and did not delete `\xad` U+00AD SOFT HYPHEN (55), which is an invisible
+   line-break hint. So `Pascual‐Montano` did not fold like `Pascual-Montano`, and
+   `180,476,646.08 − 121,058,316.40` kept a minus the arithmetic fields write as `-`.
+2. **Leading list markers.** A `•` starting a value is the page's bullet, not the value.
+
+**The list-marker rule is a POSITION rule, and both restrictions are load-bearing.** It strips
+only the FIRST character, and only when whitespace or end-of-value follows. Counterexamples
+from the corpus, each of which a plain character class would have broken:
+
+| value | why the restriction matters |
+| --- | --- |
+| `■■■-■■-■■■■` | a redacted SSN -- stripping `■` freely makes every redaction one key, and `---` then folds to the dash mark |
+| `●` | appears ALONE as a filled checkbox meaning "yes"; the `canon_key` guard restores it |
+| `MITTAL COURT ∙ NARIMAN POINT` | an interior marker may be separating two things |
+
+**Two characters excluded on evidence**, though they look like they belong:
+
+* `·` U+00B7 MIDDLE DOT is a unit separator. `N·m` is a newton-metre; folding gives `nm`, a
+  nanometre. Different quantity, same key -- a textbook P1 false merge.
+* `»` U+00BB is a quotation mark, not a bullet. The Greek filings use `«…»` around auditor
+  names.
+
+## 28. DISCLOSE: the list-marker fold helps datalab ~30x more than anyone else
+
+**Measured, corpus-wide, nine vendors.** Adding the unicode-dash and leading-list-marker folds
+(item 27) moves 23 document-vendor pairs of ~5,940. Corpus mean per vendor:
+
+| vendor | corpus mean |
+| --- | --- |
+| **datalab** | **+0.0549** |
+| reducto | +0.0018 |
+| llamaextract | +0.0018 |
+| extend | +0.0009 |
+| gemini | +0.0009 |
+| gpt | +0.0009 |
+| azure-cu | +0.0005 |
+| claude | +0.0005 |
+| mistral | +0.0004 |
+
+**Nearly all of datalab's gain is ONE document.** `internal/...health_safety_handbook_26p__s3`
+goes 61.82 -> 97.78 (+35.96), which is +0.0545 of the +0.0549. On that document every other
+vendor moves +0.00, because datalab is the only extractor that preserves the bullet glyph;
+the rest strip it upstream.
+
+**Why it is +35.96 from ten values.** The bullet cost twice. Ten bulleted rows failed to pair,
+so each produced an unfound gold leaf AND an orphaned predicted row inflating the denominator:
+`34/55, unfound 10` became `44/45, unfound 0`.
+
+**This must be stated wherever the board is published.** It is a change to the metric, made by
+datalab, that in practice benefits datalab. Absolute size is negligible (+0.055 on a 0-100
+scale reorders nothing) but the ASYMMETRY is 30-100x and that is the fact a reader deserves.
+
+**What makes it defensible, and both halves should be published too:**
+
+1. The rule was specified BEFORE this document was measured -- leading position only,
+   whitespace-or-end required.
+2. The exclusions were chosen AGAINST interest on corpus evidence: `·` (N·m is a newton-metre,
+   folding gives nm, a nanometre), `»` (Greek guillemets around auditor names), repeated `■`
+   (redacted SSNs) and standalone `●` (a filled checkbox) all stay unfolded.
+3. It is symmetric: any vendor that emitted bullets would gain identically. Every vendor's
+   delta is >= 0, because a leniency cannot cost anyone.
+
+**The general point for the writeup.** A benchmark author scoring their own product must report
+per-vendor effects of every metric change, not just the corpus mean -- the mean here looks
+like nothing, and the asymmetry underneath it is the story.
+
+## 29. Review of the fold pipeline and the recognisers
+
+Read rule by rule, testing each hypothesis rather than eyeballing. Correctness is judged
+independently of this corpus -- a benchmark others point at their own documents cannot ship a
+rule that happens to be harmless here.
+
+### Fixed
+
+**Invisible formatting characters made identical-looking values differ.** `Ac<ZWSP>me` and
+`Acme` were different keys. Six characters did this -- ZERO WIDTH SPACE, ZWNJ, ZWJ, BOM, WORD
+JOINER, MONGOLIAN VOWEL SEPARATOR -- and only the soft hyphen was handled, by a hand-written
+entry. All seven are Unicode category `Cf`, so the `accents` step now drops the category and
+the special case is gone. A stray zero-width character is invisible on the page and must be
+invisible to the comparison.
+
+**The vulgar-fraction table was hand-written and 12 of 20 complete.** `¾` folded to `34`,
+`⅗` keyed as `3⁄5` -- carrying a FRACTION SLASH that nothing strips -- so `⅗` != `3/5` while
+`¾` == `3/4`. NFKD already decomposes EVERY vulgar fraction to `N + U+2044 + M`, so mapping
+U+2044 to `/` in `typography` covers all twenty. `_FRAC`, `_defrac` and the `fractions` fold
+step are deleted: less code, complete coverage.
+
+**The overflow fallback returned raw text.** A value that tripped `OverflowError` skipped every
+fold, so `Infinity` and `infinity` were different keys -- a value lands in the strangest path
+in the system and also loses case folding. It now lowercases and collapses whitespace before
+truncating.
+
+**Typography was missing characters that ARE an ASCII character.** Added PRIME and DOUBLE PRIME
+(feet and inches: `5′` did not match `5'`), the German low-9 quotes, and HORIZONTAL BAR.
+
+**Dead code.** `.replace("µ", "u")` could never fire: NFKD maps U+00B5 to U+03BC before it
+runs, and the U+03BC replace does the work.
+
+### Not fixed -- these need a decision, not a patch
+
+**1. `float()` was reading identifiers as scientific notation. FIXED.** The biggest finding,
+and the corpus measurement is what surfaced it. METRIC_SPEC 2 says a value is numeric only if
+its text contains a `.`; `_asdecimal` honours that, but `_f_number` called bare `float()`,
+which accepts exponents. So the CUSIP `46138E62` became 4.6138e66 and keyed as a 67-digit
+number, and `46138E628` overflowed into the exception path. **1,014 CUSIPs** in
+`holdings[].cusip` and `transactions[].cusip` were affected, against **zero** legitimate
+scientific-notation values anywhere in the corpus. `_f_number` now requires a plain numeral.
+
+A first attempt at this restricted it to plain INTEGERS and broke sign fidelity -- `-98.2` and
+`98.2` both keyed as `982`. The reason is worth recording: `canon_key` hands the folds the
+normalised TEXT of a Decimal, and `_f_number` re-consuming it as `_Final` is what stops
+`punctuation` eating the sign and the point. The test suite caught it.
+
+**2. Ambiguous dates resolve by separator -- deliberate, now documented.** `/` and `-` are
+month-first, `.` is day-first. That looked accidental so it was measured: of 425 dot-dates,
+**155 prove day-first** (first component above 12) and **none proves month-first**, and they
+come from a German bank statement and a German medical guideline. Dots are the European
+convention. Making them month-first would be uniform and would misread all 270 ambiguous ones,
+so the order stays and is pinned in `tests/test_asdate_prefilter.py`. An impossible month falls
+through, so unambiguous dates parse the same either way.
+
+**3. The footnote rule strips reference markers wherever they appear. ACCEPTED.** A
+bibliography entry with its `[4]` and one without are the same entry, and that is worth having.
+The price is that two values differing ONLY by the marker collapse -- `see [1]` == `see [2]`.
+No corpus field does that; recorded in ACCEPTED_LENIENCY rather than left as an open defect.
+
+**4. Currency and percent are both deleted before parsing, so `$5` == `5%` == `5`. ACCEPTED.**
+The number fold strips `,` `$` `%` before reading a numeral, so a value it claims loses its
+unit and a currency amount shares a key with a percentage. The alternative is deciding that
+`50%` != `50`, and a page writing a bare `50` in a rate column means what a page writing `50%`
+means -- so the merge stays. 13 gold fields hold both a percent and a currency value; none
+collides today. In ACCEPTED_LENIENCY.
+
+The asymmetry it implies is pinned rather than left to be rediscovered: the rule applies only
+to a value the number fold CLAIMS. One it declines keeps its symbols, so `$5` == `5%` while
+`5% Notes` != `5 Notes`. That looks like half a fix and is the whole intended shape.
+
+### Checked and found correct
+
+`float` accepting Arabic-Indic and Devanagari digits (`١٢٣` == `123`) is right -- same number,
+another script. `1_000` == `1000` is a Python artifact no document prints; harmless. NFKD
+folding superscripts (`10²` == `102`) and Cyrillic (`й` == `и`, `ё` == `е`) and Greek tonos is
+real over-reach, but inseparable from the accent folding that NFKD is there for; recorded here
+so the next reader does not have to rediscover it.
+
+### Corpus data problem, not a code problem
+
+**Mojibake in gold.** 209 gold and 419 predicted values carry UTF-8 misdecoded as Latin-1:
+`AsunciÃ³n` for `Asunción`, `San CristÃ³bal`, `BayamÃ³n`. These key as `asuncia3n` and match
+nothing. Belongs with the gold audit, not the folds.
+
+## 30. GOLD, TOP PRIORITY: mojibake in the ground truth
+
+**209 gold values and 419 predicted values are UTF-8 misdecoded as Latin-1.** `AsunciÃ³n` for
+`Asunción`, `San CristÃ³bal`, `BayamÃ³n`, `LeÃ³n`. They canonicalise to `asuncia3n`,
+`sancrista3bal` -- which match nothing, in either direction.
+
+**Why this is a gold bug and not a fold bug.** No normalisation should repair it. A fold that
+guessed at mojibake would have to decide that `Ã³` means `ó` rather than being two real
+characters, and it would do that on every corpus, including ones where those characters are
+genuine. The damage is in the data.
+
+**Where it costs.** A gold value nothing can match is an unfound slot for every vendor on
+every run -- the whole `found` term for that address is lost, for all nine, forever. It is the
+cheapest class of gold error to fix and the most certainly wrong: there is no judgement call,
+`AsunciÃ³n` is not a place.
+
+**How to fix.** `s.encode("latin-1").decode("utf-8")` recovers it where it round-trips, and
+fails loudly where the text is genuinely Latin-1. Worth running over the whole gold corpus as a
+lint, not just these values -- the same import bug will have hit any non-ASCII text.
+
+**Check the predictions too.** 419 predicted values carry it as well, which suggests some of it
+is in the source documents or in a shared ingestion path rather than in the annotation step.
+Worth knowing which before fixing only one side.
+
+
+## 31. A decimal point inside a longer value was being deleted, changing the number
+
+**Fixed.** `_f_punctuation` stripped every period, which is right for `P.O. BOX` and wrong for
+`1.5 mg`: the point is not punctuation there, it is part of the number. `1.5 mg` keyed as
+`15mg`, so a 1.5 mg dose arm and a 15 mg dose arm were ONE KEY. `5.00 kg` == `500 kg`.
+`12.5 mg/day` == `125 mg/day`.
+
+**Why `_f_number` did not already protect them.** It only claims a value that is ENTIRELY a
+numeral. `$1.20` and `2.5%` are safe because `$` and `%` are stripped before the numeral test;
+every other unit -- mg, kg, mL, mg/day -- is not, so the value falls to the text path and the
+punctuation fold eats its point.
+
+**The rule.** A period between two digits is kept when it is the ONLY one in the value. Two or
+more are separators, so `512.784.7407` and `5.2.1.5` still fold. Commas are untouched -- they
+strip as they always did.
+
+**It is a CONSISTENCY fix, not new policy, and that is the cleanest way to see it.** The number
+route has always read a lone `1.000` as the number one and `1,000` as one thousand:
+
+    '1.000'         -> '1'          one
+    '1,000'         -> '1000'       one thousand        already differed, before any of this
+
+The punctuation strip was quietly overriding that whenever a word was attached, so `1.000`
+alone meant one while `1.000 notes` meant one thousand notes:
+
+    '1.000 notes'   -> '1000notes'  before        '1.000notes'  after
+    '1,000 notes'   -> '1000notes'  before        '1000notes'   after
+
+Attaching a unit should not change what a number means. After the fix the embedded case agrees
+with the standalone case that was already there.
+
+**It picks a side rather than resolving the ambiguity.** `1.250` is either a decimal or
+European thousands and nothing in the value says which; this reads it as a decimal. That is the
+safe side: a false MERGE credits a wrong answer, a false SPLIT only withholds a right one, and
+a benchmark should fail toward under-crediting.
+
+**Cost, scored with `grade()` over the 1,506 tractable document-vendor pairs that can move:**
+
+| vendor | pairs | mean delta | worst |
+| --- | --- | --- | --- |
+| reducto | 157 | -0.0253 | -2.000 |
+| gemini | 132 | -0.0223 | -2.941 |
+| mistral | 158 | -0.0180 | -1.961 |
+| datalab | 257 | -0.0171 | -3.333 |
+| extend | 156 | -0.0155 | -1.449 |
+| azure-cu | 180 | -0.0126 | -1.786 |
+| llamaextract | 155 | -0.0083 | -1.282 |
+| gpt | 163 | -0.0011 | -0.176 |
+| **claude** | 148 | **0.0000** | 0.000 |
+
+**16 pairs of 1,506 actually move**, and no vendor gains -- a tightening can only remove
+matches, so this cannot have been shaped to favour anyone. Claude moves 0.0000 across 148
+pairs, which is its own signal: it does not produce the decimal/comma confusions being charged.
+61 expensive pairs (>5s to grade, the giant creditor lists) are excluded and counted, not
+dropped silently: 13 each for datalab, reducto, extend and llamaextract, 1-3 for the rest.
+
+Two of the three documents that dominate the list -- `short__H9-53-319_311` and
+`short__08-15427 H-12` -- are Texas Railroad Commission forms, and the first is where all nine
+vendors read `3.300 MCF/Day` against gold's `3,300`. So part of this measured cost is the fix
+correctly charging vendors against a gold value that is probably wrong; fixing that entry
+returns most of it.
+
+**A measurement mistake worth recording, because it is easy to repeat.** The first attempt used
+a proxy -- "is this predicted value's key present anywhere in gold's key set?" -- which is
+invalid on large repetitive arrays. In `long__real_ftx_full_corrupted` (6,724 creditors) a
+predicted `1.250 BROADWAY 7TH FLOOR` at `creditors[6724]` counted as matching a gold
+`1250 BROADWAY 7TH FLOOR` belonging to a DIFFERENT creditor, while the gold at that address is
+`BAIC 16A GLADSTONE ROAD`. Value-set membership is not a scored match; only `grade()` is. The
+proxy reported 32 lost matches and a gold-vs-pred table that was mislabelled throughout.
+
+**What the lost values actually are** -- and the answer is not "models reformat numbers":
+
+* `3.300 MCF/Day` (`short__H9-53-319_311`, `.maximum_escape_volume`). Gold says
+  `3,300 MCF/Day`. **All nine vendors read a period.** Nine independent systems do not share an
+  OCR hallucination, so the page almost certainly prints `3.300` and the GOLD IS WRONG. Clean
+  consensus gold-error candidate.
+* `8-44.420 9/26/60`. Six vendors read `,` with gold, three read `.`. Genuine comma/period
+  confusion on a 1960 scan -- a few pixels apart.
+* `1.2m` against gold `12.4`. Only extend and llamaextract; datalab and reducto both read
+  `12.4`. A misread.
+* `1.250 BROADWAY 7TH FLOOR`, `94.305-2004`, `391A Orchard Road #16.00`. All extend, all in the
+  deliberately CORRUPTED FTX and iMedia filings, where every vendor returns something different
+  at those indices. A vendor failing on corrupted input, not a formatting habit.
+
+**It also un-merged a priced collision**, which is how the change announced itself: the
+`ACCEPTED_LENIENCY` guard failed on `1.1%w/w` == `11%w/w`, that entry is promoted to
+MUST_DIFFER, and the bill in METRIC_SPEC 5.3 drops from five collisions to four.
+
+**Live in this corpus?** No. `adverse_events[].treatment_group` holds `Ormelytide 1.5 mg once
+weekly` and `Ormelytide 3.0 mg once weekly`, but no 15 mg or 30 mg arm, so nothing collided
+today. A dose-ranging study with 1.5 mg and 15 mg arms is ordinary, and on that corpus the two
+would have been one key -- which is the point: a scorer others aim at their own documents
+cannot ship a rule that is only accidentally safe.
+
+
+## 32. Dot-vs-comma: what is already right, the one ambiguous shape, and one real gap
+
+**Multi-group separators already work and need nothing.** Two or more dots between digits mean
+separators, because a number cannot have two decimal points:
+
+    1.000.000      == 1,000,000
+    1.234.567      == 1,234,567
+    12.345.678 EUR == 12,345,678 EUR
+
+This falls out of the same clause that keeps `512.784.7407` matching a hyphenated phone number.
+
+**Exactly one shape is ambiguous: a SINGLE dotted group.** `1.000` is one-with-three-decimals
+in US/SI notation and one thousand in German, and nothing in the value resolves it. We read it
+as a decimal -- the safe side, because a false merge credits a wrong answer while a false split
+only withholds a right one.
+
+**The knob, if a future corpus makes leniency worth it**, is the `== 1` test in
+`_f_punctuation`. Replacing it with a rule that strips a dot followed by exactly three digits
+would buy `1.000 notes` == `1,000 notes` and would cost `1.000 kg` == `1,000 kg` -- a
+thousandfold merge on any three-decimal-place value. Given multi-group already works, the slice
+it buys is thin and the price is concentrated on the one shape where the error is largest.
+Recommend leaving it strict.
+
+**A REAL GAP, not yet fixed.** A German decimal comma is stripped like a thousands separator,
+so the same amount in two notations does not match:
+
+    '1.000.000,50' -> '100000050'
+    '1,000,000.50' -> '1000000.5'
+
+Fixing it means recognising a trailing `,DD` group as a decimal comma, which belongs in
+`recognise.py` (`_numeric_text` strips every comma before parsing) rather than in a fold, and
+it has to not collide with comma-stripping everywhere else. Unmeasured; no corpus case found
+yet, but a European financial corpus would hit it immediately.
+
+## 33. Step-back review: can we justify every rule to someone who disagrees?
+
+Read the whole fold pipeline as a customer would -- starting from the sentence they are shown
+when they object to a match. Three classes of problem, all now fixed.
+
+### The customer-facing sentences had drifted from the code
+
+`Fold.why` is what a reader sees when they disagree with a match. Three were false:
+
+| step | said | actually does |
+| --- | --- | --- |
+| `punctuation` | "periods are removed from anywhere" | a lone period between digits is KEPT, since the decimal fix |
+| `accents` | "accents and the micro sign fold to ASCII" | also strips invisible characters, and NFKD flattens superscripts (`10²`=`102`), ligatures, fullwidth forms and roman numerals |
+| `quotes and brackets` | "ENCLOSING quotes, parentheses and slashes" | only quotes are enclosing; parentheses and slashes strip from anywhere, so `and/or` = `andor` |
+
+`typography` and `case` were incomplete rather than wrong -- `typography` had grown from 6
+mappings to 15 without its sentence changing.
+
+**Now guarded.** `tests/test_canon_properties.py` P5 asserts all 24 examples any `why` promises,
+so a fold change that invalidates a sentence fails the suite. A stale explanation is worse than
+none: it is a confident answer that is wrong.
+
+### The two debt lists contradicted each other
+
+`KNOWN_COLLISIONS` is documented as "P1 violations nobody chose". Four of its seven entries were
+chosen, explicitly:
+
+* `Müller`=`Muller`, `Åse`=`Ase`, `İstanbul`=`Istanbul` are the `accents` fold doing its stated
+  job -- its own `why` gives `Müller reads as Muller` as the example.
+* `1.1`=`1.10` is trailing-zero folding, which METRIC_SPEC 2 chose and MUST_MATCH asserts via
+  `12.90`=`12.9`.
+
+A reader seeing "we deliberately fold accents" beside "Müller/Muller is a violation nobody
+chose" would not trust either statement. They are now in ACCEPTED_LENIENCY (12 entries) with
+the cost named -- including the sharp one: `Å` is a SEPARATE LETTER in Norwegian, not an
+accented `A`, so `Åse` and `Ase` are two names and one key.
+
+KNOWN_COLLISIONS is down to 3 genuinely unchosen: `½`=`1/2`=`12`, and a malformed date reaching
+the string fallback.
+
+### The distinction worth keeping
+
+The two lists answer different customer questions -- "what do you get wrong?" and "what did you
+decide to give up?" -- and an entry in the wrong one makes both answers untrustworthy. Anything
+a rule aims at belongs in ACCEPTED_LENIENCY however regrettable it looks; only side effects are
+debt.
+
+## 34. Tried and rejected: keeping a lone hyphen between numbers
+
+`90-94` == `9094` is the weakest entry in ACCEPTED_LENIENCY, so the decimal-point rule was
+tried in the same shape for hyphens. It does not work, and the reason is worth keeping.
+
+**A plain "one hyphen between digits" rule fails immediately.** It is the shape of the values
+hyphen-folding exists for:
+
+    90-94        one hyphen between digits    want KEPT      an age range
+    31-1440073   one hyphen between digits    want STRIPPED  an EIN, gold writes it bare
+    44308-1801   one hyphen between digits    want STRIPPED  a ZIP+4
+    23-11132     one hyphen between digits    want STRIPPED  a case number
+
+The decimal rule worked because a number cannot have two decimal points -- a fact about
+arithmetic, carried in the value. Hyphens have no equivalent.
+
+**A recogniser gets the classification right and the outcome wrong.** "Both sides at most three
+digits and left < right" does separate the EIN (2-7), case number (2-5) and ZIP+4 (5-4,
+descending) from `90-94` and `1-10`. But it is guessing INTENT rather than reading structure,
+and the corpus shows the guess failing at scale:
+
+* It claims **2,694 gold values**, the largest group being **1,312
+  `zoning_attribute_records[].zbl`** -- zoning bylaw numbers in year-sequence form, top value
+  `08-20`, leading zero and all.
+* Measured blast radius: **118 value-matches lost across 23 documents**, against 32 for the
+  decimal rule.
+* Worst of all, it misfires INSIDE values the hyphen fold was protecting. `512-784-7407` has
+  `512-784` claimed as a range, so the phone number keeps its first hyphen and stops matching
+  the dotted form we deliberately preserved. `1-27` (a page reference) stops matching `127`.
+  Even `2024-01-15` has `01-15` claimed, though the date recogniser catches it first.
+
+**Conclusion: keep `90-94` == `9094`.** It is one entry, with no observed corpus collision, and
+the alternative trades it for a semantic guess in a function whose entire design property is
+that it reads the value and nothing else. This is the same trap as the `_FIXED_FORMAT_NUMERIC`
+whitelist rejected earlier: a rule that classifies by shape and gets a whole field wrong.
+
+## 35. Mutation-tested the folds; one gap led to a live bug in the trace
+
+Broke each rule in turn and ran the whole suite. A suite that does not notice is not covering
+the rule.
+
+**12 of 13 mutations caught.** Stop lowercasing, stop stripping combining marks and invisibles,
+drop MINUS SIGN from typography, stop stripping bullets, strip leading zeros again, let
+`float()` read scientific notation, delete the decimal point again, make a dash mark empty,
+drop either `canon_key` guard, flip dot-dates to month-first, parse IDs without a dot -- every
+one fails at least one test file, usually `canon_properties`.
+
+**The one that got through was worth following.** Letting a footnote marker consume its value
+(`[1]` -> `""`) changed no key, because `canon_key`'s no-consumed-value guard restores it.
+Verified over 60,013 probes: with or without the fold's own guard, every key is identical. So
+the inner guard looked redundant.
+
+**It is not, and the reason is the trace.** Without it `canon_trace("[1]")` reports
+`'[1]' -> ''  [footnote marker]` while the key is `'[1]'` -- an explanation contradicting its
+own result, shown to the reader who is disputing a match.
+
+**Following that found the same bug already live**, not hypothetically. 2,034 of 40,013 probe
+values -- `()`, `,`, `"`, `•`, anything built only from strippable characters -- had a trace
+ending at `""` beside a key of the original value. The guard was doing its job and not saying
+so.
+
+**Fixed:** the guard records itself as a `value restored` step. `canon_trace("()")` now reads
+`quotes and brackets -> value restored`, and a test asserts over 20,016 probes that no trace
+ends anywhere other than its own key.
+
+**Also from this pass:**
+
+* `unwrap_schema` propagated `evaluation_config` through union branches -- a concept that was
+  rejected, that `dialects.BENCHMARK_ONLY_KEYS` strips before a vendor sees a schema, and that
+  nothing in `score.py`, `values.py` or `recognise.py` ever reads. Deleted; the function is
+  four lines.
+* `allOf` was resolved and asserted nowhere. Now covered alongside `anyOf`/`oneOf`, plus
+  `is_open_map`'s explicit-only detection and its union-branch case.
+
+**Method note.** Mutation testing found in one pass what reading could not: the gap was not a
+missing assertion about the fold, it was a missing assertion about the EXPLANATION. Worth
+repeating whenever a fold is added.
+
+---
 ---
 
-## 22. Three documents are 61% of the scoring cost, and one is 94% of a vendor's wall clock
+## 36. Three documents are 61% of the scoring cost, and one is 94% of a vendor's wall clock
 
 **Known so far:** measured building the scores writer. One vendor, all 660 documents,
 four workers: **1,161s wall, 4,484s CPU.** The three largest documents are 61% of that CPU

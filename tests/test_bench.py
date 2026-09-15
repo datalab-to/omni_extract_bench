@@ -168,8 +168,8 @@ try:
     by_addr = {r["address"]: r for r in rows}
     missing = by_addr["invoice_number"]
     report('a gold string "None" is not confused with a missing value',
-           missing["gold"] == '"None"' and missing["pred"] is None,
-           f"gold={missing['gold']!r} pred={missing['pred']!r}")
+           missing["gold_raw"] == '"None"' and missing["pred_raw"] is None,
+           f"gold={missing['gold_raw']!r} pred={missing['pred_raw']!r}")
     note("str() would render both as the text None; JSON keeps them apart")
     report("every verdict row carries the key it belongs to",
            all(set(key_of(case)) <= set(r) for r in rows))

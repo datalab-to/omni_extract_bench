@@ -36,8 +36,8 @@ from collections.abc import Hashable, Iterable
 from typing import Any, Literal, NamedTuple
 
 from . import matching as OM
-from . import normalize as N
-from .values import canon_key, cmp_leaf, drop_empty_gt_rows, states_nothing, unwrap_schema
+from .prepare import is_open_map, prep_ground_truth, prep_prediction, unwrap_schema
+from .values import canon_key, cmp_leaf, states_nothing
 
 # An address is a tuple of steps. Each step is tagged, because a document may contain the key
 # "0" and ("k", "0") must not join ("i", 0).
@@ -126,7 +126,7 @@ def flatten(node: Any, schema: Any = None, prefix: Address = (),
     rows[0].x      = 1
     """
     schema = unwrap_schema(schema) if isinstance(schema, dict) else {}
-    if N.is_open_map(schema):
+    if is_open_map(schema):
         if skipped is not None:
             skipped.append(prefix)
         return {}
@@ -210,7 +210,7 @@ def _schema_leaves(schema: Any, prefix: Address = ()) -> set[Address]:
     ['n', 'rows[*].q']
     """
     schema = unwrap_schema(schema) if isinstance(schema, dict) else {}
-    if N.is_open_map(schema):
+    if is_open_map(schema):
         return set()
     props, item = schema.get("properties") or {}, schema.get("items")
     if not props and item is None:
@@ -404,25 +404,7 @@ def _worth_if_paired(pred: Row, gold: Row, scale: int,
 
 
 def _positive_pair_bound(pred: dict, gold: dict) -> int | None:
-    """Roughly how many row pairs can be worth anything, for the exact-vs-greedy choice.
-
-    Two rows are worth pairing only if they share at least one canonical value, so the pairs
-    that can carry positive weight are exactly those co-occurring in an inverted index over
-    `(address, value)`. Counting them needs only the POSTING LENGTHS -- for each item, the
-    number of predicted rows carrying it times the number of gold rows -- so nothing is
-    enumerated and nothing the size of the answer is allocated. The index itself is one entry
-    per value, the same order as the flattened document: a few megabytes on the largest
-    document in this corpus, against 45 GB for the pair list it is used to avoid building.
-
-    The result OVER-counts, because a pair sharing three items is counted three times, and it
-    ignores the nested-array contribution to `_worth_if_paired`, which can make a pair positive
-    with no named value in common. Neither is a correctness problem for the caller: it is
-    deciding which path is cheaper, an over-estimate sends it to the exact path whose cost is
-    known before it runs, and `MAX_CELLS_DENSE` bounds that path regardless.
-
-    Returns None when the answer cannot change the decision -- the common case by far -- so the
-    index is built only for the handful of blocks big enough to be at risk.
-    """
+    """Roughly how many row pairs can be worth anything, for the exact-vs-greedy choice."""
     n, m = len(pred), len(gold)
     if not n or not m:
         return None
@@ -518,14 +500,6 @@ def _pair_weights(pred: dict[Hashable, Row], gold: dict[Hashable, Row],
 
     # Rows carrying their own arrays are worth what their sub-pairings are worth. Price those
     # pairs with the function that knows how, and leave the rest read off the product.
-    #
-    # A pair needs that only where BOTH sides populate an array at the SAME path.
-    # `_worth_if_paired` walks `set(pred.arrays) | set(gold.arrays)` and descends into
-    # `_best_pairing`, which returns immediately when either side is empty -- so a predicted
-    # row nesting something the gold never nested contributes nothing, and the product already
-    # has its answer. The distinction is not pedantry: on the corpus's three largest arrays the
-    # prediction nests 25,052 rows and the gold nests none, so asking only "does this row have
-    # arrays?" would send every one of 704 million pairs down the slow path to add zero.
     deep_p = {i: {a for a, sub in pred[k].arrays.items() if sub} for i, k in enumerate(pi)}
     deep_g = {j: {a for a, sub in gold[k].arrays.items() if sub} for j, k in enumerate(gi)}
     shared_paths = set().union(*deep_p.values()) & set().union(*deep_g.values()) \
@@ -571,74 +545,6 @@ def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: i
     that clears it is charged once, and its wrong fields score as wrong. A row that fails it
     is charged twice: once as a gold row nobody found, once as a row the model made up. So
     neither omission nor invention is free.
-
-    One consequence. If every row repeats a value -- a currency, a fiscal year -- then no
-    pair is ever worth zero, so two entirely wrong rows pair on the currency alone and take
-    partial credit rather than reading as a miss.
-
-    We pick the pairing that matches the most values. If two pairings match the same number,
-    we take the one sharing more addresses. `scale` makes that ordering work: it is bigger
-    than any possible `shared` total, so a single extra matched value always wins.
-
-    Sharing more addresses is the pairing that scores HIGHER -- the denominator is
-    `|G| + |P| - shared` -- so where agreement cannot decide, the ambiguity is resolved in
-    the model's favour rather than arbitrarily. The order matters and is not symmetric:
-    agreement decides, and the score only breaks ties. Reversed, the matcher would pair rows
-    that merely share field NAMES in order to shrink the denominator, and would call that
-    correspondence.
-
-    Because `scale` bounds `shared`, the maximum pins down the PAIR (matched, shared), so
-    every assignment achieving it yields the same accuracy, precision, recall and f1. It does
-    not pin down the assignment itself.
-
-    It does NOT pin down the assignment itself, and that is visible: two equally optimal
-    assignments can leave DIFFERENT rows unpaired, so the same document reported a different
-    `fabricated`/`invented_item` split depending on the order its rows arrived in -- 35 of 600
-    random row-documents under a permuted prediction, 11 under a permuted gold. Hence the
-    canonical sort above. What was violated was not determinism (the same input always scored
-    the same) but invariance under RELABELLING, which is the property this whole alignment
-    stage exists to provide, so an index-based tie-break would have been exactly wrong: it is
-    deterministic and still moves under permutation.
-
-    Not resolved with a third weight term, and the reason is worth keeping. It could not have
-    endangered the score -- (matched, shared) is already pinned, so any third term is
-    score-neutral -- but the total leftover is `|P| - shared` and therefore fixed too. Only
-    its SPLIT between "an invented row" and "invented fields" varies, so a weight term would
-    not be weighing evidence; it would be declaring the answer to the question the split
-    reports. `tests/test_pairing_determinism.py` holds the property at depth 3.
-
-
-    TODO(paul): scalar arrays pay this matcher's price for a question that is a multiset
-    intersection. A scalar element's `named` is `{(): value}`, so every candidate pair shares
-    that one address -- `shared` is 1 throughout and `matched` is 0 or 1 -- and the matrix is
-    0/(scale+1). Max-weight assignment on a 0/1 matrix is maximum bipartite matching on
-    equality, which is exactly `Counter(gold) & Counter(pred)`. Confirmed equal at n = 200, 800
-    and 2000; the 2000 takes 2.5 seconds, where the `Counter` is microseconds.
-
-    Time is not the worst of it. Past `MAX_EXACT` such an array falls to greedy and the grade
-    reports `matching_exact: false`, so a flag meaning "we could not afford the truth here"
-    fires on the one case where the truth is O(n). P15 stays true and stops being informative.
-
-    The fix is a fast path INSIDE this function: every row on both sides scalar (`named` is
-    `{(): v}`, `arrays` empty), pair by `Counter` and return before `OM.match_rows`. Inside,
-    because `_worth_if_paired` and `align` share this function and a path above it is a path
-    they can drift apart on. Mixed arrays like `[1, {"a": 2}]` fail the test and fall through
-    to the general path. Score-neutral by the argument above, so P2, P8 and P14 are untouched
-    and the existing suite is the check.
-
-    Not read off the schema, which cannot answer it: `items` may be absent or `anyOf`,
-    `dialects.to_strict_dialect` rewrites the schema before the vendor sees it, and a model
-    returning scalars where objects were promised is a finding to be scored rather than a case
-    to branch on. What arrived is the only authority on what arrived.
-
-    `_worth_if_paired` and `align` both call this. That is what keeps them in step.
-    `_worth_if_paired` uses the numbers to judge a pairing; `align` uses the pairs to renumber
-    rows. If they decided separately they could disagree, and then the score would not be the
-    thing the matcher was aiming at.
-
-    Every pair is priced, including the many that turn out to be worth nothing. Prices are
-    not kept: holding them costs one dict entry per pair, which is far more memory than the
-    matrix itself, and buys back only the handful of re-prices below.
     """
     if not pred or not gold:
         return []
@@ -747,9 +653,9 @@ def _resolve_order(order_matters: Iterable[str], schema: Any,
                    documents: Iterable[Any]) -> frozenset:
     """Turn the caller's array names into the keys the scorer matches against.
 
-    A name that fits no array is an error, not a no-op. Getting it wrong used to be silent:
-    a typo left the array order-free, which is the default, so the run finished and reported
-    a number that looked entirely fine.
+    A name that fits no array is an error, not a no-op. Silence would be worse than useless
+    here: a typo leaves the array order-free, which is the default, so the run finishes and
+    reports a number that looks entirely fine.
 
     A name counts if the schema declares it, or if any of `documents` contains it. Both are
     needed, and so is being generous about which documents. The schema covers a table that
@@ -823,10 +729,10 @@ def _both(pred: Any, gt: Any, schema: Any,
             "additionalProperties object behind a ref would be graded, while the same object "
             "written inline is skipped."
         )
-    raw_gt, raw_pred = gt or {}, pred or {}
-    gt = drop_empty_gt_rows(N.prep_ground_truth(raw_gt))
-    pred = drop_empty_gt_rows(N.prep_prediction(raw_pred))
-    ordered = _resolve_order(order_matters, schema, (raw_gt, raw_pred, gt, pred))
+    raw_gt, pred_raw = gt or {}, pred or {}
+    gt = prep_ground_truth(raw_gt)
+    pred = prep_prediction(pred_raw)
+    ordered = _resolve_order(order_matters, schema, (raw_gt, pred_raw, gt, pred))
     skipped: list[Address] = []
     gold_leaves = flatten(gt, schema, skipped=skipped)
     pred_leaves, inexact = align(gold_leaves, flatten(pred, schema, skipped=skipped), ordered)
@@ -870,42 +776,6 @@ def grade(pred: Any, gt: Any, schema: Any,
     `read_right` is the share of those whose values agree: did it read them correctly? A
     model that returns half the table perfectly and one that returns the whole table with
     half the values wrong get similar accuracies. These two tell them apart.
-
-
-    `matching_exact`, `approximated` and `skipped_open_maps` say where the scorer fell short:
-    an array too big to match exactly, and anything not graded at all.
-
-    >>> schema = {"properties": {"segments": {"type": "array", "items": {"properties": {
-    ...     "name": {"type": "string"},
-    ...     "q": {"type": "array", "items": {"type": "number"}}}}}}}
-    >>> gold = {"segments": [{"name": "Cloud", "q": [10.5, 12.0]}]}
-    >>> grade({"segments": [{"name": "Cloud", "q": [12.0, 10.5]}]}, gold, schema)["accuracy"]
-    100.0
-    >>> r = grade({"segments": [{"name": "Cloud", "q": [10.5, 99.9]}]}, gold, schema)
-    >>> r["matched"], r["total"], round(r["accuracy"], 1)
-    (2, 4, 50.0)
-    >>> round(r["found"] * r["read_right"] * 100, 6)
-    50.0
-    >>> r["misread"], r["unfound"], r["invented_item"]
-    (0, 1, 1)
-
-    Pass `verdicts=True` to get the per-address view back in the same result, under
-    `"verdicts"`. Do that rather than calling `explain` separately: aligning the two documents
-    is nearly all of the work, so asking twice does it twice.
-
-    >>> r = grade({"a": 1}, {"a": 2}, {"properties": {"a": {"type": "number"}}},
-    ...           verdicts=True)
-    >>> [(show(v.address), v.gold, v.pred, v.verdict) for v in r["verdicts"]]
-    [('a', 2, 1, 'misread')]
-
-    It is off by default because it is not free in memory: one `Verdict` per address, and the
-    largest document in the benchmark corpus has 410,012 of them.
-
-    That last line is worth reading twice. The wrong value is in a scalar array, whose
-    elements have no identity to be wrong about -- they compare as a multiset. So it is not
-    one value misread; it is one gold element nobody produced and one element the model
-    produced that is not there. Charged on both sides, which costs more than the same error
-    in a named field: 50.0 here against 66.7 for a wrong `name`.
     """
     gold, pred_addr, inexact, skipped = _both(pred, gt, schema, order_matters)
     shared = set(gold) & set(pred_addr)
@@ -964,16 +834,44 @@ def grade(pred: Any, gt: Any, schema: Any,
     
 
 class Verdict(NamedTuple):
-    """What happened at one address. Returned by `explain`, one per address."""
+    """What happened at one address. Returned by `explain`, one per address.
+
+    Each side is carried twice, raw and canonical, and that is the point: a reader who sees
+    `31-1440073` and `311440073` recorded as a match can tell that a fold did the work, and can
+    disagree with it. `values.canon_trace(raw)` then names the step responsible -- computed on
+    demand rather than stored here, because `explain` runs over every address and a trace is
+    wanted only for the handful someone clicks on.
+
+    `_canon` rather than `_key` because `key` already means something else in this scorer:
+    `Row.key` is a row's identity for pairing, not a canonicalised value.
+
+    WHEN A SIDE IS `None`. All six fields are always present -- this is a NamedTuple -- but a
+    side is `None` when that side has nothing at this address:
+
+        missing                 pred_raw, pred_canon are None
+        fabricated              gold_raw, gold_canon are None
+        invented field/item     gold_raw, gold_canon are None
+        skipped (open map)      all four are None; only address and verdict mean anything
+        match, wrong value      all six are set
+
+    `None` is UNAMBIGUOUS here, which is worth relying on. `flatten` gates on `states_nothing`
+    before an address exists, so a value that reaches a `Verdict` is never `null`, never `""`,
+    never whitespace-only -- `None` therefore means "no value at this address", never "a value
+    that happened to be empty". `canon_key`'s invariant extends it: a canon that is set is
+    never `""`. So `gold_raw is None`, `gold_canon is None` and "gold said nothing here" are
+    the same test, and the two always agree. Asserted in `tests/test_comparison_surface.py`.
+    """
 
     address: Address
-    gold: Any
-    pred: Any
+    gold_raw: Any                   # exactly as the document wrote it
+    pred_raw: Any                   # exactly as the model returned it
     verdict: str        # matched | misread | unfound | fabricated |
                         # invented_item | invented_field | skipped_open_map
                         # -- the same words the summary counts them under, so
                         # count(verdict='misread') == summary['misread']
                         # fabricated | invented item | invented field
+    gold_canon: str | None = None   # what gold was compared AS; None where there is no gold
+    pred_canon: str | None = None   # what the prediction was compared AS; None if none given
 
 
 def explain(pred: Any, gt: Any, schema: Any,
@@ -994,7 +892,7 @@ def explain(pred: Any, gt: Any, schema: Any,
     >>> schema = {"properties": {"a": {"type": "number"}, "b": {"type": "number"},
     ...                          "c": {"type": "number"}}}
     >>> for v in explain({"a": 1, "c": 3}, {"a": 2, "b": 9}, schema):
-    ...     print(f"{show(v.address):4} {str(v.gold):5} {str(v.pred):5} {v.verdict}")
+    ...     print(f"{show(v.address):4} {str(v.gold_raw):5} {str(v.pred_raw):5} {v.verdict}")
     a    2     1     wrong value
     b    9     None  missing
     c    None  3     fabricated
@@ -1034,13 +932,15 @@ def _verdicts(gold, pred_addr, skipped, slots) -> list:
     """
     out = [Verdict(a, None, None, "skipped_open_map") for a in skipped]
     for a in sorted(set(gold) | set(pred_addr), key=_reading_order):
+        gc = canon_key(gold[a]) if a in gold else None
+        pc = canon_key(pred_addr[a]) if a in pred_addr else None
         if a in gold and a in pred_addr:
-            verdict = "matched" if cmp_leaf(pred_addr[a], gold[a]) >= 1.0 else "misread"
+            verdict = "matched" if gc == pc else "misread"
         elif a in gold:
             verdict = "unfound"
         else:
             verdict = _classify_extra(a, slots)
-        out.append(Verdict(a, gold.get(a), pred_addr.get(a), verdict))
+        out.append(Verdict(a, gold.get(a), pred_addr.get(a), verdict, gc, pc))
     return out
 
 
@@ -1066,6 +966,7 @@ if __name__ == "__main__":
     print(f"\naccuracy {r['accuracy']:.2f}  "
           f"= found {r['found']:.4f} x read_right {r['read_right']:.4f}")
     for v in explain(PRED, GOLD, SCHEMA):
-        print(f"  {show(v.address):24} gold={v.gold!r:12} pred={v.pred!r:12} {v.verdict}")
+        print(f"  {show(v.address):24} gold={v.gold_raw!r:12} "
+              f"pred={v.pred_raw!r:12} {v.verdict}")
     assert failures == 0
     print("\nok")

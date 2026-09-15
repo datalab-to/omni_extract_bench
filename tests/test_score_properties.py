@@ -312,7 +312,7 @@ r = ACC({"rows": none_pair}, {"rows": gold_rows})
 report("when no predicted row pairs, gold and predicted leaves are all charged",
        r["matched"] == 0 and r["total"] == 10,
        f"matched {r['matched']} (want 0), denominator {r['total']} (want 4 gold + 6 spurious = 10)")
-addrs = {k[1][1] for k, _, _, _ in explain({"rows": none_pair}, {"rows": gold_rows})}
+addrs = {v.address[1][1] for v in explain({"rows": none_pair}, {"rows": gold_rows})}
 report("fabricated rows occupy addresses disjoint from gold's indices",
        addrs == {0, 1, "p0", "p1", "p2"}, f"addresses {sorted(addrs, key=str)}")
 
@@ -496,7 +496,8 @@ report("every address it found, it read correctly: the loss is entirely structur
        f"structure {rn['found']:.4f} x value {rn['read_right']:.4f}")
 
 verdicts = {"".join(f"[{st[1]!r}]" for st in k): v
-            for k, _g, _p, v in explain(copy.deepcopy(NEST_PRED), copy.deepcopy(NEST_GOLD))}
+            for k, v in ((x.address, x.verdict) for x in
+                         explain(copy.deepcopy(NEST_PRED), copy.deepcopy(NEST_GOLD)))}
 expected = {
     # the reordered-but-correct row: every quarter lands on gold's address
     "['segments'][1]['name']": "matched",
@@ -793,13 +794,49 @@ side = {"a": 1, "a_citations": ["p1"], "a_meta": {"conf": 0.9}, "rows": [{"x": 5
 report("per-field _citations/_meta sidecars are not charged as spurious leaves",
        abs(ACC(side, plain)["accuracy"] - 100) < 1e-9,
        f"got {ACC(side, plain)['accuracy']:.2f}")
+# ROWS ARE NEVER DELETED -- ONLY LEAVES. `drop_empty_gt_rows` used to remove whole array rows
+# whose non-dimension fields were all null, deciding which fields counted as dimensions from a
+# hardcoded list of substrings in the field NAME. It is gone. It contradicted METRIC_SPEC 5,
+# which says `null`, `""` and an absent key are one thing: the payload set was read off the row
+# in hand, so `{"id": "1"}` had no payload and survived while `{"id": "1", "action": null}` was
+# deleted -- and deleting it threw away a CORRECT id. The same prediction scored 62.50 or 25.00
+# depending only on which of the two ways it spelled "nothing here".
 ph = {"metrics": [{"data_period": "FY25", "segment_type": "co", "value": None},
                   {"data_period": "FY25", "segment_type": "co", "value": 5.0}]}
-report("gold rows whose payload is entirely null are dropped from both sides",
+report("a gold row stating only dimensions still asserts those dimensions",
        abs(ACC(copy.deepcopy(ph), copy.deepcopy(ph))["accuracy"] - 100) < 1e-9
-       and abs(ACC({"metrics": [ph["metrics"][1]]}, copy.deepcopy(ph))["accuracy"] - 100) < 1e-9,
+       and ACC({"metrics": [ph["metrics"][1]]}, copy.deepcopy(ph))["accuracy"] < 100.0,
        f"identity {ACC(copy.deepcopy(ph), copy.deepcopy(ph))['accuracy']:.2f}, "
-       f"without the placeholder {ACC({'metrics': [ph['metrics'][1]]}, copy.deepcopy(ph))['accuracy']:.2f}")
+       f"dropping the row {ACC({'metrics': [ph['metrics'][1]]}, copy.deepcopy(ph))['accuracy']:.2f}")
+
+# The property that matters, and the one the old rule broke: the THREE spellings of absence are
+# one thing at row level too, not just at leaf level.
+NUL_G = {"rows": [{"id": "1", "act": "None"}, {"id": "2", "act": "N/A"},
+                  {"id": "3", "act": "Dose reduced"}, {"id": "4", "act": "--"}]}
+spellings = {
+    "key omitted":  [{"id": "1"}, {"id": "2"}, {"id": "3", "act": "Dose reduced"}, {"id": "4"}],
+    "explicit null": [{"id": "1", "act": None}, {"id": "2", "act": None},
+                      {"id": "3", "act": "Dose reduced"}, {"id": "4", "act": None}],
+    "empty string": [{"id": "1", "act": ""}, {"id": "2", "act": ""},
+                     {"id": "3", "act": "Dose reduced"}, {"id": "4", "act": ""}],
+}
+got = {k: ACC({"rows": v}, copy.deepcopy(NUL_G))["accuracy"] for k, v in spellings.items()}
+report("omitted / null / empty-string score identically at ROW level",
+       len({round(v, 9) for v in got.values()}) == 1,
+       "; ".join(f"{k}={v:.2f}" for k, v in got.items()))
+report("...and that score credits the ids the model DID get right (5 of 8)",
+       abs(got["explicit null"] - 62.5) < 1e-9, f"got {got['explicit null']:.2f}, want 62.50")
+
+# A row that asserts nothing at all is inert on either side, with no rule needed: it
+# contributes no addresses, so it cannot be matched, missed, or charged.
+BLANK_G = {"rows": [{"id": "1", "act": "X"}, {"id": None, "act": None}, {"id": "2", "act": "Y"}]}
+BLANK_P = {"rows": [{"id": "1", "act": "X"}, {"id": "2", "act": "Y"}]}
+report("a wholly blank row is inert in gold",
+       abs(ACC(copy.deepcopy(BLANK_P), copy.deepcopy(BLANK_G))["accuracy"] - 100) < 1e-9,
+       f"got {ACC(copy.deepcopy(BLANK_P), copy.deepcopy(BLANK_G))['accuracy']:.2f}")
+report("a wholly blank row is inert in a prediction",
+       abs(ACC(copy.deepcopy(BLANK_G), copy.deepcopy(BLANK_P))["accuracy"] - 100) < 1e-9,
+       f"got {ACC(copy.deepcopy(BLANK_G), copy.deepcopy(BLANK_P))['accuracy']:.2f}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 print("\nTHE SCHEMA ARGUMENT DOES NOT AFFECT THE SCORE")
