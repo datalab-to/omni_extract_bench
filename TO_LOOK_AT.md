@@ -1661,10 +1661,51 @@ ends anywhere other than its own key.
 missing assertion about the fold, it was a missing assertion about the EXPLANATION. Worth
 repeating whenever a fold is added.
 
+## 36. Mutation-tested the recognisers; one "gap" was a bug in the harness
+
+11 mutations against `recognise.py`, the half of normalisation that decides which values leave
+the text path at all.
+
+**8 caught first pass**, including all three sign mutations (accounting parentheses, trailing
+minus, leading minus -- each fails three test files), the midnight/timestamp split, and the
+UTC-offset drop.
+
+**Three did not, and they are three different things.**
+
+1. **`_asdate`'s prefilter (`no digit, or longer than 34 chars -> None`) is speed-only.**
+   No format can match such a string anyway, so nothing SHOULD catch it. Correctly uncaught.
+
+2. **`_fraction_places` excusing leading zeros after the point was genuinely untested.**
+   `0.0025` keeps nine decimal places, not seven, so the 7-significant-digit budget is not
+   spent on zeros -- documented in the docstring, asserted nowhere. Now pinned with five cases
+   plus the two properties it exists for: cents survive at any magnitude (`123456.78` !=
+   `123456.79`) and a rate agreeing to seven figures still agrees (`33.33333333` ==
+   `33.3333333`).
+
+3. **`_asdecimal`'s NaN/overflow guard was reported uncaught, and that report was WRONG.**
+   Removing the guard does not produce a wrong key -- it HANGS. `Decimal` has an unbounded
+   exponent, so `1.0e1000000000` parses and `int()` then tries to materialise a billion digits.
+   The mutation harness had no timeout, so the hung subprocess never returned a failure code
+   and was recorded as a pass. Re-run with a 60s timeout: **CAUGHT -- test hung**.
+
+**The lesson is about the harness, not the suite.** A mutation runner without a timeout cannot
+distinguish "no test covers this" from "every test covers this so thoroughly that it never
+terminates". Any future mutation pass needs the timeout, and a timeout should count as caught.
+
+**And the wider point for a benchmark:** the failure a score check can never see is the one
+that does not produce a number. A wrong key shows up as a wrong score; a hang shows up as a run
+that never finishes -- and on the giant documents, which take 139s legitimately, that would look
+like slowness rather than a bug.
+
+Final state: 10 of 11 mutations caught, the 11th correctly uncaught because it is a
+performance guard with no behavioural effect.
+
+---
+
 ---
 ---
 
-## 36. Three documents are 61% of the scoring cost, and one is 94% of a vendor's wall clock
+## 37. Three documents are 61% of the scoring cost, and one is 94% of a vendor's wall clock
 
 **Known so far:** measured building the scores writer. One vendor, all 660 documents,
 four workers: **1,161s wall, 4,484s CPU.** The three largest documents are 61% of that CPU
