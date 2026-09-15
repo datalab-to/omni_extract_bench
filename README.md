@@ -108,7 +108,7 @@ They are ordinary parquet files, so exploring them needs no library:
 ```sql
 select doc_id, address, gold, pred
 from 'run/verdicts/*.parquet'
-where verdict = 'wrong value';
+where verdict = 'misread';
 ```
 
 Or for one document, without SQL:

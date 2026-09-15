@@ -78,9 +78,9 @@ print("\nTHE THREE KINDS ARE TOLD APART")
 cases = {
     "discount":      "fabricated",
     "lines[0].note": "fabricated",
-    "lines[p2].sku": "invented item",
-    "vendor":        "invented field",
-    "bag.H":         "invented field",
+    "lines[p2].sku": "invented_item",
+    "vendor":        "invented_field",
+    "bag.H":         "invented_field",
 }
 addrs = {"discount": ((KEY, "discount"),),
          "lines[0].note": ((KEY, "lines"), (INDEX, 0), (KEY, "note")),
@@ -96,7 +96,7 @@ print("\nTHE `pN` LABEL IS LOAD-BEARING, SO PIN IT")
 # what tells an extra array element from a filled field, so it gets its own test: if the
 # labelling ever changes to a plain integer, a whole invented row would be reported as a
 # handful of separately fabricated fields.
-labels = [v.address for v in explain(PRED, GT, SCH) if v.verdict == "invented item"]
+labels = [v.address for v in explain(PRED, GT, SCH) if v.verdict == "invented_item"]
 report("an unpaired predicted row is labelled with a string index, not an integer",
        labels and all(any(k == INDEX and isinstance(x, str) for k, x in a) for a in labels),
        f"got {[show(a) for a in labels]}")
@@ -135,8 +135,8 @@ hist = collections.Counter(v.verdict for v in explain(PRED, GT, SCH))
 report("grade's counts equal explain's labels, so the two surfaces cannot drift",
        (r["matched"], r["misread"], r["unfound"], r["fabricated"],
         r["invented_item"], r["invented_field"])
-       == (hist["match"], hist["wrong value"], hist["missing"], hist["fabricated"],
-           hist["invented item"], hist["invented field"]),
+       == (hist["matched"], hist["misread"], hist["unfound"], hist["fabricated"],
+           hist["invented_item"], hist["invented_field"]),
        f"grade {parts} vs explain {dict(hist)}")
 
 print("\nA SCHEMA IS REQUIRED")
@@ -281,8 +281,8 @@ for _ in range(600):
                    or abs(r["recall"] - r["matched"]
                           / (r["matched"] + r["misread"] + r["unfound"])) < 1e-12))
         hist = collections.Counter(v.verdict for v in explain(pr, g, sch))
-        ok &= parts == (hist["match"], hist["wrong value"], hist["missing"],
-                        hist["fabricated"], hist["invented item"], hist["invented field"])
+        ok &= parts == (hist["matched"], hist["misread"], hist["unfound"],
+                        hist["fabricated"], hist["invented_item"], hist["invented_field"])
         bad += not ok
         fired += any(parts[3:])
 report(f"both identities and the histogram hold over {seen} generated gradings",

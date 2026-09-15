@@ -499,19 +499,19 @@ verdicts = {"".join(f"[{st[1]!r}]" for st in k): v
             for k, _g, _p, v in explain(copy.deepcopy(NEST_PRED), copy.deepcopy(NEST_GOLD))}
 expected = {
     # the reordered-but-correct row: every quarter lands on gold's address
-    "['segments'][1]['name']": "match",
-    "['segments'][1]['quarters'][0]": "match",
-    "['segments'][1]['quarters'][1]": "match",
-    "['segments'][1]['quarters'][2]": "match",
+    "['segments'][1]['name']": "matched",
+    "['segments'][1]['quarters'][0]": "matched",
+    "['segments'][1]['quarters'][1]": "matched",
+    "['segments'][1]['quarters'][2]": "matched",
     # the misread quarter costs exactly two slots, not the row
-    "['segments'][0]['name']": "match",
-    "['segments'][0]['quarters'][0]": "match",
-    "['segments'][0]['quarters'][1]": "match",
-    "['segments'][0]['quarters'][2]": "missing",
-    "['segments'][0]['quarters']['p2']": "invented item",
+    "['segments'][0]['name']": "matched",
+    "['segments'][0]['quarters'][0]": "matched",
+    "['segments'][0]['quarters'][1]": "matched",
+    "['segments'][0]['quarters'][2]": "unfound",
+    "['segments'][0]['quarters']['p2']": "invented_item",
     # the invented row gets a fresh address at the OUTER level
-    "['segments']['p2']['name']": "invented item",
-    "['segments']['p2']['quarters'][0]": "invented item",
+    "['segments']['p2']['name']": "invented_item",
+    "['segments']['p2']['quarters'][0]": "invented_item",
 }
 report("every address and verdict is exactly as documented", verdicts == expected,
        "differences: " + str({k: (expected.get(k), verdicts.get(k))
@@ -850,7 +850,7 @@ report("a skip is reported whichever side reaches the open map",
        f"pred-only {grade(copy.deepcopy(OM_G), {'invoice_no': 'INV-1'}, OM_SCH)['skipped_open_maps']}")
 report("explain shows the skipped subtree instead of letting it vanish",
        [v.verdict for v in explain(copy.deepcopy(OM_G), copy.deepcopy(OM_G), OM_SCH)
-        if v.verdict.startswith("skipped")] == ["skipped (open map)"])
+        if v.verdict.startswith("skipped")] == ["skipped_open_map"])
 report("with no schema nothing is skipped, because nothing can be identified",
        grade(copy.deepcopy(OM_G), copy.deepcopy(OM_G))["total"] == 3
        and grade(copy.deepcopy(OM_G), copy.deepcopy(OM_G))["skipped_open_maps"] == [])
