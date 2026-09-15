@@ -1402,3 +1402,37 @@ lint, not just these values -- the same import bug will have hit any non-ASCII t
 **Check the predictions too.** 419 predicted values carry it as well, which suggests some of it
 is in the source documents or in a shared ingestion path rather than in the annotation step.
 Worth knowing which before fixing only one side.
+
+
+## 31. A decimal point inside a longer value was being deleted, changing the number
+
+**Fixed.** `_f_punctuation` stripped every period, which is right for `P.O. BOX` and wrong for
+`1.5 mg`: the point is not punctuation there, it is part of the number. `1.5 mg` keyed as
+`15mg`, so a 1.5 mg dose arm and a 15 mg dose arm were ONE KEY. `5.00 kg` == `500 kg`.
+`12.5 mg/day` == `125 mg/day`.
+
+**Why `_f_number` did not already protect them.** It only claims a value that is ENTIRELY a
+numeral. `$1.20` and `2.5%` are safe because `$` and `%` are stripped before the numeral test;
+every other unit -- mg, kg, mL, mg/day -- is not, so the value falls to the text path and the
+punctuation fold eats its point.
+
+**The rule.** A period between two digits is kept when it is the ONLY one in the value. Two or
+more are separators, so `512.784.7407` and `5.2.1.5` still fold.
+
+**It picks a side rather than resolving the ambiguity.** `1.250` is either a decimal or
+European thousands and nothing in the value says which; this reads it as a decimal. That is the
+safe side: a false MERGE credits a wrong answer, a false SPLIT only withholds a right one, and
+a benchmark should fail toward under-crediting.
+
+**Cost: 32 value-matches across 17 documents, 0 gained.** Mostly European thousands separators
+in addresses -- `1.250 BROADWAY 7TH FLOOR`, `3.300 MCF/Day`, `LEE GARDEN 3.1 SUNNING ROAD`.
+
+**It also un-merged a priced collision**, which is how the change announced itself: the
+`ACCEPTED_LENIENCY` guard failed on `1.1%w/w` == `11%w/w`, that entry is promoted to
+MUST_DIFFER, and the bill in METRIC_SPEC 5.3 drops from five collisions to four.
+
+**Live in this corpus?** No. `adverse_events[].treatment_group` holds `Ormelytide 1.5 mg once
+weekly` and `Ormelytide 3.0 mg once weekly`, but no 15 mg or 30 mg arm, so nothing collided
+today. A dose-ranging study with 1.5 mg and 15 mg arms is ordinary, and on that corpus the two
+would have been one key -- which is the point: a scorer others aim at their own documents
+cannot ship a rule that is only accidentally safe.

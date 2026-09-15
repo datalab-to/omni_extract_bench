@@ -501,10 +501,22 @@ single Schedule I return, where the gold writes EINs and ZIP+4s bare (`311440073
 model hyphenates them (`31-1440073`), costing three vendors roughly fifteen points on that
 document for nothing.
 
-**The bill.** Five collisions, enumerated in `tests/test_canon_properties.py` under
+**One exception, because it changes a number rather than a spelling.** A period between two
+digits, and only when it is the *only* one in the value, is a decimal point and is kept.
+Deleting it turned `1.5 mg` into `15mg`, so a 1.5 mg and a 15 mg dose arm shared a key —
+`_f_number` protects a value that is entirely a numeral, so anything carrying a unit (`mg`,
+`kg`, `mL`, `mg/day`) was exposed. Two or more dots are separators, not a decimal point, so
+`512.784.7407` and `5.2.1.5` still fold.
+
+This picks a side rather than resolving an ambiguity: `1.250` is read as a decimal, not as
+European thousands. That is the safe side — a false merge credits a wrong answer, a false split
+only withholds a right one — and it costs **32 value-matches** across 17 documents, mostly
+European addresses (`1.250 BROADWAY`, `3.300 MCF/Day`).
+
+**The bill.** Four collisions, enumerated in `tests/test_canon_properties.py` under
 `ACCEPTED_LENIENCY`, where a test asserts they still behave as priced:
 
-`5.2.1.5` = `5215` · `1.1%w/w` = `11%w/w` · `#30-2` = `#302` · `RR-2` = `RR2` · `90-94` = `9094`
+`5.2.1.5` = `5215` · `#30-2` = `#302` · `RR-2` = `RR2` · `90-94` = `9094`
 
 **How little P1 this actually gives up** is the reason it is affordable. `1:00.50` and `1:50`
 stay distinct; so do `0.11%w/w` and `11%w/w`, `COM PAR $.001` and `COM PAR $.01`, and
