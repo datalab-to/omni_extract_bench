@@ -106,54 +106,31 @@ class Scorer:
         return row
 
 
-#: The driver runs on your machine and the Secret does not reach it, so it needs credentials
-#: of its own -- to read the atlas and to see which predictions each vendor has. Same file
-#: `build_vendors.py` reads. Values are used, never printed.
-ENV_FILE = pathlib.Path.home() / "datalab" / "gke_pipelines" / ".env"
+@app.function(secrets=[modal.Secret.from_name("oeb-r2")], cpu=0.25, memory=2048,
+              timeout=7200, retries=0)
+def orchestrate(picked: list, limit: int, run: str) -> dict:
+    """Choose the work, run it, write the summaries -- all of it inside Modal.
 
+    This is the whole point of the module's shape. `modal run` ties an ephemeral app to the
+    local client's heartbeat, so a laptop going to sleep stopped the app mid-run once already;
+    and while the orchestration lived in the local entrypoint, closing the lid also meant no
+    summaries however much scoring had finished. Spawned, none of that is true: the laptop
+    hands over three arguments and can go away.
 
-def load_credentials():
-    """Put R2 credentials where boto3's default chain finds them. Local side only."""
-    import os
-
-    if os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_ENDPOINT_URL"):
-        return
-    if not ENV_FILE.exists():
-        raise SystemExit(
-            f"the driver needs R2 credentials: set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY "
-            f"and AWS_ENDPOINT_URL, or put R2_* in {ENV_FILE}")
-    cfg = {}
-    for line in ENV_FILE.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            cfg[k.strip()] = v.strip().strip('"').strip("'")
-    os.environ["AWS_ACCESS_KEY_ID"] = cfg["R2_ACCESS_KEY_ID"]
-    os.environ["AWS_SECRET_ACCESS_KEY"] = cfg["R2_SECRET_ACCESS_KEY"]
-    os.environ["AWS_ENDPOINT_URL"] = cfg["R2_ENDPOINT_URL"]
-    os.environ.setdefault("AWS_REGION", "auto")
-
-
-@app.local_entrypoint()
-def main(vendors: str = ",".join(VENDORS), limit: int = 0, run: str = ""):
+    A quarter of a CPU, because this container spends its life waiting on `.map()`.
+    """
+    import sys as _sys
+    _sys.path.insert(0, "/root")
     import pyarrow as pa
     import pyarrow.parquet as pq
-
-    sys.path.insert(0, str(REPO))
-    load_credentials()
     from omni_extract_bench import s3 as S3
 
-    run = run or f"{ROOT}/scores/{time.strftime('%Y-%m-%dT%H-%M-%SZ', time.gmtime())}"
-    picked = [v.strip() for v in vendors.split(",") if v.strip()]
-    print(f"  run prefix: s3://{BUCKET}/{run}")
-
-    local = pathlib.Path("/tmp/oeb-modal")
+    local = pathlib.Path("/tmp/oeb")
     local.mkdir(parents=True, exist_ok=True)
     S3.fetch_one(f"s3://{BUCKET}/{ROOT}/corpus/corpus.parquet", local / "corpus.parquet")
     doc_ids = [r["doc_id"] for r in pq.read_table(local / "corpus.parquet").to_pylist()]
     if limit:
         doc_ids = doc_ids[:limit]
-    print(f"  {len(doc_ids)} documents in the atlas, {len(picked)} vendors")
 
     units, resumed = [], 0
     for v in picked:
@@ -161,54 +138,98 @@ def main(vendors: str = ",".join(VENDORS), limit: int = 0, run: str = ""):
                 if n.endswith(".json") and "/" not in n}
         done = {n[len("rows/"):-5] for n in S3.names(f"s3://{BUCKET}/{run}/{v}")
                 if n.startswith("rows/") and n.endswith(".json")}
-        take = [d for d in doc_ids if d in held and d not in done]
         resumed += len(done)
-        print(f"    {v:<14} {len(take):>4} to score" +
-              (f", {len(done)} already done" if done else ""))
-        units += [(v, d, run) for d in take]
-    print(f"  {len(units)} (vendor, document) units"
-          + (f", resuming over {resumed} finished earlier" if resumed else "") + "\n",
-          flush=True)
-    if not units:
-        print("  nothing to do; run `modal run scripts/score_modal.py::collect` to assemble")
-        return
+        units += [(v, d, run) for d in doc_ids if d in held and d not in done]
+    print(f"  {len(doc_ids)} documents, {len(picked)} vendors, {len(units)} units"
+          + (f", resuming over {resumed}" if resumed else ""), flush=True)
 
     started = time.time()
-    rows, failed, seen = [], [], 0
-    for result in Scorer().one.map(units, order_outputs=False, return_exceptions=True):
-        seen += 1
-        if isinstance(result, dict):
-            rows.append(result)
-        else:
-            failed.append(repr(result)[:200])
-        if seen % 250 == 0 or seen == len(units):
-            print(f"    {seen}/{len(units)}  {time.time() - started:.0f}s", flush=True)
+    rows, raised, seen = [], [], 0
+    if units:
+        for result in Scorer().one.map(units, order_outputs=False, return_exceptions=True):
+            seen += 1
+            if isinstance(result, dict):
+                rows.append(result)
+            else:
+                raised.append(repr(result)[:200])
+            if seen % 500 == 0 or seen == len(units):
+                print(f"    {seen}/{len(units)}  {time.time() - started:.0f}s", flush=True)
 
-    print()
-    write_summaries(S3, run, picked, local)
-    print(f"\n  {time.time() - started:.0f}s wall, {len(failed)} raised")
-    for f in failed[:5]:
-        print("   ", f)
-    print(f"  s3://{BUCKET}/{run}")
+    # Summaries from the rows the map returned, not read back out of the bucket. Reading them
+    # back cost ~350s of one-round-trip-per-object, and lost the units that failed before they
+    # could write anything -- a vendor came out one document short with no failure reported.
+    #
+    # A resumed run has to read, though: rows from an earlier attempt are only in the bucket.
+    by_vendor = {}
+    for r in rows:
+        by_vendor.setdefault(r["vendor"], []).append(r)
+    report = {}
+    for v in sorted(picked):
+        rs = by_vendor.get(v, [])
+        if resumed:
+            have = {r["doc_id"] for r in rs}
+            names = [n for n in S3.names(f"s3://{BUCKET}/{run}/{v}")
+                     if n.startswith("rows/") and n.endswith(".json")
+                     and n[len("rows/"):-5] not in have]
+            if names:
+                into = local / "earlier" / v
+                S3.fetch(f"s3://{BUCKET}/{run}/{v}", into, names)
+                rs = rs + [json.loads((into / n).read_bytes()) for n in names]
+        if not rs:
+            continue
+        _write_vendor(pa, pq, S3, run, v, rs, local)
+        graded = [r for r in rs if r.get("kind") == "graded"]
+        report[v] = {"rows": len(rs), "graded": len(graded),
+                     "mean": round(sum(r["accuracy"] for r in graded) / len(graded), 2)
+                             if graded else None,
+                     "failed": [f"{r['doc_id']}: {r.get('error')}"
+                                for r in rs if r.get("kind") == "failed"]}
+    return {"run": run, "units": len(units), "secs": round(time.time() - started),
+            "raised": raised, "vendors": report}
 
 
 @app.local_entrypoint()
-def collect(vendors: str = ",".join(VENDORS), run: str = ""):
-    """Assemble each vendor's summary.parquet from the rows already in the bucket.
+def main(vendors: str = ",".join(VENDORS), limit: int = 0, run: str = "", wait: bool = True):
+    """Spawn the run. Everything after this happens in Modal.
 
-    Separate from `main` because the rows are the durable thing: a run that was interrupted
-    has all of them and none of the summaries, and this turns one into the other without
-    scoring anything again.
+        modal run --detach scripts/score_modal.py::main --no-wait
+
+    **`--detach` is not optional with `--no-wait`.** `modal run` builds an EPHEMERAL app and
+    stops it when the entrypoint returns, which kills the thing that was just spawned -- the
+    collected result is a `RemoteError` with no message, because the container was killed
+    rather than raising. `--detach` keeps the app alive; then this machine really is finished
+    once it prints a call id.
     """
-    sys.path.insert(0, str(REPO))
-    load_credentials()
-    from omni_extract_bench import s3 as S3
+    run = run or f"{ROOT}/scores/{time.strftime('%Y-%m-%dT%H-%M-%SZ', time.gmtime())}"
+    picked = [v.strip() for v in vendors.split(",") if v.strip()]
+    call = orchestrate.spawn(picked, limit, run)
+    print(f"  run prefix : s3://{BUCKET}/{run}")
+    print(f"  call id    : {call.object_id}")
+    if not wait:
+        print("\n  running in Modal; this machine is no longer involved"
+              " (as long as you passed --detach).\n  Collect it with:\n"
+              f"    modal run scripts/score_modal.py::status "
+              f"--call {call.object_id}")
+        return
+    show(call.get())
 
-    if not run:
-        raise SystemExit("collect needs --run, the run prefix under the bucket")
-    local = pathlib.Path("/tmp/oeb-modal")
-    local.mkdir(parents=True, exist_ok=True)
-    write_summaries(S3, run, [v.strip() for v in vendors.split(",") if v.strip()], local)
+
+@app.local_entrypoint()
+def status(call: str):
+    """Collect a spawned run, whenever. Blocks until it finishes."""
+    show(modal.FunctionCall.from_id(call).get())
+
+
+def show(out: dict):
+    print(f"\n  {out['units']} units, {out['secs']}s, {len(out['raised'])} raised")
+    for v, r in sorted(out["vendors"].items()):
+        mean = f"{r['mean']:>6.2f}" if r["mean"] is not None else "     -"
+        print(f"  {v:<14} {r['rows']:>4} rows   mean {mean} over {r['graded']}"
+              + (f"   {len(r['failed'])} FAILED" if r["failed"] else ""))
+    for v, r in sorted(out["vendors"].items()):
+        for f in r["failed"][:3]:
+            print(f"      {v}/{f}")
+    print(f"  s3://{BUCKET}/{out['run']}")
 
 
 def write_summaries(S3, run, picked, local):
