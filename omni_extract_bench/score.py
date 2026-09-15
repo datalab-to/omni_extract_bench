@@ -524,14 +524,25 @@ def _pair_weights(pred: dict[Hashable, Row], gold: dict[Hashable, Row],
 
     # Rows carrying their own arrays are worth what their sub-pairings are worth. Price those
     # pairs with the function that knows how, and leave the rest read off the product.
-    deep_p = [i for i, k in enumerate(pi) if pred[k].arrays]
-    deep_g = [j for j, k in enumerate(gi) if gold[k].arrays]
-    if deep_p or deep_g:
-        todo = {(i, j) for i in deep_p for j in range(m)}
-        todo |= {(i, j) for j in deep_g for i in range(n)}
-        for i, j in todo:
-            mt, sh = _worth_if_paired(pred[pi[i]], gold[gi[j]], scale, inexact)
-            weights[i, j] = mt * scale + sh if mt else 0
+    #
+    # A pair needs that only where BOTH sides populate an array at the SAME path.
+    # `_worth_if_paired` walks `set(pred.arrays) | set(gold.arrays)` and descends into
+    # `_best_pairing`, which returns immediately when either side is empty -- so a predicted
+    # row nesting something the gold never nested contributes nothing, and the product already
+    # has its answer. The distinction is not pedantry: on the corpus's three largest arrays the
+    # prediction nests 25,052 rows and the gold nests none, so asking only "does this row have
+    # arrays?" would send every one of 704 million pairs down the slow path to add zero.
+    deep_p = {i: {a for a, sub in pred[k].arrays.items() if sub} for i, k in enumerate(pi)}
+    deep_g = {j: {a for a, sub in gold[k].arrays.items() if sub} for j, k in enumerate(gi)}
+    shared_paths = set().union(*deep_p.values()) & set().union(*deep_g.values()) \
+        if deep_p and deep_g else set()
+    if shared_paths:
+        left = [i for i, paths in deep_p.items() if paths & shared_paths]
+        right = [j for j, paths in deep_g.items() if paths & shared_paths]
+        for i in left:
+            for j in right:
+                mt, sh = _worth_if_paired(pred[pi[i]], gold[gi[j]], scale, inexact)
+                weights[i, j] = mt * scale + sh if mt else 0
     return weights
 
 
