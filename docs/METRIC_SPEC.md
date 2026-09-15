@@ -508,10 +508,16 @@ Deleting it turned `1.5 mg` into `15mg`, so a 1.5 mg and a 15 mg dose arm shared
 `kg`, `mL`, `mg/day`) was exposed. Two or more dots are separators, not a decimal point, so
 `512.784.7407` and `5.2.1.5` still fold.
 
-This picks a side rather than resolving an ambiguity: `1.250` is read as a decimal, not as
-European thousands. That is the safe side — a false merge credits a wrong answer, a false split
-only withholds a right one — and it costs **32 value-matches** across 17 documents, mostly
-European addresses (`1.250 BROADWAY`, `3.300 MCF/Day`).
+Commas are untouched by this — they strip as they always did.
+
+**This is a consistency fix rather than new policy.** §2's number rule already read a lone
+`1.000` as the number one and `1,000` as one thousand. The punctuation strip was overriding
+that whenever a word was attached, so `1.000` alone meant one while `1.000 notes` meant one
+thousand notes. Attaching a unit should not change what a number means.
+
+It does pick a side on an ambiguity `1.250` cannot settle by itself — decimal, not European
+thousands. That is the safe side: a false merge credits a wrong answer, a false split only
+withholds a right one. Cost is measured in `TO_LOOK_AT.md` item 31.
 
 **The bill.** Four collisions, enumerated in `tests/test_canon_properties.py` under
 `ACCEPTED_LENIENCY`, where a test asserts they still behave as priced:

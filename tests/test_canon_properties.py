@@ -191,6 +191,12 @@ ACCEPTED_LENIENCY = [
     # `NA`. Checked rather than assumed: exactly ONE gold field in 660 documents holds both
     # spellings, a contract-number field where both mean "not applicable".
     ('slash stripped',      'N/A',          'NA'),
+    # The number fold strips `,` `$` `%` before reading a numeral, so a value it CLAIMS loses
+    # its unit. A currency amount and a percentage therefore share a key. Accepted: the
+    # alternative is deciding `50%` != `50`, and a page writing a bare `50` in a rate column
+    # means the same thing as one writing `50%`.
+    ('currency vs percent',  '$5',          '5%'),
+    ('percent vs bare',      '50%',         '50'),
 ]
 
 #: DEBT: P1 violations nobody chose, each reaching the string fallback (P3). Fix a fold,
@@ -233,6 +239,24 @@ if fixed:
         print(f"          {n}: {a!r} vs {b!r}")
 note(f"{len(still_broken)} of {len(KNOWN_COLLISIONS)} still collide; "
      f"every one reaches the string fallback (P3)")
+
+# The unit-stripping above only applies to a value the number fold CLAIMS. One it declines
+# keeps its symbols, so the two halves of the rule look inconsistent and are: `$5` == `5%`
+# because both parse, while `5% Notes` != `5 Notes` because neither does. Pinned so the
+# asymmetry is a recorded shape rather than a half-finished fix.
+report("a value the number fold declines keeps its unit",
+       canon_key("5% Notes") != canon_key("5 Notes")
+       and canon_key("$1,234 total") != canon_key("1234 total"),
+       f"{canon_key('5% Notes')!r} vs {canon_key('5 Notes')!r}")
+
+# Attaching a unit must not change what a number means. The number route reads a lone `1.000`
+# as one and `1,000` as one thousand; before the decimal-point rule the punctuation strip
+# overrode that as soon as a word followed, so `1.000 notes` meant one thousand notes.
+report("a number keys the same alone as it does with a unit attached",
+       (canon_key("1.000") != canon_key("1,000")
+        and canon_key("1.000 notes") != canon_key("1,000 notes")),
+       f"{canon_key('1.000 notes')!r} vs {canon_key('1,000 notes')!r}")
+note("commas are untouched by that rule: they strip alone and embedded, as they always did.")
 
 print("\nP1b  A FOLD MAY TRIM A VALUE, NEVER CONSUME IT")
 # Keying as "" is not the same as being thrown out. A thrown-out value has no address at all
