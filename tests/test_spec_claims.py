@@ -155,8 +155,8 @@ print("\nSECTION 4 -- THE BUCKETS PARTITION EVERY ADDRESS (P16)")
 verdicts = [v for v in explain(PRED, GT, SCH) if not v.verdict.startswith("skipped")]
 report("every address gets exactly one of the six verdicts",
        len(verdicts) == R["total"]
-       and {v.verdict for v in verdicts} <= {"match", "wrong value", "missing", "fabricated",
-                                             "invented item", "invented field"},
+       and {v.verdict for v in verdicts} <= {"matched", "misread", "unfound", "fabricated",
+                                             "invented_item", "invented_field"},
        f"{len(verdicts)} verdicts vs total {R['total']}: "
        f"{sorted({v.verdict for v in verdicts})}")
 

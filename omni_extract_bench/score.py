@@ -235,10 +235,10 @@ def _classify_extra(address: Address, slots: set[Address]) -> str:
     and an extra scalar in an array of scalars.
     """
     if any(kind == INDEX and isinstance(value, str) for kind, value in address):
-        return "invented item"
+        return "invented_item"
     if node_key(address) in slots:
         return "fabricated"
-    return "invented field"
+    return "invented_field"
 
 
 def _find_arrays(addresses: Iterable[Address]) -> list[Address]:
@@ -896,7 +896,7 @@ def grade(pred: Any, gt: Any, schema: Any,
     >>> r = grade({"a": 1}, {"a": 2}, {"properties": {"a": {"type": "number"}}},
     ...           verdicts=True)
     >>> [(show(v.address), v.gold, v.pred, v.verdict) for v in r["verdicts"]]
-    [('a', 2, 1, 'wrong value')]
+    [('a', 2, 1, 'misread')]
 
     It is off by default because it is not free in memory: one `Verdict` per address, and the
     largest document in the benchmark corpus has 410,012 of them.
@@ -945,8 +945,8 @@ def grade(pred: Any, gt: Any, schema: Any,
         "misread": misread,
         "unfound": unfound,
         "fabricated": extra["fabricated"],
-        "invented_item": extra["invented item"],
-        "invented_field": extra["invented field"],
+        "invented_item": extra["invented_item"],
+        "invented_field": extra["invented_field"],
         "found": len(shared) / total if total else 0.0,
         "read_right": matched / len(shared) if shared else 0.0,
         "gt_rows": gt_rows,
@@ -969,7 +969,10 @@ class Verdict(NamedTuple):
     address: Address
     gold: Any
     pred: Any
-    verdict: str        # match | wrong value | missing | skipped (open map)
+    verdict: str        # matched | misread | unfound | fabricated |
+                        # invented_item | invented_field | skipped_open_map
+                        # -- the same words the summary counts them under, so
+                        # count(verdict='misread') == summary['misread']
                         # fabricated | invented item | invented field
 
 
@@ -1013,7 +1016,7 @@ def explain(pred: Any, gt: Any, schema: Any,
     >>> for v in explain(pred, gold, sch):
     ...     cut = max(i for i, (kind, _) in enumerate(v.address) if kind == INDEX)
     ...     rows.setdefault(show(v.address[:cut + 1]), set()).add(v.verdict)
-    >>> {row: kinds == {"match"} for row, kinds in sorted(rows.items())}
+    >>> {row: kinds == {"matched"} for row, kinds in sorted(rows.items())}
     {'lines[0]': False, 'lines[1]': True}
     >>> round(grade(pred, gold, sch)["accuracy"], 1)   # the leaf view is kinder: 3 of 4
     75.0
@@ -1029,12 +1032,12 @@ def _verdicts(gold, pred_addr, skipped, slots) -> list:
     document -- so a caller that wanted a score and an explanation used to pay for the
     matching twice.
     """
-    out = [Verdict(a, None, None, "skipped (open map)") for a in skipped]
+    out = [Verdict(a, None, None, "skipped_open_map") for a in skipped]
     for a in sorted(set(gold) | set(pred_addr), key=_reading_order):
         if a in gold and a in pred_addr:
-            verdict = "match" if cmp_leaf(pred_addr[a], gold[a]) >= 1.0 else "wrong value"
+            verdict = "matched" if cmp_leaf(pred_addr[a], gold[a]) >= 1.0 else "misread"
         elif a in gold:
-            verdict = "missing"
+            verdict = "unfound"
         else:
             verdict = _classify_extra(a, slots)
         out.append(Verdict(a, gold.get(a), pred_addr.get(a), verdict))

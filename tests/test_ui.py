@@ -59,20 +59,25 @@ note("the sidebar is the reading order; interleaving a table with itself makes i
 
 print("\nA LITERAL MATCH DOES NOT REPEAT THE VALUE IT MATCHED")
 report('an identical match is ["m"], with no second slot',
-       ui.cell("match", '"Acme"', '"Acme"') == ["m"])
+       ui.cell("matched", '"Acme"', '"Acme"') == ["m"])
 report('a folded match keeps the prediction, because that is the whole point of the bucket',
-       ui.cell("match", '"1250.00"', '"1,250.00"') == ["m", '"1,250.00"'])
+       ui.cell("matched", '"1250.00"', '"1,250.00"') == ["m", '"1,250.00"'])
 report("a charge always carries what was predicted, including nothing",
-       ui.cell("missing", '"Acme"', None) == ["x", None]
-       and ui.cell("wrong value", '"a"', '"b"') == ["w", '"b"'])
+       ui.cell("unfound", '"Acme"', None) == ["x", None]
+       and ui.cell("misread", '"a"', '"b"') == ["w", '"b"'])
 report("a verdict this module has no code for passes through as itself",
        ui.cell("something new", None, '"x"') == ["something new", '"x"'])
+report("and a run scored before the verdicts were renamed still reads",
+       ui.cell("missing", '"Acme"', None) == ui.cell("unfound", '"Acme"', None)
+       and ui.cell("wrong value", '"a"', '"b"') == ui.cell("misread", '"a"', '"b"'))
+note("the scorer knows only the new names; `WAS` is the one table that knows the old ones, "
+     "and it lives in the reader of historical data")
 note("an unknown verdict must show up wrong in the viewer, not vanish from it")
 
 print("\nTHE SAME TEXT CHARGED TWICE IS ONE PAIRING FAILURE")
-verds = [{"verdict": "missing", "gold": json.dumps("Wear safety boots"), "pred": None},
-         {"verdict": "invented item", "gold": None, "pred": json.dumps("• Wear safety boots")},
-         {"verdict": "missing", "gold": json.dumps("Unrelated"), "pred": None}]
+verds = [{"verdict": "unfound", "gold": json.dumps("Wear safety boots"), "pred": None},
+         {"verdict": "invented_item", "gold": None, "pred": json.dumps("• Wear safety boots")},
+         {"verdict": "unfound", "gold": json.dumps("Unrelated"), "pred": None}]
 near = ui.near_misses(verds)
 report("a bullet glyph in front of a sentence is found as the near miss it is",
        len(near) == 1 and near[0]["gold"] == "Wear safety boots", str(near))

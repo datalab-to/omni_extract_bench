@@ -35,10 +35,10 @@ uv run oeb explain --run /tmp/run --doc invoice-b
 ```
 
 ```
-lines[0].qty                                wrong value     gold=3  pred=8
-lines[1].price                              missing         gold=120.5  pred=None
-lines[1].qty                                missing         gold=1  pred=None
-lines[1].sku                                missing         gold="B-8"  pred=None
+lines[0].qty                                misread         gold=3  pred=8
+lines[1].price                              unfound         gold=120.5  pred=None
+lines[1].qty                                unfound         gold=1  pred=None
+lines[1].sku                                unfound         gold="B-8"  pred=None
 
 accuracy 55.56
 ```
@@ -70,7 +70,7 @@ Ordinary parquet, so exploring needs no library:
 ```sql
 select doc_id, address, gold, pred
 from '/tmp/run/verdicts/*.parquet'
-where verdict <> 'match';
+where verdict <> 'matched';
 ```
 
 A run is written once. To score the same thing again, name a different `--out`; comparing two

@@ -139,14 +139,14 @@ No library and no API -- these are ordinary parquet files:
 -- every value the model got wrong, across the whole run
 select doc_id, address, gold, pred
 from 'run/verdicts/*.parquet'
-where verdict = 'wrong value';
+where verdict = 'misread';
 
 -- what kind of failure dominates
 select verdict, count(*) from 'run/verdicts/*.parquet' group by 1 order by 2 desc;
 
 -- worst documents, with a count of bad addresses
 select s.doc_id, round(s.accuracy, 1) acc,
-       count(*) filter (where v.verdict <> 'match') bad
+       count(*) filter (where v.verdict <> 'matched') bad
 from 'run/summary.parquet' s
 join 'run/verdicts/*.parquet' v
   on s.doc_id = v.doc_id and s.prediction_id = v.prediction_id

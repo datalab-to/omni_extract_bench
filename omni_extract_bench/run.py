@@ -353,9 +353,12 @@ def cmd_explain(args: Namespace) -> int:
         raise FileNotFoundError(
             f"{args.doc} was graded but has no verdicts at {verdicts}; "
             f"the run was made with --no-verdicts")
+    from .bench import verdict as verdict_name
+
     for v in pq.read_table(verdicts).to_pylist():
-        if args.all or v["verdict"] != "match":
-            print(f"  {v['address']:<44}{v['verdict']:<16}"
+        name = verdict_name(v["verdict"])
+        if args.all or name != "matched":
+            print(f"  {v['address']:<44}{name:<16}"
                   f"gold={v['gold']}  pred={v['pred']}")
     print(f"\n  accuracy {row['accuracy']:.2f}")
     return 0

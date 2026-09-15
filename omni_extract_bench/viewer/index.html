@@ -482,7 +482,7 @@ const at = (d) => d.by_source[source];
    how you see whether it folded, and what it folded to. */
 function kindOf(cell) {
   if (!cell) return null;
-  return cell[0] === "m" ? "match" : (VERDICT[cell[0]] || cell[0]);
+  return cell[0] === "m" ? "matched" : (VERDICT[cell[0]] || cell[0]);
 }
 const folded = (cell) => cell && cell[0] === "m" && cell.length > 1;
 
@@ -494,14 +494,14 @@ const folded = (cell) => cell && cell[0] === "m" && cell.length > 1;
 const MAX_ROWS = 1200;
 
 const BUCKETS = [
-  ["wrong value", "b-wrong"], ["missing", "b-missing"], ["invented item", "b-invented"],
-  ["invented field", "b-invented"], ["fabricated", "b-fabricated"],
-  ["skipped (open map)", "b-plain"], ["match", "b-matched"],
+  ["misread", "b-wrong"], ["unfound", "b-missing"], ["invented_item", "b-invented"],
+  ["invented_field", "b-invented"], ["fabricated", "b-fabricated"],
+  ["skipped_open_map", "b-plain"], ["matched", "b-matched"],
 ];
 const TAGCLASS = {
-  "wrong value": "t-wrong", "missing": "t-missing", "invented item": "t-invented",
-  "invented field": "t-invented", "fabricated": "t-fabricated",
-  "skipped (open map)": "t-wrong",
+  "misread": "t-wrong", "unfound": "t-missing", "invented_item": "t-invented",
+  "invented_field": "t-invented", "fabricated": "t-fabricated",
+  "skipped_open_map": "t-wrong",
 };
 
 /* ── header ─────────────────────────────────────────────── */
@@ -663,7 +663,7 @@ function drawValue() {
     const [addr, gold, v] = r;
     const kind = kindOf(v[source]);
     if (!kind) continue;
-    if (onlyBad && (kind === "match")) continue;
+    if (onlyBad && (kind === "matched")) continue;
     if (!groups.has(kind)) groups.set(kind, []);
     groups.get(kind).push({ addr, gold, pred: v[source][1], kind,
                             goldCanon: r[3], predCanon: v[source][2],
@@ -699,7 +699,7 @@ function drawValue() {
     if (!rows) continue;
     const h = document.createElement("p");
     h.className = `bucket ${klass}`;
-    h.innerHTML = `${kind === "match" ? "matched" : kind}<span class="n">${rows.length}</span>`;
+    h.innerHTML = `${kind}<span class="n">${rows.length}</span>`;
     box.appendChild(h);
     for (const r of rows.slice(0, budget)) box.appendChild(rowNode(r));
     budget -= rows.length;
@@ -746,7 +746,7 @@ function rowNode(r) {
   const b = document.createElement("button");
   b.type = "button";
   b.dataset.addr = r.addr;
-  if (r.kind === "match") {
+  if (r.kind === "matched") {
     // Nothing to compare at a glance: one line, and the value once.
     b.className = "line";
     // Both columns clip with an ellipsis, so the full text lives in the tooltip.
@@ -806,7 +806,7 @@ function drawCompare() {
   const groups = new Map();
   for (const [addr, gold, v] of current.addrs) {
     const kinds = sources.map((s) => kindOf(v[s]));
-    const bad = kinds.filter((k) => k && k !== "match" && k !== "folded").length;
+    const bad = kinds.filter((k) => k && k !== "matched" && k !== "folded").length;
     if (onlyBad && bad === 0) continue;
     if (!groups.has(bad)) groups.set(bad, []);
     groups.get(bad).push({ addr, gold, v, kinds });
@@ -832,7 +832,7 @@ function drawCompare() {
       const cells = sources.map((s, i) => {
         const kind = r.kinds[i];
         if (!kind) return `<td class="val ok">&mdash;</td>`;
-        if (kind === "match") return `<td class="val ok">&#10003;</td>`;
+        if (kind === "matched") return `<td class="val ok">&#10003;</td>`;
         const p = show(parse(r.v[s][1]));
         return `<td class="val" data-src="${s}"><span class="cell">` +
           `<span class="tag ${TAGCLASS[kind] || ""}">${kind}</span>` +

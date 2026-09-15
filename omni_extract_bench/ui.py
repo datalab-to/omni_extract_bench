@@ -51,12 +51,13 @@ DOCUMENT_PDF = "document.pdf"
 #: Verdicts, one character each. Every address carries one and a full run has millions, so the
 #: word would be most of the payload. The viewer prints an unknown code as itself, so a verdict
 #: added later shows up wrong rather than disappearing.
-CODE = {"match": "m", "wrong value": "w", "missing": "x", "invented item": "i",
-        "fabricated": "f", "invented field": "n", "skipped (open map)": "s"}
+CODE = {"matched": "m", "misread": "w", "unfound": "x", "invented_item": "i",
+        "fabricated": "f", "invented_field": "n", "skipped_open_map": "s"}
+
 
 #: Charges that are the prediction saying something the gold did not, which is the half of a
 #: near miss that pairs with a `missing`.
-EXTRA = ("invented item", "invented field", "fabricated")
+EXTRA = ("invented_item", "invented_field", "fabricated")
 
 _DIGITS = re.compile(r"(\d+)")
 _ALNUM = re.compile(r"[^0-9a-z]+")
@@ -106,7 +107,7 @@ def near_misses(verds: list[dict]) -> list[dict]:
     """
     unpaired: dict[str, str] = {}
     for v in verds:
-        if v["verdict"] == "missing":
+        if _renamed(v["verdict"]) == "unfound":
             key = loose(decode(v["gold"]))
             if key:
                 unpaired.setdefault(key, decode(v["gold"]))
@@ -114,7 +115,7 @@ def near_misses(verds: list[dict]) -> list[dict]:
         return []
     out = []
     for v in verds:
-        if v["verdict"] in EXTRA:
+        if _renamed(v["verdict"]) in EXTRA:
             pred = decode(v["pred"])
             key = loose(pred)
             if key and key in unpaired:
@@ -152,6 +153,12 @@ def read_summary(run: Path) -> tuple[str, dict[str, dict]]:
     return meta.get("source") or run.name, {r["doc_id"]: r for r in table.to_pylist()}
 
 
+def _renamed(name: str) -> str:
+    """A verdict under its current name, whatever the run that wrote it called it."""
+    from .bench import verdict
+    return verdict(name)
+
+
 def canon(raw: str | None) -> str | None:
     """A stored value's canonical form -- what the scorer actually compared.
 
@@ -180,7 +187,7 @@ def cell(verdict: str, gold: str | None, pred: str | None) -> list:
     the gold's. Together they answer "why did these count as equal" -- or as different --
     without a second opinion about what equal means.
     """
-    code = CODE.get(verdict, verdict)
+    code = CODE.get(_renamed(verdict), _renamed(verdict))
     if code == "m" and pred == gold:
         return [code]
     return [code, pred]

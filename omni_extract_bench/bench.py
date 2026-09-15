@@ -258,6 +258,22 @@ def score(case: Case, verdicts: bool = True) -> Outcome:
 
 #: Column names this module owns on a summary row. A prediction set's own metadata may not
 #: use them, because each would then mean two different things depending on the row.
+#: What the verdicts used to be called, before they were renamed to the words the summary
+#: already counted them under. A run written by an older scorer still reads, and there is ONE
+#: table saying so -- a second reader inventing its own would be the same divergence that
+#: `canon_key` exists to prevent, in a smaller place.
+#:
+#: Delete this once no run worth reading predates the rename.
+RENAMED = {"match": "matched", "wrong value": "misread", "missing": "unfound",
+           "invented item": "invented_item", "invented field": "invented_field",
+           "skipped (open map)": "skipped_open_map"}
+
+
+def verdict(name: str) -> str:
+    """A verdict under the name the scorer uses now, whenever it was written."""
+    return RENAMED.get(name, name)
+
+
 SUMMARY_COLUMNS = frozenset({
     "doc_id", "prediction_id", "kind", "error",
     "accuracy", "f1", "precision", "recall", "found", "read_right", "matched", "total",
