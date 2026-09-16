@@ -3,7 +3,7 @@
     oeb predict --manifest jobs.parquet --out preds/
 
     preds/predictions/<doc_id>.json      the bare extraction
-    preds/manifest/part-00000.parquet    one row per manifest row, with pred_path filled in
+    preds/manifest.parquet/part-00000.parquet    one row per document, with pred_path filled
 
 Same shape as `run_score`, deliberately, and built on its table layer. The property worth
 designing for: **this module's output table is the next one's input.** Join ground truth onto
@@ -38,12 +38,14 @@ from __future__ import annotations
 import concurrent.futures as cf
 import json
 import logging
+import pathlib
 import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from .run_score import carried, check_manifest, open_manifest, open_uri, write_part
+from .run_score import (carried, check_manifest, open_manifest, open_uri, prepare_out, resolve,
+                        write_part)
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +65,8 @@ PREDICT_FIELDS: list[tuple[str, str]] = [
 RESERVED = frozenset(name for name, _ in PREDICT_FIELDS)
 
 
-def predict_row(row: dict, out: str, provider: str, options: SimpleNamespace) -> dict:
+def predict_row(row: dict, out: str, provider: str, options: SimpleNamespace,
+                root: str = ".") -> dict:
     """Run one document through the provider. Never raises: a failed document is a row."""
     from .harness.run_provider import _reset_state, cost_record, extract_one
 
@@ -76,7 +79,8 @@ def predict_row(row: dict, out: str, provider: str, options: SimpleNamespace) ->
         schema = json.loads(row["schema"])
         # A vendor adapter takes a local file path and a manifest may name an object in a
         # bucket, so the document lands in a temporary file on the way through.
-        with open_uri(row["doc_path"]) as fh, tempfile.TemporaryDirectory() as tmp:
+        with open_uri(resolve(row["doc_path"], root)) as fh, \
+             tempfile.TemporaryDirectory() as tmp:
             pdf = Path(tmp) / f"{doc_id}.pdf"
             pdf.write_bytes(fh.read())
             result = extract_one(provider, pdf, schema, options)
@@ -97,8 +101,9 @@ def predict_row(row: dict, out: str, provider: str, options: SimpleNamespace) ->
 
 def run(manifest: str, out: str, provider: str, jobs: int = 4, batch_size: int = 256,
         timeout: float = 1800, mode: str | None = None,
-        completion_model: str | None = None) -> dict:
-    """Predict a manifest into `<out>/predictions` and `<out>/manifest`. Returns a tally."""
+        completion_model: str | None = None, root: str = ".",
+        overwrite: bool = False) -> dict:
+    """Predict a manifest into `<out>/predictions` and `<out>/manifest.parquet`."""
     from .harness.run_provider import PROVIDERS
 
     if provider not in PROVIDERS:
@@ -107,16 +112,25 @@ def run(manifest: str, out: str, provider: str, jobs: int = 4, batch_size: int =
                               completion_model=completion_model)
     data = open_manifest(manifest)
     check_manifest(data, REQUIRED, RESERVED)
+    # Predictions are not owned by the corpus, so what we record for them is absolute -- the
+    # other half of the rule `resolve` states. A relative `pred_path` would be read back
+    # against the corpus root, where it is not, while `gt_path` rides through still relative
+    # to that root: two bases in one row, and the row cannot say which is which.
+    out = out if "://" in out else str(pathlib.Path(out).resolve())
+    # Same guard as scoring, on the one output whose parts are named by batch. The
+    # predictions themselves are named by doc_id, so re-predicting replaces its own.
+    prepare_out(out, overwrite, names=("manifest.parquet",))
+
     tally = {"ok": 0, "error": 0}
     total = data.count_rows()
     log.info("predicting %d documents with %s into %s", total, provider, out)
     with cf.ThreadPoolExecutor(max_workers=jobs) as pool:
         for n, batch in enumerate(data.to_batches(batch_size=batch_size)):
-            done = list(pool.map(lambda r: predict_row(r, out, provider, options),
+            done = list(pool.map(lambda r: predict_row(r, out, provider, options, root),
                                  batch.to_pylist()))
             for row in done:
                 tally[row["pred_status"]] += 1
-            write_part(done, PREDICT_FIELDS, f"{out.rstrip('/')}/manifest/part-{n:05d}.parquet",
+            write_part(done, PREDICT_FIELDS, f"{out.rstrip('/')}/manifest.parquet/part-{n:05d}.parquet",
                        carried(batch, consumed=()))
             log.info("part-%05d: %d/%d documents  %s", n, sum(tally.values()), total,
                      "  ".join(f"{k}={v}" for k, v in tally.items()))

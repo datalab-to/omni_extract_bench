@@ -33,8 +33,8 @@ oeb score --manifest jobs.parquet --out run/
 ```
 
 ```
-run/scores/part-00000.parquet      one row per manifest row
-run/verdicts/part-00000-0.parquet  one row per verdict
+run/scores.parquet/part-00000.parquet      one row per manifest row
+run/verdicts.parquet/part-00000-0.parquet  one row per verdict
 ```
 
 Two tables are outputted because they are read differently: a leaderboard reads every score and no
@@ -82,14 +82,14 @@ oeb predict --manifest docs.parquet --out preds/ --provider datalab
 
 ```
 preds/predictions/<doc_id>.json     the bare extraction
-preds/manifest/part-00000.parquet   a row per document, with pred_path filled in
+preds/manifest.parquet/part-00000.parquet   a row per document, with pred_path filled in
 ```
 
 **That output table is a score manifest.** If the input carried `gt_path`, score it with
 nothing joined and nothing assembled:
 
 ```bash
-oeb score --manifest preds/manifest --out run/
+oeb score --manifest preds/manifest.parquet --out run/
 ```
 
 

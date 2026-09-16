@@ -4,8 +4,8 @@
     oeb ui --run runs/*/ --out site/        several vendors side by side
     python -m http.server -d site/
 
-**A run directory is the only input.** `scores/` carries the schema and, where the manifest
-supplied one, `doc_path`; `verdicts/` carries the addresses. Nothing else is needed and nothing
+**A run directory is the only input.** `scores.parquet/` carries the schema and, where the manifest
+supplied one, `doc_path`; `verdicts.parquet/` carries the addresses. Nothing else is needed and nothing
 else is accepted -- no corpus, no manifest, no atlas. Hand someone a run and they can audit it.
 
     <out>/index.html            the viewer
@@ -28,6 +28,7 @@ that keeps this module free of a filesystem abstraction it would otherwise need 
 from __future__ import annotations
 
 import glob as _glob
+import hashlib
 import json
 import re
 import sys
@@ -47,6 +48,23 @@ CODE = {"matched": "m", "misread": "w", "unfound": "x", "invented_item": "i",
         "fabricated": "f", "invented_field": "n", "skipped_open_map": "s"}
 
 _DIGITS = re.compile(r"(\d+)")
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def slug(doc_id: str) -> str:
+    """The name a document's files get in the site.
+
+    A doc_id is whatever the manifest said, and the site names files after it. One
+    containing a slash writes into a directory that is not there, and one containing `..`
+    writes outside the site entirely -- so the id is reduced to filename characters, and a
+    digest of the original keeps two ids that reduce to the same name apart. The index
+    carries the result under `file`, and only where it differs from the id, so the ordinary
+    corpus of plain ids pays nothing for this.
+    """
+    safe = _UNSAFE.sub("-", doc_id)
+    if safe == doc_id and safe.strip(".") and not doc_id.startswith("."):
+        return safe
+    return f"{safe.strip('.') or 'doc'}-{hashlib.sha1(doc_id.encode()).hexdigest()[:8]}"
 
 
 def natural(address: str) -> list:
@@ -84,11 +102,11 @@ def cell(verdict: str, gold: object, pred: object) -> list:
     return [code, pred]
 
 
-def runs_from(patterns: list[str]) -> list[tuple[str, Path]]:
+def runs_from(patterns: list[str], root: str = ".") -> list[tuple[str, Path]]:
     """Every run named, with the label its column gets: the directory's own name.
 
     A pattern is expanded here as well as by the shell, so `--run 'runs/*'` works quoted or
-    not. A directory without a `scores/` is an error rather than a skip -- a glob that sweeps
+    not. A directory without a `scores.parquet/` is an error rather than a skip -- a glob that sweeps
     in a sibling would otherwise produce a site quietly missing a vendor.
     """
     paths: list[Path] = []
@@ -100,8 +118,8 @@ def runs_from(patterns: list[str]) -> list[tuple[str, Path]]:
 
     out, seen = [], {}
     for path in paths:
-        if not (path / "scores").exists():
-            raise ValueError(f"{path} is not a run: it has no scores/. "
+        if not (path / "scores.parquet").exists():
+            raise ValueError(f"{path} is not a run: it has no scores.parquet/. "
                              f"Produce one with:  oeb score --out {path} ...")
         label = path.name
         if label in seen:
@@ -116,7 +134,7 @@ def scores_of(run: Path) -> dict[str, dict]:
     """A run's scores, by document. Every row, including the ones that failed."""
     import pyarrow.parquet as pq
 
-    return {r["doc_id"]: r for r in pq.read_table(run / "scores").to_pylist()}
+    return {r["doc_id"]: r for r in pq.read_table(run / "scores.parquet").to_pylist()}
 
 
 def addresses(doc_id: str, runs: list[tuple[str, Path]]) -> list:
@@ -135,7 +153,7 @@ def addresses(doc_id: str, runs: list[tuple[str, Path]]) -> list:
     interesting: set[str] = set()
     canons: dict[str, str | None] = {}
     for source, run in runs:
-        rows = ds.dataset(run / "verdicts", format="parquet").to_table(
+        rows = ds.dataset(run / "verdicts.parquet", format="parquet").to_table(
             filter=pc.field("doc_id") == doc_id).to_pylist()
         for v in rows:
             gold = decode(v["gold_raw"])
@@ -169,7 +187,7 @@ def link(target: Path, at: Path) -> None:
     at.symlink_to(target.resolve())
 
 
-def build(runs: list[tuple[str, Path]], out: Path) -> dict:
+def build(runs: list[tuple[str, Path]], out: Path, root: str = ".") -> dict:
     """Write the site. Returns what to print.
 
     Documents are handled one at a time and their addresses are never all in memory: a
@@ -198,8 +216,9 @@ def build(runs: list[tuple[str, Path]], out: Path) -> dict:
             blank += 1
             continue
 
+        name = slug(doc_id)
         payload = json.dumps({"addrs": addrs}, ensure_ascii=False, separators=(",", ":"))
-        (out / DOCS / f"{doc_id}.json").write_text(payload, encoding="utf-8")
+        (out / DOCS / f"{name}.json").write_text(payload, encoding="utf-8")
         written += len(payload.encode("utf-8"))
 
         # The schema and the PDF come from whichever run has them; they describe the document,
@@ -210,16 +229,21 @@ def build(runs: list[tuple[str, Path]], out: Path) -> dict:
             raw = row["schema"]
             body = raw if isinstance(raw, bytes) else str(raw).encode()
             (out / SCHEMAS).mkdir(exist_ok=True)
-            (out / SCHEMAS / f"{doc_id}.json").write_bytes(body)
+            (out / SCHEMAS / f"{name}.json").write_bytes(body)
             schema_kb, schemas = round(len(body) / 1024), schemas + 1
         if row is not None and row.get("doc_path"):
-            pdf = Path(str(row["doc_path"]))
+            from .run_score import resolve
+
+            pdf = Path(resolve(str(row["doc_path"]), root))
             if pdf.is_file():
-                link(pdf, out / PDFS / f"{doc_id}.pdf")
+                link(pdf, out / PDFS / f"{name}.pdf")
                 pdfs += 1
 
-        index.append({"doc_id": doc_id, "total": len(addrs), "schema_kb": schema_kb,
-                      "by_source": by_source})
+        entry = {"doc_id": doc_id, "total": len(addrs), "schema_kb": schema_kb,
+                 "by_source": by_source}
+        if name != doc_id:
+            entry["file"] = name
+        index.append(entry)
 
     head = {"sources": [label for label, _ in runs],
             "verdicts": {v: k for k, v in CODE.items()},
@@ -234,9 +258,9 @@ def build(runs: list[tuple[str, Path]], out: Path) -> dict:
 
 def cmd_ui(args: Namespace) -> int:
     """Write a browsable site for one or more runs."""
-    runs = runs_from(args.run)
+    runs = runs_from(args.run, args.root)
     out = Path(args.out)
-    stats = build(runs, out)
+    stats = build(runs, out, args.root)
     if not stats["docs"]:
         print("  nothing to view: no document in those runs has any address.", file=sys.stderr)
         return 1

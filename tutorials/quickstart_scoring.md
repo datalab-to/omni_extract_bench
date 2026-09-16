@@ -66,8 +66,8 @@ oeb score --manifest jobs.parquet --out run/
 ```
 
 Two parquet datasets land in `run/`:
-- `scores/` has one row per manifest row
-- `verdicts/` one row per address after alignment. 
+- `scores.parquet/` has one row per manifest row
+- `verdicts.parquet/` one row per address after alignment. 
 
 They are split because they operate at different levels of granularity. 
 
@@ -77,7 +77,7 @@ They are split because they operate at different levels of granularity.
 python - <<'PY'
 import pyarrow.parquet as pq
 
-for r in pq.read_table("run/scores").select(
+for r in pq.read_table("run/scores.parquet").select(
         [
           "doc_id", 
           "status", 
@@ -112,7 +112,7 @@ Every address carries exactly one verdict, so the six verdict columns partition 
 python - <<'PY'
 import pyarrow.parquet as pq
 
-for r in pq.read_table("run/verdicts").to_pylist():
+for r in pq.read_table("run/verdicts.parquet").to_pylist():
     print(f"{r['address']:<20} {r['verdict']:<14} gold={str(r['gold_raw']):<12}"
           f" pred={str(r['pred_raw']):<12} canon={r['gold_canon']}/{r['pred_canon']}")
 PY
@@ -174,5 +174,5 @@ each container finishes, and read back exactly as a local run's do:
 
 ```python
 import fsspec, pyarrow.parquet as pq
-scores = pq.read_table("bucket/run/scores", filesystem=fsspec.filesystem("s3"))
+scores = pq.read_table("bucket/run/scores.parquet", filesystem=fsspec.filesystem("s3"))
 ```

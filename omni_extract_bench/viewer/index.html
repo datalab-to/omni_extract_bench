@@ -631,7 +631,7 @@ async function select(doc) {
   [...el("docs").children].forEach((c) =>
     c.setAttribute("aria-current", String(c.querySelector(".name")?.textContent === doc.doc_id)));
   if (!changed) { draw(); return; }
-  loadPdf(doc.doc_id);
+  loadPdf(doc.doc_id, doc.file || doc.doc_id);
   schemaText = null;
   if (tab === "schema") showSchema();
   if (!doc.addrs) {
@@ -639,7 +639,7 @@ async function select(doc) {
     el("matrix").innerHTML = "";
     el("row-count").textContent = el("compare-count").textContent = "";
     try {
-      const got = await fetch(`doc/${encodeURIComponent(doc.doc_id)}.json`);
+      const got = await fetch(`doc/${encodeURIComponent(doc.file || doc.doc_id)}.json`);
       doc.addrs = (await got.json()).addrs;
     } catch {
       if (current === doc) {
@@ -906,7 +906,7 @@ async function showSchema() {
   if (schemaText === null) {
     el("pane-schema").textContent = "Loading…";
     try {
-      schemaText = await (await fetch(`schema/${doc.doc_id}.json`)).text();
+      schemaText = await (await fetch(`schema/${encodeURIComponent(doc.file || doc.doc_id)}.json`)).text();
     } catch {
       schemaText = "";
       el("pane-schema").textContent = "Could not load the schema.";
@@ -932,7 +932,7 @@ const PAGE_SCALE = 1.35;
 let drawn = [];          /* rendered pages, oldest first, so the furthest can be given back */
 let watcher = null;
 
-async function loadPdf(docId) {
+async function loadPdf(docId, file) {
   el("pages").innerHTML = `<p class="empty">Loading ${esc(docId)}&hellip;</p>`;
   el("notice-pdf").innerHTML = "";
   watcher?.disconnect();
@@ -941,7 +941,7 @@ async function loadPdf(docId) {
   pdfStatus = "loading…";
   if (tab === "pdf") el("pane-status").textContent = pdfStatus;
   try {
-    pdf = await pdfjsLib.getDocument(`pdf/${docId}.pdf`).promise;
+    pdf = await pdfjsLib.getDocument(`pdf/${encodeURIComponent(file)}.pdf`).promise;
   } catch {
     el("pages").innerHTML = `<p class="empty">No PDF for this document.</p>`;
     pdfStatus = "no pdf";

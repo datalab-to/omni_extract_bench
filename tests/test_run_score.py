@@ -79,7 +79,7 @@ def score(rows, name, **kw):
     """Run one manifest into its own output directory; return the scores rows."""
     out = str(TMP / f"out-{name}")
     tally = rs.run(manifest(rows, f"{name}.parquet"), out, **kw)
-    return pq.read_table(f"{out}/scores").to_pylist(), tally, out
+    return pq.read_table(f"{out}/scores.parquet").to_pylist(), tally, out
 
 
 print("[1] the schema rides in the row, the documents are read from their paths")
@@ -129,8 +129,8 @@ schema2 = {"type": "object", "properties": {"rows": {"type": "array", "items": {
     "type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "string"}}}}}}
 gt2 = {"rows": [{"a": "x", "b": "1"}, {"a": "y", "b": "2"}]}
 pred2 = {"rows": [{"a": "x", "b": "1"}, {"a": "y", "b": "WRONG"}]}
-rows, _, out = score([row("d1", pred2, gt=gt2, schema=schema2)], "verdicts")
-verdicts = pq.read_table(f"{out}/verdicts").to_pylist()
+rows, _, out = score([row("d1", pred2, gt=gt2, schema=schema2)], "verdicts.parquet")
+verdicts = pq.read_table(f"{out}/verdicts.parquet").to_pylist()
 misread = [v for v in verdicts if v["verdict"] == "misread"]
 check("one misread at the right address",
       len(misread) == 1 and misread[0]["address"] == "rows[1].b", str(misread))
@@ -143,7 +143,7 @@ check("every verdict names its document", {v["doc_id"] for v in verdicts} == {"d
 print("\n[5] parts of a fan-out concatenate, including a batch with nothing to infer from")
 rows, _, out = score([row("a", {}), row("b", {}), row("c", GT), row("d", GT)],
                      "parts", batch_size=2)
-check("one part per batch", len(list(Path(out, "scores").iterdir())) == 2)
+check("one part per batch", len(list(Path(out, "scores.parquet").iterdir())) == 2)
 check("input order preserved", [r["doc_id"] for r in rows] == ["a", "b", "c", "d"], str(rows))
 check("an all-failed part still concatenates with a scored one",
       [r["status"] for r in rows] == ["error", "error", "scored", "scored"])
@@ -162,7 +162,7 @@ gt_path, pred_path = written(GT, "gt"), written(GT, "pred")
 csv.write_text("doc_id,gt_path,pred_path,schema\n"
                f'd1,{gt_path},{pred_path},"{json.dumps(SCHEMA).replace(chr(34), chr(34) * 2)}"\n')
 rs.run(str(csv), str(TMP / "out-csv"))
-check("a CSV scores", pq.read_table(f"{TMP / 'out-csv'}/scores").to_pylist()[0]["accuracy"] == 100.0)
+check("a CSV scores", pq.read_table(f"{TMP / 'out-csv'}/scores.parquet").to_pylist()[0]["accuracy"] == 100.0)
 
 print("\n[8] an envelope is NOT unwrapped: a bare extraction is the contract")
 rows, _, _ = score([row("d1", {"result": GT})], "envelope")
@@ -175,7 +175,7 @@ parts.mkdir()
 for i, doc in enumerate(("p1", "p2")):
     pq.write_table(pa.Table.from_pylist([row(doc, GT)]), parts / f"part-{i:05d}.parquet")
 rs.run(str(parts), str(TMP / "out-dir"))
-rows = pq.read_table(f"{TMP / 'out-dir'}/scores").to_pylist()
+rows = pq.read_table(f"{TMP / 'out-dir'}/scores.parquet").to_pylist()
 check("both parts were read as one manifest",
       sorted(r["doc_id"] for r in rows) == ["p1", "p2"], str(rows))
 
@@ -185,7 +185,7 @@ print("\n[10] nothing is held that does not have to be")
 # the documents worth keeping. What is checked here is that streaming them loses nothing.
 rows, _, out = score([row("a", GT), row("b", GT), row("c", GT), row("d", GT)],
                      "streamed", batch_size=2)
-verdicts = pq.read_table(f"{out}/verdicts").to_pylist()
+verdicts = pq.read_table(f"{out}/verdicts.parquet").to_pylist()
 check("every document's addresses are there, across batches",
       sorted({v["doc_id"] for v in verdicts}) == ["a", "b", "c", "d"], str(verdicts[:2]))
 check("and the counts agree with the scores table",
@@ -212,6 +212,55 @@ class Fake:
 got = list(rs.in_order(Fake, range(20), window=4))
 check("in_order yields input order", got == list(range(20)), str(got))
 check("with at most `window` in flight", peak <= 4, f"peak {peak}")
+
+print("\n[11] a relative path is owned by the benchmark; an absolute one is external")
+# The rule Delta Lake draws, and the one COCO and HuggingFace both assume: a manifest holds
+# relative paths, the caller names the root. Inferring the root from where the manifest sits
+# would break the moment predict's output becomes score's input.
+check("relative is taken from the root", rs.resolve("gold/x.json", "/data/bench")
+      == "/data/bench/gold/x.json")
+check("absolute is left alone", rs.resolve("/elsewhere/x.json", "/data/bench")
+      == "/elsewhere/x.json")
+check("a URI is left alone", rs.resolve("s3://b/x.json", "/data/bench") == "s3://b/x.json")
+check("no root means no change", rs.resolve("gold/x.json", ".") == "gold/x.json")
+
+# and end to end: a manifest of relative paths, scored from somewhere else entirely
+home = TMP / "rooted"
+(home / "gold").mkdir(parents=True)
+(home / "preds").mkdir()
+(home / "gold" / "d.json").write_text(json.dumps(GT))
+(home / "preds" / "d.json").write_text(json.dumps(GT))
+pq.write_table(pa.Table.from_pylist([{"doc_id": "d", "gt_path": "gold/d.json",
+                                      "pred_path": "preds/d.json",
+                                      "schema": json.dumps(SCHEMA).encode()}]),
+               home / "manifest.parquet")
+# the manifest and the output are ordinary command-line paths; only what is INSIDE the
+# manifest is taken from the root
+tally = rs.run(str(home / "manifest.parquet"), str(TMP / "rooted-run"), root=str(home))
+check("scored without being run from the dataset directory", tally["scored"] == 1, str(tally))
+check("the output went where it was asked, not under the root",
+      (TMP / "rooted-run" / "scores.parquet").exists() and not (home / "rooted-run").exists())
+
+print("[12] an output directory holds one run")
+# Parts are named by batch, so a second, smaller run into the same directory would overwrite
+# the parts it reaches and leave the rest -- a table that is two runs interleaved and says so
+# nowhere. This is the check that makes that impossible rather than merely unlikely.
+_, _, once = score([row(f"m{i}", GT) for i in range(6)], "reuse", batch_size=2)
+raises("a second run into the same --out is refused",
+       "already holds a run", lambda: rs.run(manifest([row("m0", GT)], "reuse2.parquet"),
+                                             once, batch_size=2))
+rs.run(manifest([row("m0", GT)], "reuse3.parquet"), once, batch_size=2, overwrite=True)
+after = pq.read_table(f"{once}/scores.parquet")
+check("--overwrite replaces the run rather than merging with it", after.num_rows == 1,
+      f"{after.num_rows} rows, so parts of the first run survived")
+check("verdicts are replaced too",
+      pq.read_table(f"{once}/verdicts.parquet").num_rows
+      == len(set(pq.read_table(f"{once}/verdicts.parquet")["doc_id"].to_pylist())) * 3,
+      "stale verdict parts left behind")
+raises("jobs below 1 is refused by name, not by ZeroDivisionError",
+       "at least 1", lambda: score([row("j", GT)], "jobs0", jobs=0))
+raises("batch_size below 1 likewise", "at least 1",
+       lambda: score([row("b", GT)], "bs0", batch_size=0))
 
 print(f"\n{'ALL MANIFEST TESTS PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}")
 sys.exit(1 if FAILS else 0)
