@@ -8,11 +8,19 @@ identically to every document and every provider, with the properties it claims 
 and tested rather than asserted.
 
 ```bash
-pip install omni-extract-bench                 # the scorer; one dependency, scipy
-pip install 'omni-extract-bench[benchmark]'    # running a table of them
+uv pip install omni-extract-bench                 # the scorer; one dependency, scipy
+uv pip install 'omni-extract-bench[benchmark]'    # running a table of them
 ```
 
-Python 3.11+.
+Python 3.11+. Each extra is additive, and the scorer alone needs none of them:
+
+| extra | for | brings |
+|---|---|---|
+| — | grading one pair in Python | `scipy` |
+| `benchmark` | manifests and runs | `pyarrow`, `fsspec` |
+| `s3` | manifest paths naming a bucket | `s3fs` |
+| `harness` | producing predictions | the vendor SDKs |
+| `modal` | fanning a run across containers | `modal`, and the two above |
 
 ## Scoring
 
@@ -101,7 +109,7 @@ oeb score   --root ./benchmark --manifest preds/manifest.parquet --out run/
 
 
 Vendor adapters live behind an extra:
-`pip install 'omni-extract-bench[harness]'`.
+`uv pip install 'omni-extract-bench[harness]'`.
 
 
 ## What the metric does

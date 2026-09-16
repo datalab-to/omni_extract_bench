@@ -51,7 +51,7 @@ self-describing: hand someone one row and they can reproduce the grading.
 ## Get it
 
 ```bash
-pip install 'omni-extract-bench[benchmark]'
+uv pip install 'omni-extract-bench[benchmark]' polars   # polars is for the examples below
 huggingface-cli download datalab-to/omni-extract-bench --repo-type dataset --local-dir benchmark
 ```
 
@@ -101,7 +101,7 @@ oeb score   --root benchmark --manifest preds/manifest.parquet --out run/
 
 Providers: `azure-cu`, `claude`, `datalab`, `datalab-accurate`, `extend`, `gemini`, `gpt`,
 `gpt-pro`, `llamaextract`, `mistral`, `reducto`. Each needs its own credentials in the
-environment, and the adapters live behind an extra: `pip install 'omni-extract-bench[harness]'`.
+environment, and the adapters live behind an extra: `uv pip install 'omni-extract-bench[harness]'`.
 
 ## Read the results
 
