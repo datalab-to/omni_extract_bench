@@ -181,7 +181,8 @@ MUST_DIFFER = [
 #: over a period, so where the measurement is one-sided the models get the benefit of the
 #: doubt -- but the cost is written down here rather than discovered later in a score.
 ACCEPTED_LENIENCY = [
-    # Punctuation folds from anywhere. Buys 1,607 value matches across 660 documents, of
+    # Punctuation folds from anywhere. Buys 1,607 value matches across the 660-document
+    # snapshot measured 2026-09-11, of
     # which 1,532 differ by punctuation alone and 0 credit a wrong value as right; of the
     # gold values it merges inside one field, all 215 have identical digit strings.
     ('section identifier',  '5.2.1.5',      '5215'),
@@ -193,7 +194,8 @@ ACCEPTED_LENIENCY = [
     # differing ONLY by the marker collapse together. No corpus field does that today.
     ('reference marker',    'see [1]',      'see [2]'),
     # `canonical` strips `/` (which is also why `1/2` == `12` below). `N/A` therefore keys as
-    # `NA`. Checked rather than assumed: exactly ONE gold field in 660 documents holds both
+    # `NA`. Checked rather than assumed: exactly ONE gold field in that
+    # same snapshot holds both
     # spellings, a contract-number field where both mean "not applicable".
     ('slash stripped',      'N/A',          'NA'),
     # The number fold strips `,` `$` `%` before reading a numeral, so a value it CLAIMS loses

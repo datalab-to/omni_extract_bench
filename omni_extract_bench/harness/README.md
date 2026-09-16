@@ -14,13 +14,24 @@ python -m omni_extract_bench.harness.run_provider datalab --data-root data/ --ou
 python -m omni_extract_bench.harness.run_provider gemini --data-root data/ --out-root predictions/ \
     --subsets internal --max-docs 5
 
-# then score what it produced
-omni-extract-bench leaderboard --pred-root predictions/ --data-root data/ --workers 8
 ```
 
-`--data-root` is the dataset layout published on HuggingFace:
+`--data-root` is the tree `run_provider` walks:
 `<root>/<subset>/<doc>/{document.pdf,schema.json,ground_truth.json}`. Predictions are written to
-`<out-root>/<provider>/<subset>/<doc>.json`, which is what the scorer's `--pred-root` expects.
+`<out-root>/<provider>/<subset>/<doc>.json`.
+
+**To score what it produced**, name the files in a manifest and hand that to `oeb score` -- the
+scorer takes a table, not a directory layout, so this tree is one of many it can be pointed at:
+
+```python
+rows = [{"doc_id": doc.name,
+         "gt_path": str(doc / "ground_truth.json"),
+         "pred_path": f"predictions/<provider>/{subset}/{doc.name}.json",
+         "schema": (doc / "schema.json").read_bytes()}
+        for subset in ... for doc in ...]
+```
+
+`tutorials/quickstart_scoring.md` walks through the rest.
 
 ## What is uniform
 
