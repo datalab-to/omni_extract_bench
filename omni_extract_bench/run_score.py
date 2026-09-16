@@ -41,9 +41,6 @@ log = logging.getLogger(__name__)
 
 REQUIRED = ("doc_id", "gt_path", "pred_path", "schema")
 
-#: Read, then dropped. Only the schema: the paths stay, as the score's provenance.
-CONSUMED = frozenset({"schema"})
-
 #: What a scored row carries, and the arrow type it carries it as. Declared rather than
 #: inferred so every part of a fan-out agrees: a batch where every prediction failed has
 #: nothing to infer `accuracy` from, and a null column will not concatenate with a double one.
@@ -296,7 +293,7 @@ def score_batch(batch, out: str, name: str) -> dict:
     write_streaming(verdicts_of(batch.to_pylist()), VERDICT_FIELDS, f"{out}/verdicts", name)
     # The score rows are sixteen small fields each and the batch they attach to is already in
     # memory, so they are written once the batch is done rather than streamed.
-    write_part(scores, SCORE_FIELDS, f"{out}/scores/{name}.parquet", carried(batch, CONSUMED))
+    write_part(scores, SCORE_FIELDS, f"{out}/scores/{name}.parquet", carried(batch, ()))
     return tally
 
 
