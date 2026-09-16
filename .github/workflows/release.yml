@@ -1,0 +1,61 @@
+# Publishing to PyPI. Triggered by publishing a GitHub release, whose tag is the version
+# `pyproject.toml` already declares -- the job refuses the two if they disagree, because a
+# wheel named after the wrong version cannot be taken back off PyPI.
+#
+# No API token: PyPI is configured to trust this repository and this workflow file, and the
+# `id-token` permission below is what lets the action prove it is them.
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Check the tag against the declared version
+        if: github.event_name == 'release'
+        run: |
+          declared=$(uv version --short)
+          tag=${GITHUB_REF_NAME#v}
+          if [ "$declared" != "$tag" ]; then
+            echo "tag $tag does not match version $declared in pyproject.toml" >&2
+            exit 1
+          fi
+
+      - run: uv build
+
+      # A source distribution that swept in the benchmark corpus is the failure this guards
+      # against: PyPI takes nothing over 100 MB, and finding that out mid-upload leaves the
+      # wheel published and the sdist not.
+      - name: Check the artifacts
+        run: |
+          uvx twine check dist/*
+          if [ -n "$(find dist -size +50M)" ]; then
+            echo "an artifact is over 50 MB; check what the sdist swept in" >&2
+            ls -lh dist
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
