@@ -108,8 +108,21 @@ def main(argv=None) -> int:
     p.add_argument("--manifest", required=True)
     p.add_argument("--out", required=True,
                    help="written as <out>/predictions and <out>/manifest.parquet")
+    # The provider is a run, not a manifest column -- one manifest, nine runs of it. The
+    # names are not `choices` here because listing them means importing the harness, and a
+    # machine that only scores does not have it installed; `run_predict` validates the name
+    # against PROVIDERS and names them all when it does not know one.
+    p.add_argument("--provider", required=True,
+                   help="which vendor runs the manifest, e.g. datalab, reducto, mistral")
     p.add_argument("--jobs", type=int, default=4, help="concurrent requests")
     p.add_argument("--batch-size", type=int, default=256)
+    # One timeout for every provider, so that a slow vendor is recorded as slow rather than
+    # given more room than the others.
+    p.add_argument("--timeout", type=float, default=1800,
+                   help="seconds one document may take, per provider. Default: 1800")
+    p.add_argument("--mode", help="provider-specific tier, where it has one")
+    p.add_argument("--completion-model",
+                   help="model name, for the providers that are a chat completion")
     add_root(p)
     p.add_argument("--overwrite", action="store_true",
                    help="replace a run already in --out, instead of refusing")
@@ -127,10 +140,12 @@ def main(argv=None) -> int:
                         format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     try:
         return args.fn(args)
-    except (ValueError, FileNotFoundError) as exc:
+    except (ValueError, FileNotFoundError, ImportError) as exc:
         # One boundary for everything a manifest can get wrong -- a missing column, a name
         # that collides with ours, a repeated doc_id, a path that is not there. These are
-        # already written to be read, so print the message and not a traceback.
+        # already written to be read, so print the message and not a traceback. ImportError
+        # joins them because a missing extra is the same kind of thing: something to install,
+        # not a defect, and the messages raised for it name the extra to install.
         print(f"  {exc}", file=sys.stderr)
         return 1
 
