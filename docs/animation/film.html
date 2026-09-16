@@ -1,0 +1,318 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>film</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@600&display=swap">
+<style>
+  :root{
+    --ground:#eceff4; --surface:#ffffff; --sunk:#f4f6f9;
+    --ink:#151a23; --muted:#5c6676; --faint:#8a93a2;
+    --rule:#d3d9e2; --hair:#e3e7ee;
+    --accent:#4b45b5; --accent-soft:#e7e6f8;
+    --ok:#14784c; --ok-bg:#e2f2e9;
+    --warn:#94600a; --warn-bg:#f8eed8;
+    --gapv:#3a6191; --gapv-bg:#e4ecf6;
+    --extra:#ad2f47; --extra-bg:#fae5e9;
+    --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+    --sans:"IBM Plex Sans",system-ui,sans-serif;
+    --serif:"IBM Plex Serif",Georgia,serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;width:1100px;height:560px;overflow:hidden}
+  body{background:var(--ground);color:var(--ink);font-family:var(--sans);
+       -webkit-font-smoothing:antialiased}
+  .frame{width:1100px;height:560px;padding:20px 26px;display:flex;flex-direction:column}
+
+  .head{display:flex;justify-content:center;align-items:baseline;height:36px}
+  h1{margin:0;font-family:var(--serif);font-size:28px;font-weight:600;
+     letter-spacing:-.012em;text-align:center}
+
+  .stage{position:relative;margin-top:16px;flex:1;background:var(--surface);
+         border:1px solid var(--rule);border-radius:9px}
+  .panel{position:absolute;inset:0;padding:16px 20px;display:flex;
+         align-items:center;justify-content:center}
+  .bar{margin-top:14px;height:3px;background:var(--rule);border-radius:2px;overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--accent);width:0}
+
+  /* docs */
+  .docs{display:grid;grid-template-columns:1fr 1fr;gap:22px;width:100%}
+  h3{margin:0 0 9px;font-family:var(--mono);font-size:10.5px;letter-spacing:.13em;
+     text-transform:uppercase;color:var(--faint);font-weight:500}
+  pre{margin:0;font-family:var(--mono);font-size:13px;line-height:1.72;background:var(--sunk);
+      border:1px solid var(--hair);border-radius:7px;padding:14px 16px;color:var(--ink)}
+  .k{color:var(--muted)} .s{color:var(--accent)} .n{color:var(--ok)}
+  .nul{color:var(--faint)}
+  .dl.off{opacity:.42;text-decoration:line-through;text-decoration-color:var(--extra)}
+  .dtag{color:var(--extra);font-size:11.5px;padding-left:10px;opacity:0}
+
+  /* tracks */
+  .tracks{display:grid;grid-template-columns:424px 152px 424px;width:1000px}
+  .thead{display:flex;align-items:baseline;padding-bottom:8px;
+         border-bottom:1px solid var(--rule);margin-bottom:8px;height:26px}
+  .thead.r{justify-content:flex-end}
+  .thead.blank{border-bottom-color:transparent}
+  .rows{position:relative;height:324px}
+  .row{position:absolute;left:0;right:0;top:0;height:36px;display:grid;align-items:center;
+       gap:10px;font-family:var(--mono);font-size:13px}
+  .gold .row{grid-template-columns:158px 96px 140px;padding-right:10px}
+  .pred .row{grid-template-columns:140px 96px 158px;padding-left:10px}
+  .addr{color:var(--muted);white-space:nowrap}
+  .addr b{font-weight:600;color:var(--ink)}
+  .raw{color:var(--ink);text-align:right;white-space:nowrap}
+  .pred .raw{text-align:left}
+  .canon{color:var(--accent);white-space:nowrap;font-weight:500}
+  .gold .canon{text-align:left}
+  .pred .canon{text-align:right}
+  .row.relabel .addr b{color:var(--accent)}
+  .row.orphan .addr b{color:var(--extra)}
+  .seam{position:relative}
+  .seam .line{position:absolute;left:50%;top:34px;height:320px;width:1px;background:var(--hair)}
+  .chip,.tag{position:absolute;left:50%;height:36px;display:flex;align-items:center;
+        justify-content:center;font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;
+        padding:0 10px;border-radius:20px;border:1px solid;white-space:nowrap;
+        transform:translate(-50%,0);top:0}
+  .tag{font-size:10px;border-style:dashed;background:transparent}
+  .v0{color:var(--ok);background:var(--ok-bg);border-color:var(--ok)}
+  .v1{color:var(--warn);background:var(--warn-bg);border-color:var(--warn)}
+  .v2{color:var(--gapv);background:var(--gapv-bg);border-color:var(--gapv)}
+  .v3{color:var(--extra);background:var(--extra-bg);border-color:var(--extra)}
+  .tneg{color:var(--gapv);border-color:var(--gapv)}
+  .tpos{color:var(--extra);border-color:var(--extra)}
+
+  /* matrix */
+  .mx{display:flex;flex-direction:column;align-items:center;gap:12px}
+  table{border-collapse:collapse;font-family:var(--mono);font-size:13px}
+  th,td{border:1px solid var(--hair);padding:9px 16px;font-weight:400;text-align:center}
+  thead th{background:var(--sunk);color:var(--faint);font-size:11px;letter-spacing:.04em;
+           line-height:1.5}
+  tbody th{background:var(--sunk);color:var(--faint);font-size:11px;text-align:right;
+           letter-spacing:.04em}
+  th.corner{background:transparent;border-color:transparent}
+  td{position:relative;color:var(--faint);font-variant-numeric:tabular-nums}
+  td.hit{color:var(--ink);font-weight:600}
+  td .hl{position:absolute;inset:-1px;border:1.5px solid var(--ok);background:var(--ok-bg);
+         border-radius:2px;opacity:0}
+  td .num{position:relative}
+  td.pick .num{color:var(--ok);font-weight:600}
+  tr.dead th{background:var(--extra-bg);color:var(--extra)}
+  tr.dead td{color:var(--extra);opacity:.7}
+  .mxnote{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+
+  /* metrics */
+  .mt{display:flex;flex-direction:column;gap:14px;width:1000px}
+  .tally{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
+  .t{padding:10px 12px;border-radius:7px;border:1px solid;background:var(--surface)}
+  .t .num{font-family:var(--mono);font-size:23px;font-weight:600;line-height:1.1}
+  .t .lb{font-family:var(--mono);font-size:10px;letter-spacing:.03em;margin-top:2px}
+  .t.a{border-color:var(--ok);background:var(--ok-bg);color:var(--ok)}
+  .t.b{border-color:var(--warn);background:var(--warn-bg);color:var(--warn)}
+  .t.c{border-color:var(--gapv);background:var(--gapv-bg);color:var(--gapv)}
+  .t.z{border-color:var(--hair);color:var(--faint)}
+  .t.d{border-color:var(--extra);background:var(--extra-bg);color:var(--extra)}
+  .arrowrow{display:flex;justify-content:center;font-family:var(--mono);font-size:11px;
+            color:var(--faint);letter-spacing:.06em}
+  .heads{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .h{border:1px solid var(--rule);border-radius:8px;padding:12px 16px;background:var(--sunk);
+     display:flex;align-items:baseline;gap:12px}
+  .h .hv{font-family:var(--serif);font-size:32px;font-weight:600;color:var(--ink);line-height:1}
+  .h .hm{font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.5}
+  .h .hn{font-family:var(--mono);font-size:10.5px;color:var(--faint);letter-spacing:.05em}
+</style></head>
+<body>
+<div class="frame">
+  <div class="head"><h1 id="title"></h1></div>
+  <div class="stage" id="stage"></div>
+  <div class="bar"><i id="bar"></i></div>
+</div>
+<script>
+(function(){
+"use strict";
+var ROW_H = 36;
+
+var GOLD = [
+  {a:'filing_date',               raw:'2024-03-31', c:'#d2024-03-31', slot:0},
+  {a:'holdings[<b>0</b>].issuer', raw:'Acme',       c:'acme',         slot:1},
+  {a:'holdings[<b>0</b>].value',  raw:'125.0',      c:'125',          slot:2},
+  {a:'holdings[<b>1</b>].issuer', raw:'Beta',       c:'beta',         slot:3},
+  {a:'holdings[<b>1</b>].value',  raw:'310.5',      c:'310.5',        slot:4},
+  {a:'holdings[<b>2</b>].issuer', raw:'Cygnus',     c:'cygnus',       slot:5},
+  {a:'holdings[<b>2</b>].value',  raw:'88.25',      c:'88.25',        slot:6}
+];
+var PRED = [
+  {a0:'filing_date',               a1:'filing_date',                raw:'03/31/2024', c:'#d2024-03-31', s0:0,s1:0},
+  {a0:'holdings[<b>0</b>].issuer', a1:'holdings[<b>2</b>].issuer',  raw:'Cygnus',     c:'cygnus', s0:1,s1:5},
+  {a0:'holdings[<b>0</b>].value',  a1:'holdings[<b>2</b>].value',   raw:'88.25',      c:'88.25',  s0:2,s1:6},
+  {a0:'holdings[<b>1</b>].issuer', a1:'holdings[<b>0</b>].issuer',  raw:'Acme',       c:'acme',   s0:3,s1:1},
+  {a0:'holdings[<b>1</b>].value',  a1:'holdings[<b>0</b>].value',   raw:'999.0',      c:'999',    s0:4,s1:2},
+  {a0:'holdings[<b>2</b>].issuer', a1:'holdings[<b>p2</b>].issuer', raw:'Delta',      c:'delta',  s0:5,s1:7},
+  {a0:'holdings[<b>2</b>].value',  a1:'holdings[<b>p2</b>].value',  raw:'42.0',       c:'42',     s0:6,s1:8}
+];
+var VERD = [['matched',0],['matched',0],['misread',1],['unfound',2],['unfound',2],
+            ['matched',0],['matched',0],['invented_item',3],['invented_item',3]];
+
+var SCENES = ['Gold & Prediction', 'Flatten', 'Normalize scalars',
+              'Hungarian match', 'Align', 'Verdicts', 'Metrics'];
+
+var stage = document.getElementById('stage');
+
+function doc(title, date, nullv, rows, side){
+  return '<div><h3>'+title+'</h3><pre>{\n  <span class="k">"filing_date"</span>: '+
+    '<span class="s">"'+date+'"</span>,\n'+
+    '<span class="dl" id="dl'+side+'">  <span class="k">"currency"</span>: '+
+      '<span class="nul">'+nullv+'</span>,</span>'+
+      '<span class="dtag" id="dt'+side+'">no address</span>\n'+
+    '  <span class="k">"holdings"</span>: [\n'+
+    rows.map(function(r){
+      return '    { <span class="k">"issuer"</span>: <span class="s">"'+r[0]+'"</span>,'+r[2]+
+             '<span class="k">"value"</span>: <span class="n">'+r[1]+'</span> }';
+    }).join(',\n')+'\n  ]\n}</pre></div>';
+}
+
+stage.innerHTML =
+  '<div class="panel" id="pDocs"><div class="docs">'+
+    doc('Gold','2024-03-31','null',
+        [['Acme','125.0','   '],['Beta','310.5','   '],['Cygnus','88.25',' ']],'g')+
+    doc('Prediction','03/31/2024','""',
+        [['Cygnus','88.25',' '],['Acme','999.0','   '],['Delta','42.0','  ']],'p')+
+  '</div></div>'+
+
+  '<div class="panel" id="pTracks"><div class="tracks">'+
+    '<div class="gold"><div class="thead"><h3>Gold</h3></div><div class="rows">'+
+      GOLD.map(function(g,i){
+        return '<div class="row" id="g'+i+'"><span class="addr">'+g.a+'</span>'+
+               '<span class="raw">'+g.raw+'</span>'+
+               '<span class="canon">&rarr; '+g.c+'</span></div>';
+      }).join('')+'</div></div>'+
+    '<div class="seam"><div class="thead blank">&nbsp;</div><div class="line"></div>'+
+      '<div class="rows">'+
+        VERD.map(function(v,i){
+          return '<div class="chip v'+v[1]+'" id="c'+i+'">'+v[0]+'</div>';
+        }).join('')+
+        '<div class="tag tneg" id="tagN">false negative</div>'+
+        '<div class="tag tpos" id="tagP">false positive</div>'+
+      '</div></div>'+
+    '<div class="pred"><div class="thead r"><h3>Prediction</h3></div><div class="rows">'+
+      PRED.map(function(p,i){
+        return '<div class="row" id="p'+i+'"><span class="canon">'+p.c+' &larr;</span>'+
+               '<span class="raw">'+p.raw+'</span>'+
+               '<span class="addr">'+p.a0+'</span></div>';
+      }).join('')+'</div></div>'+
+  '</div></div>'+
+
+  '<div class="panel" id="pMatrix"><div class="mx">'+(function(){
+      var W=[[0,0,2],[1,0,0],[0,0,0]], PICK={'0,2':1,'1,0':1};
+      var pl=['pred [0] &nbsp;cygnus 88.25','pred [1] &nbsp;acme 999','pred [2] &nbsp;delta 42'];
+      var gl=['gold [0]<br>acme 125','gold [1]<br>beta 310.5','gold [2]<br>cygnus 88.25'];
+      return '<table><thead><tr><th class="corner"></th>'+
+        gl.map(function(g){return '<th>'+g+'</th>';}).join('')+'</tr></thead><tbody>'+
+        W.map(function(r,i){
+          var dead = r.every(function(v){return v===0;});
+          return '<tr'+(dead?' class="dead"':'')+'><th>'+pl[i]+'</th>'+
+            r.map(function(v,j){
+              var pk = PICK[i+','+j];
+              return '<td class="'+(pk?'pick':(v?'hit':''))+'">'+
+                (pk?'<span class="hl" id="h'+i+j+'"></span>':'')+
+                '<span class="num">'+v+'</span></td>';
+            }).join('')+'</tr>';
+        }).join('')+'</tbody></table>'+
+        '<div class="mxnote">values that would agree if the two rows were paired</div>';
+    })()+'</div></div>'+
+
+  '<div class="panel" id="pMetrics"><div class="mt">'+
+    '<div class="tally">'+
+      '<div class="t a"><div class="num">4</div><div class="lb">matched</div></div>'+
+      '<div class="t b"><div class="num">1</div><div class="lb">misread</div></div>'+
+      '<div class="t c"><div class="num">2</div><div class="lb">unfound</div></div>'+
+      '<div class="t z"><div class="num">0</div><div class="lb">fabricated</div></div>'+
+      '<div class="t d"><div class="num">2</div><div class="lb">invented_item</div></div>'+
+      '<div class="t z"><div class="num">0</div><div class="lb">invented_field</div></div></div>'+
+    '<div class="arrowrow">&darr; &nbsp; metrics are counts of verdicts &nbsp; &darr;</div>'+
+    '<div class="heads">'+
+      '<div class="h"><span class="hv">44.4</span><span><span class="hm">accuracy</span><br>'+
+        '<span class="hn">|matched| / total &nbsp;=&nbsp; 4 / 9</span></span></div>'+
+      '<div class="h"><span class="hv">57.1</span><span><span class="hm">recall</span><br>'+
+        '<span class="hn">|matched| / |gold| &nbsp;=&nbsp; 4 / 7</span></span></div>'+
+      '<div class="h"><span class="hv">57.1</span><span><span class="hm">precision</span><br>'+
+        '<span class="hn">|matched| / |pred| &nbsp;=&nbsp; 4 / 7</span></span></div>'+
+    '</div></div></div>';
+
+/* frames */
+var F=[];
+function st(s,o){return{scene:s,docs:o.docs||0,tracks:o.tracks||0,matrix:o.matrix||0,
+  metrics:o.metrics||0,drop:o.drop||0,fold:o.fold||0,align:o.align||0,chip:o.chip||0,
+  tag:o.tag||0,pick:o.pick||0};}
+function push(ms,s){s.ms=ms;F.push(s);}
+function seg(n,ms,f){for(var i=1;i<=n;i++)push(ms,f(i/n));}
+function ease(k){return k<0.5?2*k*k:1-Math.pow(-2*k+2,2)/2;}
+
+// Reading time on each still. Change this one number to repace the film. Transitions are
+// timed separately so they stay smooth instead of stretching into a slideshow.
+var HOLD = 1.55;
+function hold(ms,s){push(Math.round(ms*HOLD),s);}
+
+hold(2400, st(0,{docs:1}));
+seg(6,70,  function(k){return st(1,{docs:1,drop:k});});
+hold(1900, st(1,{docs:1,drop:1}));
+seg(9,45,  function(k){return st(1,{docs:1-k,tracks:k,drop:1});});
+hold(2200, st(1,{tracks:1}));
+seg(11,55, function(k){return st(2,{tracks:1,fold:k});});
+hold(2300, st(2,{tracks:1,fold:1}));
+seg(9,45,  function(k){return st(3,{tracks:1-k,matrix:k,fold:1});});
+hold(1500, st(3,{matrix:1}));
+seg(6,90,  function(k){return st(3,{matrix:1,pick:k});});
+hold(2000, st(3,{matrix:1,pick:1}));
+seg(9,45,  function(k){return st(4,{matrix:1-k,tracks:k,fold:1});});
+hold(500,  st(4,{tracks:1,fold:1}));
+seg(24,58, function(k){return st(4,{tracks:1,fold:1,align:ease(k)});});
+seg(7,65,  function(k){return st(4,{tracks:1,fold:1,align:1,tag:k});});
+hold(2300, st(4,{tracks:1,fold:1,align:1,tag:1}));
+seg(11,60, function(k){return st(5,{tracks:1,fold:1,align:1,tag:1-k,chip:k});});
+hold(2500, st(5,{tracks:1,fold:1,align:1,chip:1}));
+seg(9,45,  function(k){return st(6,{tracks:1-k,metrics:k,fold:1,align:1,chip:1});});
+hold(3300, st(6,{metrics:1}));
+seg(8,45,  function(k){return st(0,{metrics:1-k,docs:k});});
+
+/* render */
+var E=function(id){return document.getElementById(id);};
+var pDocs=E('pDocs'),pTracks=E('pTracks'),pMatrix=E('pMatrix'),pMetrics=E('pMetrics'),
+    elTitle=E('title'),elBar=E('bar');
+
+function seek(i){
+  var s=F[i];
+  pDocs.style.opacity=s.docs; pTracks.style.opacity=s.tracks;
+  pMatrix.style.opacity=s.matrix; pMetrics.style.opacity=s.metrics;
+
+  ['g','p'].forEach(function(side){
+    E('dl'+side).className = 'dl' + (s.drop>0.3 ? ' off' : '');
+    E('dt'+side).style.opacity = s.drop;
+  });
+
+  GOLD.forEach(function(g,j){
+    var el=E('g'+j);
+    el.style.transform='translateY('+(g.slot*ROW_H)+'px)';
+    el.querySelector('.canon').style.opacity=s.fold;
+  });
+  PRED.forEach(function(p,j){
+    var el=E('p'+j), y=(p.s0+(p.s1-p.s0)*s.align)*ROW_H;
+    el.style.transform='translateY('+y+'px)';
+    el.querySelector('.canon').style.opacity=s.fold;
+    el.querySelector('.addr').innerHTML = s.align>0.5 ? p.a1 : p.a0;
+    el.className='row'+(s.align>0.5
+      ? (p.s1>=7 ? ' orphan' : (p.s0!==p.s1 ? ' relabel' : '')) : '');
+  });
+  VERD.forEach(function(v,j){
+    var el=E('c'+j);
+    el.style.transform='translate(-50%,'+(j*ROW_H)+'px)';
+    el.style.opacity=s.chip;
+  });
+  E('tagN').style.transform='translate(-50%,'+(3.5*ROW_H)+'px)';
+  E('tagP').style.transform='translate(-50%,'+(7.5*ROW_H)+'px)';
+  E('tagN').style.opacity=s.tag; E('tagP').style.opacity=s.tag;
+  ['02','10'].forEach(function(id){var el=E('h'+id); if(el) el.style.opacity=s.pick;});
+
+  elTitle.textContent=SCENES[s.scene];
+  elBar.style.width=((i+1)/F.length*100)+'%';
+}
+
+window.FILM={count:F.length, delays:F.map(function(f){return f.ms;}), seek:seek,
+             ready:document.fonts.ready.then(function(){seek(0);return true;})};
+})();
+</script></body></html>
