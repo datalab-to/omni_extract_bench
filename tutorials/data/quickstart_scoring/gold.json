@@ -1,0 +1,14 @@
+{
+  "invoice_id": "INV-77",
+  "total": "1,240.00",
+  "line_items": [
+    {
+      "sku": "AX-9910",
+      "qty": 2
+    },
+    {
+      "sku": "BX-2201",
+      "qty": 1
+    }
+  ]
+}

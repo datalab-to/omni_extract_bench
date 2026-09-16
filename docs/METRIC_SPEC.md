@@ -1,184 +1,270 @@
 # Metric specification
 
-**In one paragraph.** Every scalar value in the gold JSON is one point. A prediction earns the point when its value at the same place matches under one canonical comparison: numbers compared numerically, dates by calendar day, everything else case-, whitespace- and edge-punctuation-insensitive, with placeholders like "N/A" treated as empty. Rows of an array are paired first by maximum-weight assignment on how many values they share, so row order never matters and no key has to be guessed. The score for a document is matched points divided by gold points plus every predicted value that has no gold counterpart, so omitting rows and inventing them both cost; a document the system returned nothing for scores zero and stays in. The benchmark score is the mean over documents.
+The definition of the benchmark score. Anything the grader does that is not here is a bug.
+Every property in §9 is enforced by a test.
 
+Figures quoted below were measured on the 660-document snapshot of 2026-09-11, which the
+620-document corpus later replaced. They are evidence for the rules, not claims about what is
+published now: a rule stands or falls on the argument, and the numbers say what it cost when it
+was decided.
 
-The complete definition of the benchmark score. Everything the grader does is here; anything
-not here is a bug. Properties are stated formally and each is enforced by a test in
-`tests/test_metric_properties.py`.
+**The idea.** Give every value an address, then compare addresses. Object keys are addresses
+already — the model was handed the schema, so it uses the same key names. Array indices are
+not: the model emits rows in whatever order it read them. So the only real problem is working
+out which predicted row goes with which gold row; renumber, and scoring is set arithmetic.
 
-## 1. Objects
+## 1. Addresses
 
-- **Document** `d` with ground truth `G` and schema `S`. A vendor returns prediction `P`.
-- **Leaf**: a scalar reachable in `G` or `P` by walking objects and arrays. `null` on both
-  sides is *not* a leaf (it asserts nothing). Objects and arrays are never leaves themselves.
+- **Value**: a scalar at a complete path. Objects and arrays are never values; addresses pass
+  through them. `{"a": {"b": [{"c": 1}]}}` holds one value, at `a.b[0].c`.
+- **Address**: the path to a value, as tagged steps — a key or an index. The tag matters: a
+  document may contain the key `"0"`, and it must not join index `0`.
 - **Row**: an object element of an array. Arrays of scalars are compared as multisets.
+- The schema is **required**; §4 and §5 both depend on it.
 
-## 2. Leaf comparison — `cmp(p, g) ∈ {0, 1}`
+## 2. Comparing one value
 
-Deterministic and type-directed. No model participates.
+Deterministic and type-directed. No model participates. `canon_key` in
+`omni_extract_bench/values.py` is the single comparison rule, used by leaf scoring and row
+pairing alike, so the two cannot disagree.
 
 | gold type | rule |
 | --- | --- |
 | boolean | canonical equality |
-| integer / identifier-like | exact after canonicalisation — IDs, phone numbers and account numbers never fuzzy-match |
-| decimal number | equal within `1e-6 · max(1, |g|)`; **sign notation** folded (`(98.2)`, `−98.2`, `98.2-` all parse to −98.2) but **sign value preserved** (`−98.2 ≠ +98.2`) |
-| date-like string | equal if both parse to the same calendar date under any supported format |
-| other string | canonical equality under the string fold below |
+| integer / identifier-like | exact after canonicalisation — IDs, phone and account numbers never fuzzy-match |
+| decimal number | integer part exact, fraction rounded to 7 significant digits; sign *notation* folded (`(98.2)`, `−98.2`, `98.2-`), sign *value* preserved (`−98.2 ≠ 98.2`) |
+| date-like string | equal if both parse to the same calendar date. A timestamp at midnight is its date; any other time of day is kept and compared |
+| other string | canonical equality (case, whitespace, punctuation, smart quotes, unicode fractions) |
 
-**The string fold** (`normalize.canonical`): lowercase; NFKD with combining marks dropped; smart
-quotes and dashes to ASCII; placeholder markers (`n/a`, `none`, `-`, `..`) to empty; short footnote
-markers (`[1]`, `[a]`) removed; whitespace collapsed to one space; punctuation stripped from the
-**edges** of the value only; leading zeros inside digit runs dropped; unicode fractions expanded.
-Punctuation **between** characters is content and is kept.
+What sorts a value into integer or decimal is whether its text contains a `.` — that and
+nothing else, which is what stops an account number fuzzy-matching.
 
-| equal | distinct |
+Folded, and tested in `tests/test_comparison_surface.py`:
+
+    1,234 = 1234      $1,234.56 = 1234.56      12.34% = 12.34      5.00 = 5
+    (1,234.56) = -1234.56      1234.56- = -1234.56      −1234.56 = -1234.56
+    31/10/2024 = 2024-10-31    Oct 31, 2024 = 2024-10-31
+    2024-10-31T00:00:00Z = 2024-10-31          midnight is a date
+    ACME CORP = Acme Corp      "Acme  Corp." = "Acme Corp"      TRUE = true
+
+Not folded, and scored as disagreements — the first place to look when a provider's misses
+look like formatting, since this is a list of candidate scorer gaps rather than vendor errors:
+
+    USD 1234.56 ≠ 1234.56      currency codes are not stripped
+    1.234,56 ≠ 1234.56         European decimal notation
+    2024-10-31T09:00:00Z ≠ 2024-10-31          a real time of day is not a date
+    "yes" ≠ true               only true/false spellings are booleans
+
+`""` is deliberately absent from both lists: a placeholder *word* is ink the page printed and
+compares like any other value, while an empty string is what a blank cell serialises to and
+gets no address at all (§5).
+
+**These rules fold spelling, not wording.** Comparison is equality, so one character decides a
+string and there is no partial credit; §10 rules out the mechanisms that would soften it. For a
+name, code, date or amount, spelling is the whole job. For prose it is not, so a prose-valued
+leaf measures verbatim transcription — on a 1081-entry bibliography, dropping a trailing DOI
+from every entry scores 91.42 and eliding authors to "et al." scores 8.35. Fix that in the
+schema by decomposing prose into fields, not in the scorer.
+
+## 3. Aligning arrays
+
+1. **Price** every candidate pair: `w(Pᵢ, Gⱼ)` is the number of values that would match, using
+   §2's equivalences. Pricing descends, one array level per hop.
+2. **Pair** by the assignment maximising `Σ w`, solved exactly with
+   `scipy.optimize.linear_sum_assignment`, ties broken by shared addresses. Without that
+   tie-break two solvers returned different equal-weight assignments, and so different scores.
+3. **Discard any pair worth zero.** The bar is one matching value. Failing it charges every
+   gold value in the row as missing *and* everything the prediction put there as invented, so
+   neither omission nor invention is free.
+4. **Renumber** onto the paired gold row. A predicted row that paired with nothing keeps an
+   index of its own, written `lines[p2]`, so it can never be mistaken for a gold row.
+5. **Exactness budget.** Past `MAX_CELLS` (250 million) or `MAX_EXACT` (20 000 on the smaller
+   dimension) the solver falls back to greedy and reports `matching_exact: false`. The largest
+   gold array measured was 6881 rows — 19% of the cap — and solves exactly.
+
+Order is free by default, because row order is usually an artefact of layout. Naming an array
+in `order_matters` makes its index an address again; §8 covers what that trades away.
+
+## 4. What is reported
+
+Every address falls into exactly one bucket. These are the verdicts `explain()` returns and
+the counts `grade()` reports:
+
+| bucket | meaning |
 | --- | --- |
-| `Acme Inc.` / `Acme Inc` | `1/2` / `12` |
-| `ABN AMRO Bank N.V.` / `ABN AMRO BANK N.V.,` | `Section 2.1` / `Section 21` |
-| `"quoted"` / `quoted` | `v1.2` / `v12` |
-| `[1] Y. Bengio` / `Y. Bengio` | `Inst itutional` / `Institutional` |
-| `Table  B-1.` / `Table B-1` | `UBS AG, Stamford Branch` / `UBS AG (Stamford Branch)` |
+| `matched` | address on both sides, values agree |
+| `misread` | address on both sides, values differ |
+| `unfound` | gold address the prediction never used |
+| `fabricated` | the schema offered the slot, the document is silent, the model asserted a value |
+| `invented_item` | a value under an array element that paired with nothing |
+| `invented_field` | a name the schema never declared |
 
-An earlier fold deleted every internal period, slash, hyphen and space, which merged the
-right-hand column. Measured on the reference corpus, the narrower rule costs every provider
-0.3–0.6 points about equally and changes no rank.
+`fabricated` keys off the **schema**, not gold's `null`s — a gold field written `null` and one
+left out mean the same thing (§5), so keying off gold would sort two identical ground truths
+differently. `invented_item` is separate from `invented_field` because one invented row
+contributes a value per column while one invented field contributes one.
 
-Canonicalisation is a single shared function applied identically to `p` and `g`, so the
-comparison is symmetric by construction.
+    asserted  = matched + misread + fabricated + invented_item + invented_field
+    gold      = matched + misread + unfound
+    total     = matched + misread + unfound + fabricated + invented_item + invented_field
 
-## 3. Array semantics — optimal assignment
+    accuracy   = 100 · matched / total       how much you recovered, net of inventions
+    precision  = matched / asserted          how much of what you said was true
+    recall     = matched / gold              how much you recovered, inventions ignored
 
-For an array with predicted rows `P₁…Pₙ` and gold rows `G₁…Gₘ`:
+**Why `accuracy` and not `f1` or Jaccard.** Those are functions of `matched`, `|gold|` and
+`|asserted|` alone, so they cannot tell *misread* from *missed and invented elsewhere* — both
+score 50.00 under `f1`. `accuracy` scores them 50.00 and 33.33, because it knows the first
+pair shares an address, and locating a field is a different problem from not finding it.
 
-1. **Weight** `w(Pᵢ, Gⱼ)` = number of leaves that match if the two are paired. The weight uses
-   **the same equivalences as `cmp`** (dates, float precision, unicode fractions, sign
-   notation). It must: when the field that *distinguishes* two rows is a date, a weight that
-   only accepted literal equality paired the rows arbitrarily and a correct extraction scored
-   50 — reintroducing the very format penalty §2 removes.
-2. **Pairing** = the assignment maximising `Σ w` over all matchings — solved exactly
-   (Hungarian, `omni_extract_bench/matching.py`). Pairs with `w = 0` are discarded: two rows sharing nothing
-   are not a pair.
-3. Leaves inside paired rows are scored recursively. Leaves of unpaired rows count as misses —
-   on either side, so both omission and over-production are penalised.
-4. **Blocking**: rows may be partitioned by fields compared exactly; rows in different blocks
-   can never pair, so per-block optimal is globally optimal.
-5. **Exactness budget**: the solver is `O(n²·m)` in the *smaller* dimension `n`. Blocks are
-   solved exactly while `n²·m ≤ MAX_WORK`; beyond that the solver falls back to greedy and
-   *reports* `exact=False` rather than claiming optimality. The budget is on work, not row
-   count: a truncating provider produces a cheap rectangular problem (44×349 ≈ 7e5 operations),
-   so gating on the larger dimension pushed exactly the cases that most need accurate scoring
-   onto the approximate path. Greedy costs 0.2–0.8% of assignment weight, and it is charged
-   only to providers returning very large tables, so it is surfaced per grade
-   (`matching_exact`, `greedy_blocks`) and never silent.
+**It cannot be inflated.** `total = |gold| + invented`, so `accuracy ≤ matched / |gold|`.
+Proposing all 27 combinations of a three-key row to guarantee one hit scores 3.70. Ten gold
+rows returned perfectly score 100.00; the same ten with a thousand invented ones score 0.99.
 
-*Why exact matching matters:* the previous key-inference heuristic lost 2.6 points on a single
-10-Q, and 28% of array-cell misses on one subset were the right value attached to the wrong row.
+**It is indifferent in exactly one place:** where gold has a value, a wrong value costs what a
+blank costs. Both recovered nothing there. *Can I trust what it said* is `precision`'s question.
 
-## 4. Document score
+**Honesty flags.** `matching_exact` and `approximated` say when an array was too large to solve
+exactly; `skipped_open_maps` says which subtrees were not graded (§5). Asserted by
+`tests/test_false_assertions.py`, including that `grade`'s counts equal `explain`'s histogram.
 
-    leaf_accuracy(d) = 100 · (matched leaves) / (total leaves)
+## 5. What is not scored
 
-`total leaves` counts every gold leaf plus every spurious predicted leaf. Recall and precision
-over rows are reported separately and are never folded into `leaf_accuracy`.
+One rule, three instances: **the metric scores facts, so anything asserting no fact is not
+scored, on either side.**
 
-## 5. Aggregation
+**`null`, `""`, whitespace and an absent key all score alike**, at every level. A page can print
+`N/A` but cannot print emptiness, so `""` is what a blank cell becomes in JSON. The placeholder
+*words* are ink and remain ordinary values — `N/A`, `None` and `-` appear as real gold 24,980
+times, and 67 documents hold both those strings and `null` in one file.
 
-    score         = mean of leaf_accuracy over all documents
-    subset_score  = mean of leaf_accuracy over that subset's documents
+This is a comparability guarantee, not a convenience: `harness/dialects.py` makes strict vendors
+emit `null` where permissive ones omit the key, so scoring them differently would move a score
+with the serialisation convention the harness imposed. The deeper reason absence cannot earn
+credit is that it would make the score depend on **schema width instead of document content** —
+add fifty optional fields and every provider's score rises with nothing extracted.
 
-The headline is the document mean; subset means are reported beside it. A document a vendor
-returned nothing usable for scores **0** — excluding failures would reward fragility. Coverage
-is reported beside the score, never inside it.
+**A fold may trim a value; it may never consume one**, stated as an invariant on the one public
+entry point:
+
+> `canon_key(v) == ""` **implies** `states_nothing(v)`
+
+Seventeen spellings once violated it. `[1]` through `[14]` as reference numbers all keyed
+empty, so reversing every reference scored 100.00. Asserted by construction over 128 probe
+values in `tests/test_canon_properties.py`, not by a list — a list is what let them sit.
+
+**`additionalProperties` objects are not graded.** The keyword is not forwarded to strict
+vendors, so grading it would score a request the harness never made. Skipped on both sides and
+reported in `skipped_open_maps`.
+
+**Rows are never deleted; only leaves are.** A row asserting nothing contributes no addresses
+and so cannot be matched, missed or charged — the leaf rule already does the work a row filter
+would, without a field-name heuristic that §5.2 forbids.
+
+Asserted by `tests/test_spec_null_semantics.py`.
+
+### 5.1 Rendering is folded; content is not
+
+`17 APR 2020` and `2020-04-17` compare equal. `NIKE, Inc.` and `Nike` do not. The test is not
+how alike the strings look — it is whether the fact survives the round trip. A date in another
+format still names the same day; a company name with its legal suffix removed has dropped
+something no rule recovers. A field description asking for a particular rendering does not
+change this, and nothing here licenses the ground truth to normalise.
+
+### 5.2 Only what was asked is scored
+
+**The scorer enforces nothing the model was not shown.** No rule may read a field's name,
+description or position to decide how to compare its value; the comparison depends on the value
+alone. Otherwise the benchmark would grade a question it never asked.
+
+### 5.3 Where the fold is lenient on purpose, and what that costs
+
+Whitespace, commas, hyphens and periods fold from anywhere in a string, which merges a few
+values that are not the same: `1:00.50` and `1:50`, and the three in `KNOWN_COLLISIONS` nobody
+chose — `½` = `1/2` = `12`. Twelve such merges are enumerated in `tests/test_canon_properties.py`.
+The policy is that normalisation changes only where current behaviour is egregious, because
+each tightening is a score change that has to be paid for.
+
+### 5.4 Reading a comparison back
+
+`explain()` returns both sides twice, raw and canonical, so a reader can see *why* two values
+counted as equal without recomputing the rule and risking a second opinion about equality.
 
 ## 6. Ground truth adjustments
 
-Applied uniformly, before scoring, to every vendor alike:
+Corrections change the gold, never the scorer. A scorer rule that exists to hide a bad
+annotation makes every future run wrong in the same way.
 
-- **Placeholder rows dropped**: a gold row whose payload fields are all `null` asserts no fact.
-  Charging a vendor for omitting it penalises everyone for an unstated convention.
-- **Verified corrections**: applied as an overlay only where a human read the source and the
-  evidence is recorded (`GT_LEDGER.md`). Benchmark corpora are never edited in place.
+## 7. Aggregation
 
-## 7. Properties
+    SUBJECT   = mean over the documents of one subset
+    UNIFIED   = mean of the subset scores
 
-| # | property | statement |
+Equal weight per subset, not per document, so a large subset cannot dominate. The two
+weightings compose: every value carries `1/total` inside its document, so a value's weight is
+**inversely proportional to the size of the document holding it**.
+
+> **Not yet implemented.** `run_score.py` takes a flat mean over documents, which is the thing
+> this section says must not happen. Doing it properly needs each document's subset, which a
+> manifest can carry as an ordinary column. Until then a leaderboard printed by this repository
+> is not UNIFIED.
+
+## 8. What the metric pays for
+
+Recovering a value is the only thing that raises a score. Two consequences worth stating:
+
+**Omission is charged.** Returning 44 of 349 rows scores about 12, not 100. A metric that lets
+an extractor skip rows for free ranks a truncating system above a complete one.
+
+**Volume is not rewarded.** A document whose every gold value is returned scores 23.08 when it
+also emits ten invented rows, against 66.67 for one. Output that produces no correct value
+never raises a score and strictly lowers it whenever the score was above zero (P21).
+
+**Order-freedom is a trade.** A wrong value costs more inside a scalar array than in an object,
+because the array has no key to hold the address still. Wrapping scalars in objects does not
+buy it back. Asserted by `tests/test_incentives.py`.
+
+## 9. Properties
+
+Each is enforced by `tests/test_metric_properties.py` unless noted.
+
+| | | |
 | --- | --- | --- |
-| P1 | Identity | `score(G, G) = 100` for every `G` |
-| P2 | Permutation invariance | reordering any array in `P` or `G` leaves the score unchanged |
-| P3 | Monotonicity | correcting one wrong leaf never lowers the score |
-| P4 | No double counting | each gold leaf contributes exactly 1 to the denominator |
-| P5 | Determinism | identical inputs produce identical output, always |
-| P6 | Coverage honesty | a missing prediction scores 0 and is never dropped from the mean |
-| P7 | Symmetry of canonicalisation | `cmp(p, g) = cmp(g, p)` |
-| P8 | Optimality | no pairing of array rows yields a higher score than the one chosen |
-| P9 | Null neutrality | `null` on both sides adds nothing to numerator or denominator |
-| P10 | Sign fidelity | sign notation is free; a wrong sign is never free |
+| P2 | Order never matters | permuting any array changes neither score nor diagnostics |
+| P8 | Optimality | no pairing of rows yields a higher score than the one chosen |
 | P11 | Nesting invariance | wrapping a document in an extra level changes neither score nor denominator |
-| P12 | Omission is charged | returning a subset of the gold rows never scores 100 |
-| P13 | Scalar arrays are scored | an array of scalars contributes leaves at every depth |
-| P14 | Pairing/scoring agreement | any equivalence `cmp` honours is honoured when choosing the pairing |
-| P15 | No silent approximation | a grade that used the greedy fallback says so |
+| P13 | Scalar arrays are scored | an array of scalars contributes values at every depth |
+| P14 | Pairing/scoring agreement | the pairing that earned the score is the pairing committed |
+| P15 | No silent shortfall | a greedy pairing and a skipped open map are reported, never dropped |
+| P16 | Bucket completeness | the six buckets partition every address and equal `explain`'s verdicts |
+| P21 | Right is not punished, volume is not rewarded | correcting one value never lowers the score |
+| P22 | Split determinism | the diagnostic split does not move under a permutation (`tests/test_pairing_determinism.py`) |
 
-P1, P2, P5–P7, P9, P10 were already enforced. P3, P4 and P8 were added when this spec was
-written — the plan flagged monotonicity and no-double-counting as unasserted, and optimality
-was claimed before it was tested.
+P1 identity and P12 omission follow from P16; P4 is P16 restated.
 
-**P11–P15 are regressions, not hypotheticals.** Each corresponds to a defect that reached the
-leaderboard before it was caught; the README summarises them. P11/P12 cover a defect that made omission
-free for top-level arrays — one provider scored 100.0 on a document where it returned almost
-nothing. P11 is the strongest of these: if depth cannot change the score, no depth-dependent
-scoring path can exist, which is the whole class rather than the instance.
+## 10. Deliberate non-goals
 
-## 8. Deliberate non-goals
+No partial credit for strings, no per-field or per-vendor modes, no model in the comparison
+loop, no confidence weighting. Each would make two runs of the same scorer on the same data
+answer differently, or would require reading the field to decide how to compare it (§5.2).
 
-- No LLM judge in scoring. Measured worth ≈ 0.2 points on one subset; not worth
-  nondeterminism in a benchmark.
-- No per-subset scoring paths. One grader or the comparison is meaningless.
-- No substring acceptance and no sign flipping to accommodate ground-truth conventions.
-  Conventions are written into the schema instead (`schema_overlay.py`) so vendors are told,
-  not guessed at.
+## 11. Reading a score
 
+**Quote three.** `accuracy` is how much came back, `precision` how much of it can be trusted,
+and coverage how many documents were graded at all.
 
-### Object keys are values
+**Check four things before comparing providers:** coverage, `matching_exact`,
+`skipped_open_maps`, and whether the misses are in §2's second list — a harness gap reads
+exactly like a vendor error.
 
-An object's keys are compared by the same canonical form as its values, not literally. This
-matters only where the keys come from the DOCUMENT rather than the schema — an open
-`additionalProperties` map, whose keys are headings the extractor read off the page.
-Schema-declared property names are unaffected: both sides spell them the way the schema does.
+**What the scorer does not decide.** Document shape sets the weights (§7), and schema width
+sets how many addresses exist. Both are properties of the benchmark, not of the extractor.
 
-The reason is that ground truth is not reliably verbatim about case. In this corpus a document
-prints a heading in capitals, gold records it title-cased, and an extractor that transcribed it
-faithfully scored zero for that entire group — penalised for being closer to the document than
-the gold file. A benchmark cannot ask for verbatim transcription and then grade it against a
-normalised answer.
+## 12. Comparing vendors that fail differently
 
-If canonicalisation would merge two distinct keys of the same object (`Total` and `TOTAL`),
-that object falls back to literal pairing: merging them would silently discard one side's
-value, which is a worse failure than the one being fixed.
-
-## 9. Run protocol
-
-The metric is only fair if the inputs to it were produced the same way. Every published run
-follows these rules, and each is recorded per document in the stored raw record so it can be
-audited rather than trusted:
-
-- **One timeout for everyone** (1800 s per document). A document that exceeds it scores 0
-  for that provider unless the provider's job completed server-side and can be fetched by its
-  job id after the deadline — in which case the result counts and the timeout is *also*
-  reported. Recovery measures accuracy, not latency; the timeout count is published beside the
-  score. The rule is applied to every provider; whether it can benefit depends on whether the
-  vendor retains results, and that difference is stated.
-- **Maximum tier for everyone.** Each provider runs at its highest-accuracy setting. Any
-  exception is disclosed in the same sentence as that provider's score.
-- **Same schema for everyone.** Benchmark-only keys are stripped before a schema is sent;
-  a conventions overlay, where used, is applied to the same documents for every provider.
-- **Every raw response is kept** — status, body, headers, request and job ids, vendor-reported
-  usage — so any score can be recomputed, and any intervention checked, without re-running.
-- **Interventions are rules, not edits.** A re-run happens only when a stored result was
-  produced by a harness fault (a capture crash, an account-level stop, an empty 200) and
-  never because a score looked wrong. Each rule and the documents it touched are listed with
-  the results.
-- **Exclusions are declared** and applied to every provider, including already-scored ones.
-- **Coverage is published beside every score**, per §5, together with the count of documents
-  recovered after the deadline.
+An error costs one address if its element pairs and two if it does not, so the same error count
+scores differently depending on how it is distributed. Ten wrong values scattered across ten
+rows cost ten addresses; concentrated into two rows they can break the pairing and cost far
+more. `accuracy` is the only one of the three that sees that concentration, and the cost is a
+step rather than a slope: a repeated value — a currency, a fiscal year — can rescue a pairing
+that would otherwise fail. Directions are structural; magnitudes are shape-dependent.
