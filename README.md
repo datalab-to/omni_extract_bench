@@ -16,7 +16,7 @@ Python 3.11+.
 
 ## Scoring
 
-To score requires a table containing or pointing to the necessary inputs. The required columsn are:
+Scoring requires a table containing or pointing to the necessary inputs. The required columns are:
 
 | column | |
 |---|---|
@@ -36,6 +36,22 @@ oeb score --manifest jobs.parquet --out run/
 run/scores.parquet/part-00000.parquet      one row per manifest row
 run/verdicts.parquet/part-00000-0.parquet  one row per verdict
 ```
+
+A **relative** path in a manifest is owned by the benchmark and is read from `--root`; an
+**absolute** path or a URI is external and is read as written. So a published table of relative
+paths works wherever you unpacked it:
+
+```bash
+oeb score --root ./benchmark --manifest jobs.parquet --out run/
+```
+
+`--manifest`, `--out` and `--run` are ordinary command-line paths and are never touched by
+`--root`. Nothing rewrites what the manifest said either — `gt_path` reaches `scores.parquet`
+exactly as you wrote it — so read a run back with the root that produced it.
+
+`--out` holds one run. Scoring into a directory that already has one is refused, because parts
+are named by batch and a second, smaller run would replace some of them and leave the rest;
+pass `--overwrite` when replacing is what you meant.
 
 Two tables are outputted because they are read differently: a leaderboard reads every score and no
 verdicts, an audit reads one document's verdicts and no scores, and verdicts are two orders of
@@ -85,11 +101,16 @@ preds/predictions/<doc_id>.json     the bare extraction
 preds/manifest.parquet/part-00000.parquet   a row per document, with pred_path filled in
 ```
 
+`doc_path` follows the same rule as the rest, so `--root` works here too. The `pred_path`
+that comes back is absolute: `predict` wrote that file, and the benchmark does not own it.
+
 **That output table is a score manifest.** If the input carried `gt_path`, score it with
-nothing joined and nothing assembled:
+nothing joined and nothing assembled — with the same `--root`, since the gold paths rode
+through unchanged:
 
 ```bash
-oeb score --manifest preds/manifest.parquet --out run/
+oeb predict --root ./benchmark --manifest ./benchmark/manifest.parquet --out preds/ --provider datalab
+oeb score   --root ./benchmark --manifest preds/manifest.parquet --out run/
 ```
 
 
