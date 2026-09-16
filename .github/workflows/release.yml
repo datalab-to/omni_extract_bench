@@ -1,4 +1,4 @@
-# Publishing to PyPI. Triggered by publishing a GitHub release, whose tag is the version
+# Publishing to PyPI. Triggered by pushing a version tag, whose version must be the one
 # `pyproject.toml` already declares -- the job refuses the two if they disagree, because a
 # wheel named after the wrong version cannot be taken back off PyPI.
 #
@@ -6,10 +6,16 @@
 # `id-token` permission below is what lets the action prove it is them.
 name: release
 
+# Tag push only. A `release: published` trigger alongside this one would fire a second time
+# for the usual "push the tag, then write the release notes" sequence, and that second upload
+# fails on a filename PyPI already has -- a red run for a release that actually succeeded.
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -18,13 +24,36 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
 
+      # Read the declared version from pyproject itself rather than `uv version --short`:
+      # that subcommand reports the PROJECT version only on uv >= 0.7, and on older uv the
+      # same command prints uv's OWN version instead -- so a drifting toolchain would quietly
+      # compare the tag against the wrong number.
       - name: Check the tag against the declared version
-        if: github.event_name == 'release'
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
-          declared=$(uv version --short)
+          declared=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
           tag=${GITHUB_REF_NAME#v}
+          echo "tag=$tag declared=$declared"
           if [ "$declared" != "$tag" ]; then
-            echo "tag $tag does not match version $declared in pyproject.toml" >&2
+            echo "::error::tag $GITHUB_REF_NAME does not match version $declared in pyproject.toml. Bump the version, or move the tag." >&2
+            exit 1
+          fi
+
+      # The scorer decides published numbers, so a release that cannot pass its own tests is
+      # not one to ship. `benchmark` brings pyarrow and `harness` brings httpx; between them
+      # every test runs. None of them needs network or credentials.
+      - name: Install and test
+        run: |
+          uv pip install --system -e ".[benchmark,harness]"
+          failed=""
+          for t in tests/test_*.py; do
+            if ! PYTHONPATH=. python3 "$t" > /tmp/test-out.txt 2>&1; then
+              failed="$failed $(basename "$t")"
+              echo "::group::FAILED $t"; cat /tmp/test-out.txt; echo "::endgroup::"
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::tests failed:$failed" >&2
             exit 1
           fi
 
@@ -37,10 +66,24 @@ jobs:
         run: |
           uvx twine check dist/*
           if [ -n "$(find dist -size +50M)" ]; then
-            echo "an artifact is over 50 MB; check what the sdist swept in" >&2
+            echo "::error::an artifact is over 50 MB; check what the sdist swept in" >&2
             ls -lh dist
             exit 1
           fi
+
+      # The tag matched what pyproject declared; this checks the files that actually built
+      # carry that version too, which is what PyPI indexes and nobody can rename afterwards.
+      - name: Check the built version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag=${GITHUB_REF_NAME#v}
+          ls -l dist
+          for f in dist/*; do
+            case "$(basename "$f")" in
+              *-"$tag"-*.whl|*-"$tag".tar.gz) ;;
+              *) echo "::error::$(basename "$f") is not version $tag" >&2; exit 1 ;;
+            esac
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -50,6 +93,9 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    # Must match the environment named on PyPI's trusted-publisher entry for this repo. If
+    # that entry leaves the environment blank, delete these two lines: an upload from an
+    # environment the entry does not name is rejected.
     environment: pypi
     permissions:
       id-token: write
