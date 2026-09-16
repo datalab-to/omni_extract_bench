@@ -88,8 +88,8 @@ check("it scores", rows[0]["accuracy"] == 100.0 and tally["scored"] == 1, str(ta
 check("the paths stay on the row, so a score can say what it graded",
       rows[0]["gt_path"].endswith(".json") and rows[0]["pred_path"].endswith(".json"),
       str(rows[0]))
-check("the schema does not, since a report needs no copy of the question",
-      "schema" not in rows[0], str(list(rows[0])))
+check("and so does the schema, so a run can be audited without its manifest",
+      "schema" in rows[0], str(list(rows[0])))
 
 print("\n[2] unknown columns ride through")
 rows, _, _ = score([row("d1", GT, vendor="acme", suite="invoices", cost_usd=0.5)], "carry")
