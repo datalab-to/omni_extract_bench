@@ -47,7 +47,8 @@ Null rather than zero, because a zero claims the model tried and missed every fi
 Walk through it on data in this repo, including what each verdict means:
 [`tutorials/quickstart_scoring.md`](./tutorials/quickstart_scoring.md).
 
-One pair, no table:
+One pair, no table. This is the one command the base install runs: three local files,
+scipy, and nothing else. `oeb score` reads a manifest, so it needs `[benchmark]`.
 
 ```bash
 oeb score-one --gt gold.json --schema schema.json --pred pred.json
