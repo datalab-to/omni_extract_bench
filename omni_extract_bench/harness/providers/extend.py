@@ -32,7 +32,7 @@ Schema dialect most benchmarks emit. Use `omni_extract_bench.harness.dialects`:
 Skipping that step produces a stream of 400s -- $ref, then `evaluation_config`, then `title`,
 then non-nullable primitives -- one per request, which reads like a broken vendor and is not.
 
-Usage: python3 extend_provider.py --pdf X.pdf --schema S.json --out O.json
+Usage: python3 -m omni_extract_bench.harness.providers.extend --pdf X.pdf --schema S.json --out O.json
 """
 from __future__ import annotations
 import argparse, json, os, sys, time
@@ -180,3 +180,33 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# Extend reserves the property name `id` ("Field key \"id\" is reserved for internal use", HTTP 400).
+# Send it under an alias and restore the schema's own name on the way back -- dialect, not content.
+RESERVED = {"id": "id__"}
+
+
+def rename_reserved(node):
+    if isinstance(node, list):
+        return [rename_reserved(x) for x in node]
+    if not isinstance(node, dict):
+        return node
+    out = {}
+    for k, v in node.items():
+        if k == "properties" and isinstance(v, dict):
+            out[k] = {RESERVED.get(pk, pk): rename_reserved(pv) for pk, pv in v.items()}
+        elif k == "required" and isinstance(v, list):
+            out[k] = [RESERVED.get(x, x) for x in v]
+        else:
+            out[k] = rename_reserved(v)
+    return out
+
+
+def restore_reserved(obj):
+    back = {v: k for k, v in RESERVED.items()}
+    if isinstance(obj, list):
+        return [restore_reserved(x) for x in obj]
+    if isinstance(obj, dict):
+        return {back.get(k, k): restore_reserved(v) for k, v in obj.items()}
+    return obj
