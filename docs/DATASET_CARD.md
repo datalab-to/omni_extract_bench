@@ -31,14 +31,16 @@ metric, applied identically to every document and every provider.
 manifest.parquet        one row per document; the schema is in it
 pdfs/<doc_id>.pdf       the document
 gold/<doc_id>.json      the ground-truth extraction
+licenses/               the upstream licence for each suite
 ```
 
 | column | |
 |---|---|
-| `doc_id` | opaque, stable, unique; the name the files carry |
+| `doc_id` | unique; a descriptive name, which the files carry. Some contain spaces |
 | `doc_path` | `pdfs/<doc_id>.pdf`, relative to the dataset root |
 | `gt_path` | `gold/<doc_id>.json`, relative to the dataset root |
 | `schema` | the JSON Schema itself, inline as bytes |
+| `suite` | which part of the benchmark it came from |
 
 **Paths are relative, and that is deliberate.** The scorer reads a relative path from a
 `--root` you give it and an absolute path or a URI as written, so this table works wherever
@@ -46,13 +48,18 @@ you unpack it — and a `pred_path` you add pointing at your own predictions is 
 read from where it actually is. Nothing here has to be rewritten after download.
 
 The schema rides in the table rather than in a file because it is what makes the row
-self-describing: hand someone one row and they can reproduce the grading.
+self-describing: hand someone one row and they can reproduce the grading. Inlining costs
+almost nothing here -- 318 distinct schemas cover the 620 documents, and parquet stores the
+23 MB of JSON in a 1.3 MB file.
+
+`suite` names the part of the benchmark a document came from, and rides through to your
+scores, so results can be read per suite as well as overall.
 
 ## Get it
 
 ```bash
 uv pip install 'omni-extract-bench[benchmark]' polars   # polars is for the examples below
-hf download datalab-to/omni-extract-bench --repo-type dataset --local-dir benchmark
+hf download datalab-to/omni_extract_bench --repo-type dataset --local-dir benchmark
 ```
 
 Everything below assumes `benchmark/` is that directory, and that you are working next to it,
