@@ -36,14 +36,6 @@ def read_bytes(uri):
         return fh.read()
 
 
-def _ui():
-    """Imported when the verb runs, not when the module loads: the viewer needs pyarrow, and
-    `score-one` should work on a machine that has only the scorer."""
-    from . import ui
-
-    return ui
-
-
 def add_root(parser) -> None:
     """`--root` on every verb that reads a manifest.
 
@@ -122,13 +114,6 @@ def main(argv=None) -> int:
     p.add_argument("--overwrite", action="store_true",
                    help="replace a run already in --out, instead of refusing")
     p.set_defaults(fn=cmd_predict)
-
-    u = sub.add_parser("ui", help="write a browsable site for one or more runs")
-    u.add_argument("--run", nargs="+", required=True, metavar="RUN",
-                   help="a run directory, or a glob over several; its name labels the column")
-    u.add_argument("--out", required=True, help="the site directory")
-    add_root(u)
-    u.set_defaults(fn=lambda a: _ui().cmd_ui(a))
 
     o = sub.add_parser("score-one", help="score a single prediction/gt/schema triple")
     o.add_argument("--pred", required=True)
