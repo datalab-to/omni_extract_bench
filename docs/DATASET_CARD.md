@@ -56,7 +56,11 @@ huggingface-cli download datalab-to/omni-extract-bench --repo-type dataset --loc
 ```
 
 Everything below assumes `benchmark/` is that directory, and that you are working next to it,
-not inside it.
+not inside it. Each command names it with `--root`; export it once instead if you prefer:
+
+```bash
+export OEB_ROOT=$PWD/benchmark
+```
 
 ## Score your own predictions
 
