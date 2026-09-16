@@ -35,10 +35,6 @@ run/scores.parquet/part-00000.parquet      one row per manifest row
 run/verdicts.parquet/part-00000-0.parquet  one row per verdict
 ```
 
-- `-out` holds one run. Scoring into a directory that already has one is refused, because parts
-are named by batch and a second, smaller run would replace some of them and leave the rest;
-pass `-overwrite` when replacing is what you meant.
-
 Two tables are outputted because they are read differently: a leaderboard reads every score and no
 verdicts, an audit reads one document's verdicts and no scores, and verdicts are two orders of
 magnitude larger. Every other column you put in the manifest rides through to `scores` untouched.
