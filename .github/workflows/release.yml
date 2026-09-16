@@ -9,6 +9,9 @@ name: release
 # Tag push only. A `release: published` trigger alongside this one would fire a second time
 # for the usual "push the tag, then write the release notes" sequence, and that second upload
 # fails on a filename PyPI already has -- a red run for a release that actually succeeded.
+# `workflow_dispatch` is a DRY RUN: it builds, tests and checks the artifacts but does not
+# publish (see the `if` on the publish job). Use it to see a release go green before the tag
+# exists, because a tag that fails halfway can leave a version burned on PyPI.
 on:
   push:
     tags: ["v*"]
@@ -93,9 +96,11 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    # Must match the environment named on PyPI's trusted-publisher entry for this repo. If
-    # that entry leaves the environment blank, delete these two lines: an upload from an
-    # environment the entry does not name is rejected.
+    # Only a tag publishes. A manual run stops after `build`, so `workflow_dispatch` is a
+    # dry run rather than a way to put whatever is on main onto PyPI without a version check.
+    if: startsWith(github.ref, 'refs/tags/')
+    # PyPI's trusted-publisher entry may name an environment. If it does, this must be that
+    # name; if it leaves the field blank, any environment is accepted and this is free.
     environment: pypi
     permissions:
       id-token: write
