@@ -114,7 +114,7 @@ Vendor adapters live behind an extra:
 
 ## What the metric does
 
-![gif](./docs/animation/scoring.gif)
+![gif](./assets/animation/scoring.gif)
 
 - Normalize document;
 - Flatten prediction and gold JSON dictionary to addresses mapped to their scalar values;
