@@ -22,16 +22,11 @@ The scorer needs none of it. Grading reads JSON off a disk, so a machine that on
 never installs a vendor SDK -- which is why the adapters' dependencies are an extra rather
 than a dependency, and why nothing above this directory imports anything in it.
 
-WHAT WAS MISSING, AND WHERE IT CAME BACK FROM
----------------------------------------------
-This file used to record that the runner did not exist: that nothing called
-`capture.install_taps()`, that `providers/` held one adapter of the nine vendors on the board,
-and that the code which drove them was not in this repository or on any machine we had looked
-at. What it had instead was the evidence a caller must have existed -- every prediction in
-`s3://example-bucket/omni-extract-bench/runs/full/baselines/<vendor>/_raw/` carries
-the schema actually sent, every HTTP call, the job ids, the cost, and a `run_manifest`, all in
-`capture.record`'s own format.
-
-The runner was on `fix/scorer-parity-660` the whole time. It is now here, and the account
-above stands as written: those records are what it produces.
+WHAT A RUN LEAVES BEHIND
+------------------------
+Every prediction this package produces is accompanied by a raw record carrying the schema
+actually sent, every HTTP call, the job ids, the cost and a `run_manifest`, in
+`capture.record`'s own format. That is what makes a vendor's score checkable after the fact:
+what it was asked, what it answered, and what the call cost, rather than the parsed result
+alone.
 """
