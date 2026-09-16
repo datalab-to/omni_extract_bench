@@ -85,8 +85,20 @@ def open_uri(uri: str, mode: str = "rb"):
     fsspec rather than a client of our own, opened inside whichever process does the work: a
     filesystem object does not survive being pickled to a worker, while fsspec's instance
     cache gives each process its own without being asked.
+
+    A local path falls back to the builtin when fsspec is not installed, so that the base
+    install -- the scorer and scipy, which is what the README calls it -- can grade a pair of
+    files on disk. fsspec arrives with the `benchmark` extra alongside pyarrow, because a
+    manifest needs both; one local file needs neither.
     """
-    import fsspec
+    try:
+        import fsspec
+    except ImportError:
+        if "://" in uri:
+            raise ImportError(
+                f"reading {uri!r} needs fsspec: pip install 'omni-extract-bench[benchmark]'"
+                " (add [s3] for a bucket)") from None
+        return open(uri, mode)
 
     return fsspec.open(uri, mode)
 
@@ -103,8 +115,16 @@ def open_manifest(manifest: str):
     Parquet or CSV, by extension. In a CSV the `schema` cell is JSON text, which `json.loads`
     reads exactly as it reads the bytes a parquet column holds.
     """
-    import fsspec
-    import pyarrow.dataset as ds
+    # A manifest is the one thing the base install genuinely cannot read: a parquet dataset
+    # is pyarrow by definition. Named here rather than left as a bare ImportError, because
+    # the extra that supplies it is not guessable from "No module named 'pyarrow'".
+    try:
+        import fsspec
+        import pyarrow.dataset as ds
+    except ImportError as exc:
+        raise ImportError(f"reading a manifest needs {exc.name}: "
+                          "pip install 'omni-extract-bench[benchmark]'"
+                          " (add [s3] for a manifest or paths in a bucket)") from None
 
     fs, path = fsspec.core.url_to_fs(manifest)
     return ds.dataset(path, filesystem=fs,
