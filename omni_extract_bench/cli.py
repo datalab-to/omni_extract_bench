@@ -1,229 +1,138 @@
 """Command-line interface.
 
-    omni-extract-bench score --pred p.json --gt g.json --schema s.json
-    omni-extract-bench score-dir --pred-dir preds/ --gt-dir gt/ --schema-dir schemas/
-    omni-extract-bench leaderboard --pred-root baselines/ --gt-dir gt/ --schema-dir schemas/
+    oeb score     --manifest jobs.parquet --out run/   [--jobs N] [--batch-size N]
+    oeb predict   --manifest jobs.parquet --out preds/ [--jobs N] [--batch-size N]
+    oeb score-one --pred p.json --gt g.json --schema s.json
 
-`score-dir` pairs files by basename. `leaderboard` expects one sub-directory per provider
-under `--pred-root` and scores them all over the same document list, which is what makes the
-comparison fair: every provider is scored over an identical denominator, and a document a
-provider failed to return scores 0 rather than being dropped from its mean.
+Two verbs and an escape hatch. `score` and `predict` each take one tabular manifest and write
+a directory of parquet parts; `score-one` grades a single triple and prints it, for when there
+is no table involved at all.
+
+A manifest is any parquet or CSV whose rows name their inputs -- `run_score` and
+`run_predict` document the columns. Paths go through fsspec, so `s3://`, `gs://` and a local
+path are the same thing here and there is no separate remote runner.
+
+`score-one` builds a one-row manifest and calls the same `score_row` a run does, rather than
+repeating the resolve-and-grade path. Two definitions of what scoring a row means is one more
+than there should be.
+
+A manifest may also be a DIRECTORY of parquet parts, because a dataset is what gets opened --
+so `predict --out preds/` is followed by `score --manifest preds/manifest.parquet` with nothing in
+between.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
-from pathlib import Path
 
-from .grading import fair_grade
-from .prediction_io import usable
+from .run_score import open_uri, score_row
 
 
-def _load(path):
-    with open(path) as fh:
-        return json.load(fh)
+def read_bytes(uri):
+    with open_uri(uri) as fh:
+        return fh.read()
 
 
-def _unwrap(obj):
-    """Accept either a bare extraction or a `{"result": ...}` envelope."""
-    if isinstance(obj, dict) and set(obj) == {"result"}:
-        return obj["result"]
-    return obj
+def add_root(parser) -> None:
+    """`--root` on every verb that reads a manifest.
 
-
-def _score_one(pred_path, gt_path, schema_path):
-    pred = _unwrap(_load(pred_path)) if pred_path and Path(pred_path).exists() else None
-    gt = _unwrap(_load(gt_path))
-    schema = _load(schema_path) if schema_path and Path(schema_path).exists() else {}
-    if not usable(pred):
-        return None
-    return fair_grade(pred, gt, schema)
-
-
-def _mean(xs):
-    return sum(xs) / len(xs) if xs else 0.0
-
-
-def cmd_score(args):
-    r = _score_one(args.pred, args.gt, args.schema)
-    if r is None:
-        print("prediction is empty or errored -> scores 0")
-        return 0
-    print(json.dumps(r, indent=2))
-    return 0
-
-
-def _pairs(gt_dir, pred_dir, schema_dir):
-    for gt_file in sorted(Path(gt_dir).glob("*.json")):
-        stem = gt_file.stem
-        schema = Path(schema_dir) / f"{stem}.json" if schema_dir else None
-        yield stem, Path(pred_dir) / f"{stem}.json", gt_file, schema
-
-
-def cmd_score_dir(args):
-    rows, missing = [], 0
-    for stem, pred, gt, schema in _pairs(args.gt_dir, args.pred_dir, args.schema_dir):
-        r = _score_one(pred, gt, schema)
-        if r is None:
-            missing += 1
-            rows.append((stem, 0.0, None))
-            continue
-        rows.append((stem, r["leaf_accuracy"], r))
-    if not rows:
-        print(f"no ground-truth files found in {args.gt_dir}", file=sys.stderr)
-        return 1
-    for stem, score, r in sorted(rows, key=lambda x: x[1]):
-        cov = "" if r else "   (no output -> 0)"
-        print(f"  {score:6.2f}  {stem}{cov}")
-    scored = [s for _, s, r in rows if r]
-    print(f"\ndocuments      {len(rows)}")
-    print(f"returned       {len(scored)}  ({100 * len(scored) // max(len(rows), 1)}% coverage)")
-    print(f"score          {_mean([s for _, s, _ in rows]):.2f}   (no output counted as 0)")
-    print(f"on returned    {_mean(scored):.2f}")
-    return 0
-
-
-def _leaderboard_rows(pred_root, gt_dir, schema_dir):
-    """(provider, scores-with-zeros, returned, n_docs) for one directory of ground truth."""
-    providers = sorted(p for p in Path(pred_root).iterdir() if p.is_dir())
-    docs = [g.stem for g in sorted(Path(gt_dir).glob("*.json"))]
-    rows = []
-    for prov in providers:
-        scores, returned = [], 0
-        for stem in docs:
-            schema = Path(schema_dir) / f"{stem}.json" if schema_dir else None
-            r = _score_one(prov / f"{stem}.json", Path(gt_dir) / f"{stem}.json", schema)
-            # A document a provider did not return scores 0; it is never dropped from the
-            # mean, or a provider that fails on hard documents would look better than one
-            # that attempts them.
-            scores.append(r["leaf_accuracy"] if r else 0.0)
-            returned += 1 if r else 0
-        rows.append((prov.name, scores, returned, len(docs)))
-    return rows
-
-
-def _leaf_task(t):
-    """leaf_accuracy for one (provider, subset, pred, gt, schema) task, or None if unusable.
-
-    Module-level so it pickles for the process pool; the big tables that make parallelism
-    worthwhile are exactly the ones a fork-safe worker has to be able to reach by name.
+    `OEB_ROOT` sits behind it so that a corpus someone downloaded is named once per shell
+    rather than once per command -- the flag still wins where it is given. An environment
+    variable rather than a rewrite of the manifest on arrival: the root is a fact about this
+    machine, and writing it into the data would make the data untrue on the next one.
     """
-    _, _, pred, gt, schema = t
-    r = _score_one(Path(pred), Path(gt), Path(schema))
-    return r["leaf_accuracy"] if r else None
+    parser.add_argument("--root", default=os.environ.get("OEB_ROOT", "."),
+                        help="what a relative path in a manifest is relative to; absolute\n"
+                             "paths and URIs are used as written. Default: $OEB_ROOT, or .")
 
 
-def cmd_leaderboard_subsets(args):
-    """The published headline: METRIC_SPEC section 5, the mean over all documents. Per-subset
-    means are printed beside it.
+def cmd_score(args) -> int:
+    from . import run_score
 
-    Expects the HF dataset layout: <data-root>/<subset>/<doc>/{ground_truth,schema}.json with
-    predictions at <pred-root>/<provider>/<subset>/<doc>.json.
-    """
-    root = Path(args.data_root)
-    subsets = sorted(d.name for d in root.iterdir() if d.is_dir())
-    if not subsets:
-        print(f"no subset directories under {root}", file=sys.stderr)
-        return 1
-    providers = sorted(p for p in Path(args.pred_root).iterdir() if p.is_dir())
-    # One task per (provider, subset, document). Scoring is a pure function of the three files,
-    # so the order of evaluation cannot change a number -- which is what makes it safe to fan
-    # out. A 20,000-row table takes minutes on one core; the reference corpus has several.
-    tasks = []
-    for sub in subsets:
-        docs = sorted(d for d in (root / sub).iterdir() if d.is_dir())
-        for prov in providers:
-            for d in docs:
-                tasks.append((prov.name, sub, str(prov / sub / f"{d.name}.json"),
-                              str(d / "ground_truth.json"), str(d / "schema.json")))
-    workers = args.workers or os.cpu_count() or 1
-    if workers > 1 and len(tasks) > 1:
-        from concurrent.futures import ProcessPoolExecutor
-        with ProcessPoolExecutor(max_workers=workers) as ex:
-            leaf = list(ex.map(_leaf_task, tasks, chunksize=1))
-    else:
-        leaf = [_leaf_task(t) for t in tasks]
-    per = {}                       # provider -> subset -> (scores, returned, n)
-    for (prov, sub, *_), acc in zip(tasks, leaf):
-        scores, returned, n = per.setdefault(prov, {}).setdefault(sub, ([], 0, 0))
-        scores.append(acc if acc is not None else 0.0)
-        per[prov][sub] = (scores, returned + (1 if acc is not None else 0), n + 1)
-    head = f"{'provider':22}{'score':>8}{'coverage':>11}" + "".join(f"{s[:10]:>12}" for s in subsets)
-    print(head); print("-" * len(head))
-    table = []
-    for prov, by in per.items():
-        sub_means = [_mean(by[s][0]) for s in subsets if s in by]
-        allscores = [x for s in subsets if s in by for x in by[s][0]]
-        ret = sum(by[s][1] for s in subsets if s in by); n = sum(by[s][2] for s in subsets if s in by)
-        table.append((prov, _mean(allscores), ret, n, sub_means))
-    for prov, score, ret, n, subs in sorted(table, key=lambda t: -t[1]):
-        print(f"{prov:22}{score:>8.2f}{f'{ret}/{n}':>11}" + "".join(f"{v:>12.2f}" for v in subs))
-    print("\nscore = mean over all documents (METRIC_SPEC section 5); a missing prediction scores 0.")
+    tally = run_score.run(args.manifest, args.out, jobs=args.jobs,
+                          batch_size=args.batch_size, root=args.root,
+                          overwrite=args.overwrite)
+    print(f"{args.out}: " + "  ".join(f"{k}={v}" for k, v in tally.items()))
+    # Zero: the run did its job. Documents the system under test could not answer are the
+    # benchmark's findings, not this command's failure, and they are all in the table with
+    # their reasons. A manifest that cannot be read still exits non-zero, from main().
     return 0
 
 
-def cmd_leaderboard(args):
-    if getattr(args, "data_root", None):
-        return cmd_leaderboard_subsets(args)
-    if not args.gt_dir:
-        print("leaderboard needs --gt-dir (one subset) or --data-root (all subsets)", file=sys.stderr)
-        return 2
-    providers = sorted(p for p in Path(args.pred_root).iterdir() if p.is_dir())
-    if not providers:
-        print(f"no provider directories under {args.pred_root}", file=sys.stderr)
+def cmd_predict(args) -> int:
+    from . import run_predict
+
+    tally = run_predict.run(args.manifest, args.out, args.provider, jobs=args.jobs,
+                            batch_size=args.batch_size, timeout=args.timeout, mode=args.mode,
+                            completion_model=args.completion_model, root=args.root,
+                            overwrite=args.overwrite)
+    print(f"{args.out}: " + "  ".join(f"{k}={v}" for k, v in tally.items()))
+    return 1 if tally["error"] else 0
+
+
+def cmd_score_one(args) -> int:
+    # The schema is inline in a manifest; here it is a path like the other two, because a
+    # path is what someone at a terminal has.
+    row, _ = score_row({"doc_id": "one", "gt_path": args.gt, "pred_path": args.pred,
+                        "schema": read_bytes(args.schema)})
+    if row["status"] != "scored":
+        print(f"{row['status']}: {row['error']}", file=sys.stderr)
         return 1
-    docs = [g.stem for g in sorted(Path(args.gt_dir).glob("*.json"))]
-    print(f"{'provider':22}{'score':>9}{'coverage':>10}{'on returned':>13}")
-    print("-" * 54)
-    table = []
-    for prov in providers:
-        scores, returned = [], 0
-        for stem in docs:
-            schema = Path(args.schema_dir) / f"{stem}.json" if args.schema_dir else None
-            r = _score_one(prov / f"{stem}.json", Path(args.gt_dir) / f"{stem}.json", schema)
-            # A document a provider did not return scores 0; it is never dropped from the
-            # mean, or a provider that fails on hard documents would look better than one
-            # that attempts them.
-            scores.append(r["leaf_accuracy"] if r else 0.0)
-            returned += 1 if r else 0
-        table.append((prov.name, _mean(scores), returned, len(docs),
-                      _mean([s for s in scores if s > 0])))
-    for name, score, ret, total, on_ret in sorted(table, key=lambda t: -t[1]):
-        print(f"{name:22}{score:>9.2f}{f'{ret}/{total}':>10}{on_ret:>13.2f}")
+    print(json.dumps({k: v for k, v in row.items() if k not in ("status", "error")}, indent=2))
     return 0
 
 
-def main(argv=None):
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="omni-extract-bench",
                                  description="Score document-extraction predictions.")
+    ap.add_argument("-q", "--quiet", action="store_true", help="progress off; results only")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("score", help="score one prediction")
-    s.add_argument("--pred", required=True)
-    s.add_argument("--gt", required=True)
-    s.add_argument("--schema")
+    s = sub.add_parser("score", help="score a manifest of documents")
+    s.add_argument("--manifest", required=True, help="parquet or CSV naming the work")
+    s.add_argument("--out", required=True,
+                   help="written as <out>/scores.parquet and <out>/verdicts.parquet")
+    s.add_argument("--jobs", type=int, default=1, help="worker processes")
+    s.add_argument("--batch-size", type=int,
+                   help="manifest rows per part, and the unit one worker takes; "
+                        "default: about four batches per job")
+    add_root(s)
+    s.add_argument("--overwrite", action="store_true",
+                   help="replace a run already in --out, instead of refusing")
     s.set_defaults(fn=cmd_score)
 
-    d = sub.add_parser("score-dir", help="score a directory of predictions")
-    d.add_argument("--pred-dir", required=True)
-    d.add_argument("--gt-dir", required=True)
-    d.add_argument("--schema-dir")
-    d.set_defaults(fn=cmd_score_dir)
+    p = sub.add_parser("predict", help="run a manifest of documents through their providers")
+    p.add_argument("--manifest", required=True)
+    p.add_argument("--out", required=True,
+                   help="written as <out>/predictions and <out>/manifest.parquet")
+    p.add_argument("--jobs", type=int, default=4, help="concurrent requests")
+    p.add_argument("--batch-size", type=int, default=256)
+    add_root(p)
+    p.add_argument("--overwrite", action="store_true",
+                   help="replace a run already in --out, instead of refusing")
+    p.set_defaults(fn=cmd_predict)
 
-    b = sub.add_parser("leaderboard", help="score every provider under a root directory")
-    b.add_argument("--pred-root", required=True)
-    b.add_argument("--gt-dir", help="one directory of ground truth (document-mean over it)")
-    b.add_argument("--schema-dir")
-    b.add_argument("--data-root", help="HF-layout root with <subset>/<doc>/ dirs: reports the "
-                                        "mean over all documents, with per-subset means")
-    b.add_argument("--workers", type=int, default=0,
-                   help="parallel scoring processes for --data-root (default: all cores; 1 = serial)")
-    b.set_defaults(fn=cmd_leaderboard)
+    o = sub.add_parser("score-one", help="score a single prediction/gt/schema triple")
+    o.add_argument("--pred", required=True)
+    o.add_argument("--gt", required=True)
+    o.add_argument("--schema", required=True)
+    o.set_defaults(fn=cmd_score_one)
 
     args = ap.parse_args(argv)
-    return args.fn(args)
+    # Progress on stderr, results on stdout, so `oeb score-one | jq` stays a pipe.
+    logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO,
+                        format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    try:
+        return args.fn(args)
+    except (ValueError, FileNotFoundError) as exc:
+        # One boundary for everything a manifest can get wrong -- a missing column, a name
+        # that collides with ours, a repeated doc_id, a path that is not there. These are
+        # already written to be read, so print the message and not a traceback.
+        print(f"  {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
