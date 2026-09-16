@@ -4,8 +4,7 @@ The complete definition of the benchmark score. Anything the grader does that is
 a bug. Every property in §9 is enforced by a test, and the tests are named where they matter.
 
 §11 is the practical end of it: what to check before trusting a number, and what the metric
-is measuring that no part of the scorer decides. Observations about the published corpus
-rather than about the scorer are in `CORPUS_NOTES.md`.
+is measuring that no part of the scorer decides.
 
 ## The idea
 
@@ -103,7 +102,7 @@ for a string and one character decides it; §10 rules out the two mechanisms tha
 that. For a name, code, date or amount, spelling is the whole job. For prose it is not — the
 realistic disagreements on a long string are edits. **So a prose-valued leaf measures verbatim
 transcription.** On a 1081-entry bibliography list, perfect but for one variance per entry
-(`CORPUS_NOTES.md`):
+:
 
     smart quotes, whitespace, trailing period, PDF hyphenation     100.00
     a trailing arXiv or DOI dropped                                 91.42
@@ -644,7 +643,7 @@ document carries equal weight across the means above. So a gold value's weight i
 largest table decides the score: a 500-row, 4-column table beside a 5-field header leaves the
 header at 0.25% of that document's number. Across documents, on the published corpus (2 to
 410,012 values per document) the heaviest single gold value carries **57,029×** the weight of
-the lightest (`CORPUS_NOTES.md`).
+the lightest.
 
 Both follow from decisions argued above — an address per value, equal weight per subset — but
 the composition is not neutral, and it is why document shape is a first-order input to a
