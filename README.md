@@ -142,7 +142,7 @@ did not know where it would land. `--root` will default to `OEB_ROOT`.
 
 Two consequences worth knowing:
 
-- `--manifest`, `--out` and `--run` are your shell's, never resolved against `--root`.
+- `--manifest` and `--out` are your shell's, never resolved against `--root`.
 - Nothing is rewritten. `gt_path` reaches `scores.parquet` exactly as the manifest wrote it.
 - `predict` records its `pred_path`s absolute, because it created that file and the corpus does not own it.
 
