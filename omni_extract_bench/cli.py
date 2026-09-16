@@ -1,181 +1,111 @@
 """Command-line interface.
 
-    oeb build-corpus --corpus DIR
-    oeb score        --predictions preds/ --out run/ [--corpus DIR] [--jobs N]
-    oeb explain      --run run/ --doc <doc_id>
-    oeb ui           --run run/ [--run run2/ ...] --out site/ [--corpus DIR]
-    oeb verify       --corpus DIR
-    oeb score-one    --pred p.json --gt g.json --schema s.json
+    oeb score     --manifest jobs.parquet --out run/   [--jobs N] [--batch-size N]
+    oeb predict   --manifest jobs.parquet --out preds/ [--jobs N] [--batch-size N]
+    oeb score-one --pred p.json --gt g.json --schema s.json
 
-A corpus is a directory of document directories, each holding `ground_truth.json` and
-`schema.json`, plus a `corpus.parquet` atlas that says which of them are in the benchmark.
-`build-corpus` writes the atlas; `score` runs over it. `--corpus` also takes a specific atlas
-file, so a filtered one written beside `corpus.parquet` is a subset you can score without
-disturbing the full list. `--corpus` defaults to the published
-benchmark, and pointing it elsewhere is how you score against your own ground truth. See
-`docs/USING.md`.
+Two verbs and an escape hatch. `score` and `predict` each take one tabular manifest and write
+a directory of parquet parts; `score-one` grades a single triple and prints it, for when there
+is no table involved at all.
 
-`score-one` is the escape hatch for a single pair, when there is no benchmark involved at all.
+A manifest is any parquet or CSV whose rows name their inputs -- `run_score` and
+`run_predict` document the columns. Paths go through fsspec, so `s3://`, `gs://` and a local
+path are the same thing here and there is no separate remote runner.
 
-Every command here takes local paths. Running against a bucket is `remote.py`'s business --
-it stages what the atlas names and calls the same scorer -- so that nothing about scoring
-depends on where the bytes came from.
+`score-one` builds a one-row manifest and calls the same `score_row` a run does, rather than
+repeating the resolve-and-grade path. Two definitions of what scoring a row means is one more
+than there should be.
 
-A schema is required, and is passed through `strip_benchmark_keys` and `resolve_refs` first --
-the scorer refuses a schema it cannot see through.
-
-Two earlier commands, `score-dir` and `leaderboard`, paired files by basename across flat
-per-type directories and could not read the benchmark layout at all. `score` replaces both.
-
-NOTE: aggregation here is a flat mean over documents. METRIC_SPEC section 7 defines the
-published number as an equal-weight mean over SUBSETS, which needs the subset each document
-belongs to and is not implemented yet.
+A manifest may also be a DIRECTORY of parquet parts, because a dataset is what gets opened --
+so `predict --out preds/` is followed by `score --manifest preds/manifest` with nothing in
+between.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
-from pathlib import Path
 
-from .harness.dialects import resolve_refs, strip_benchmark_keys
-from .harness.prediction_io import usable
-from .score import grade
+from .run_score import open_uri, score_row
 
 
-def _load(path):
-    with open(path) as fh:
-        return json.load(fh)
+def read_bytes(uri):
+    with open_uri(uri) as fh:
+        return fh.read()
 
 
-def _unwrap(obj):
-    """Accept either a bare extraction or a `{"result": ...}` envelope."""
-    if isinstance(obj, dict) and set(obj) == {"result"}:
-        return obj["result"]
-    return obj
+def cmd_score(args) -> int:
+    from . import run_score
 
-
-class Failed(Exception):
-    """One document could not be scored. Never fatal to a run, never silent either."""
-
-
-def _schema_for(schema_path):
-    """Load a schema and make it gradeable.
-
-    Two transforms, both required rather than tidy. `strip_benchmark_keys` removes our own
-    annotations, which are not part of the schema the model answered. `resolve_refs` inlines
-    `$ref`, because the scorer refuses a schema it cannot see through -- an
-    `additionalProperties` object behind a pointer would be graded while the same object
-    written inline is skipped.
-    """
-    if not schema_path or not Path(schema_path).exists():
-        raise Failed(f"no schema at {schema_path}. The scorer needs one: without it an "
-                     f"additionalProperties object cannot be found, and a fabricated value "
-                     f"cannot be told from an invented one")
-    return resolve_refs(strip_benchmark_keys(_load(schema_path)))
-
-
-def _score_one(pred_path, gt_path, schema_path):
-    """Score one document. Returns the grade, or None if the provider returned nothing.
-
-    Raises `Failed` for anything else that goes wrong, so a caller scoring a whole corpus can
-    record which documents failed and carry on. A run of nine providers over a hundred and
-    sixty documents must not be lost to one malformed file.
-    """
-    schema = _schema_for(schema_path)
-    try:
-        gt = _unwrap(_load(gt_path))
-    except (OSError, ValueError) as exc:
-        raise Failed(f"unreadable ground truth: {exc}") from exc
-    try:
-        pred = _unwrap(_load(pred_path)) if pred_path and Path(pred_path).exists() else None
-    except (OSError, ValueError) as exc:
-        raise Failed(f"unreadable prediction: {exc}") from exc
-    if not usable(pred):
-        return None
-    try:
-        return grade(pred, gt, schema)
-    except Failed:
-        raise
-    except Exception as exc:                                            # noqa: BLE001
-        raise Failed(f"{type(exc).__name__}: {exc}") from exc
-
-
-def cmd_score(args):
-    try:
-        r = _score_one(args.pred, args.gt, args.schema)
-    except Failed as exc:
-        print(f"could not score: {exc}", file=sys.stderr)
-        return 1
-    if r is None:
-        print("prediction is empty or errored -> scores 0")
-        return 0
-    print(json.dumps(r, indent=2))
+    tally = run_score.run(args.manifest, args.out, jobs=args.jobs, batch_size=args.batch_size)
+    print(f"{args.out}: " + "  ".join(f"{k}={v}" for k, v in tally.items()))
+    # Zero: the run did its job. Documents the system under test could not answer are the
+    # benchmark's findings, not this command's failure, and they are all in the table with
+    # their reasons. A manifest that cannot be read still exits non-zero, from main().
     return 0
 
 
-def main(argv=None):
+def cmd_predict(args) -> int:
+    from . import run_predict
+
+    tally = run_predict.run(args.manifest, args.out, args.provider, jobs=args.jobs,
+                            batch_size=args.batch_size, timeout=args.timeout, mode=args.mode,
+                            completion_model=args.completion_model)
+    print(f"{args.out}: " + "  ".join(f"{k}={v}" for k, v in tally.items()))
+    return 1 if tally["error"] else 0
+
+
+def cmd_score_one(args) -> int:
+    # The schema is inline in a manifest; here it is a path like the other two, because a
+    # path is what someone at a terminal has.
+    row, _ = score_row({"doc_id": "one", "gt_path": args.gt, "pred_path": args.pred,
+                        "schema": read_bytes(args.schema)})
+    if row["status"] != "scored":
+        print(f"{row['status']}: {row['error']}", file=sys.stderr)
+        return 1
+    print(json.dumps({k: v for k, v in row.items() if k not in ("status", "error")}, indent=2))
+    return 0
+
+
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="omni-extract-bench",
                                  description="Score document-extraction predictions.")
+    ap.add_argument("-q", "--quiet", action="store_true", help="progress off; results only")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("score-one", help="score a single prediction/gt/schema triple")
-    s.add_argument("--pred", required=True)
-    s.add_argument("--gt", required=True)
-    s.add_argument("--schema", required=True)
+    s = sub.add_parser("score", help="score a manifest of documents")
+    s.add_argument("--manifest", required=True, help="parquet or CSV naming the work")
+    s.add_argument("--out", required=True, help="written as <out>/scores and <out>/verdicts")
+    s.add_argument("--jobs", type=int, default=1, help="worker processes")
+    s.add_argument("--batch-size", type=int,
+                   help="manifest rows per part, and the unit one worker takes; "
+                        "default: about four batches per job")
     s.set_defaults(fn=cmd_score)
 
+    p = sub.add_parser("predict", help="run a manifest of documents through their providers")
+    p.add_argument("--manifest", required=True)
+    p.add_argument("--out", required=True, help="written as <out>/predictions and <out>/manifest")
+    p.add_argument("--jobs", type=int, default=4, help="concurrent requests")
+    p.add_argument("--batch-size", type=int, default=256)
+    p.set_defaults(fn=cmd_predict)
 
-    # The corpus-level commands. These read the benchmark layout -- a directory per document
-    # holding ground_truth.json and schema.json -- rather than the flat per-type directories
-    # the three commands above take.
-    from . import run as _run
-    from . import ui as _ui
-
-    c = sub.add_parser("build-corpus", help="write the atlas that says what a corpus contains")
-    c.add_argument("--corpus", required=True, help="the corpus directory")
-    c.set_defaults(fn=_run.cmd_build_corpus)
-
-    n = sub.add_parser("score", help="score a directory of predictions against a corpus")
-    n.add_argument("--predictions", required=True, help="directory of <doc_id>.json")
-    n.add_argument("--corpus", help="corpus directory, or a specific atlas parquet in it; "
-                                    "default: download the published benchmark")
-    n.add_argument("--out", required=True,
-                   help="the run directory: summary.parquet and verdicts/ land here")
-    n.add_argument("--source", help="what to call these predictions; default: the directory name")
-    n.add_argument("--jobs", type=int, default=1,
-                   help="worker processes, one document each")
-    n.add_argument("--no-verdicts", action="store_true",
-                   help="skip the per-address table; saves memory, not much time")
-    n.set_defaults(fn=_run.cmd_score)
-
-    e = sub.add_parser("explain", help="show every address for one document of a run")
-    e.add_argument("--run", required=True, help="a run directory written by `score --out`")
-    e.add_argument("--doc", required=True)
-    e.add_argument("--all", action="store_true", help="include addresses that matched")
-    e.set_defaults(fn=_run.cmd_explain)
-
-    u = sub.add_parser("ui", help="write a browsable site for one or more runs")
-    u.add_argument("--run", action="append", required=True, metavar="RUN",
-                   help="a run directory; repeat it to put several vendors side by side")
-    u.add_argument("--corpus", help="corpus directory, or a specific atlas parquet in it; "
-                                    "default: download the published benchmark")
-    u.add_argument("--out", required=True, help="the site directory")
-    u.set_defaults(fn=_ui.cmd_ui)
-
-    v = sub.add_parser("verify", help="check a corpus directory against the contract")
-    v.add_argument("--corpus", required=True,
-                   help="corpus directory, or a specific atlas parquet in it")
-    v.set_defaults(fn=_run.cmd_verify)
-
+    o = sub.add_parser("score-one", help="score a single prediction/gt/schema triple")
+    o.add_argument("--pred", required=True)
+    o.add_argument("--gt", required=True)
+    o.add_argument("--schema", required=True)
+    o.set_defaults(fn=cmd_score_one)
 
     args = ap.parse_args(argv)
+    # Progress on stderr, results on stdout, so `oeb score-one | jq` stays a pipe.
+    logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO,
+                        format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     try:
         return args.fn(args)
-    except _run.USER_ERRORS as exc:
-        # One boundary for everything a user can get wrong -- a missing atlas, a corpus that
-        # has drifted, a prediction naming no document. Anything else keeps its traceback,
-        # because it is ours to fix.
+    except (ValueError, FileNotFoundError) as exc:
+        # One boundary for everything a manifest can get wrong -- a missing column, a name
+        # that collides with ours, a repeated doc_id, a path that is not there. These are
+        # already written to be read, so print the message and not a traceback.
         print(f"  {exc}", file=sys.stderr)
         return 1
 

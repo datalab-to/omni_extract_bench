@@ -138,10 +138,17 @@ report("...and through a union branch",
        is_open_map({"anyOf": [{"type": "null"}, {"additionalProperties": True}]}))
 
 print("\nTHERE IS EXACTLY ONE GRADER")
+# `run_score.py` and `run_score_modal.py` are named for the verb they run, not for what they
+# compute: one resolves a manifest row and calls `grade`, the other decides which machine does
+# it. So the check is not the filename -- it is that no second module DEFINES a grade, which
+# is the thing that cannot be allowed back.
 graders = sorted(p.relative_to(PKG).as_posix() for p in PKG.rglob("*.py")
                  if "grad" in p.stem.lower() or "scor" in p.stem.lower())
-report("score.py is the only module that grades", graders == ["score.py"],
-       f"found {graders}")
+report("only score.py and the runners that call it are named for scoring",
+       graders == ["run_score.py", "run_score_modal.py", "score.py"], f"found {graders}")
+defines = sorted(p.relative_to(PKG).as_posix() for p in PKG.rglob("*.py")
+                 if p.name != "score.py" and "\ndef grade(" in p.read_text())
+report("nothing else defines a grade", not defines, f"a second grader in {defines}")
 report("no vendored grader tree", not (PKG / "vendor").exists(),
        "omni_extract_bench/vendor/ is back")
 
