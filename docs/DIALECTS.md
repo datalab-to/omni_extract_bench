@@ -32,6 +32,6 @@ In one run these took a provider from 8th place with 19 of 40 documents failed t
 none — the extraction quality never changed. Treat a vendor's low coverage as a harness bug
 until proven otherwise.
 
-`harness/providers/extend_provider.py` is a reference adapter showing the shape an integration takes.
+`omni_extract_bench/harness/providers/extend.py` is a reference adapter showing the shape an integration takes.
 Provider APIs change; treat it as an example rather than a maintained client.
 
