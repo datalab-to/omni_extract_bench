@@ -52,7 +52,7 @@ self-describing: hand someone one row and they can reproduce the grading.
 
 ```bash
 uv pip install 'omni-extract-bench[benchmark]' polars   # polars is for the examples below
-huggingface-cli download datalab-to/omni-extract-bench --repo-type dataset --local-dir benchmark
+hf download datalab-to/omni-extract-bench --repo-type dataset --local-dir benchmark
 ```
 
 Everything below assumes `benchmark/` is that directory, and that you are working next to it,

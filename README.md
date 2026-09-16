@@ -20,7 +20,7 @@ Python 3.11+. Each extra is additive, and the scorer alone needs none of them:
 | `benchmark` | manifests and runs | `pyarrow`, `fsspec` |
 | `s3` | manifest paths naming a bucket | `s3fs` |
 | `harness` | producing predictions | the vendor SDKs |
-| `modal` | fanning a run across containers | `modal`, and the two above |
+| `modal` | fanning a run across containers | `modal` + `benchmark` and `s3` extras |
 
 ## Scoring
 
