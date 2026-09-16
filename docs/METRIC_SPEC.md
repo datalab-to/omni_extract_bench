@@ -3,6 +3,11 @@
 The definition of the benchmark score. Anything the grader does that is not here is a bug.
 Every property in §9 is enforced by a test.
 
+Figures quoted below were measured on the 660-document snapshot of 2026-09-11, which the
+620-document corpus later replaced. They are evidence for the rules, not claims about what is
+published now: a rule stands or falls on the argument, and the numbers say what it cost when it
+was decided.
+
 **The idea.** Give every value an address, then compare addresses. Object keys are addresses
 already — the model was handed the schema, so it uses the same key names. Array indices are
 not: the model emits rows in whatever order it read them. So the only real problem is working
@@ -75,7 +80,7 @@ schema by decomposing prose into fields, not in the scorer.
    index of its own, written `lines[p2]`, so it can never be mistaken for a gold row.
 5. **Exactness budget.** Past `MAX_CELLS` (250 million) or `MAX_EXACT` (20 000 on the smaller
    dimension) the solver falls back to greedy and reports `matching_exact: false`. The largest
-   gold array in this corpus is 6881 rows — 19% of the cap — and solves exactly.
+   gold array measured was 6881 rows — 19% of the cap — and solves exactly.
 
 Order is free by default, because row order is usually an artefact of layout. Naming an array
 in `order_matters` makes its index an address again; §8 covers what that trades away.
