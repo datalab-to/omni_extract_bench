@@ -1,5 +1,3 @@
-# Github
-
 # Omni Extract Bench
 
 One scorer for document-extraction benchmarks. See [huggingface](https://huggingface.co/datasets/datalab-to/omni_extract_bench) for benchmark datasets.
@@ -51,7 +49,7 @@ Null rather than zero, because a zero claims the model tried and missed every fi
 `status == "scored"` and say how many documents that was.
 
 Walk through it on data in this repo, including what each verdict means:
-[`tutorials/quickstart_scoring.md`](./tutorials/quickstart_scoring.md).
+[`tutorials/quickstart_scoring.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/tutorials/quickstart_scoring.md).
 
 One pair, no table:
 
@@ -68,7 +66,7 @@ modal run --detach -m omni_extract_bench.run_score_modal \
     --manifest s3://bucket/jobs.parquet --out s3://bucket/run --rows 16
 ```
 
-Your machine needs no bucket credentials but modal does: see [`tutorials/quickstart_scoring.md`](./tutorials/quickstart_scoring.md) for details.
+Your machine needs no bucket credentials but modal does: see [`tutorials/quickstart_scoring.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/tutorials/quickstart_scoring.md) for details.
 
 ## Predicting
 
@@ -103,7 +101,7 @@ Vendor adapters live behind an extra:
 
 ## What the metric does
 
-![scoring.gif](./assets/animation/scoring.gif)
+![scoring.gif](https://raw.githubusercontent.com/datalab-to/omni_extract_bench/main/assets/animation/scoring.gif)
 
 - Normalize document;
 - Flatten prediction and gold JSON dictionary to addresses mapped to their scalar values;
@@ -121,7 +119,7 @@ For each document, this process produces one `Verdict` per unique scalar address
 
 These are mutually exclusive in our code and also semantically. The one interesting judgement call we made here is that an address falls under `invented_item` it falls within an unpaired item (i.e. row), even if the address was an invented field *within* that array element’s schema. We think this is the right call: it signals that this was counted against the model for inventing an item. Addresses outside of arrays that the schema never declared is `invented_field`.
 
-Full specification: [`docs/METRIC_SPEC.md`](./docs/METRIC_SPEC.md).
+Full specification: [`docs/METRIC_SPEC.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/METRIC_SPEC.md).
 
 ## Paths
 
