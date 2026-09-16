@@ -138,10 +138,9 @@ have no base and relative paths are relative to your working directory unless yo
 | relative paths written before the files reached you | the directory you put them in | `--root <dir>` |
 
 The third row is for a table someone else published: it cannot name a location, because the author
-did not know where it would land. `--root` falls back to `$OEB_ROOT`, so that corpus can be
-named once per shell instead of once per command.
+did not know where it would land. `--root` will default to `OEB_ROOT`.
 
-Three consequences worth knowing:
+Two consequences worth knowing:
 
 - `--manifest`, `--out` and `--run` are your shell's, never resolved against `--root`.
 - Nothing is rewritten. `gt_path` reaches `scores.parquet` exactly as the manifest wrote it.
