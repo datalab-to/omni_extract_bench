@@ -45,9 +45,14 @@ jobs:
       # The scorer decides published numbers, so a release that cannot pass its own tests is
       # not one to ship. `benchmark` brings pyarrow and `harness` brings httpx; between them
       # every test runs. None of them needs network or credentials.
+      # A venv, not `--system`: the runner's Python is Debian's, which refuses installs into
+      # itself under PEP 668 ("externally managed"). Activating it here means the test loop
+      # below runs on the interpreter that has the extras.
       - name: Install and test
         run: |
-          uv pip install --system -e ".[benchmark,harness]"
+          uv venv
+          . .venv/bin/activate
+          uv pip install -e ".[benchmark,harness]"
           failed=""
           for t in tests/test_*.py; do
             if ! PYTHONPATH=. python3 "$t" > /tmp/test-out.txt 2>&1; then
@@ -88,10 +93,15 @@ jobs:
             esac
           done
 
+      # The distributions only. `uv build` leaves a `.gitignore` in dist/, and while the
+      # upload action skips hidden files by default, naming what to carry means the publish
+      # job cannot be handed anything that is not a distribution.
       - uses: actions/upload-artifact@v4
         with:
           name: dist
-          path: dist/
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
 
   publish:
     needs: build
