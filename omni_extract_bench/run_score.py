@@ -2,8 +2,8 @@
 
     oeb score --manifest jobs.parquet --out run/
 
-    run/scores/part-00000.parquet      one row per manifest row
-    run/verdicts/part-00000.parquet    one row per address
+    run/scores.parquet/part-00000.parquet      one row per manifest row
+    run/verdicts.parquet/part-00000-0.parquet  one row per address
 
 **The manifest is the benchmark.** It says which documents to score and where their bytes
 are, and nothing else does -- no corpus directory, no atlas, no `<doc_id>.json` naming rule,
@@ -19,6 +19,13 @@ Required columns::
     schema       the schema itself, inline
 
 Paths are read through fsspec, so `s3://`, `gs://` and a local path are one code path.
+
+Each output is a DIRECTORY of parts carrying the `.parquet` name, because every reader opens
+one exactly as it opens a single file -- so a manifest that is one file and a manifest that is
+a hundred parts look alike wherever one is named. One part per batch, written under a name
+nothing else writes, so a fan-out needs no concatenate step: a part is complete or absent.
+A directory that already holds a run is refused rather than written into, since parts are
+named by batch and a second, differently sized run would replace some and leave the rest.
 """
 from __future__ import annotations
 
@@ -27,6 +34,7 @@ import concurrent.futures as cf
 import itertools
 import json
 import logging
+import pathlib
 import time
 import traceback
 from typing import Any
@@ -134,6 +142,24 @@ def check_manifest(data, required, reserved) -> None:
                            "unique -- the verdicts table joins back on it.")
 
 
+def resolve(path: str, root: str) -> str:
+    """Where a path in a manifest actually points.
+
+    **Relative means owned by the benchmark** and is taken from `root`; **absolute, or a URI,
+    means external** and is used as written. Delta Lake draws the same line -- a relative path
+    in its log is a file the table owns, an absolute one is a file somewhere else -- and COCO
+    and HuggingFace both hold relative names and take the root from the caller.
+
+    The root is named by the caller rather than inferred from where the manifest sits, which is
+    what keeps a chain working: `predict`'s output becomes `score`'s input, and a base guessed
+    from the second manifest's own location would resolve the first manifest's paths against
+    the wrong directory. `.` by default, so a manifest of absolute paths needs no root at all.
+    """
+    if not path or "://" in path or path.startswith("/") or root in ("", "."):
+        return path
+    return f"{root.rstrip('/')}/{path}"
+
+
 def read_json(uri: str) -> Any:
     with open_uri(uri) as fh:
         return json.loads(fh.read())
@@ -151,6 +177,34 @@ def write_part(rows: list[dict], fields, path: str, carry=None) -> None:
             table = table.add_column(0, carry.schema.field(name), carry.column(name))
     with open_uri(path, "wb") as fh:
         pq.write_table(table, fh)
+
+
+def prepare_out(out: str, overwrite: bool = False,
+                names: tuple[str, ...] = ("scores.parquet", "verdicts.parquet")) -> None:
+    """Refuse to lay a run on top of another one, or clear it out if that is what was meant.
+
+    A run is a directory of parts named by batch, so a second run into the same `--out`
+    overwrites the parts it reaches and leaves the rest: score forty documents, then one, and
+    the directory reads back as thirty-one rows from two different runs. Nothing about the
+    table says so, which makes it the kind of number someone puts in a post.
+
+    Refusing rather than clearing, because the common way to arrive here is a typo in `--out`,
+    and deleting the run someone spent an afternoon on is worse than stopping.
+    """
+    import fsspec
+
+    fs, path = fsspec.core.url_to_fs(out.rstrip("/"))
+    existing = [f"{path}/{n}" for n in names if fs.exists(f"{path}/{n}")]
+    if not existing:
+        return
+    if not overwrite:
+        raise ValueError(
+            f"{out} already holds a run ({', '.join(pathlib.Path(d).name for d in existing)}). "
+            f"Writing into it again would mix the two, because parts are named by batch and "
+            f"only the ones this run reaches get overwritten. Point --out somewhere new, or "
+            f"pass --overwrite to replace what is there.")
+    for d in existing:
+        fs.rm(d, recursive=True)
 
 
 def in_order(submit, items, window: int):
@@ -216,18 +270,18 @@ def failed(why: str) -> dict:
     return {**{name: None for name, _ in SCORE_FIELDS}, "status": "error", "error": why}
 
 
-def score_row(row: dict) -> tuple[dict, list[dict]]:
+def score_row(row: dict, root: str = ".") -> tuple[dict, list[dict]]:
     """Grade one manifest row, timed. Never raises -- a run that stops on its first bad row is
     a run you cannot finish, and what went wrong belongs on the row, not in a traceback."""
     started = time.perf_counter()
-    scored, verdicts = _grade_row(row)
+    scored, verdicts = _grade_row(row, root)
     scored["seconds"] = round(time.perf_counter() - started, 4)
     return scored, verdicts
 
 
-def _grade_row(row: dict) -> tuple[dict, list[dict]]:
+def _grade_row(row: dict, root: str) -> tuple[dict, list[dict]]:
     try:
-        gt = read_json(row["gt_path"])
+        gt = read_json(resolve(row["gt_path"], root))
         # Both transforms are required, not tidy: the scorer refuses a schema it cannot see
         # through, since an additionalProperties object behind a $ref would be graded while
         # the same object written inline is skipped.
@@ -235,7 +289,7 @@ def _grade_row(row: dict) -> tuple[dict, list[dict]]:
     except Exception:                                                   # noqa: BLE001
         return failed(traceback.format_exc()), []
     try:
-        pred = read_json(row["pred_path"])
+        pred = read_json(resolve(row["pred_path"], root))
     except Exception:                                                   # noqa: BLE001
         return failed(traceback.format_exc()), []
     if not usable(pred):
@@ -263,7 +317,7 @@ def _grade_row(row: dict) -> tuple[dict, list[dict]]:
                     for v in result.get("verdicts", [])]
 
 
-def score_batch(batch, out: str, name: str) -> dict:
+def score_batch(batch, out: str, name: str, root: str = ".") -> dict:
     """Score one batch, write its two parts, and return a status tally.
 
     **This is the unit of work, everywhere.** One process grades the rows in order; whoever
@@ -285,20 +339,24 @@ def score_batch(batch, out: str, name: str) -> dict:
     def verdicts_of(rows):
         """Yield each document's verdicts as it is graded, keeping the score row."""
         for row in rows:
-            scored, verdicts = score_row(row)
+            scored, verdicts = score_row(row, root)
             tally[scored["status"]] += 1
             scores.append(scored)
             yield verdicts
 
-    write_streaming(verdicts_of(batch.to_pylist()), VERDICT_FIELDS, f"{out}/verdicts", name)
+    write_streaming(verdicts_of(batch.to_pylist()), VERDICT_FIELDS,
+                    f"{out}/verdicts.parquet", name)
     # The score rows are sixteen small fields each and the batch they attach to is already in
     # memory, so they are written once the batch is done rather than streamed.
-    write_part(scores, SCORE_FIELDS, f"{out}/scores/{name}.parquet", carried(batch, ()))
+    write_part(scores, SCORE_FIELDS, f"{out}/scores.parquet/{name}.parquet", carried(batch, ()))
     return tally
 
 
-def run(manifest: str, out: str, jobs: int = 1, batch_size: int | None = None) -> dict:
-    """Score a manifest into `<out>/scores` and `<out>/verdicts`. Returns a status tally.
+def run(manifest: str, out: str, jobs: int = 1, batch_size: int | None = None,
+        root: str = ".", overwrite: bool = False) -> dict:
+    """Score a manifest into `<out>/scores.parquet` and `<out>/verdicts.parquet`.
+
+    Returns a status tally.
 
     Parallelism is here and only here: `jobs` workers, each handed whole batches, each writing
     its own parts. Nothing is pickled back but a tally -- a worker's verdicts go straight from
@@ -309,8 +367,12 @@ def run(manifest: str, out: str, jobs: int = 1, batch_size: int | None = None) -
     files. On a corpus with a heavy tail it is worth lowering -- see docs/FOLLOW_UPS.md, which
     records what a measured run says about it.
     """
+    if jobs < 1 or (batch_size is not None and batch_size < 1):
+        raise ValueError(f"jobs and batch_size are counts, so both are at least 1; "
+                         f"got jobs={jobs}, batch_size={batch_size}")
     data = open_manifest(manifest)
     check_manifest(data, REQUIRED, RESERVED)
+    prepare_out(out, overwrite)
     total = data.count_rows()
     batch_size = batch_size or max(1, min(256, total // (jobs * 4) or 1))
     log.info("scoring %d documents into %s (%d per batch, %d job%s)",
@@ -328,12 +390,12 @@ def run(manifest: str, out: str, jobs: int = 1, batch_size: int | None = None) -
 
     if jobs == 1:
         for n, (batch, name) in enumerate(work):
-            done(score_batch(batch, out, name), n)
+            done(score_batch(batch, out, name, root), n)
     else:
         with cf.ProcessPoolExecutor(max_workers=jobs) as pool:
             # A bounded window rather than submitting every batch at once: a queued batch holds
             # its rows, and a manifest is meant to stream rather than land in the pipe whole.
-            counts = in_order(lambda item: pool.submit(score_batch, item[0], out, item[1]),
+            counts = in_order(lambda item: pool.submit(score_batch, item[0], out, item[1], root),
                               work, jobs * 2)
             for n, c in enumerate(counts):
                 done(c, n)

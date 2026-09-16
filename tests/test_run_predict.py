@@ -78,7 +78,7 @@ print("[1] a prediction is written bare, and the row records where")
 stub(GT)
 out = str(TMP / "run1")
 tally = rp.run(manifest([row("d1", suite="invoices")], "m1.parquet"), out, PROVIDER, jobs=1)
-table = pq.read_table(f"{out}/manifest").to_pylist()
+table = pq.read_table(f"{out}/manifest.parquet").to_pylist()
 check("tally", tally == {"ok": 1, "error": 0}, str(tally))
 check("the file holds the bare extraction, no envelope",
       json.loads(Path(table[0]["pred_path"]).read_text()) == GT)
@@ -88,12 +88,16 @@ check("unknown columns ride through", table[0]["suite"] == "invoices")
 check("and so does the schema, because the scorer needs it", "schema" in table[0])
 check("the provider is written onto the row, since the manifest no longer carries it",
       table[0]["provider"] == PROVIDER, str(table[0]))
+# A prediction is not owned by the corpus, so its path is absolute -- otherwise scoring this
+# table with a --root would resolve it against the corpus, where it is not.
+check("pred_path is absolute, while the manifest's own paths stay as they were",
+      table[0]["pred_path"].startswith("/"), table[0]["pred_path"])
 
 print("\n[2] a vendor failure is a row with a reason, not a hole")
 stub(RuntimeError("vendor exploded"))
 out = str(TMP / "run2")
 tally = rp.run(manifest([row("d1")], "m2.parquet"), out, PROVIDER, jobs=1)
-table = pq.read_table(f"{out}/manifest").to_pylist()
+table = pq.read_table(f"{out}/manifest.parquet").to_pylist()
 check("tally", tally == {"ok": 0, "error": 1}, str(tally))
 check("the reason is on the row", "vendor exploded" in (table[0]["pred_error"] or ""),
       str(table[0]))
@@ -131,8 +135,8 @@ out = str(TMP / "run5")
 rp.run(manifest([row("d1", gt_path=str(TMP / "gt.json"))], "m5.parquet"), out,
        PROVIDER, jobs=1)
 scored = str(TMP / "scored5")
-tally = rs.run(f"{out}/manifest", scored)
-rows = pq.read_table(f"{scored}/scores").to_pylist()
+tally = rs.run(f"{out}/manifest.parquet", scored)
+rows = pq.read_table(f"{scored}/scores.parquet").to_pylist()
 check("the predict output scores with no join", tally == {"scored": 1, "error": 0},
       str(tally))
 check("perfectly, since the stub returned the ground truth", rows[0]["accuracy"] == 100.0)
