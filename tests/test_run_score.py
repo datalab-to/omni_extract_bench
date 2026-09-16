@@ -262,5 +262,40 @@ raises("jobs below 1 is refused by name, not by ZeroDivisionError",
 raises("batch_size below 1 likewise", "at least 1",
        lambda: score([row("b", GT)], "bs0", batch_size=0))
 
+print("[13] OEB_ROOT names the root once per shell; the flag still wins")
+# Two corpora with the same relative layout and different answers, so "the right one was
+# read" is a score and not merely an exit code.
+import os  # noqa: E402
+from omni_extract_bench import cli  # noqa: E402
+
+for which, value in [("right", GT), ("wrong", {"n": "elsewhere", "rows": []})]:
+    (TMP / which / "gold").mkdir(parents=True)
+    (TMP / which / "gold" / "d.json").write_text(json.dumps(value))
+pq.write_table(pa.Table.from_pylist([{"doc_id": "d", "gt_path": "gold/d.json",
+                                      "pred_path": written(GT, "envpred"),
+                                      "schema": json.dumps(SCHEMA).encode()}]),
+               TMP / "env.parquet")
+
+
+def by_env(name, env_root, flag=None):
+    """Score through the CLI, and report the accuracy that came back."""
+    out = str(TMP / f"env-{name}")
+    before = os.environ.get("OEB_ROOT")
+    os.environ["OEB_ROOT"] = env_root
+    try:
+        argv = ["score", "--manifest", str(TMP / "env.parquet"), "--out", out]
+        cli.main(argv + (["--root", flag] if flag else []))
+    finally:
+        os.environ.pop("OEB_ROOT") if before is None else os.environ.update(OEB_ROOT=before)
+    return pq.read_table(f"{out}/scores.parquet").to_pylist()[0]["accuracy"]
+
+
+check("OEB_ROOT is used when no flag is given",
+      by_env("env", str(TMP / "right")) == 100.0)
+check("an explicit --root beats OEB_ROOT",
+      by_env("flag", str(TMP / "wrong"), flag=str(TMP / "right")) == 100.0)
+check("...and the environment really was pointing somewhere else",
+      by_env("proof", str(TMP / "wrong")) < 100.0)
+
 print(f"\n{'ALL MANIFEST TESTS PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}")
 sys.exit(1 if FAILS else 0)

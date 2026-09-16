@@ -70,32 +70,6 @@ modal run --detach -m omni_extract_bench.run_score_modal \
 
 Your machine needs no bucket credentials but modal does: see [`tutorials/quickstart_scoring.md`](tutorials/quickstart_scoring.md) for details.
 
-## Paths
-
-A path is resolved against a base, and the only question is which one. Absolute paths and URIs
-have no base. Relative paths are relative to your working directory, as in any other command —
-unless you name a different base with `--root`.
-
-| your manifest holds | base | you pass |
-|---|---|---|
-| absolute paths or URIs (`/data/x.json`, `s3://b/x.json`) | none; used as written | — |
-| relative paths, and you run where they point from | your working directory | — |
-| relative paths written before the files reached you | the directory you put them in | `--root <dir>` |
-
-The third row is a table someone else published: it cannot name a location, because the author
-did not know where you would unpack it. Every other case needs nothing.
-
-This is COCO's split — `CocoDetection(root, annFile)` — and Delta Lake's rule, where a relative
-path in the log is a file the table owns and an absolute one is a file elsewhere. Iceberg went
-the other way, with absolute URIs in its metadata, and needed a dedicated rewrite procedure
-before a table could be moved at all.
-
-Two consequences worth knowing:
-
-- `--manifest`, `--out` and `--run` are your shell's, never resolved against `--root`.
-- Nothing is rewritten. `gt_path` reaches `scores.parquet` exactly as the manifest wrote it, so
-  read a run back with the root that produced it. `pred_path` is the one exception: `predict`
-  records it absolute, because it created that file and the corpus does not own it.
 
 ## Predicting
 
@@ -152,6 +126,28 @@ These are mutually exclusive in our code and also semantically. The one interest
 
 Full specification: [`docs/METRIC_SPEC.md`](docs/METRIC_SPEC.md).
 
+## Paths
+
+A path is resolved against a base. Absolute paths and URIs
+have no base and relative paths are relative to your working directory unless you name a different base with `--root`.
+
+| your manifest holds | base | you pass |
+|---|---|---|
+| absolute paths or URIs | none; used as written | — |
+| relative paths, and you run where they point from | your working directory | — |
+| relative paths written before the files reached you | the directory you put them in | `--root <dir>` |
+
+The third row is for a table someone else published: it cannot name a location, because the author
+did not know where it would land. `--root` falls back to `$OEB_ROOT`, so that corpus can be
+named once per shell instead of once per command.
+
+Three consequences worth knowing:
+
+- `--manifest`, `--out` and `--run` are your shell's, never resolved against `--root`.
+- Nothing is rewritten. `gt_path` reaches `scores.parquet` exactly as the manifest wrote it.
+- `predict` records its `pred_path`s absolute, because it created that file and the corpus does not own it.
+
 ## Licence
 
 Apache 2.0 — see [`LICENSE`](LICENSE). All code here is Datalab's own.
+

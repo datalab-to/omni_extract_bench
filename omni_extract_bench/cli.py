@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 
 from .run_score import open_uri, score_row
@@ -41,6 +42,19 @@ def _ui():
     from . import ui
 
     return ui
+
+
+def add_root(parser) -> None:
+    """`--root` on every verb that reads a manifest.
+
+    `OEB_ROOT` sits behind it so that a corpus someone downloaded is named once per shell
+    rather than once per command -- the flag still wins where it is given. An environment
+    variable rather than a rewrite of the manifest on arrival: the root is a fact about this
+    machine, and writing it into the data would make the data untrue on the next one.
+    """
+    parser.add_argument("--root", default=os.environ.get("OEB_ROOT", "."),
+                        help="what a relative path in a manifest is relative to; absolute\n"
+                             "paths and URIs are used as written. Default: $OEB_ROOT, or .")
 
 
 def cmd_score(args) -> int:
@@ -93,9 +107,7 @@ def main(argv=None) -> int:
     s.add_argument("--batch-size", type=int,
                    help="manifest rows per part, and the unit one worker takes; "
                         "default: about four batches per job")
-    s.add_argument("--root", default=".",
-                   help="what a relative path in a manifest is relative to; absolute paths\n"
-                        "and URIs are used as written")
+    add_root(s)
     s.add_argument("--overwrite", action="store_true",
                    help="replace a run already in --out, instead of refusing")
     s.set_defaults(fn=cmd_score)
@@ -106,9 +118,7 @@ def main(argv=None) -> int:
                    help="written as <out>/predictions and <out>/manifest.parquet")
     p.add_argument("--jobs", type=int, default=4, help="concurrent requests")
     p.add_argument("--batch-size", type=int, default=256)
-    p.add_argument("--root", default=".",
-                   help="what a relative path in a manifest is relative to; absolute paths\n"
-                        "and URIs are used as written")
+    add_root(p)
     p.add_argument("--overwrite", action="store_true",
                    help="replace a run already in --out, instead of refusing")
     p.set_defaults(fn=cmd_predict)
@@ -117,9 +127,7 @@ def main(argv=None) -> int:
     u.add_argument("--run", nargs="+", required=True, metavar="RUN",
                    help="a run directory, or a glob over several; its name labels the column")
     u.add_argument("--out", required=True, help="the site directory")
-    u.add_argument("--root", default=".",
-                   help="what a relative path in a manifest is relative to; absolute paths\n"
-                        "and URIs are used as written")
+    add_root(u)
     u.set_defaults(fn=lambda a: _ui().cmd_ui(a))
 
     o = sub.add_parser("score-one", help="score a single prediction/gt/schema triple")
