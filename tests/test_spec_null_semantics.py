@@ -1,6 +1,8 @@
 """Every number in METRIC_SPEC section 5, checked against the scorer."""
+import os as _os
 import sys
-sys.path.insert(0, "/Users/paulscemama/omni_extract_bench")
+# run from anywhere: `python tests/x.py` puts tests/ on the path, not the repo root
+sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench.score import grade
 
 # ── the scorer now requires a schema ──────────────────────────────────────────────────
