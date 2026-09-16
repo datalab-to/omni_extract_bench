@@ -1,5 +1,7 @@
 ---
-license: TBD                      # the PDFs, not the code -- see Licence below
+# `unknown` is the Hub's own value for undecided -- the vocabulary has no TBD, and
+# `other` would assert a licence exists. Change this once the PDFs' terms are settled.
+license: unknown
 task_categories:
   - visual-question-answering
   - table-question-answering
