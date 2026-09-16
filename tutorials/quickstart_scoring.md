@@ -5,7 +5,7 @@ live, and the schema it was asked for.
 
 ```bash
 git clone git@github.com:datalab-to/omni_extract_bench.git
-cd omni_extract_bench && pip install -e ".[benchmark]"      # add [s3] for s3:// paths
+cd omni_extract_bench && uv pip install -e ".[benchmark]"   # add [s3] for s3:// paths
 ```
 
 ## The example
@@ -152,7 +152,7 @@ Same scorer, one container per batch, for when one machine is the bottleneck or 
 close the laptop. Once:
 
 ```bash
-pip install -e ".[modal]" && modal token new
+uv pip install -e ".[modal]" && modal token new
 modal secret create oeb-s3 \
     AWS_ACCESS_KEY_ID=...  AWS_SECRET_ACCESS_KEY=...  FSSPEC_S3_ENDPOINT_URL=https://...
 ```
