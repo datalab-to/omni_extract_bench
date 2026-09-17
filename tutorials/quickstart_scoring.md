@@ -1,12 +1,14 @@
 # Quickstart: scoring
 
-Scoring takes one table. Each row corresponds to a document, where its ground truth and prediction
-live, and the schema it was asked for.
+Scoring is one function over one document: the prediction, the ground truth, and the schema
+the prediction was asked for.
 
 ```bash
 git clone git@github.com:datalab-to/omni_extract_bench.git
-cd omni_extract_bench && uv pip install -e ".[benchmark]"   # add [s3] for s3:// paths
+cd omni_extract_bench && uv pip install -e .
 ```
+
+That is the whole install — `score` is pure Python and scipy.
 
 ## The example
 
@@ -35,107 +37,74 @@ prediction.
 }
 ```
 
-## Create table
+## Score it
 
 ```bash
 python - <<'PY'
-import pathlib
-import pyarrow as pa, pyarrow.parquet as pq
+import json, pathlib
+from omni_extract_bench import score
 
 data = pathlib.Path("tutorials/data/quickstart_scoring")
+load = lambda name: json.loads((data / name).read_text())
 
-rows = [{"doc_id": "invoice-77",                          # unique within the table
-         "gt_path": str(data / "gold.json"),              # local, s3:// or gs://
-         "pred_path": str(data / "pred.json"),
-         "schema": (data / "schema.json").read_bytes(),   # inline, not a path
-         "vendor": "my-model"}]                           # extra columns ride through
-
-pq.write_table(pa.Table.from_pylist(rows), "jobs.parquet")
-PY
-```
-
-Four columns are required: `doc_id`, `gt_path`, `pred_path`, `schema`. The two documents are
-paths because an extraction is unbounded (the document could be thousands of pages); the schema is inline.
-
-## Score 
-
-You point to the table and where you want the outputs to live.
-
-```bash
-oeb score --manifest jobs.parquet --out run/
-```
-
-Two parquet datasets land in `run/`:
-- `scores.parquet/` has one row per manifest row
-- `verdicts.parquet/` one row per address after alignment. 
-
-They are split because they operate at different levels of granularity. 
-
-## Read the scores
-
-```bash
-python - <<'PY'
-import pyarrow.parquet as pq
-
-for r in pq.read_table("run/scores.parquet").select(
-        [
-          "doc_id", 
-          "status", 
-          "accuracy", 
-          "matched", 
-          "misread",
-         "unfound", 
-         "invented_item"
-        ]).to_pylist():
-    print("  ".join(f"{k}={v}" for k, v in r.items()))
+result = score(load("pred.json"), load("gold.json"), load("schema.json"))
+print("  ".join(f"{k}={result[k]}" for k in
+                ("accuracy", "matched", "misread", "unfound", "invented_item")))
 PY
 ```
 
 ```
-doc_id=invoice-77  status=scored  accuracy=37.5  matched=3  misread=1  unfound=2  invented_item=2
+accuracy=0.375  matched=3  misread=1  unfound=2  invented_item=2
 ```
 
-Every row comes back, including failures, because coverage is only visible if failures
-occupy rows. A row is either `scored` or `error`, and an `error` row says why in `error`: the
-traceback where something raised, or the system's own words where the prediction recorded a
-failure of its own, like `{"__error__": "context length exceeded"}`.
+Or from a terminal, with no Python around it:
 
-Metrics on those rows are **null**, never zero — a zero claims the model tried and missed
-every field. So when you average a corpus, filter on `status == "scored"` and say how many
-documents that was.
+```bash
+oeb score --gt tutorials/data/quickstart_scoring/gold.json \
+          --pred tutorials/data/quickstart_scoring/pred.json \
+          --schema tutorials/data/quickstart_scoring/schema.json
+```
 
 ## Read the verdicts
 
-Every address carries exactly one verdict, so the six verdict columns partition the score.
+Every address carries exactly one verdict, so the six verdict counts partition the score.
+Ask for them with `verdicts=True`, which reuses the alignment the score already paid for.
 
 ```bash
 python - <<'PY'
-import pyarrow.parquet as pq
+import json, pathlib
+from omni_extract_bench import score
+from omni_extract_bench.metric import show
 
-for r in pq.read_table("run/verdicts.parquet").to_pylist():
-    print(f"{r['address']:<20} {r['verdict']:<14} gold={str(r['gold_raw']):<12}"
-          f" pred={str(r['pred_raw']):<12} canon={r['gold_canon']}/{r['pred_canon']}")
+data = pathlib.Path("tutorials/data/quickstart_scoring")
+load = lambda name: json.loads((data / name).read_text())
+
+result = score(load("pred.json"), load("gold.json"), load("schema.json"), verdicts=True)
+for v in result["verdicts"]:
+    print(f"{show(v.address):<20} {v.verdict:<14} gold={str(v.gold_raw):<12}"
+          f" pred={str(v.pred_raw):<12} canon={v.gold_canon}/{v.pred_canon}")
 PY
 ```
 
 ```
-invoice_id           matched        gold="INV-77"     pred="INV-77"     canon=inv77/inv77
+invoice_id           matched        gold=INV-77       pred=INV-77       canon=inv77/inv77
 line_items[0].qty    matched        gold=2            pred=2            canon=2/2
-line_items[0].sku    misread        gold="AX-9910"    pred="AX-9919"    canon=ax9910/ax9919
+line_items[0].sku    misread        gold=AX-9910      pred=AX-9919      canon=ax9910/ax9919
 line_items[1].qty    unfound        gold=1            pred=None         canon=1/None
-line_items[1].sku    unfound        gold="BX-2201"    pred=None         canon=bx2201/None
+line_items[1].sku    unfound        gold=BX-2201      pred=None         canon=bx2201/None
 line_items[p1].qty   invented_item  gold=None         pred=9            canon=None/9
-line_items[p1].sku   invented_item  gold=None         pred="ZZ-0000"    canon=None/zz0000
-total                matched        gold="1,240.00"   pred="1240.00"    canon=1240/1240
+line_items[p1].sku   invented_item  gold=None         pred=ZZ-0000      canon=None/zz0000
+total                matched        gold=1,240.00     pred=1240.00      canon=1240/1240
 ```
 
 Things to point out:
 
-
 - **`line_items[p1]`** is the row the prediction invented. Rows are matched by content, not by
-  position, so an unpaired predicted row gets a made-up label and is counted against meaning `p1` is
-  not gold's index 1. 
+  position, so an unpaired predicted row gets a made-up label — `p1` is not gold's index 1.
 - **`line_items[1]`** is gold's second row, which the prediction never produced.
+- **`total`** matched across `1,240.00` and `1240.00`. Both sides are carried raw *and*
+  canonical so you can see that a fold did that work, and disagree with it;
+  `values.canon_trace(raw)` names the step responsible.
 
 | verdict | |
 |---|---|
@@ -146,33 +115,44 @@ Things to point out:
 | `invented_item` | an address under an array row that paired with nothing |
 | `invented_field` | an address the schema never offered |
 
-## On Modal
+## Scoring a corpus
 
-Same scorer, one container per batch, for when one machine is the bottleneck or you want to
-close the laptop. Once:
-
-```bash
-uv pip install -e ".[modal]" && modal token new
-modal secret create oeb-s3 \
-    AWS_ACCESS_KEY_ID=...  AWS_SECRET_ACCESS_KEY=...  FSSPEC_S3_ENDPOINT_URL=https://...
-```
-
-`FSSPEC_S3_ENDPOINT_URL` is only for R2 or another S3-compatible store. Then, with a manifest
-whose paths are all `s3://` and which lives in the bucket itself:
-
-```bash
-modal run --detach -m omni_extract_bench.run_score_modal \
-    --manifest s3://bucket/jobs.parquet --out s3://bucket/run --rows 16
-```
-
-It waits and prints the tally at the end. `--detach` is what lets you close the laptop
-meanwhile: Modal keeps the driver alive when your client goes away, and without it the run
-is stopped the moment the command exits.
-Your machine never needs bucket credentials — it passes the paths as strings and only the
-containers read and write. Follow it with `modal app logs <id>`; parts appear in the bucket as
-each container finishes, and read back exactly as a local run's do:
+There is no runner here, and no table format to put your corpus into. A corpus is a loop, and
+it stays yours — which means the decisions in it stay yours too:
 
 ```python
-import fsspec, pyarrow.parquet as pq
-scores = pq.read_table("bucket/run/scores.parquet", filesystem=fsspec.filesystem("s3"))
+import collections, json, pathlib
+from omni_extract_bench import score
+
+rows = []
+for doc in pathlib.Path("corpus").iterdir():
+    pred = json.loads((doc / "pred.json").read_text())
+    # A prediction can be a RECORDED FAILURE rather than an answer. Decide explicitly which
+    # it is: scoring `{}` as 0.0 says the model tried and missed every field, and a corpus
+    # where that is silently true of a third of the documents reports the wrong thing.
+    if not pred or "__error__" in pred:
+        rows.append({"doc_id": doc.name, "status": "error", "accuracy": None})
+        continue
+    result = score(pred, json.loads((doc / "gold.json").read_text()),
+                   json.loads((doc / "schema.json").read_text()))
+    rows.append({"doc_id": doc.name, "status": "scored", "subset": doc.parent.name, **result})
+
+scored = [r for r in rows if r["status"] == "scored"]
+print(f"{len(scored)}/{len(rows)} documents scored")
+
+# Mean per subset, then mean of those -- NOT a flat mean over documents, which lets a large
+# subset dominate. See docs/METRIC_SPEC.md section 7.
+by_subset = collections.defaultdict(list)
+for r in scored:
+    by_subset[r["subset"]].append(r["accuracy"])
+unified = sum(sum(v) / len(v) for v in by_subset.values()) / len(by_subset)
+print(f"UNIFIED {unified:.2f}")
 ```
+
+Two things that loop does on purpose, and that a runner would have decided for you:
+
+- **Failures occupy rows.** Coverage is only visible if a document that produced nothing is
+  still counted. Its metrics are `None`, never `0` — so say how many documents an average
+  was over.
+- **The aggregation is named.** Equal weight per subset rather than per document is a claim
+  about what the benchmark measures, and it belongs where you can read it.

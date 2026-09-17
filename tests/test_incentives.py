@@ -18,7 +18,7 @@ import os as _os
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.score import grade                                 # noqa: E402
+from omni_extract_bench.metric import score                                 # noqa: E402
 
 FAILS = []
 
@@ -54,8 +54,8 @@ def row(i, right=K):
 
 GOLD = {"lines": [row(i) for i in range(N)]}
 BASE = [row(i) for i in range(5)]
-omit = grade({"lines": BASE}, GOLD, SCH)
-partial = [grade({"lines": BASE + [row(i, j) for i in range(5, N)]}, GOLD, SCH)
+omit = score({"lines": BASE}, GOLD, SCH)
+partial = [score({"lines": BASE + [row(i, j) for i in range(5, N)]}, GOLD, SCH)
            for j in range(K + 1)]
 
 report("a row of NAMED fields keeps the omitted row's denominator once it pairs",
@@ -70,14 +70,14 @@ note("if this ever reverses, providers are being paid to truncate")
 
 # METRIC_SPEC section 8 prints these exact figures. Assert them, so the spec cannot drift
 # away from the scorer without a test failing.
-SPEC_TABLE = {None: (50.0, 66.7), 0: (33.3, 50.0), 1: (62.5, 62.5),
-              2: (75.0, 75.0), 4: (100.0, 100.0)}
+SPEC_TABLE = {None: (0.5, 0.667), 0: (0.333, 0.5), 1: (0.625, 0.625),
+              2: (0.75, 0.75), 4: (1.0, 1.0)}
 drift = []
 for j, (want_acc, want_f1) in SPEC_TABLE.items():
     r = omit if j is None else partial[j]
-    if (abs(round(r["accuracy"], 1) - want_acc) > 1e-9
-            or abs(round(r["f1"] * 100, 1) - want_f1) > 1e-9):
-        drift.append((j, round(r["accuracy"], 1), round(r["f1"] * 100, 1),
+    if (abs(round(r["accuracy"], 3) - want_acc) > 1e-9
+            or abs(round(r["f1"], 3) - want_f1) > 1e-9):
+        drift.append((j, round(r["accuracy"], 3), round(r["f1"], 3),
                       want_acc, want_f1))
 report("the figures printed in METRIC_SPEC section 8 are the ones the scorer produces",
        not drift, f"drifted: {drift}")
@@ -119,10 +119,10 @@ def arow(i, tags=None):
 
 AG = {"lines": [arow(i) for i in range(N)]}
 ABASE = [arow(i) for i in range(5)]
-a_omit = grade({"lines": ABASE}, AG, ARR_S)
-a_guess = grade({"lines": ABASE + [arow(i, [f"X{j}" for j in range(T)])
+a_omit = score({"lines": ABASE}, AG, ARR_S)
+a_guess = score({"lines": ABASE + [arow(i, [f"X{j}" for j in range(T)])
                                    for i in range(5, N)]}, AG, ARR_S)
-a_honest = grade({"lines": ABASE + [{"sku": f"s{i}"} for i in range(5, N)]}, AG, ARR_S)
+a_honest = score({"lines": ABASE + [{"sku": f"s{i}"} for i in range(5, N)]}, AG, ARR_S)
 report("guessing a row of unreadable array content loses to omitting it",
        a_guess["accuracy"] < a_omit["accuracy"] - 1e-9,
        f"guess {a_guess['accuracy']:.1f} vs omit {a_omit['accuracy']:.1f}")
@@ -154,7 +154,7 @@ for lbl, gold_doc, omit_pred, honest_pred, sch in (
     ("scalar arrays", AG, {"lines": ABASE},
      {"lines": ABASE + [{"sku": f"s{i}"} for i in range(5, N)]}, ARR_S),
 ):
-    o, h = grade(omit_pred, gold_doc, sch), grade(honest_pred, gold_doc, sch)
+    o, h = score(omit_pred, gold_doc, sch), score(honest_pred, gold_doc, sch)
     report(f"P17 holds for {lbl}: same denominator, higher numerator",
            h["total"] == o["total"] and h["matched"] > o["matched"]
            and h["accuracy"] > o["accuracy"] + 1e-9,
@@ -167,7 +167,7 @@ print("\nRULE 2: WHAT ABSTAINING COSTS, IN BOTH DIRECTIONS")
 R2_S = {"properties": {"a": {"type": "string"}, "note": {"type": "string"},
                        "tags": {"type": "array", "items": {"type": "string"}}}}
 R2_G = {"a": "keep", "note": "N", "tags": ["t1", "t2"]}
-spellings = [grade(p, R2_G, R2_S) for p in (
+spellings = [score(p, R2_G, R2_S) for p in (
     {"a": "keep", "tags": ["t1", "t2"]},                       # omitted
     {"a": "keep", "note": None, "tags": ["t1", "t2"]},         # null
     {"a": "keep", "note": [], "tags": ["t1", "t2"]})]          # []
@@ -176,10 +176,10 @@ report("null, [] and omitting the key cost exactly the same",
        f"{[round(r['accuracy'], 2) for r in spellings]}")
 
 abstain = spellings[0]
-wrong = grade({"a": "keep", "note": "WRONG", "tags": ["t1", "t2"]}, R2_G, R2_S)
-right = grade({"a": "keep", "note": "N", "tags": ["t1", "t2"]}, R2_G, R2_S)
-arr_abstain = grade({"a": "keep", "note": "N", "tags": ["t1"]}, R2_G, R2_S)
-arr_wrong = grade({"a": "keep", "note": "N", "tags": ["t1", "WRONG"]}, R2_G, R2_S)
+wrong = score({"a": "keep", "note": "WRONG", "tags": ["t1", "t2"]}, R2_G, R2_S)
+right = score({"a": "keep", "note": "N", "tags": ["t1", "t2"]}, R2_G, R2_S)
+arr_abstain = score({"a": "keep", "note": "N", "tags": ["t1"]}, R2_G, R2_S)
+arr_wrong = score({"a": "keep", "note": "N", "tags": ["t1", "WRONG"]}, R2_G, R2_S)
 report("abstaining never costs MORE than a wrong value",
        abstain["accuracy"] >= wrong["accuracy"] - 1e-9
        and abstain["f1"] >= wrong["f1"] - 1e-9,
@@ -198,7 +198,7 @@ note("so rule 2 is about the hit-rate, not about caution -- see the f1 threshold
 print("\nAND A STRICT SCHEMA CANNOT TAKE ABSTENTION AWAY")
 # Strict structured outputs require every declared property to be present, so a model may
 # not omit `tags`. It can still decline: null and [] carry no addresses.
-same = [grade({"lines": ABASE + [{"sku": f"s{i}", "tags": t} for i in range(5, N)]},
+same = [score({"lines": ABASE + [{"sku": f"s{i}", "tags": t} for i in range(5, N)]},
               AG, ARR_S) for t in (None, [])]
 report("`tags: null` and `tags: []` score exactly as omitting the key does",
        all(abs(s["accuracy"] - a_honest["accuracy"]) < 1e-9
@@ -216,14 +216,14 @@ wrong_in_place = {"t": [f"v{i}" for i in range(4)] + ["WRONG"]}
 one_dropped = {"t": [f"v{i}" for i in range(1, 5)]}
 
 got = {
-    ("wrong in place", "free"):    grade(wrong_in_place, five, TAGS_S)["accuracy"],
-    ("wrong in place", "ordered"): grade(wrong_in_place, five, TAGS_S, ("t",))["accuracy"],
-    ("one dropped", "free"):       grade(one_dropped, five, TAGS_S)["accuracy"],
-    ("one dropped", "ordered"):    grade(one_dropped, five, TAGS_S, ("t",))["accuracy"],
+    ("wrong in place", "free"):    score(wrong_in_place, five, TAGS_S)["accuracy"],
+    ("wrong in place", "ordered"): score(wrong_in_place, five, TAGS_S, ("t",))["accuracy"],
+    ("one dropped", "free"):       score(one_dropped, five, TAGS_S)["accuracy"],
+    ("one dropped", "ordered"):    score(one_dropped, five, TAGS_S, ("t",))["accuracy"],
 }
-want = {("wrong in place", "free"): 66.7, ("wrong in place", "ordered"): 80.0,
-        ("one dropped", "free"): 80.0, ("one dropped", "ordered"): 0.0}
-drift2 = [(k, round(v, 1), want[k]) for k, v in got.items() if abs(round(v, 1) - want[k]) > 1e-9]
+want = {("wrong in place", "free"): 0.667, ("wrong in place", "ordered"): 0.8,
+        ("one dropped", "free"): 0.8, ("one dropped", "ordered"): 0.0}
+drift2 = [(k, round(v, 3), want[k]) for k, v in got.items() if abs(round(v, 3) - want[k]) > 1e-9]
 report("the four order_matters figures in section 8 are the ones the scorer produces",
        not drift2, f"drifted: {drift2}")
 report("`order_matters` helps a substitution and ruins an omission",
@@ -238,8 +238,8 @@ print("\nWRAPPING A SCALAR IN A ONE-FIELD OBJECT CHANGES NOTHING")
 BARE_S = {"properties": {"t": {"type": "array", "items": {"type": "string"}}}}
 WRAP_S = {"properties": {"t": {"type": "array", "items": {"properties":
           {"tag": {"type": "string"}}}}}}
-bare = grade({"t": ["a", "b", "c", "X"]}, {"t": list("abcd")}, BARE_S)
-wrap = grade({"t": [{"tag": c} for c in ["a", "b", "c", "X"]]},
+bare = score({"t": ["a", "b", "c", "X"]}, {"t": list("abcd")}, BARE_S)
+wrap = score({"t": [{"tag": c} for c in ["a", "b", "c", "X"]]},
              {"t": [{"tag": c} for c in "abcd"]}, WRAP_S)
 report("a bare scalar list and a list of one-field objects score identically",
        abs(bare["accuracy"] - wrap["accuracy"]) < 1e-9
@@ -250,14 +250,14 @@ report("a bare scalar list and a list of one-field objects score identically",
 note("so the fix for a double-charged list is a second field to pair on, not a wrapper")
 
 print("\nINVENTED ROWS ARE CHARGED AT SCALE, NOT JUST IN THE 27-ROW EXAMPLE")
-# Section 4 prints 100.00 and 0.99 for these two.
+# Section 4 prints 1.0 and 0.0099 for these two.
 ROWS_S = {"properties": {"l": {"type": "array", "items": {"properties":
           {f"f{k}": {"type": "string"} for k in range(4)}}}}}
 ten = {"l": [{f"f{k}": f"r{i}v{k}" for k in range(4)} for i in range(10)]}
 flood = {"l": ten["l"] + [{f"f{k}": f"J{j}_{k}" for k in range(4)} for j in range(1000)]}
-perfect_acc, flood_acc = grade(ten, ten, ROWS_S)["accuracy"], grade(flood, ten, ROWS_S)["accuracy"]
-report("ten perfect rows score 100.00; the same ten plus a thousand invented score 0.99",
-       abs(perfect_acc - 100.0) < 1e-9 and abs(round(flood_acc, 2) - 0.99) < 1e-9,
+perfect_acc, flood_acc = score(ten, ten, ROWS_S)["accuracy"], score(flood, ten, ROWS_S)["accuracy"]
+report("ten perfect rows score 1.0; the same ten plus a thousand invented score 0.0099",
+       abs(perfect_acc - 1.0) < 1e-9 and abs(round(flood_acc, 4) - 0.0099) < 1e-9,
        f"{perfect_acc:.2f} and {flood_acc:.2f}")
 note("accuracy <= matched/|gold|, so inventing can only move a score down")
 

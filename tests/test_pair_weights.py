@@ -24,7 +24,7 @@ import sys as _sys
 
 _ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 _sys.path.insert(0, _ROOT)
-import omni_extract_bench.score as sc                                       # noqa: E402
+import omni_extract_bench.metric as sc                                       # noqa: E402
 
 FAILS = []
 
@@ -106,7 +106,7 @@ def compare_every_cell(seeds, force_small=True):
             rnd = random.Random(seed)
             gold = doc(rnd)
             pred = shuffled(gold, rnd) if seed % 3 else doc(rnd)
-            sc.grade(pred, gold, NESTED)
+            sc.score(pred, gold, NESTED)
     finally:
         sc._best_pairing = real
         sc.MIN_VECTOR_CELLS = saved
@@ -144,12 +144,12 @@ sc._worth_if_paired = counted
 saved = sc.MIN_VECTOR_CELLS
 sc.MIN_VECTOR_CELLS = 1
 try:
-    r = sc.grade(pred, gold, NESTED)
+    r = sc.score(pred, gold, NESTED)
 finally:
     sc._worth_if_paired = real_worth
     sc.MIN_VECTOR_CELLS = saved
-report("a document whose every row is nested still scores 100 after reordering",
-       r["accuracy"] == 100.0, str(r["accuracy"]))
+report("a document whose every row is nested still scores 1.0 after reordering",
+       r["accuracy"] == 1.0, str(r["accuracy"]))
 report("and the scalar function was still called for those pairs",
        calls["n"] > 0, f"{calls['n']} calls")
 
@@ -196,13 +196,13 @@ for seed in range(160):
     gold = doc(rnd)
     pred = shuffled(gold, rnd) if seed % 2 else doc(rnd)
     sc.MIN_VECTOR_CELLS, sc.MAX_VECTOR_CELLS = 1, 64 * 10**6
-    a = sc.grade(pred, gold, NESTED)
+    a = sc.score(pred, gold, NESTED)
     sc.MAX_VECTOR_CELLS = 0                      # forces the scalar loop everywhere
-    b = sc.grade(pred, gold, NESTED)
+    b = sc.score(pred, gold, NESTED)
     sc.MIN_VECTOR_CELLS, sc.MAX_VECTOR_CELLS = 16 * 16, 64 * 10**6
     same += a == b
     differing += a != b
-report("160 generated documents grade identically on every key", differing == 0,
+report("160 generated documents score identically on every key", differing == 0,
        f"{differing} differ")
 note("not just accuracy: matched, total, matching_exact, approximated, all of them")
 

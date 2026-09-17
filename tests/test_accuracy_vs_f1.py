@@ -29,7 +29,7 @@ import random
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.score import grade                                 # noqa: E402
+from omni_extract_bench.metric import score                                 # noqa: E402
 
 FAILS = []
 
@@ -106,12 +106,12 @@ for _ in range(1000):
     if not s.get("properties"):
         continue
     for p in (copy.deepcopy(g), perturb(g, .3, .1, .1), perturb(g, .0, .3, .3), {}):
-        r = grade(p, g, s)
+        r = score(p, g, s)
         seen += 1
         m, w, u, x = buckets(r)
         G, P, T = m + w + u, m + w + x, m + w + u + x
         bad_t += T != r["total"]
-        bad_acc += bool(T) and abs(r["accuracy"] / 100 - m / T) > 1e-12
+        bad_acc += bool(T) and abs(r["accuracy"] - m / T) > 1e-12
         bad_f1 += bool(G and P) and abs(r["f1"] - 2 * m / (G + P)) > 1e-12
         if w == 0 and T and G and P:
             J = m / T
@@ -130,8 +130,8 @@ print("\naccuracy READS THE ALIGNMENT; f1 AND JACCARD CANNOT")
 # accuracy does not, because it knows the first pair shares an address.
 AB_S = {"properties": {k: {"type": "string"} for k in "abc"}}
 AB_G = {"a": "1", "b": "2"}
-A = grade({"a": "1", "b": "99"}, AB_G, AB_S)      # found b, misread it
-B = grade({"a": "1", "c": "99"}, AB_G, AB_S)      # missed b, invented c
+A = score({"a": "1", "b": "99"}, AB_G, AB_S)      # found b, misread it
+B = score({"a": "1", "c": "99"}, AB_G, AB_S)      # missed b, invented c
 def _j(r):
     m, w, u = r["matched"], r["misread"], r["unfound"]
     x = r["fabricated"] + r["invented_item"] + r["invented_field"]
@@ -158,10 +158,10 @@ IN_S = {"properties": {"a": {"type": "string"}, "b": {"type": "string"},
                        "blank": {"type": ["string", "null"]}}}
 filled_G = {"a": "1", "b": "2"}
 silent_G = {"a": "1", "blank": None}
-abst_f = grade({"a": "1"}, filled_G, IN_S)
-gues_f = grade({"a": "1", "b": "WRONG"}, filled_G, IN_S)
-abst_s = grade({"a": "1"}, silent_G, IN_S)
-gues_s = grade({"a": "1", "blank": "WRONG"}, silent_G, IN_S)
+abst_f = score({"a": "1"}, filled_G, IN_S)
+gues_f = score({"a": "1", "b": "WRONG"}, filled_G, IN_S)
+abst_s = score({"a": "1"}, silent_G, IN_S)
+gues_s = score({"a": "1", "blank": "WRONG"}, silent_G, IN_S)
 report("at an address where gold HAS a value, a wrong value costs what a blank costs",
        abs(abst_f["accuracy"] - gues_f["accuracy"]) < 1e-9,
        f"blank {abst_f['accuracy']:.2f}, wrong {gues_f['accuracy']:.2f}")
@@ -182,7 +182,7 @@ for _ in range(4000):
     if not s.get("properties"):
         continue
     a, b = perturb(g, .0, .25, .25), perturb(g, .0, .10, .40)
-    ra, rb = grade(a, g, s), grade(b, g, s)
+    ra, rb = score(a, g, s), score(b, g, s)
     if ra["misread"] or rb["misread"] or abs(ra["accuracy"] - rb["accuracy"]) < 1e-9:
         continue
     pairs += 1
@@ -199,7 +199,7 @@ for _ in range(4000):
     if not s.get("properties"):
         continue
     a, b = perturb(g, .35, .02, .02), perturb(g, .02, .25, .25)
-    ra, rb = grade(a, g, s), grade(b, g, s)
+    ra, rb = score(a, g, s), score(b, g, s)
     if abs(ra["accuracy"] - rb["accuracy"]) < 1e-9:
         continue
     pairs2 += 1
@@ -223,7 +223,7 @@ for bits in itertools.product([0, 1, 2], repeat=6):
     for i, b in enumerate(bits):
         if b == 1:   pred[f"k{i}"] = G_G.get(f"k{i}", "WRONG")
         elif b == 2: pred[f"k{i}"] = "WRONG"
-    r = grade(pred, G_G, G_S)
+    r = score(pred, G_G, G_S)
     by_correct.setdefault(r["matched"], []).append(r["accuracy"])
 ceilings = [(m, max(v)) for m, v in sorted(by_correct.items())]
 report(f"the best reachable accuracy is monotone in correct values ({3**6} strategies)",
@@ -237,8 +237,8 @@ note("so guessing well raises accuracy because it produces correct values -- not
 print("\nWHAT accuracy IS INDIFFERENT TO, AND WHAT precision SAYS ABOUT IT")
 IND_S = {"properties": {"a": {"type": "string"}, "b": {"type": "string"}}}
 IND_G = {"a": "x", "b": "y"}
-blank = grade({"a": "x"}, IND_G, IND_S)
-wrong = grade({"a": "x", "b": "WRONG"}, IND_G, IND_S)
+blank = score({"a": "x"}, IND_G, IND_S)
+wrong = score({"a": "x", "b": "WRONG"}, IND_G, IND_S)
 report("a wrong value and a blank score the same accuracy",
        abs(blank["accuracy"] - wrong["accuracy"]) < 1e-9,
        f"blank {blank['accuracy']}, wrong {wrong['accuracy']}")
@@ -264,8 +264,8 @@ for rates in ([0.9] * 4, [0.9, 0.5, 0.3, 0.1], [0.1] * 4):
     a = g_ = 0.0
     for i, rate in enumerate(rates):
         d = _corpus(i, rate)
-        a += grade({"lines": [{"sku": x["sku"]} for x in d["lines"]]}, d, BR_S)["accuracy"]
-        g_ += grade({"lines": [{"sku": x["sku"], "region": "US"} for x in d["lines"]]},
+        a += score({"lines": [{"sku": x["sku"]} for x in d["lines"]]}, d, BR_S)["accuracy"]
+        g_ += score({"lines": [{"sku": x["sku"], "region": "US"} for x in d["lines"]]},
                     d, BR_S)["accuracy"]
     gains.append(round((g_ - a) / len(rates), 2))
 report("guessing the modal value gains on every corpus, most where the prior is strongest",
@@ -279,8 +279,8 @@ for N in (2, 3, 5, 10, 50):
     keys = [f"k{i}" for i in range(N)]
     S = {"properties": {k: {"type": "number"} for k in keys + ["extra"]}}
     gold = {k: i for i, k in enumerate(keys)}
-    a_omit = grade({k: i for i, k in enumerate(keys) if k != keys[-1]}, gold, S)["accuracy"]
-    a_inv = grade(dict(gold, extra=999), gold, S)["accuracy"]
+    a_omit = score({k: i for i, k in enumerate(keys) if k != keys[-1]}, gold, S)["accuracy"]
+    a_inv = score(dict(gold, extra=999), gold, S)["accuracy"]
     worse.append((N, round(a_omit, 2), round(a_inv, 2), a_omit <= a_inv + 1e-9))
 report("losing a true fact never scores above adding a false one",
        all(ok for *_r, ok in worse), str(worse))

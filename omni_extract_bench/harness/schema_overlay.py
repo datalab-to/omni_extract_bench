@@ -28,7 +28,7 @@ Usage:  from schema_overlay import apply_overlay;  schema = apply_overlay(schema
         python3 schema_overlay.py --preview     # show what would change
 """
 from __future__ import annotations
-import copy, json, re, sys
+import copy, json
 
 # field-name markers -> convention sentence appended to that field's description
 CONVENTIONS = [
@@ -185,4 +185,4 @@ if __name__ == "__main__":
             counts[conv["id"]] = after.count(conv["text"])
         hit = {k: v for k, v in counts.items() if v}
         print(f"  {dom:20} {hit}")
-    print("\nApplied at request time by run_provider; benchmark dataset files are never edited.")
+    print("\nApplied at request time by vendor.predict; benchmark dataset files are never edited.")

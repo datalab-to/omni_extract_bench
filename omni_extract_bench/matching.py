@@ -77,7 +77,7 @@ def _exact_ok(n, m, positives=None):
 
     Returns:
         Whether `optimal_pairs` may be called directly. `match_rows` falls back to greedy when
-        this is False, and records that the grade is approximate.
+        this is False, and records that the score is approximate.
 
     Three bands. Below `MAX_CELLS` exact is taken outright. Above `MAX_CELLS_DENSE` it is
     refused outright, so the exact path's memory is bounded whatever the data does. Between

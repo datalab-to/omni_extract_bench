@@ -2,7 +2,7 @@
 """The three kinds of false assertion, and the identities that tie them together.
 
 `1 - precision` is the rate at which the model asserts something untrue. That single number
-hides three different bugs, so `grade` splits it:
+hides three different bugs, so `score` splits it:
 
     misread          the document has this value; the model read it wrongly
     fabricated       the schema offered the slot, the document is silent, the model filled it
@@ -19,8 +19,12 @@ import os as _os
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.score import (                                     # noqa: E402
-    INDEX, KEY, _classify_extra, _schema_leaves, explain, format_node, grade, show)
+from omni_extract_bench.metric import (                                     # noqa: E402
+    INDEX, KEY, _classify_extra, _schema_leaves, format_node, score, show)
+
+def verdicts_of(pred, gt, schema):
+    """Per-address verdicts. `score` is the only entry point; the list comes off it."""
+    return score(pred, gt, schema, verdicts=True)["verdicts"]
 
 FAILS = []
 
@@ -70,7 +74,7 @@ print("\nGOLD'S NULLS ARE NOT THE AUTHORITY -- THE SCHEMA IS")
 NULL_GT = {"lines": [{"sku": "a", "note": None}]}
 GONE_GT = {"lines": [{"sku": "a"}]}
 SAME_P = {"lines": [{"sku": "a", "note": "x"}]}
-both = [grade(SAME_P, g, SCH)["fabricated"] for g in (NULL_GT, GONE_GT)]
+both = [score(SAME_P, g, SCH)["fabricated"] for g in (NULL_GT, GONE_GT)]
 report("gold `note: null` and gold with no `note` classify identically",
        both == [1, 1], f"got {both}, want [1, 1]")
 
@@ -96,7 +100,7 @@ print("\nTHE `pN` LABEL IS LOAD-BEARING, SO PIN IT")
 # what tells an extra array element from a filled field, so it gets its own test: if the
 # labelling ever changes to a plain integer, a whole invented row would be reported as a
 # handful of separately fabricated fields.
-labels = [v.address for v in explain(PRED, GT, SCH) if v.verdict == "invented_item"]
+labels = [v.address for v in verdicts_of(PRED, GT, SCH) if v.verdict == "invented_item"]
 report("an unpaired predicted row is labelled with a string index, not an integer",
        labels and all(any(k == INDEX and isinstance(x, str) for k, x in a) for a in labels),
        f"got {[show(a) for a in labels]}")
@@ -109,7 +113,7 @@ report("an integer index in an extra address would be a filled slot, not an extr
 note("so the two are distinguished by the label alone -- hence this test")
 
 print("\nTHE IDENTITIES HOLD")
-r = grade(PRED, GT, SCH)
+r = score(PRED, GT, SCH)
 parts = (r["matched"], r["misread"], r["unfound"], r["fabricated"],
          r["invented_item"], r["invented_field"])
 report("asserted = matched + misread + fabricated + invented item + invented field",
@@ -131,18 +135,18 @@ note("which is the whole reason accuracy and f1 differ")
 
 print("\nTHE COUNTS ARE THE VERDICT HISTOGRAM")
 import collections                                                          # noqa: E402
-hist = collections.Counter(v.verdict for v in explain(PRED, GT, SCH))
-report("grade's counts equal explain's labels, so the two surfaces cannot drift",
+hist = collections.Counter(v.verdict for v in verdicts_of(PRED, GT, SCH))
+report("score's counts equal explain's labels, so the two surfaces cannot drift",
        (r["matched"], r["misread"], r["unfound"], r["fabricated"],
         r["invented_item"], r["invented_field"])
        == (hist["matched"], hist["misread"], hist["unfound"], hist["fabricated"],
            hist["invented_item"], hist["invented_field"]),
-       f"grade {parts} vs explain {dict(hist)}")
+       f"score {parts} vs explain {dict(hist)}")
 
 print("\nA SCHEMA IS REQUIRED")
 for bad in (None, {}, "not a schema", []):
     try:
-        grade(PRED, GT, bad)
+        score(PRED, GT, bad)
         report(f"{bad!r} is refused", False, "no TypeError raised")
     except TypeError as exc:
         report(f"{bad!r} is refused", "schema is required" in str(exc), str(exc)[:70])
@@ -151,7 +155,7 @@ note("from an invented one -- reporting fabricated=0 would be a false claim")
 
 print("\nEXISTING NUMBERS ARE UNCHANGED BY THE SPLIT")
 report("accuracy, precision, recall and f1 still come from matched and the address sets",
-       abs(r["accuracy"] - 100 * r["matched"] / r["total"]) < 1e-9
+       abs(r["accuracy"] - r["matched"] / r["total"]) < 1e-9
        and abs(r["f1"] - (2 * r["precision"] * r["recall"]
                           / (r["precision"] + r["recall"]))) < 1e-12)
 
@@ -163,8 +167,8 @@ print("\nA SCALAR ARRAY HAS NO CELLS TO MISREAD")
 ARR_S = {"properties": {"q": {"type": "array", "items": {"type": "number"}},
                         "name": {"type": "string"}}}
 ARR_G = {"name": "Cloud", "q": [10.5, 12.0]}
-in_array = grade({"name": "Cloud", "q": [10.5, 99.9]}, ARR_G, ARR_S)
-in_field = grade({"name": "Nope", "q": [10.5, 12.0]}, ARR_G, ARR_S)
+in_array = score({"name": "Cloud", "q": [10.5, 99.9]}, ARR_G, ARR_S)
+in_field = score({"name": "Nope", "q": [10.5, 12.0]}, ARR_G, ARR_S)
 report("a wrong value in a scalar array is unfound + invented item, not misread",
        (in_array["misread"], in_array["unfound"], in_array["invented_item"]) == (0, 1, 1),
        f"got {(in_array['misread'], in_array['unfound'], in_array['invented_item'])}")
@@ -183,19 +187,19 @@ ARR_S2 = {"properties": {"tags": {"type": "array", "items": {"type": "string"}}}
 FLD_S2 = {"properties": {k: {"type": "string"} for k in ("t1", "t2", "t3")}}
 A_G, F_G = {"tags": ["a", "x", "c"]}, {"t1": "a", "t2": "x", "t3": "c"}
 report("reordering is free for the array and fatal for named fields",
-       abs(grade({"tags": ["c", "a", "x"]}, A_G, ARR_S2)["accuracy"] - 100) < 1e-9
-       and grade({"t1": "c", "t2": "a", "t3": "x"}, F_G, FLD_S2)["accuracy"] < 1e-9)
+       abs(score({"tags": ["c", "a", "x"]}, A_G, ARR_S2)["accuracy"] - 1) < 1e-9
+       and score({"t1": "c", "t2": "a", "t3": "x"}, F_G, FLD_S2)["accuracy"] < 1e-9)
 report("...which is what the harsher value error pays for",
-       grade({"tags": ["a", "W", "c"]}, A_G, ARR_S2)["accuracy"]
-       < grade({"t1": "a", "t2": "W", "t3": "c"}, F_G, FLD_S2)["accuracy"] - 1e-9)
+       score({"tags": ["a", "W", "c"]}, A_G, ARR_S2)["accuracy"]
+       < score({"t1": "a", "t2": "W", "t3": "c"}, F_G, FLD_S2)["accuracy"] - 1e-9)
 report("order_matters buys cell identity back",
-       abs(grade({"tags": ["a", "W", "c"]}, A_G, ARR_S2,
-                 order_matters=["tags"])["accuracy"] - 200 / 3) < 1e-6)
+       abs(score({"tags": ["a", "W", "c"]}, A_G, ARR_S2,
+                 order_matters=["tags"])["accuracy"] - 2 / 3) < 1e-6)
 report("omission and invention cost the same either way",
-       abs(grade({"tags": ["a", "c"]}, A_G, ARR_S2)["accuracy"]
-           - grade({"t1": "a", "t3": "c"}, F_G, FLD_S2)["accuracy"]) < 1e-9
-       and abs(grade({"tags": ["a", "x", "c", "Z"]}, A_G, ARR_S2)["accuracy"]
-               - grade({"t1": "a", "t2": "x", "t3": "c", "t4": "Z"},
+       abs(score({"tags": ["a", "c"]}, A_G, ARR_S2)["accuracy"]
+           - score({"t1": "a", "t3": "c"}, F_G, FLD_S2)["accuracy"]) < 1e-9
+       and abs(score({"tags": ["a", "x", "c", "Z"]}, A_G, ARR_S2)["accuracy"]
+               - score({"t1": "a", "t2": "x", "t3": "c", "t4": "Z"},
                        F_G, FLD_S2)["accuracy"]) < 1e-9)
 note("so the two shapes differ ONLY on order and on localising a wrong value")
 
@@ -264,7 +268,7 @@ for _ in range(600):
         continue
     for pr in (copy.deepcopy(g), perturb(g), rand_doc(), {}):
         try:
-            r = grade(pr, g, sch)
+            r = score(pr, g, sch)
         except TypeError:
             continue
         seen += 1
@@ -280,7 +284,7 @@ for _ in range(600):
               and (not (r["matched"] + r["misread"] + r["unfound"])
                    or abs(r["recall"] - r["matched"]
                           / (r["matched"] + r["misread"] + r["unfound"])) < 1e-12))
-        hist = collections.Counter(v.verdict for v in explain(pr, g, sch))
+        hist = collections.Counter(v.verdict for v in verdicts_of(pr, g, sch))
         ok &= parts == (hist["matched"], hist["misread"], hist["unfound"],
                         hist["fabricated"], hist["invented_item"], hist["invented_field"])
         bad += not ok
