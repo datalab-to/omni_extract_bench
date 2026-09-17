@@ -40,8 +40,8 @@ from pathlib import Path
 
 from . import schema_overlay as SO
 from .dialects import cost_from_response, strip_benchmark_keys
-from .extraction import (AccountFailure, Cost, Extraction, MissingDependency, VendorError,
-                         VendorTimeout)
+from .extraction import (AccountFailure, Budget, Cost, Extraction, MissingDependency,
+                         VendorError, VendorTimeout)
 
 DEFAULT_TIMEOUT = 1800.0
 #: An OpenRouter model id is recognised by its slash: no vendor name has one, every model id
@@ -93,6 +93,14 @@ PROVIDER_TIER = {
 WORKERS = {"reducto": 3, "llamaextract": 3, "azure-cu": 3, "datalab": 10,
            "datalab-accurate": 10}
 
+#: The adapters read the environment for CREDENTIALS only -- which change whether a call is
+#: allowed, not what it asks. Everything that steers a vendor (mode, tier, array strategy, api
+#: version, base url, completion model) is a keyword argument, reaching the adapter through
+#: `options` and landing in `run_manifest.overrides`. That is the whole reason: an environment
+#: variable steers a run without appearing in its record, so `LLAMAEXTRACT_TIER=cost_effective`
+#: used to produce a run indistinguishable from a maxed-out one. `test_no_steering_env` holds
+#: the line; credentials stay in the environment and out of the record.
+
 TRANSIENT_ATTEMPTS = 4
 TRANSIENT_BACKOFF = (20, 60, 120)
 
@@ -134,6 +142,7 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     Retries only what a retry can fix. Raises `AccountFailure` and `MissingDependency` instead
     of returning them: neither is a fact about the document, both are identical for every one
     of them, and a returned failure is written down as a settled answer no resume re-attempts.
+
     """
     extract = adapter(provider)
     pdf = Path(pdf)
@@ -149,12 +158,18 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     # maximum, and a figure produced with that turned down is a different measurement.
     overrides = {k: v for k, v in options.items() if defaults.get(k) != v} or None
 
+    # ONE budget for the document, shared by every attempt and by the waits between them.
+    # Each attempt used to get the full `timeout`, so four of them plus backoff could spend
+    # 7,400s on a document whose budget is documented as 1,800s "end to end". This is the same
+    # mistake `Budget` was written to fix inside the adapters -- azure-cu taking it twice,
+    # llm_single_shot three times -- sitting one level up, where nothing had checked for it.
+    budget = Budget(timeout)
     started = time.time()
     got, error, attempts = None, None, 0
     for attempt in range(TRANSIENT_ATTEMPTS):
         attempts = attempt + 1
         try:
-            got = extract(pdf, sent, timeout=timeout, **opts)
+            got = extract(pdf, sent, timeout=budget.remaining(), **opts)
             error = None
             break
         except VendorError as exc:
@@ -163,7 +178,15 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
             error = exc
             if not exc.transient or attempt == TRANSIENT_ATTEMPTS - 1:
                 break
-            time.sleep(TRANSIENT_BACKOFF[min(attempt, len(TRANSIENT_BACKOFF) - 1)])
+            # The wait comes out of the same budget: backing off past the deadline would spend
+            # the document's time doing nothing and then call the vendor with none left.
+            time.sleep(min(TRANSIENT_BACKOFF[min(attempt, len(TRANSIENT_BACKOFF) - 1)],
+                           budget.remaining()))
+            if budget.expired():
+                error = VendorTimeout(
+                    f"the uniform {timeout:.0f}s budget was spent over {attempts} attempt(s); "
+                    f"last failure: {exc}"[:400])
+                break
 
     elapsed = round(time.time() - started, 1)
     if got is not None and got.cost.usd is None:

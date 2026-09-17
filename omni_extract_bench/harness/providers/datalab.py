@@ -22,8 +22,8 @@ from pathlib import Path
 
 import httpx
 
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, VendorError,
-                          VendorTimeout)
+from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
+                          VendorError, VendorTimeout)
 from ._cli import run_cli
 
 DEFAULT_BASE_URL = "https://www.datalab.to"
@@ -110,12 +110,23 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, mode: str = "ba
                               status=resp.status_code, body=resp.text)
 
         url = f"{base_url}/api/v1/extract/{request_id}"
+        retry = PollRetry(budget)
         while not budget.expired():
-            r = client.get(url)
-            polls += 1
+            try:
+                r = client.get(url)
+            except httpx.TransportError as exc:
+                if retry.again():
+                    continue
+                raise VendorError(f"polling failed: {exc}"[:300], status=None) from None
             if r.status_code != 200:
+                # A failed poll is not a failed job: `request_id` is still running and
+                # already billed. Give up only on a status that will not change.
+                if retry.again(r.status_code):
+                    continue
                 raise VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
                                   status=r.status_code, body=r.text)
+            retry.ok()
+            polls += 1
             body = r.json()
             # `is not None`, not `or`: a vendor reporting a genuine zero is saying
             # something, and `0.0 or previous` would throw it away.
@@ -154,9 +165,9 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, mode: str = "ba
 
 def main() -> None:
     run_cli(extract, "datalab",
-            ("--mode", {"default": os.environ.get("DATALAB_MODE", "balanced"),
+            ("--mode", {"default": "balanced",
                         "choices": ["fast", "balanced", "accurate"]}),
-            ("--base-url", {"default": os.environ.get("DATALAB_BASE_URL", DEFAULT_BASE_URL)}))
+            ("--base-url", {"default": DEFAULT_BASE_URL}))
 
 
 if __name__ == "__main__":

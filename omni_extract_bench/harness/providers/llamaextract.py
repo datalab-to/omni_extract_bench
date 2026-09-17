@@ -5,10 +5,10 @@ Uploads the PDF file BYTES (never a URL — no source domain leaks to the vendor
 submits a stateless v2 extraction job, polls to completion, and writes the same
 `{result, _meta}` envelope as the other providers.
 
-Mode: tier="agentic" — the highest extraction tier available on a standard
-LlamaCloud key. NOTE: tier="agentic_plus" (the premium tier) is not available on a
-standard key — the v2 extract API rejects it with 422 ("Input should be
-'cost_effective' or 'agentic'"), so `agentic` is the maxed-out mode here.
+Mode: tier="agentic_plus" — the highest extraction tier the v2 API offers. It was once
+recorded as unavailable on a standard key (a 422 saying "Input should be 'cost_effective'
+or 'agentic'"), and the default sat at `agentic` on that basis; re-probing the live endpoint
+shows it now validates. Entitlements change — check a tier against the API, not a comment.
 
 Auth: LLAMA_CLOUD_API_KEY (llx-...).
 
@@ -30,21 +30,17 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, VendorError,
-                          VendorTimeout)
+from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
+                          VendorError, VendorTimeout)
 from ._cli import run_cli
 
 BASE = "https://api.cloud.llamaindex.ai"
-# Overridable so a caller can select the maximum tier without editing this module.
-# The v2 API enum is 'cost_effective' | 'agentic' | 'agentic_plus'. `agentic_plus` was recorded
-# as unavailable after a 422 on this key, and the default stayed at `agentic` on that basis --
-# but re-probing the live endpoint shows it now validates, so that note was stale. Verify a
-# tier against the API rather than trusting a comment; entitlements change.
+#: The v2 API enum is 'cost_effective' | 'agentic' | 'agentic_plus'.
 #: The benchmark runs every vendor at its maximum, and `vendor.ADAPTERS` selects this one.
 #: The default here MATCHES it, so reproducing a document by hand reproduces the
 #: benchmark -- it used to default to `agentic`, one tier below, which meant a hand-run
 #: silently answered a different question from the run it was meant to explain.
-TIER = os.environ.get("LLAMAEXTRACT_TIER", "agentic_plus")
+TIER = "agentic_plus"
 _TERMINAL = {"SUCCESS", "COMPLETED", "FAILED", "ERROR", "CANCELLED"}
 
 
@@ -137,7 +133,12 @@ def _req(
             body = e.read().decode("utf-8", "replace")[:600]
         except Exception:  # noqa: BLE001
             body = "<body unavailable>"
-        raise RuntimeError(f"HTTP {e.code} {method} {url.split('?')[0]}: {body}") from None
+        # VendorError, not RuntimeError: `predict` catches VendorError and records the
+        # document as failed. A bare RuntimeError escapes it, reaches `future.result()`
+        # in the pool, and kills the whole run -- so one 400 on one schema would end a
+        # 620-document job. Schema validation is this vendor's documented failure mode.
+        raise VendorError(f"HTTP {e.code} {method} {url.split('?')[0]}: {body}",
+                          status=e.code, body=body) from None
 
 
 def _project_id(key: str) -> str:
@@ -182,8 +183,8 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, tier: str = TIE
     the harness runs every vendor at its maximum, and a setting that reads itself out of the
     environment is one a run cannot state in its own record.
 
-    The run-id sidecar file is gone with the subprocess it protected -- the job id comes back
-    with the result instead.
+    The job id comes back with the result, so a job that outlived its budget is named in the
+    record rather than being anonymous.
     """
     budget = Budget(timeout)          # before the upload: it is part of the document
     # LlamaCloud issues ONE key for the whole platform, and people export it under the
@@ -193,34 +194,38 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, tier: str = TIE
     if not key:
         raise MissingCredential("LLAMA_CLOUD_API_KEY (or LLAMAPARSE_API_KEY) is not set")
 
-    try:
-        project_id = _project_id(key)
-        file_id = _upload(pdf, key)
-        job = _req("POST", f"{BASE}/api/v2/extract?project_id={project_id}", key,
-                   headers={"Content-Type": "application/json"},
-                   data=json.dumps({
-                       "file_input": file_id,
-                       "configuration": {"tier": tier, "extraction_target": "per_doc",
-                                         "data_schema": _adapt_schema(schema)},
-                   }).encode())
-    except urllib.error.HTTPError as exc:
-        raise VendorError(f"HTTP {exc.code}: {exc.read()[:300]!r}", status=exc.code) from None
+    # No try/except here: `_req` already raises `VendorError` with the vendor's own message
+    # and status, which is what `predict` records and what decides whether a retry is worth
+    # anything. Catching and re-wrapping would only lose the status.
+    project_id = _project_id(key)
+    file_id = _upload(pdf, key)
+    job = _req("POST", f"{BASE}/api/v2/extract?project_id={project_id}", key,
+               headers={"Content-Type": "application/json"},
+               data=json.dumps({
+                   "file_input": file_id,
+                   "configuration": {"tier": tier, "extraction_target": "per_doc",
+                                     "data_schema": _adapt_schema(schema)},
+               }).encode())
     job_id = job.get("id") or job.get("job_id")
 
-    transient = polls = 0
+    polls = 0
+    retry = PollRetry(budget)
     while True:
         budget.check(f"job {job_id} was still running server-side after {polls} polls")
         try:
             body = _req("GET", f"{BASE}/api/v2/extract/{job_id}"
                                f"?project_id={project_id}&expand=metadata", key)
-        except (urllib.error.URLError, OSError, ValueError):
-            transient += 1
-            if transient > 60:
-                raise VendorError(f"job {job_id}: polling failed {transient} times "
-                                  f"consecutively", status=None) from None
-            time.sleep(min(30, 2 * transient))
-            continue
-        transient = 0
+        except VendorError as exc:
+            # A failed poll is not a failed job: it is still running, and already billed.
+            if retry.again(exc.status):
+                continue
+            raise
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            if retry.again():
+                continue
+            raise VendorError(f"job {job_id}: polling failed repeatedly: {exc}"[:300],
+                              status=None) from None
+        retry.ok()
         polls += 1
         status = body.get("status")
         if status in _TERMINAL:

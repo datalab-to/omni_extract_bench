@@ -16,8 +16,10 @@ Four steps, in the order they run, each one function below:
     summarise      per suite, then UNIFIED
 
 IT IS RESUMABLE, AND RUNNING IT TWICE IS SAFE. A document is re-attempted only when it has no
-prediction, or the prediction on disk is a TRANSIENT failure -- so an interrupted run continues
-where it stopped, and a run that finished costs nothing to score again. Scoring is pure and
+record -- a record means the vendor was called and answered, well or badly. Whether a failure
+deserved another try is decided inside `predict`, with the HTTP status in hand, while the
+attempts are still affordable; by the time a record exists they are spent, and re-running would
+pay twice for an answer already bought. Scoring is pure and
 always redone: it is free, and it is the half most likely to change under you.
 
 THIS SCRIPT IS THE ORCHESTRATION, AND IT IS DELIBERATELY NOT IN THE LIBRARY. `score` scores one
@@ -27,21 +29,27 @@ choosing the shape of every benchmark built on it. What this file does, you can 
 
     pip install 'omni-extract-bench[benchmark,harness]'
 
-Credentials for each vendor come from the environment; see `harness/README.md`.
+Credentials for each vendor come from the environment (`DATALAB_API_KEY`, `REDUCTO_API_KEY`,
+`EXTEND_API_KEY`, `MISTRAL_API_KEY`, `LLAMA_CLOUD_API_KEY`, `AZURE_CU_ENDPOINT`/`AZURE_CU_KEY`,
+`OPENROUTER_API_KEY`). Everything else a vendor is told comes from `--options`, never from the
+environment, so `run_manifest.overrides` is a complete account of how a run was steered.
 """
 from __future__ import annotations
 
 import collections
 import concurrent.futures as cf
+import functools
 import json
 import logging
 import os
 import threading
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import NamedTuple
 
 from . import score
-from .harness import AccountFailure, MissingCredential, MissingDependency, predict
+from .harness import (WORKERS, AccountFailure, MissingCredential, MissingDependency,
+                      predict)
 
 
 log = logging.getLogger(__name__)
@@ -254,42 +262,82 @@ def predict_all(docs: list[Doc], provider: str, out: Path, timeout: float, worke
 
 # ── 3. scores ────────────────────────────────────────────────────────────────────────────
 
-def score_all(docs: list[Doc], provider: str, out: Path, verdicts: bool = False) -> list[dict]:
+#: Default scoring processes. Scoring is the only CPU-bound half of a run and the documents are
+#: independent, so it parallelises exactly. Capped rather than taken from the core count
+#: because the heaviest arrays in this corpus need ~1.8 GB to solve (`matching.MAX_CELLS`), and
+#: a machine holding one per process should not be run out of memory by its own core count.
+SCORE_WORKERS = min(8, os.cpu_count() or 1)
+
+
+def score_one(doc: Doc, *, provider: str, out: Path, verdicts: bool = False) -> dict:
+    """Grade one prediction on disk and return its row.
+
+    A module-level function taking picklable arguments, so `score_all` can hand it to a
+    process pool. It never raises: a document that cannot be scored comes back as an error
+    row, which is what keeps one bad document from taking a pool worker -- and the run -- with
+    it.
+    """
+    row = {"doc_id": doc.doc_id, "suite": doc.suite, "provider": provider}
+    path = out / "predictions" / f"{doc.doc_id}.json"
+    try:
+        pred = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {**row, "status": "error", "error": "no prediction on disk"}
+    # ONE definition of "is this something to score", and it lives here because here is
+    # the only place that asks. It was two once, and they disagreed: one path treated an
+    # empty `{}` as "never attempted" while the other graded it as 0.0 and counted it as
+    # attempted -- so a vendor reported 100% coverage while 37 of its 45 outputs were empty.
+    if not (isinstance(pred, dict) and pred and "__error__" not in pred):
+        reason = (pred or {}).get("__error__") if isinstance(pred, dict) else "not an object"
+        return {**row, "status": "error", "error": str(reason or "empty prediction")}
+    try:
+        result = score(pred, json.loads(doc.gt.read_text()), doc.schema, verdicts=verdicts)
+    except Exception as exc:                            # noqa: BLE001 -- the message is the row
+        return {**row, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
+    if verdicts:
+        # `exist_ok`, because several workers reach this at once on the first document each.
+        (out / "verdicts").mkdir(parents=True, exist_ok=True)
+        (out / "verdicts" / f"{doc.doc_id}.jsonl").write_text(
+            "\n".join(json.dumps(v._asdict(), default=str) for v in result.pop("verdicts")))
+    return {**row, "status": "scored", **result}
+
+
+def score_all(docs: list[Doc], provider: str, out: Path, verdicts: bool = False,
+              workers: int = 0) -> list[dict]:
     """Grade every prediction on disk, and write one line per document.
 
     EVERY DOCUMENT COMES BACK, including the ones with no usable prediction. Coverage is only
     visible if a failure occupies a row. Such a row carries `status="error"` and NULL metrics
     rather than zero, because a zero claims the model tried and missed every field -- the
     summary then reports coverage beside the score instead of hiding the difference in it.
+
+    PROCESSES, not threads. This is the one part of a run that is real CPU work -- the heaviest
+    documents here take minutes each, and `_worth_if_paired`'s recursive descent is interpreted
+    Python, so threads would serialise on the GIL exactly where the time goes. `score` is pure
+    and the documents are independent, so a process per document is the whole of it.
+
+    `pool.map` preserves input order, so `scores.jsonl` is in document order whatever order the
+    workers finish in -- a run stays comparable with the one before it.
     """
-    rows = []
-    for doc in docs:
-        row = {"doc_id": doc.doc_id, "suite": doc.suite, "provider": provider}
-        path = out / "predictions" / f"{doc.doc_id}.json"
+    grade = functools.partial(score_one, provider=provider, out=out, verdicts=verdicts)
+    rows = None
+    if (workers or SCORE_WORKERS) > 1:
         try:
-            pred = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            rows.append({**row, "status": "error", "error": "no prediction on disk"})
-            continue
-        # ONE definition of "is this something to score", and it lives here because here is
-        # the only place that asks. It was two once, and they disagreed: one path treated an
-        # empty `{}` as "never attempted" while the other graded it as 0.0 and counted it as
-        # attempted -- so a vendor reported 100% coverage while 37 of its 45 outputs were empty.
-        if not (isinstance(pred, dict) and pred and "__error__" not in pred):
-            reason = (pred or {}).get("__error__") if isinstance(pred, dict) else "not an object"
-            rows.append({**row, "status": "error", "error": str(reason or "empty prediction")})
-            continue
-        try:
-            result = score(pred, json.loads(doc.gt.read_text()), doc.schema,
-                           verdicts=verdicts)
-        except Exception as exc:                        # noqa: BLE001 -- the message is the row
-            rows.append({**row, "status": "error", "error": f"{type(exc).__name__}: {exc}"})
-            continue
-        if verdicts:
-            (out / "verdicts").mkdir(parents=True, exist_ok=True)
-            (out / "verdicts" / f"{doc.doc_id}.jsonl").write_text(
-                "\n".join(json.dumps(v._asdict(), default=str) for v in result.pop("verdicts")))
-        rows.append({**row, "status": "scored", **result})
+            with cf.ProcessPoolExecutor(max_workers=workers or SCORE_WORKERS) as pool:
+                rows = list(pool.map(grade, docs))
+        except BrokenProcessPool:
+            # A worker died. Overwhelmingly this is the `spawn` guard: starting a process
+            # re-imports the program's __main__, so a caller that is a bare script re-runs
+            # itself in every worker. `oeb benchmark` is safe (its console script is guarded);
+            # a hand-written script is not until it says so. Falling back costs nothing here,
+            # because the pool breaks at startup before any document is graded -- and for the
+            # other cause, a worker out of memory on a huge array, serial is the right retry.
+            log.warning("scoring pool could not start, grading in this process instead. "
+                        "To parallelise, put the call under `if __name__ == \"__main__\":`, "
+                        "or pass score_workers=1 to ask for this directly.")
+            rows = None
+    if rows is None:
+        rows = [grade(d) for d in docs]
 
     with (out / "scores.jsonl").open("w") as fh:
         for row in rows:
@@ -331,9 +379,31 @@ def summarise(rows: list[dict]) -> dict:
 
 
 # ── the run ──────────────────────────────────────────────────────────────────────────────
+#: Concurrency for a vendor `harness.WORKERS` says nothing about.
+DEFAULT_WORKERS = 5
+
+
+def workers_for(provider: str, requested: dict[str, int] | int | None) -> int:
+    """How many documents to have in flight at one vendor.
+
+    Because a worker holds its document through the whole poll loop, this number IS the
+    number of jobs in flight server-side -- not a request rate. The two are wildly different:
+    at five-second polls, ten in-flight documents is two requests a second.
+
+    Named providers win over a bare number, which wins over the per-vendor default, so
+    `{"*": 25, "reducto": 5}` means "twenty-five everywhere, except reducto".
+    """
+    if isinstance(requested, int):
+        requested = {"*": requested} if requested else {}
+    requested = requested or {}
+    return (requested.get(provider) or requested.get("*")
+            or WORKERS.get(provider, DEFAULT_WORKERS))
+
+
 def run(providers: list[str], *, out: Path = Path("runs"),
         data_root: Path = Path("benchmark"), suites: list[str] | None = None, limit: int = 0,
-        timeout: float = 1800.0, workers: int = 0, verdicts: bool = False,
+        timeout: float = 1800.0, predict_workers: dict[str, int] | int | None = None,
+        score_workers: int = 0, verdicts: bool = False,
         score_only: bool = False, options: dict | None = None) -> dict:
     """Fetch, predict, score, write it down. Returns the summary it also writes to `out`.
 
@@ -345,8 +415,12 @@ def run(providers: list[str], *, out: Path = Path("runs"),
     one is recorded in the document's `run_manifest.overrides`, because the benchmark's claim
     is that every vendor ran at its maximum and a run that turned something down is a different
     measurement -- one that should not be able to look stock afterwards.
+
+    `predict_workers` is `{provider: count}` (or one number for all of them); `workers_for`
+    explains what the number means. The two worker counts are separate because they buy
+    different resources: one is how many documents a vendor holds at once, the other is how
+    many local cores grade.
     """
-    from .harness import WORKERS
     from .harness.vendor import out_name, resolve
 
     for provider in providers:
@@ -357,18 +431,35 @@ def run(providers: list[str], *, out: Path = Path("runs"),
     if not docs:
         raise ValueError("no documents selected: check --suites and --limit")
 
-    # One provider at a time, on purpose: concurrency limits are per vendor, and interleaving
-    # them would make a slow vendor's latency a function of who else was running.
+    dirs = {p: out / out_name(p) for p in providers}  # `openai/gpt-5.6-sol` would nest
+    for provider_out in dirs.values():
+        provider_out.mkdir(parents=True, exist_ok=True)
+
+    # PREDICT EVERY VENDOR AT ONCE, THEN GRADE. The two phases are kept apart because they
+    # cost different things and only one of them is measured: predicting is network wait, and
+    # a document's `wall_s` is the vendor's own server-side time plus a couple of seconds, so
+    # vendors do not slow each other down -- their rate limits are separate and the local cost
+    # of waiting is nil. Grading is the opposite: `score_all` saturates every core it is given.
+    # Letting it overlap a vendor call would put local CPU load inside a published latency
+    # figure, which is the one thing the old provider-at-a-time loop was really protecting.
+    if not score_only:
+        with cf.ThreadPoolExecutor(max_workers=len(providers)) as pool:
+            futures = {pool.submit(predict_all, docs, provider, dirs[provider], timeout=timeout,
+                                   workers=workers_for(provider, predict_workers),
+                                   options=(options or {}).get(provider)): provider
+                       for provider in providers}
+            # `result()` re-raises what a provider raised -- an unset key, a missing SDK, an
+            # account that cannot pay. Leaving the loop still drains the pool on the way out,
+            # so the other vendors finish and their predictions are on disk: the run is
+            # resumable, and `--score-only` grades what was bought.
+            for future in cf.as_completed(futures):
+                future.result()
+
     summary = {}
     for provider in providers:
-        provider_out = out / out_name(provider)      # `openai/gpt-5.6-sol` would nest
-        provider_out.mkdir(parents=True, exist_ok=True)
-        if not score_only:
-            predict_all(docs, provider, provider_out, timeout=timeout,
-                        workers=workers or WORKERS.get(provider, 5),
-                        options=(options or {}).get(provider))
         summary[provider] = summarise(
-            score_all(docs, provider, provider_out, verdicts=verdicts))
+            score_all(docs, provider, dirs[provider], verdicts=verdicts,
+                      workers=score_workers))
         s = summary[provider]
         log.info("%s: unified %.4f over %d suites, coverage %d/%d",
                  provider, s["unified"], len(s["per_suite"]), s["scored"], s["documents"])

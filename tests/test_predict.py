@@ -95,7 +95,22 @@ report("the provider's maximum-tier options are passed to the adapter",
        and seen["opts"]["mode"] == "accurate", str(seen["opts"]))
 report("the uniform budget is passed to the adapter",
        vendor.predict("mistral", PDF, SCHEMA, timeout=900) is not None
-       and seen["opts"]["timeout"] == 900, str(seen["opts"]))
+       and 899 < seen["opts"]["timeout"] <= 900, str(seen["opts"]))
+
+# One budget for the document, not one per attempt. Four attempts at the full timeout plus
+# backoff could spend 7,400s on a document documented as taking 1,800s end to end -- the same
+# mistake `Budget` fixed inside the adapters, one level up.
+_given, _backoff = [], vendor.TRANSIENT_BACKOFF
+vendor.TRANSIENT_BACKOFF = (0, 0, 0)
+stub(lambda pdf, schema, **o: (_given.append(o["timeout"]),
+                               (_ for _ in ()).throw(VendorError("HTTP 503", status=503)))[1])
+_rec = vendor.predict("mistral", PDF, SCHEMA, timeout=5)
+vendor.TRANSIENT_BACKOFF = _backoff
+report("a retried document does not get a fresh budget each time",
+       all(a > b for a, b in zip(_given, _given[1:])), str([round(t, 3) for t in _given]))
+report("...and the whole run stays inside one budget",
+       _given and _given[0] <= 5 and _given[-1] > 0, str([round(t, 3) for t in _given]))
+stub(lambda pdf, schema, **o: OK)          # the sections below expect a successful adapter
 
 print("\nTHE ANSWER TRAVELS WITH ITS EVIDENCE")
 rec = vendor.predict("mistral", PDF, SCHEMA)

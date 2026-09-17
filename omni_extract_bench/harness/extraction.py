@@ -61,6 +61,56 @@ class Budget:
             raise VendorTimeout(f"timed out at the uniform {self.total:.0f}s limit; {what}")
 
 
+class PollRetry:
+    """Survive a failed POLL without abandoning the job behind it.
+
+    A POLL FAILING IS NOT THE JOB FAILING. The work is running and already billed at the
+    vendor. Letting a 429 out of the loop hands the whole document back to `predict`, which
+    reads the status as transient and retries -- from the upload -- so the running job is
+    abandoned and the same extraction is bought a second time. At $1.55 a document that is a
+    real bill, and it is silent, because the second attempt returns a perfectly good answer.
+
+    It is not a rare case either. A 259-second document polls ~51 times; at
+    `--predict-workers 25` that is five requests a second for hours, and one rate limit
+    anywhere in the stream costs a full re-extraction. Raising concurrency makes it likelier.
+
+    Only a TRANSIENT status is worth asking again. A 400 or a 404 says the job is not there to
+    poll, and no amount of asking will change it -- the same rule `predict` applies one level
+    up, read off the status rather than matched in a message. A transport failure carries no
+    status and is retried too: it says nothing about the job.
+
+    `reducto` has had this since the beginning -- "transient connection / 5xx errors must NOT
+    abandon it (that's how billed jobs got lost)" -- and the other four adapters did not. This
+    is that protection written once, where all of them reach the same copy of it.
+    """
+
+    __slots__ = ("budget", "limit", "count")
+
+    def __init__(self, budget: Budget, limit: int = 60):
+        self.budget, self.limit, self.count = budget, limit, 0
+
+    def ok(self) -> None:
+        """A poll came back. Consecutive failures start again from zero."""
+        self.count = 0
+
+    def again(self, status: int | None = None) -> bool:
+        """A poll failed. True if the caller should poll again rather than give up.
+
+        `status` is the HTTP status where there was one; None means the request never got far
+        enough to have one. Sleeps the backoff itself, and never past the document's deadline:
+        waiting beyond it would spend the budget doing nothing. Whether the budget then ran
+        out is the loop's own business -- it re-checks and raises `VendorTimeout`, which is the
+        honest answer when the vendor is still working.
+        """
+        if status is not None and status not in TRANSIENT_STATUSES:
+            return False
+        self.count += 1
+        if self.count > self.limit:
+            return False
+        time.sleep(min(30.0, 2.0 ** min(self.count, 5), self.budget.remaining()))
+        return True
+
+
 class Cost(NamedTuple):
     """What the vendor said this document cost. `usd` is None where it does not say.
 

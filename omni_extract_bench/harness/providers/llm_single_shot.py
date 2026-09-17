@@ -16,7 +16,9 @@ Three behaviours here exist because getting them wrong decides a vendor's score:
     returned to the caller either way, so a fenced or otherwise unparseable answer can be
     salvaged from the record rather than re-paid for.
 
-Auth: OPENROUTER_API_KEY (or OEB_LLM_API_KEY with --base-url for another endpoint).
+Auth: OPENROUTER_API_KEY, or OPENAI_API_KEY. Another OpenAI-compatible endpoint is selected
+with `base_url=` (`--base-url`), which is an argument and not an environment variable, so the
+record can say which endpoint answered.
 
     python -m omni_extract_bench.harness.providers.llm_single_shot --pdf doc.pdf --schema s.json --out out.json \\
         --model anthropic/claude-opus-5
@@ -31,6 +33,8 @@ import time
 from pathlib import Path
 
 import openai
+
+from ..dialects import parse_model_json
 
 from ..extraction import (Budget, Cost, Extraction, MissingCredential, VendorError)
 from ._cli import run_cli
@@ -150,10 +154,14 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, model: str,
                               f"({model}'s published ceiling)", status=200)
         if not text:
             raise VendorError("empty completion", status=200)
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            last = f"JSON parse error: {exc}"[:200]
+        # `parse_model_json`, not `json.loads`: some models wrap their answer in a ```json
+        # fence, and a parser that accepts only bare JSON scores those at zero. One run
+        # discarded 12 of 24 documents from the most accurate provider in the field over a
+        # backtick. The helper existed for this and no adapter was calling it.
+        parsed = parse_model_json(text)
+        if parsed is None:
+            last = f"not JSON, even allowing a code fence: {text[:120]!r}"
+            calls[-1]["text"] = text          # keep it: a parser fix re-reads instead of re-paying
             temperature = min(temperature + 0.1, 1.0)
             continue
         if isinstance(parsed, dict) and parsed:
@@ -168,13 +176,17 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, model: str,
                                    tokens_out=usage.get("completion_tokens")))
         last = f"model returned {type(parsed).__name__}, not an object"
 
-    raise VendorError(f"all {attempts} attempts returned an unusable answer: {last}", status=200)
+    # The body carries every completion, text included, so an answer that no parser could read
+    # is still on disk in `record["raw"]` -- which is what this module's docstring promises and
+    # what makes a parser bug a re-read rather than a re-payment.
+    raise VendorError(f"all {attempts} attempts returned an unusable answer: {last}",
+                      status=200, body=json.dumps({"calls": calls, "model": model})[:4000])
 
 
 def main() -> None:
     run_cli(extract, "llm-single-shot",
             ("--model", {"required": True}),
-            ("--base-url", {"default": os.environ.get("OEB_LLM_BASE_URL", DEFAULT_BASE_URL)}),
+            ("--base-url", {"default": DEFAULT_BASE_URL}),
             ("--max-output-tokens", {"type": int, "default": None,
                                      "help": "default: the model's published ceiling"}))
 

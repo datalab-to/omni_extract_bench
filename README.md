@@ -44,7 +44,7 @@ google/gemini-3.7-flash
 Then run the benchmark (limit to 5 documents here). **NOTE**: this will cost money and you will need your API keys set.
 
 ```
-oeb benchmark --out runs/smoke --limit 5 \
+oeb benchmark --out runs/ --limit 5 \
     --providers datalab reducto extend llamaextract 
 ```
 

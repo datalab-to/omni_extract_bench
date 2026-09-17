@@ -103,6 +103,37 @@ def read_options(value: str | None, *, per_provider: bool = True) -> dict:
     return parsed
 
 
+def read_workers(value: str | None) -> dict[str, int]:
+    """`--predict-workers` as `{provider: count}`, `"*"` being a bare number meaning all.
+
+        --predict-workers 25                     -> {"*": 25}
+        --predict-workers reducto=25,datalab=40  -> {"reducto": 25, "datalab": 40}
+
+    Per provider rather than one global number, because the right value is a fact about the
+    vendor: these are documents in flight at it, and a run naming several vendors has no one
+    number that fits them all.
+    """
+    if not value:
+        return {}
+    if value.strip().isdigit():
+        return {"*": _count(value, value)}
+    out = {}
+    for part in value.split(","):
+        name, sep, count = part.partition("=")
+        if not sep:
+            raise ValueError(f"--predict-workers: {part.strip()!r} is neither a number nor "
+                             f"NAME=COUNT, e.g. '25' or 'reducto=25,datalab=40'")
+        out[name.strip()] = _count(count, part)
+    return out
+
+
+def _count(text: str, shown: str) -> int:
+    """One `--predict-workers` count: a whole number of documents, so at least one."""
+    if not text.strip().isdigit() or int(text) < 1:
+        raise ValueError(f"--predict-workers: {shown.strip()!r} needs a count of 1 or more")
+    return int(text)
+
+
 def cmd_predict(args) -> int:
     """One document through one vendor. The mirror of `oeb score`: files in, JSON out."""
     from .harness import (AccountFailure, MissingCredential, MissingDependency, VendorError,
@@ -141,7 +172,9 @@ def cmd_benchmark(args) -> int:
     try:
         summary = run(args.providers, out=args.out, data_root=args.data_root,
                       suites=args.suites,
-                      limit=args.limit, timeout=args.timeout, workers=args.workers,
+                      limit=args.limit, timeout=args.timeout,
+                      predict_workers=read_workers(args.predict_workers),
+                      score_workers=args.score_workers,
                       verdicts=args.verdicts, score_only=args.score_only,
                       options=read_options(args.options))
     except (MissingCredential, MissingDependency, AccountFailure) as exc:
@@ -188,8 +221,14 @@ def main(argv=None) -> int:
     b.add_argument("--limit", type=int, default=0, help="first N documents; for a smoke test")
     b.add_argument("--timeout", type=float, default=1800,
                    help="seconds one document may take, the same for every vendor")
-    b.add_argument("--workers", type=int, default=0,
-                   help="concurrent requests. Default: the harness's per-vendor limit")
+    b.add_argument("--predict-workers", metavar="N|NAME=N,...",
+                   help="documents in flight at one vendor -- one number for every provider, "
+                        "or per provider: 'reducto=25,datalab=40'. Default: the harness's "
+                        "per-vendor limit")
+    b.add_argument("--score-workers", type=int, default=0, metavar="N",
+                   help="processes used to grade. Scoring is the CPU-bound half and is "
+                        "independent per document. Default: one per core, capped at 8; "
+                        "1 grades in this process")
     b.add_argument("--verdicts", action="store_true",
                    help="also write one verdict per address, per document")
     b.add_argument("--options", metavar="JSON",
