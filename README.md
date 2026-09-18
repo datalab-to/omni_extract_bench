@@ -1,7 +1,7 @@
 # Omni Extract Bench
 
 This repository contains a way to run our benchmark on [HuggingFace](https://huggingface.co/datasets/datalab-to/omni_extract_bench) and also
-provides modular tooling to run your own. The README is split up into the following table of contents.
+provides primitives (`score` and `predict`) to run your own! The README is split up into the following table of contents.
 
 1. **[Install](#install)** — the scorer on its own, or with the vendor adapters.
 2. **[Run our benchmark with one line](#run-our-benchmark-with-one-line)** — rerun vendors on the benchmark dataset.
@@ -13,8 +13,6 @@ provides modular tooling to run your own. The README is split up into the follow
 
 ## Install
 
-One scorer for document-extraction benchmarks: leaf value accuracy with optimal row matching.
-See [huggingface](https://huggingface.co/datasets/datalab-to/omni_extract_bench) for benchmark datasets.
 
 ```bash
 uv pip install omni-extract-bench                 # the scorer: score(), scipy and nothing else
