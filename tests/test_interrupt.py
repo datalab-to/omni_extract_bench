@@ -165,8 +165,8 @@ finally:
     V.adapter, B.fetch, B.read_manifest = saved_adapter, saved_fetch, saved_manifest
 report("the healthy vendor still ran every document", calls["reducto"] == 6,
        f"{calls['reducto']} of 6 -- a shared flag stops it after one")
-report("...and no summary is written from a half-run corpus",
-       not (acct / "summary.json").exists())
+report("...and no run published a summary from a half-run corpus",
+       not list(acct.glob("*/summary.json")))
 report("...while its predictions are on disk for --score-only",
        len(list((acct / out_name("reducto") / "predictions").glob("*.json"))) == 6)
 

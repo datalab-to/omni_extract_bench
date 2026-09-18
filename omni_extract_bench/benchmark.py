@@ -101,15 +101,18 @@ def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[D
 
 
 # ── 2. predictions ───────────────────────────────────────────────────────────────────────
-def write_json(path: Path, obj) -> None:
+def write_json(path: Path, obj, *, indent: int | None = None) -> None:
     """Write a file that is either wholly there or not there at all.
 
     `write_text` killed part way through leaves a truncated file that still EXISTS, and a
     resume asking "was this attempted?" would skip it forever. The temp file shares a
     directory with the target, because rename is only atomic within a filesystem.
+
+    `indent` for the few files a person opens; the per-document ones are read by the machine
+    and there are 620 of them per run.
     """
     tmp = path.with_name(f".{path.name}.partial")
-    tmp.write_text(json.dumps(obj, default=str))
+    tmp.write_text(json.dumps(obj, default=str, indent=indent))
     os.replace(tmp, path)
 
 
@@ -519,6 +522,17 @@ def run(providers: list[str], *, out: Path = Path("runs"),
     Keyword arguments and no argparse, so this stays callable from a notebook; it raises
     rather than exits, for the same reason.
 
+        <out>/<provider>-<digest>/
+            settings.json                      what this run asked, before it asked it
+            summary.json                       what it came to, as soon as it is graded
+            predictions/<doc_id>.json          the bare extraction -- what scoring reads
+            records/<doc_id>.json              the schema sent, the cost, the manifest
+            scores.jsonl                       one graded row per document
+
+    A run directory is self-contained, and there is no table across them: `runs/*/summary.json`
+    is one, aggregated however its reader likes, and a file here would only be one opinion
+    about that written down -- stale the moment another run lands beside it.
+
     `options` is `{provider: {option: value}}` and lands in `run_manifest.settings`, because
     a run that turned a vendor down must not be able to look stock afterwards.
 
@@ -539,16 +553,16 @@ def run(providers: list[str], *, out: Path = Path("runs"),
 
     # WHAT THIS RUN IS, WRITTEN BEFORE IT STARTS. The directory is `<provider>-<digest of the
     # settings>`, which keeps two configurations apart and says nothing a person can read.
-    # This is where they read it -- at the start, because `summary.json` is written at the end
-    # and a run that is interrupted, or stopped by a credit ceiling, never reaches it. The
-    # alternative was a record: they carry `run_manifest.settings` too, but only once a
-    # document has landed, and a directory should not need one to say what it is.
+    # This is where they read it -- before the first document, because `summary.json` is
+    # written after grading and a run interrupted, or stopped by a credit ceiling, never
+    # reaches one. The alternative was a record: they carry `run_manifest.settings` too, but
+    # only once a document has landed, and a directory should not need one to say what it is.
     dirs = {label: out / label for label, _, _ in runs}
     for label, provider, opts in runs:
         dirs[label].mkdir(parents=True, exist_ok=True)
         write_json(dirs[label] / "settings.json",
                    {"provider": provider, "settings": settings_for(provider, opts),
-                    "timeout_s": timeout})
+                    "timeout_s": timeout}, indent=2)
 
     # PREDICT EVERY VENDOR AT ONCE, THEN GRADE. Predicting is network wait -- a document's
     # `wall_s` is the vendor's own server-side time plus a couple of seconds -- so vendors do
@@ -596,15 +610,25 @@ def run(providers: list[str], *, out: Path = Path("runs"),
     # labelled however its author likes without parsing the key back apart.
     summary = {}
     for label, provider, opts in runs:
-        summary[label] = {
-            "provider": provider,
-            "settings": settings_for(provider, opts),
-            **summarise(score_all(docs, provider, dirs[label], verdicts=verdicts,
-                                  workers=score_workers, rescore=rescore)),
-        }
+        head = {"run": label, "provider": provider, "settings": settings_for(provider, opts)}
+        mine = score_all(docs, provider, dirs[label], verdicts=verdicts,
+                         workers=score_workers, rescore=rescore)
+        summary[label] = {**head, **summarise(mine)}
+        # WRITTEN AS SOON AS THIS RUN IS GRADED, so a run that finished is readable whether or
+        # not the ones after it do. Grading is serial, and holding every summary until the last
+        # vendor is how an invocation that stops half way leaves directories of answers and
+        # nothing that reads them.
+        #
+        # AND IT DESCRIBES THE DIRECTORY, NOT THIS INVOCATION -- `summarise` over every row in
+        # `scores.jsonl`, not over the selection. `runs/*/summary.json` is what a reader
+        # aggregates, and what it says must not depend on how the last run happened to be
+        # limited: `--limit 2` against a graded 620 would leave a two-document summary sitting
+        # on a full run, and a table built from those is wrong by a factor of 300. The RETURN
+        # value answers the other question -- what did I just run -- so it stays the selection.
+        write_json(dirs[label] / "summary.json",
+                   {**head, **summarise(list(read_scores(dirs[label]).values()))}, indent=2)
         s = summary[label]
         log.info("%s: unified %.4f over %d suites, coverage %d/%d",
                  label, s["unified"], len(s["per_suite"]), s["scored"], s["documents"])
 
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
     return summary

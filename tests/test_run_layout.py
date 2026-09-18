@@ -200,6 +200,59 @@ report("the stock row carries its own settings",
 report("both ran the same vendor",
        {r["provider"] for r in summary.values()} == {"datalab"})
 
+# EACH RUN CARRIES ITS OWN ROW. Grading is serial, so waiting for the last vendor to publish
+# the first one leaves an interrupted invocation with directories of answers and nothing that
+# reads them.
+for one in summary.values():
+    on_disk = json.loads((out2 / one["run"] / "summary.json").read_text())
+    report(f"{one['run']}: its directory carries its own row", on_disk == one)
+report("and there is no table across them to go stale",
+       not (out2 / "summary.json").exists())
+
+# THE FILE DESCRIBES THE DIRECTORY, NOT THE INVOCATION. A narrower resume regrades nothing and
+# must not leave a two-document summary sitting on a full run -- `runs/*/summary.json` is what
+# gets aggregated, and a table built from those would be wrong by the ratio of the two.
+B.read_manifest = lambda *a, **k: docs[:1]          # what `--limit 1` would select
+narrow = B.run(["datalab"], out=out2, score_workers=1, predict_workers={"*": 1},
+               options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+B.read_manifest = lambda *a, **k: docs
+kept = json.loads((out2 / named("datalab") / "summary.json").read_text())
+report("a narrowed resume leaves the directory's own summary whole",
+       kept["documents"] == len(docs), f'{kept["documents"]} of {len(docs)}')
+report("...while the return value answers what this invocation ran",
+       narrow[named("datalab")]["documents"] == 1,
+       str(narrow[named("datalab")]["documents"]))
+
+print("\nAND A RUN THAT IS GRADED SURVIVES THE ONE AFTER IT NOT BEING")
+out3 = pathlib.Path(tempfile.mkdtemp())
+B.fetch = lambda root: out3
+real_score_all, graded = B.score_all, {"n": 0}
+
+
+def interrupted_on_the_second(*a, **k):
+    graded["n"] += 1
+    if graded["n"] == 2:
+        raise KeyboardInterrupt
+    return real_score_all(*a, **k)
+
+
+B.score_all = interrupted_on_the_second
+try:
+    B.run(["datalab"], out=out3, score_workers=1, predict_workers={"*": 1},
+          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+    report("the interrupt reaches the caller", False, "it was swallowed")
+except KeyboardInterrupt:
+    report("the interrupt reaches the caller", True)
+finally:
+    B.score_all = real_score_all
+
+first, second = named("datalab", mode="balanced"), named("datalab", mode="accurate")
+report("the run that finished grading published its row",
+       (out3 / first / "summary.json").exists())
+report("the one that did not, did not", not (out3 / second / "summary.json").exists())
+report("...so aggregating the directories finds one finished run, not a half-counted second",
+       sorted(p.parent.name for p in out3.glob("*/summary.json")) == [first])
+
 print("\nA RUN IS A PROVIDER PLUS ITS OPTIONS, AND THE CAP IS STILL THE VENDOR'S")
 # `--options` keyed to a name that is not being run drops the steering silently, and the run
 # then reports as stock -- a steered measurement wearing a stock label.

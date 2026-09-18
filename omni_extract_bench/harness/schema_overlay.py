@@ -28,7 +28,7 @@ Usage:  from schema_overlay import apply_overlay;  schema = apply_overlay(schema
         python3 schema_overlay.py --preview     # show what would change
 """
 from __future__ import annotations
-import copy, json
+import copy
 
 # field-name markers -> convention sentence appended to that field's description
 CONVENTIONS = [
