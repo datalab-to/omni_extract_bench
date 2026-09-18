@@ -28,6 +28,7 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
+from omni_extract_bench.harness.vendor import out_name                         # noqa: E402
 
 FAILS = []
 ROOT = pathlib.Path(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
@@ -104,8 +105,10 @@ report("...and exits as interrupted", proc.returncode in (-signal.SIGINT, 130, 1
 
 print("\nWHAT IT LEAVES BEHIND IS RESUMABLE")
 for provider in ("datalab", "reducto"):
-    recs = work / provider / "records"
-    preds = work / provider / "predictions"
+    # A run directory is named for the vendor AND a digest of what it was sent.
+    run = work / out_name(provider)
+    recs = run / "records"
+    preds = run / "predictions"
     done = sorted(p.stem for p in recs.glob("*.json")) if recs.exists() else []
     have = {p.stem for p in preds.glob("*.json")} if preds.exists() else set()
     report(f"{provider}: it stopped part way, not at the end", 0 < len(done) < 40,
@@ -165,7 +168,7 @@ report("the healthy vendor still ran every document", calls["reducto"] == 6,
 report("...and no summary is written from a half-run corpus",
        not (acct / "summary.json").exists())
 report("...while its predictions are on disk for --score-only",
-       len(list((acct / "reducto" / "predictions").glob("*.json"))) == 6)
+       len(list((acct / out_name("reducto") / "predictions").glob("*.json"))) == 6)
 
 print("\nA NARROWED RUN DOES NOT TRUNCATE THE SCORES FILE")
 # `--limit 2` used to rewrite scores.jsonl with two lines, dropping a full run's grading.

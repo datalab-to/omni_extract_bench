@@ -142,13 +142,16 @@ print("\nA RUN THAT IS NOT STOCK SAYS SO")
 # can turn that down, so each one is recorded on every document -- a figure produced with a
 # vendor dialled back must not be able to look stock afterwards.
 stub(lambda pdf, schema, **o: OK)
-report("a stock run is named for the vendor alone", vendor.out_name("datalab") == "datalab")
+import re as _re
+report("a run is named for the vendor and a digest of what it was sent",
+       _re.fullmatch(r"datalab-[0-9a-f]{8}", vendor.out_name("datalab")) is not None,
+       vendor.out_name("datalab"))
 _rec = vendor.predict("datalab", PDF, SCHEMA, mode="accurate")
 report("an overridden option reaches the adapter", seen["opts"]["mode"] == "accurate")
 report("...and is recorded in the run manifest",
        _rec["run_manifest"]["settings"]["mode"] == "accurate", str(_rec["run_manifest"]))
-report("an option equal to the stock value is not a change",
-       vendor.out_name("datalab", {"mode": "balanced"}) == "datalab",
+report("an option equal to the stock value names the same run",
+       vendor.out_name("datalab", {"mode": "balanced"}) == vendor.out_name("datalab"),
        vendor.out_name("datalab", {"mode": "balanced"}))
 
 print("\nA MODEL IS NAMED IN FULL, NOT ALIASED")
@@ -165,7 +168,8 @@ report("an OpenRouter suffix is part of the id, not a separator",
 report("a bare alias is refused, naming the vendors",
        (lambda: [False for _ in ()] or _refused("gpt"))())
 report("a model id gets one directory, not a nested pair",
-       vendor.out_name("openai/gpt-5.6-sol") == "openai__gpt-5.6-sol")
+       vendor.out_name("openai/gpt-5.6-sol").startswith("openai__gpt-5.6-sol-"),
+       vendor.out_name("openai/gpt-5.6-sol"))
 
 print("\nRETRY ONLY WHAT A RETRY CAN FIX")
 for status, label, want in ((503, "a 5xx", vendor.TRANSIENT_ATTEMPTS),

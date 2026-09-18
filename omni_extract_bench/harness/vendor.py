@@ -89,33 +89,43 @@ def resolve(provider: str) -> str:
 
 
 def out_name(provider: str, options: dict | None = None) -> str:
-    """A run's directory name: the provider, plus whatever it changes about the vendor's stock.
+    """A run's directory name: the provider, and a digest of everything it was asked.
 
-    `openai/gpt-5.6-sol` would otherwise nest. A STEERED RUN GETS ITS OWN DIRECTORY: options
-    change what is measured, and while they did not change where the answer was stored,
-    `needs_run` handed a run that asked for `mode=fast` the records of a stock one -- three
-    documents reported `balanced` results for a `fast` run.
+    THE NAME IS A FUNCTION OF THE SETTINGS, so a directory holds one configuration and two
+    configurations never share one. It used to digest only what DIFFERED from the adapter's
+    defaults, which holds within a version of this code and breaks across one: the day a
+    vendor's maximum tier moves and a `Config` default follows it, the new stock run is stored
+    under the same plain `datalab` as the old one, `needs_run` finds records and skips every
+    document, and two tiers are averaged into one published number. That is the same mixing
+    `--options` already forced this directory apart for, displaced in time.
 
-    Named for what CHANGED, not for every setting, so a stock run stays plain `datalab` and is
-    the same directory however it was reached -- asked for by name, or as one leg of a sweep
-    that happens to include the stock value. Naming it for every setting would make each of
-    those a separate directory and buy the same documents twice.
+    So the digest covers the WHOLE resolved settings, and there is no case without one -- a
+    name that does not encode the settings cannot identify them, and `datalab` was exactly
+    that name.
+
+    The readable half is the difference from the current defaults, and is DECORATION: it keeps
+    `datalab@mode=accurate` legible in `ls` and in the progress display, and it carries no part
+    of the guarantee. Being decoration it can read differently after a default moves, so a run
+    pinned to the old value lands in a new directory and is bought again. That is the cost, and
+    it is the affordable one: a re-run is loud and a directory holding two measurements is not.
+
+    `openai/gpt-5.6-sol` would otherwise nest, so the separator is spelled out.
     """
     name = provider.replace(MODEL_SEPARATOR, "__")
+    settings = settings_for(provider, options)
+    # `sort_keys` so the spelling does not depend on the order the options were written in, and
+    # `sha256` rather than `hash()`, which is salted per process and would name the same run
+    # differently tomorrow.
+    digest = hashlib.sha256(
+        json.dumps(settings, sort_keys=True, default=str).encode()).hexdigest()[:8]
     stock = settings_for(provider)
-    changed = {k: v for k, v in settings_for(provider, options).items() if stock.get(k) != v}
+    changed = {k: v for k, v in settings.items() if stock.get(k) != v}
     if not changed:
-        return name
-    # THE DIGEST IS WHAT MAKES IT DISTINCT; the prefix is only there to read. No condition
-    # decides between them, because a rule that sometimes appends a digest is a rule that can
-    # be wrong about when -- and two steerings sharing a directory is the mixing this exists
-    # to stop. `sha256` over the canonical JSON, never `hash()`, which is salted per process
-    # and would name the same run differently tomorrow.
-    spelled = json.dumps(changed, sort_keys=True, default=str)       # sorted == stable
-    digest = hashlib.sha256(spelled.encode()).hexdigest()[:8]
+        return f"{name}-{digest}"
     readable = re.sub(r"[^A-Za-z0-9._=,-]+", "_",
                       ",".join(f"{k}={changed[k]}" for k in sorted(changed)))[:40]
     return f"{name}@{readable}-{digest}"
+
 
 #: A safe concurrency per vendor. Advisory: the caller owns the pool.
 WORKERS = {"reducto": 3, "llamaextract": 3, "azure-cu": 3, "datalab": 10}
@@ -189,8 +199,7 @@ def config_for(provider: str, options: dict | None = None):
 def settings_for(provider: str, options: dict | None = None) -> dict:
     """What the adapter will be sent, as a plain dict: the `Config` it is handed.
 
-    The record states it, `out_name` compares it against the stock settings to name a run, and
-    `oeb providers` prints it. There are no credentials in it -- every adapter reads its key
+    The record states it, `out_name` digests it to name a run, and `oeb providers` prints it. There are no credentials in it -- every adapter reads its key
     from the environment -- so nothing secret reaches a record or a directory name.
     """
     import dataclasses
@@ -213,11 +222,11 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
 
     stripped = strip_benchmark_keys(schema)
     sent = strip_benchmark_keys(SO.apply_overlay(schema)) if overlay else stripped
-    # Resolved once: the adapter is handed this object, and the record states its fields.
+    # Resolved ONCE, here: the adapter is handed this object and the record states its fields,
+    # so what was sent and what was written down cannot be two different resolutions. The whole
+    # of it is recorded, not just what the caller changed -- the benchmark's claim is that each
+    # vendor ran at its maximum, and a document has to say what that was on the day.
     config = config_for(provider, options)
-    # Only what the CALLER changed, not the maximum-tier defaults. A run that was not stock
-    # has to say so on every document: the benchmark's claim is that each vendor ran at its
-    # maximum, and a figure produced with that turned down is a different measurement.
     budget = Budget(timeout)
     started = time.time()
     got, error, attempts = None, None, 0

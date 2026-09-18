@@ -12,11 +12,14 @@ form of it, and the preset is gone.
 
 Run: python3 tests/test_run_layout.py
 """
+import dataclasses
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
+import types
 
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
@@ -24,7 +27,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 import omni_extract_bench.benchmark as B                                       # noqa: E402
 import omni_extract_bench.harness.vendor as V                                  # noqa: E402
 from omni_extract_bench.harness.extraction import Cost, Extraction             # noqa: E402
-from omni_extract_bench.harness.vendor import out_name, settings_for            # noqa: E402
+from omni_extract_bench.harness.vendor import out_name                          # noqa: E402
 
 ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 FAILS = []
@@ -40,15 +43,17 @@ def named(provider, **opts):
     return out_name(provider, opts)
 
 
-print("\nONLY A STEERED RUN IS MARKED")
-# Keyed on the OVERRIDES, not on every option, so the published layout is unchanged and only
-# a run that turned something down gets a suffix -- the line `run_manifest.overrides` draws.
-report("a stock run keeps the plain name", named("datalab") == "datalab")
-report("an option set to the stock value is not an override",
-       named("datalab", mode="balanced") == "datalab")
+print("\nA NAME IS A FUNCTION OF THE SETTINGS")
+# Every name carries a digest of the WHOLE resolved settings, so a directory holds one
+# configuration. The readable half is the difference from the defaults and is decoration.
+report("a run is named for the vendor and what it was sent",
+       re.fullmatch(r"datalab-[0-9a-f]{8}", named("datalab")) is not None, named("datalab"))
+report("an option set to the stock value names the same run",
+       named("datalab", mode="balanced") == named("datalab"))
 report("a model id still gets one directory, not a nested pair",
-       named("openai/gpt-5.6-sol") == "openai__gpt-5.6-sol")
-report("a real override is marked, and readably",
+       named("openai/gpt-5.6-sol").startswith("openai__gpt-5.6-sol-"),
+       named("openai/gpt-5.6-sol"))
+report("a steered run is marked, and readably",
        named("datalab", mode="accurate").startswith("datalab@mode=accurate-"),
        named("datalab", mode="accurate"))
 
@@ -62,6 +67,44 @@ apart = [named("datalab", mode="accurate"), named("datalab", mode="fast"),
          named("reducto", system_prompt="L" * 300),
          named("reducto", system_prompt="M" * 300)]  # differs past the readable cut
 report("every one of them is unique", len(set(apart)) == len(apart), str(apart))
+
+print("\nAND NOT ON WHAT THE DEFAULT HAPPENED TO BE THAT DAY")
+# THE FAILURE THIS REPLACED. The digest used to cover only what DIFFERED from the adapter's
+# defaults, so the name held within a version of the code and broke across one: move the
+# `Config` default the day a vendor's maximum tier moves, and the new stock run is stored
+# under the same plain `datalab` as the old one. `needs_run` finds records, skips every
+# document, and two tiers are averaged into one published number.
+def _datalab_defaulting_to(tier):
+    module = types.ModuleType("fake_datalab")
+
+    @dataclasses.dataclass(frozen=True)
+    class Config:
+        mode: str = tier
+        base_url: str = "https://www.datalab.to"
+        poll_interval: float = 5.0
+
+    module.Config = Config
+    return lambda provider: module
+
+
+_real_module = V._module
+try:
+    V._module = _datalab_defaulting_to("balanced")
+    was_stock, was_pinned = named("datalab"), named("datalab", mode="accurate")
+    V._module = _datalab_defaulting_to("accurate")
+    now_stock, now_pinned = named("datalab"), named("datalab", mode="balanced")
+finally:
+    V._module = _real_module
+report("the same name never means two different settings", was_stock != now_stock,
+       f"{was_stock} vs {now_stock}")
+report("...and the digest of one setting is the same either way",
+       was_stock.rsplit("-", 1)[1] == now_pinned.rsplit("-", 1)[1],
+       f"{was_stock} vs {now_pinned}")
+# What the readable half costs: it is decoration, so it re-reads when a default moves, and a
+# run pinned to the old value is bought again. Loud -- a new directory -- where the mixing
+# above was silent.
+report("the readable half is decoration and may re-read", was_stock != now_pinned
+       and was_pinned != now_stock, f"{was_pinned} vs {now_stock}")
 
 print("\nAND THE NAME DOES NOT DEPEND ON HOW IT WAS WRITTEN")
 report("option order does not change it",
@@ -112,9 +155,9 @@ report("the steered run calls the vendor again, at the asked-for setting",
        called == ["fast"] * 3, f"{called} -- empty means it reused the stock records")
 steered_dir = named("datalab", mode="fast")
 report("...into a directory of its own",
-       (out / steered_dir).is_dir() and (out / "datalab").is_dir(), steered_dir)
+       (out / steered_dir).is_dir() and (out / named("datalab")).is_dir(), steered_dir)
 
-stock = json.loads((out / "datalab" / "predictions" / "d0.json").read_text())
+stock = json.loads((out / named("datalab") / "predictions" / "d0.json").read_text())
 steered = json.loads((out / steered_dir / "predictions" / "d0.json").read_text())
 report("the two answers are kept apart", (stock["a"], steered["a"]) == ("balanced", "fast"),
        f"{stock['a']} / {steered['a']}")
@@ -133,7 +176,8 @@ summary = B.run(["datalab"], out=out2, score_workers=1, predict_workers={"*": 1}
 # how it was steered), and keyed by the vendor alone a steered row silently replaces a stock
 # one. The key is the same string that named the directory.
 report("each configuration is its own row in the summary",
-       sorted(summary) == sorted(["datalab", named("datalab", mode="accurate")]),
+       sorted(summary) == sorted([named("datalab", mode="balanced"),
+                                  named("datalab", mode="accurate")]),
        str(sorted(summary)))
 report("...matching its directory exactly",
        sorted(summary) == sorted(d.name for d in out2.iterdir() if d.is_dir()),
@@ -143,7 +187,7 @@ steered_row = summary[named("datalab", mode="accurate")]
 report("the row names the vendor it came from", steered_row["provider"] == "datalab")
 report("...and what it was sent", steered_row["settings"]["mode"] == "accurate")
 report("the stock row carries its own settings",
-       summary["datalab"]["settings"]["mode"] == "balanced")
+       summary[named("datalab")]["settings"]["mode"] == "balanced")
 report("both ran the same vendor",
        {r["provider"] for r in summary.values()} == {"datalab"})
 
