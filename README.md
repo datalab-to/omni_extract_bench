@@ -41,6 +41,21 @@ anthropic/claude-opus-5
 google/gemini-3.7-flash
 ```
 
+See what settings each provider takes and its default values. For example, datalab:
+
+```
+oeb providers datalab
+```
+```
+datalab
+
+  mode           balanced
+  base_url       https://www.datalab.to
+  poll_interval  5.0
+
+  oeb benchmark --providers datalab --options '{"datalab": {"mode": ...}}'
+```
+
 Then run the benchmark (limit to 1 document here). It's resumable so you can stop and reinvoke to resume at any point. 
 
 **!!NOTE!!**: this will cost money and you will need your API keys set. 
@@ -50,16 +65,29 @@ oeb benchmark --out runs/ --limit 1 \
     --providers datalab reducto extend llamaextract
 ```
 ```
-datalab       ██████████████  1/1  ok 1  err 0  avg 13s  done in 13s
-reducto       ░░░░░░░░░░░░░░  0/1  ok 0  err 0  1/1 in flight
-extend        ░░░░░░░░░░░░░░  0/1  ok 0  err 0  1/1 in flight
-llamaextract  ██████████████  1/1  ok 1  err 0  avg 10s  done in 10s
+datalab-f46415c9       ██████████████  1/1  ok 1  err 0  avg 13s  done in 13s
+reducto-e54d3a1d       ░░░░░░░░░░░░░░  0/1  ok 0  err 0  1/1 in flight
+extend-7bbd41aa        ░░░░░░░░░░░░░░  0/1  ok 0  err 0  1/1 in flight
+llamaextract-76247dbb  ██████████████  1/1  ok 1  err 0  avg 10s  done in 10s
 ```
 
+You can also specify settings per provider. For example:
+
+```
+oeb benchmark \
+  --providers datalab reducto \
+  --limit 1 \                                                                                                                              
+  --options '{"datalab":  [{"mode": "balanced"}, {"mode": "accurate"}],
+              "reducto": [{"agentic_table_mode": "max"},
+                          {"agentic_table_mode": "default"}]}' \
+  --out runs/
+```
+
+This will execute 4 different runs -- one for each pair (provider, settings). 
 
 ## Score
 
-Use in your code.
+Use in your own code.
 
 ```python
 from omni_extract_bench import score
@@ -128,7 +156,7 @@ result["precision"]   # 0.5625
 result["recall"]      # 0.8182
 ```
 
-or from the cli.
+or from the command line.
 
 
 ```bash
@@ -176,7 +204,7 @@ print(result["verdicts"][0]) # print the first verdict
 #     }
 ```
 
-In the cli.
+From the cli.
 
 ```bash
 oeb score --pred pred.json --gt gold.json --schema schema.json --verdicts
