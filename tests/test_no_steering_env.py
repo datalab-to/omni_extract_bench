@@ -70,7 +70,7 @@ import importlib  # noqa: E402
 PROMOTED = {
     "datalab": ("mode", "base_url"),
     "reducto": ("agentic_table_mode",),
-    "extend": ("array_strategy", "api_version", "base_url", "workspace_id"),
+    "extend": ("array_strategy", "api_version", "base_url"),
     "llamaextract": ("tier",),
     "azure_cu": ("completion_model",),
     "llm_single_shot": ("base_url",),

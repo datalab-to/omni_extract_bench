@@ -163,15 +163,14 @@ def _await(client, op_url: str, *, budget, poll_interval: float, want_result: bo
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
             completion_model: str = DEFAULT_COMPLETION_MODEL, api_version: str = API_VERSION,
-            poll_interval: float = 3.0, endpoint: str | None = None,
-            key: str | None = None) -> Extraction:
+            poll_interval: float = 3.0) -> Extraction:
     """Create (or reuse) an analyzer for this schema, analyse the document, poll for the result.
 
     Azure does not report a per-call cost, so `cost.usd` is None and the record says
     `billed_out_of_band` -- rather than inventing a figure from a price list.
     """
-    endpoint = endpoint or os.environ.get("AZURE_CU_ENDPOINT")
-    key = key or os.environ.get("AZURE_CU_KEY")
+    endpoint = os.environ.get("AZURE_CU_ENDPOINT")
+    key = os.environ.get("AZURE_CU_KEY")
     if not endpoint or not key:
         raise MissingCredential("AZURE_CU_ENDPOINT and AZURE_CU_KEY must be set")
     endpoint = endpoint.rstrip("/")

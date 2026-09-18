@@ -29,12 +29,11 @@ DEFAULT_TIMEOUT_S = 1800.0
 TERMINAL = {"PROCESSED", "COMPLETED", "FAILED", "CANCELLED", "ERROR"}
 
 
-def headers(key: str, api_version: str = API_VERSION,
-            workspace_id: str | None = None) -> dict:
+def headers(key: str, api_version: str = API_VERSION) -> dict:
     h = {"Authorization": f"Bearer {key}", "x-extend-api-version": api_version}
     # Which workspace the key acts in -- part of the credential, not of the ask, so it is
     # read from the environment alongside the key it belongs to.
-    ws = workspace_id or os.environ.get("EXTEND_WORKSPACE_ID")
+    ws = os.environ.get("EXTEND_WORKSPACE_ID")
     if ws:
         h["x-extend-workspace-id"] = ws      # required for org-level keys
     return h
@@ -127,19 +126,18 @@ def extraction_of(run: dict):
 
 def extract(pdf: Path, schema: dict, *, timeout: float = DEFAULT_TIMEOUT_S,
             array_strategy: str = ARRAY_STRATEGY, api_version: str = API_VERSION,
-            base_url: str = BASE, workspace_id: str | None = None,
-            api_key: str | None = None) -> Extraction:
+            base_url: str = BASE) -> Extraction:
     """Get a generic processor, upload, submit a run, poll it to a terminal state.
 
     Extend does not report a per-document cost, so `cost.usd` is None and the record says
     `billed_out_of_band` rather than inventing a figure from a price list.
     """
-    key = api_key or os.environ.get("EXTEND_API_KEY")
+    key = os.environ.get("EXTEND_API_KEY")
     if not key:
         raise MissingCredential("EXTEND_API_KEY is not set")
 
     budget = Budget(timeout)          # before the upload: it is part of the document
-    with httpx.Client(headers=headers(key, api_version, workspace_id), timeout=120) as c:
+    with httpx.Client(headers=headers(key, api_version), timeout=120) as c:
         # THE DIALECT, applied rather than merely documented. Extend validates strictly:
         # without this the API rejects the schema outright -- "Schema must have either a
         # `type` property or an `enum` property" -- which reads like a broken vendor and is

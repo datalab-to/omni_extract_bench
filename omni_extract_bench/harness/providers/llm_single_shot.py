@@ -81,8 +81,7 @@ def max_output_for(model: str) -> int:
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, model: str,
             max_output_tokens: int | None = None,
-            base_url: str = DEFAULT_BASE_URL, attempts: int = 3,
-            api_key: str | None = None) -> Extraction:
+            base_url: str = DEFAULT_BASE_URL, attempts: int = 3) -> Extraction:
     """One completion with the schema as `response_format`, retried only for a bad ANSWER.
 
     The loop here raises the temperature after a reply that would not parse, was empty of
@@ -91,7 +90,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, model: str,
     becomes a `VendorError` carrying its status, and the harness's own retry decides, so the
     two loops cannot multiply into 12 attempts on one document.
     """
-    key = api_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if not key:
         raise MissingCredential("OPENROUTER_API_KEY (or OPENAI_API_KEY) must be set")
 

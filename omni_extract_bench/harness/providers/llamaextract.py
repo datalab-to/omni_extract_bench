@@ -176,7 +176,7 @@ def _dt(v: object) -> datetime | None:
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, tier: str = TIER,
-            poll_interval: int = 5, api_key: str | None = None) -> Extraction:
+            poll_interval: int = 5) -> Extraction:
     """Upload, submit a v2 extract job at `tier`, poll it to a terminal state.
 
     `tier` is an argument rather than an environment variable because it is a PARITY decision:
@@ -189,7 +189,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, tier: str = TIE
     budget = Budget(timeout)          # before the upload: it is part of the document
     # LlamaCloud issues ONE key for the whole platform, and people export it under the
     # name of whichever product they reached first.
-    key = (api_key or os.environ.get("LLAMA_CLOUD_API_KEY")
+    key = (os.environ.get("LLAMA_CLOUD_API_KEY")
            or os.environ.get("LLAMAPARSE_API_KEY"))
     if not key:
         raise MissingCredential("LLAMA_CLOUD_API_KEY (or LLAMAPARSE_API_KEY) is not set")

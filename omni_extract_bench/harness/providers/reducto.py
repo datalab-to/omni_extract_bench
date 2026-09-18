@@ -179,13 +179,13 @@ def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
             deep_extract_model: str = DEFAULT_DEEP_EXTRACT_MODEL, system_prompt: str = "",
             agentic_table_mode: str = AGENTIC_TABLE_MODE,
-            poll_interval: int = 5, api_key: str | None = None) -> Extraction:
+            poll_interval: int = 5) -> Extraction:
     """Upload, submit an async extract, poll to completion.
 
     A job that outlives its budget is named in the record by `job_id`, so it can be chased by
     hand rather than being anonymous.
     """
-    key = api_key or os.environ.get("REDUCTO_API_KEY")
+    key = os.environ.get("REDUCTO_API_KEY")
     if not key:
         raise MissingCredential("REDUCTO_API_KEY is not set")
 

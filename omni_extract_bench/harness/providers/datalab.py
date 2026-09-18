@@ -58,8 +58,7 @@ def normalize_schema(schema: dict) -> dict:
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, mode: str = "balanced",
-            base_url: str = DEFAULT_BASE_URL, poll_interval: float = 5.0,
-            api_key: str | None = None) -> Extraction:
+            base_url: str = DEFAULT_BASE_URL, poll_interval: float = 5.0) -> Extraction:
     """POST the document, poll until it is done, return the extraction and what it cost.
 
     Raises rather than returning a failure: this function ran the poll loop, so it is the only
@@ -67,7 +66,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, mode: str = "ba
     while it was still working" -- a distinction the harness used to reconstruct from an HTTP
     log afterwards.
     """
-    key = api_key or os.environ.get("DATALAB_API_KEY")
+    key = os.environ.get("DATALAB_API_KEY")
     if not key:
         raise MissingCredential("DATALAB_API_KEY is not set")
 

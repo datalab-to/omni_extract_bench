@@ -23,8 +23,7 @@ MODEL = "mistral-ocr-latest"
 URL = "https://api.mistral.ai/v1/ocr"
 
 
-def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
-            api_key: str | None = None) -> Extraction:
+def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0) -> Extraction:
     """One POST, one response, one parse.
 
     No polling, so the document's budget IS this request's timeout -- there is no second phase
@@ -32,7 +31,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     elapsed time, so a server trickling bytes could outlast it; for a single call that is the
     closest an HTTP client gets to a wall-clock cap.
     """
-    key = api_key or os.environ.get("MISTRAL_API_KEY")
+    key = os.environ.get("MISTRAL_API_KEY")
     if not key:
         raise MissingCredential("MISTRAL_API_KEY is not set")
 
