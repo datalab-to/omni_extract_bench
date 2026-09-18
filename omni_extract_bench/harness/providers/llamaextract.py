@@ -41,13 +41,21 @@ BASE = "https://api.cloud.llamaindex.ai"
 TIER = os.environ.get("LLAMAEXTRACT_TIER", "agentic")
 _TERMINAL = {"SUCCESS", "COMPLETED", "FAILED", "ERROR", "CANCELLED"}
 
+#: JSON Schema type names for the Python values an enum member can be.
+JSON_TYPE_NAMES = {str: "string", bool: "boolean", int: "integer", float: "number"}
+
+
+def _enum_type(members: list) -> str | list[str]:
+    """The `type` an enum needs: the type of each member, "null" included."""
+    names = sorted({JSON_TYPE_NAMES[type(m)] for m in members if m is not None})
+    if None in members:
+        names.append("null")
+    return names[0] if len(names) == 1 else names
+
 
 def _adapt_schema(schema: dict, defs: dict | None = None) -> dict:
-    """Inline $ref/$defs, drop $-prefixed metadata keys, and collapse type-lists to a
-    single type. The latter is required: LlamaExtract turns `"type": ["array","null"]`
-    into an anyOf and the array branch loses its `items` → 400 schema_validation. We
-    drop the "null" so arrays/objects/scalars stay single-typed (items preserved). No
-    field, description, enum, or type-category is changed — pure dialect cleanup."""
+    """Inline $ref/$defs, drop $-prefixed metadata keys, and reduce the schema to the subset
+    LlamaExtract's v2 API accepts"""
     if defs is None:
         defs = schema.get("$defs", {})
     if not isinstance(schema, dict):
@@ -58,41 +66,14 @@ def _adapt_schema(schema: dict, defs: dict | None = None) -> dict:
         )
     node = {k: v for k, v in schema.items() if not k.startswith("$")}
 
-    # Collapse a union to its non-null branch. Recursing into the branches while LEAVING the
-    # anyOf in place produced `properties.skills.anyOf.anyOf.1...` -- a nested union the API
-    # rejects. Same resolution the grader applies when scoring, so what is sent matches how the
-    # answer is judged.
     for comb in ("anyOf", "oneOf", "allOf"):
-        branches = [b for b in (node.get(comb) or []) if isinstance(b, dict)]
-        if branches:
-            pick = next((b for b in branches if b.get("type") != "null"), None)
-            if pick is not None:
-                merged = {k: v for k, v in node.items()
-                          if k not in ("anyOf", "oneOf", "allOf")}
-                for k, v in pick.items():
-                    merged.setdefault(k, v)
-                return _adapt_schema(merged, defs)
+        if isinstance(node.get(comb), list):
+            node[comb] = [_adapt_schema(b, defs) for b in node[comb]]
 
-    t = node.get("type")
-    if isinstance(t, list):
-        non_null = [x for x in t if x != "null"]
-        node["type"] = non_null[0] if non_null else "string"
-
-    # An enum with no `type` is valid JSON Schema, but the API reports "Invalid type for
-    # field". Infer the type from the enum's own non-null values rather than defaulting.
+    # A typeless enum is rejected ("Invalid type for field"), so infer the type from the
+    # enum's own values -- including `null`, or the field stops being nullable.
     if "enum" in node and "type" not in node:
-        vals = [v for v in node["enum"] if v is not None]
-        kinds = {type(v) for v in vals}
-        node["type"] = ({str: "string", bool: "boolean", int: "integer", float: "number"}
-                        .get(kinds.pop()) if len(kinds) == 1 else "string")
-
-    # Once a type is declared, every enum member must match it: leaving the `null` in
-    # `["MILD","MODERATE","SEVERE",null]` alongside `type: string` fails with "Input should be
-    # a valid string at ...enum.3". Nullability is carried by the field being optional, not by
-    # a null enum member, so the null is removed rather than the type loosened.
-    if isinstance(node.get("enum"), list) and node.get("type") in (
-            "string", "boolean", "integer", "number"):
-        node["enum"] = [v for v in node["enum"] if v is not None]
+        node["type"] = _enum_type(node["enum"])
 
     # `additionalProperties` as a SCHEMA (an open map, e.g. skill-category -> list) is rejected:
     # "Input should be a valid boolean". Reduce it to the boolean the dialect allows; the map
