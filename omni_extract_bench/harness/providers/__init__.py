@@ -1,6 +1,6 @@
 """Vendor adapters: one module per vendor, each an `extract()` function.
 
-    extract(pdf, schema, *, timeout, **options) -> Extraction
+    extract(pdf, schema, *, timeout, config: Config) -> Extraction
 
 It makes the vendor call, parses the answer, and returns both. It does not RETURN a failure --
 it raises `VendorError` (or `VendorTimeout`) from where the failure happened, while it still

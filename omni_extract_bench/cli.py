@@ -81,7 +81,7 @@ def cmd_providers(args) -> int:
     follow-up about one entry -- printing every provider's defaults in the list drowned the
     names. Bare, it stays one column, so `oeb providers | ...` is still a clean list.
 
-    The options come from `vendor.settings_for`, which reads the adapter's own signature, so
+    The options come from `vendor.settings_for`, which reads the adapter's own `Config`, so
     this cannot drift from what the adapter accepts.
     """
     from .harness import PROVIDERS

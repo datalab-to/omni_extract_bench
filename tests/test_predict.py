@@ -11,6 +11,7 @@ what it receives, and what `predict` does with what it returns, is.
 
 Run: python3 tests/test_predict.py
 """
+import dataclasses
 import json
 import sys
 import tempfile
@@ -54,20 +55,18 @@ seen = {}
 def stub(fn):
     """Install `fn` as every provider's adapter.
 
-    The signature names the options the real adapters take, because `settings_for` reads
-    defaults off it -- a stub with only `**opts` declares no options, so nothing would be
-    resolved and the tier pins would never be sent.
+    The stub's own signature does not matter: the options come from the REAL adapter's
+    `Config`, which is a declaration rather than something inferred from whatever is standing
+    in for `extract`. A stub used to have to replicate the signature to be believed.
     """
-    def counted(pdf, schema, *, mode="balanced", tier="agentic_plus",
-                base_url=None, poll_interval=5.0, **rest):
-        # Named so `settings_for` can read the defaults off this signature, then folded back
-        # into one dict so the assertions below see everything the adapter was handed.
-        opts = {"mode": mode, "tier": tier, "base_url": base_url,
-                "poll_interval": poll_interval, **rest}
+    def counted(pdf, schema, *, timeout=None, config=None):
+        opts = dataclasses.asdict(config) if config is not None else {}
         seen.clear()
-        seen.update(pdf=pdf, schema=schema, opts=opts)
+        seen.update(pdf=pdf, schema=schema, opts=opts, timeout=timeout)
         counted.calls += 1
-        return fn(pdf, schema, **opts)
+        # `timeout` goes through to `fn` as well, so a test can watch the budget shrink across
+        # retries -- `seen["opts"]` keeps it out, because it is the contract and not a setting.
+        return fn(pdf, schema, timeout=timeout, **opts)
     counted.calls = 0
     vendor.adapter = lambda provider: counted
     return counted
@@ -105,7 +104,7 @@ report("the provider's maximum-tier options are passed to the adapter",
        and seen["opts"]["mode"] == "balanced", str(seen["opts"]))
 report("the uniform budget is passed to the adapter",
        vendor.predict("mistral", PDF, SCHEMA, timeout=900) is not None
-       and 899 < seen["opts"]["timeout"] <= 900, str(seen["opts"]))
+       and 899 < seen["timeout"] <= 900, str(seen["timeout"]))
 
 # One budget for the document, not one per attempt. Four attempts at the full timeout plus
 # backoff could spend 7,400s on a document documented as taking 1,800s end to end -- the same
@@ -134,11 +133,8 @@ report("a vendor that reports no cost is billed out of band, not guessed",
 # A fresh call, because `seen` holds whatever the LAST adapter was handed and `rec` above
 # came from an earlier one.
 _sent = vendor.predict("datalab", PDF, SCHEMA)["run_manifest"]["settings"]
-# `timeout` is the adapter CONTRACT, not a setting, so it is deliberately absent -- the
-# record states what the vendor was asked, not how long we were willing to wait for it.
-_handed = {k: v for k, v in seen["opts"].items() if k != "timeout"}
 report("what the provider was actually sent is recorded, not a name for it",
-       _sent == _handed, f"{_sent} vs {_handed}")
+       _sent == seen["opts"], f'{_sent} vs {seen["opts"]}')
 report("...and the contract's own arguments are not settings", "timeout" not in _sent)
 
 print("\nA RUN THAT IS NOT STOCK SAYS SO")
@@ -159,12 +155,12 @@ print("\nA MODEL IS NAMED IN FULL, NOT ALIASED")
 # `gpt` said nothing about which model produced a row, and changed meaning whenever the alias
 # was repointed. A slash is the discriminator: no vendor name has one, every model id does.
 report("a model id routes to the single-shot adapter",
-       vendor.resolve("openai/gpt-5.6-sol") == ("llm_single_shot",
-                                                {"model": "openai/gpt-5.6-sol"}))
+       vendor.resolve("openai/gpt-5.6-sol") == "llm_single_shot"
+       and vendor.settings_for("openai/gpt-5.6-sol")["model"] == "openai/gpt-5.6-sol")
 report("a vendor name still routes to its own adapter",
-       vendor.resolve("datalab")[0] == "datalab")
+       vendor.resolve("datalab") == "datalab")
 report("an OpenRouter suffix is part of the id, not a separator",
-       vendor.resolve("mistralai/mistral-medium-3-5:batch")[1]["model"]
+       vendor.settings_for("mistralai/mistral-medium-3-5:batch")["model"]
        == "mistralai/mistral-medium-3-5:batch")
 report("a bare alias is refused, naming the vendors",
        (lambda: [False for _ in ()] or _refused("gpt"))())

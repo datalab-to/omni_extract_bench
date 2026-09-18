@@ -96,9 +96,10 @@ for i in range(3):
 B.fetch = lambda root: out
 B.read_manifest = lambda *a, **k: docs
 called = []
-V.adapter = lambda prov: (lambda pdf, schema, *, timeout, **o: (
-    called.append(o.get("mode")),
-    Extraction(result={"a": o.get("mode")}, cost=Cost(usd=0.1)))[1])
+# The adapter is handed its `Config`, so a stub reads the setting off a field.
+V.adapter = lambda prov: (lambda pdf, schema, *, timeout, config: (
+    called.append(config.mode),
+    Extraction(result={"a": config.mode}, cost=Cost(usd=0.1)))[1])
 
 B.run(["datalab"], out=out, score_workers=1, predict_workers={"*": 1})
 report("the stock run calls the vendor at its stock setting", called == ["balanced"] * 3,
@@ -182,7 +183,7 @@ guard = _threading.Lock()
 
 
 def counting(prov):
-    def extract(pdf, schema, *, timeout, **o):
+    def extract(pdf, schema, *, timeout, config):
         with guard:
             live["n"] += 1
             live["peak"] = max(live["peak"], live["n"])

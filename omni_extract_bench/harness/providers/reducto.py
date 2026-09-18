@@ -20,6 +20,7 @@ Adapted from longextract_bench (MIT, (c) 2026 Micro1) -- see providers/LICENSE-m
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import time
@@ -40,6 +41,20 @@ DEFAULT_DEEP_EXTRACT_MODEL = "v2"
 # `agentic_table_mode` argument, which the record reports, rather than the environment.
 AGENTIC_TABLE_MODE = "max"
 _TERMINAL = {"Completed", "Failed", "Error", "Cancelled"}
+
+
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """What reducto can be asked, and what it is asked at its maximum tier."""
+
+    deep_extract_model: str = DEFAULT_DEEP_EXTRACT_MODEL
+    system_prompt: str = dataclasses.field(
+        default="", metadata={"help": "extra system prompt; empty so the schema drives it"})
+    agentic_table_mode: str = dataclasses.field(
+        default=AGENTIC_TABLE_MODE,
+        metadata={"choices": ["default", "max"],
+                  "help": "agentic table enrichment; `max` enriches every table"})
+    poll_interval: int = 5
 
 
 #: How far back down the /jobs listing to look for our own job. It has to cover everything
@@ -177,9 +192,7 @@ def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
-            deep_extract_model: str = DEFAULT_DEEP_EXTRACT_MODEL, system_prompt: str = "",
-            agentic_table_mode: str = AGENTIC_TABLE_MODE,
-            poll_interval: int = 5) -> Extraction:
+            config: Config = Config()) -> Extraction:
     """Upload, submit an async extract, poll to completion.
 
     A job that outlives its budget is named in the record by `job_id`, so it can be chased by
@@ -193,9 +206,9 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     with httpx.Client() as client:
         try:
             file_id = _upload(client, key, pdf)
-            job_id = _submit(client, key, _build_payload(file_id, schema, system_prompt,
-                                                         deep_extract_model,
-                                                         agentic_table_mode))
+            job_id = _submit(client, key, _build_payload(
+                file_id, schema, config.system_prompt, config.deep_extract_model,
+                config.agentic_table_mode))
         except httpx.HTTPStatusError as exc:
             raise VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
                               status=exc.response.status_code,
@@ -203,7 +216,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
         except RuntimeError as exc:                      # no file_id / no job_id in the reply
             raise VendorError(str(exc)[:300], status=200) from None
 
-        body = _poll(client, key, job_id, poll_interval, budget)
+        body = _poll(client, key, job_id, config.poll_interval, budget)
         try:
             latency_s = _server_duration(client, key, job_id)
         except Exception:  # noqa: BLE001
@@ -241,12 +254,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
 
 
 def main() -> None:
-    run_cli(extract, "reducto",
-            ("--deep-extract-model", {"default": DEFAULT_DEEP_EXTRACT_MODEL}),
-            ("--system-prompt", {"default": "", "help": "extra system prompt; empty by default"}),
-            ("--agentic-table-mode", {"default": AGENTIC_TABLE_MODE,
-                                      "choices": ["default", "max"]}),
-            ("--poll-interval", {"type": int, "default": 5}),
+    run_cli(extract, Config, "reducto",
             description="Reducto deep extract (v2, citations off)")
 
 

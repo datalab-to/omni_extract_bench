@@ -64,7 +64,7 @@ print(f"{len(modules)} adapters: no steering read from the environment")
 
 # The settings that USED to be environment variables are all reachable as arguments -- removing
 # the variable without promoting it to a parameter would just make the setting unreachable.
-import inspect  # noqa: E402
+import dataclasses  # noqa: E402
 import importlib  # noqa: E402
 
 PROMOTED = {
@@ -75,20 +75,23 @@ PROMOTED = {
     "azure_cu": ("completion_model",),
     "llm_single_shot": ("base_url",),
 }
+def config_fields(module):
+    """The adapter's `Config` fields -- the one declaration of what it can be asked."""
+    return {f.name: f for f in dataclasses.fields(
+        importlib.import_module(f"omni_extract_bench.harness.providers.{module}").Config)}
+
+
 for module, params in PROMOTED.items():
-    sig = inspect.signature(
-        importlib.import_module(f"omni_extract_bench.harness.providers.{module}").extract)
-    missing = [p for p in params if p not in sig.parameters]
-    assert not missing, f"{module}.extract cannot be steered through options: {missing}"
-print(f"{sum(len(v) for v in PROMOTED.values())} former env settings are keyword arguments")
+    missing = [p for p in params if p not in config_fields(module)]
+    assert not missing, f"{module}.Config cannot be steered through options: {missing}"
+print(f"{sum(len(v) for v in PROMOTED.values())} former env settings are Config fields")
 
 # And none of them is optional-with-a-None-default pretending to have one: a `None` default is
 # a second place the real default can hide.
 for module in ("datalab", "reducto", "llamaextract", "azure_cu"):
-    sig = inspect.signature(
-        importlib.import_module(f"omni_extract_bench.harness.providers.{module}").extract)
+    fields = config_fields(module)
     for name in PROMOTED[module]:
-        got = sig.parameters[name].default
-        assert got is not inspect.Parameter.empty and got is not None, \
-            f"{module}.extract({name}=) should carry its literal default, got {got!r}"
-print("every promoted setting carries its literal default in the signature")
+        got = fields[name].default
+        assert got is not dataclasses.MISSING and got is not None, \
+            f"{module}.Config.{name} should carry its literal default, got {got!r}"
+print("every promoted setting carries its literal default on the Config")

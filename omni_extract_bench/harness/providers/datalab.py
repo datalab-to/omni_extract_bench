@@ -15,6 +15,7 @@ Auth: DATALAB_API_KEY.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import time
@@ -27,6 +28,23 @@ from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry
 from ._cli import run_cli
 
 DEFAULT_BASE_URL = "https://www.datalab.to"
+
+
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """What this vendor can be asked, and what it is asked at its maximum tier.
+
+    The fields ARE the options: `oeb providers datalab` lists them, `--options` sets them, and
+    `run_cli` builds this adapter's flags from them. One declaration, so nothing infers from a
+    signature and nothing restates a default somewhere else.
+    """
+
+    mode: str = dataclasses.field(
+        default="balanced",
+        metadata={"choices": ["fast", "balanced", "accurate"],
+                  "help": "extraction tier; the published runs use balanced and accurate"})
+    base_url: str = DEFAULT_BASE_URL
+    poll_interval: float = 5.0
 
 
 def normalize_schema(schema: dict) -> dict:
@@ -57,8 +75,8 @@ def normalize_schema(schema: dict) -> dict:
     return schema
 
 
-def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, mode: str = "balanced",
-            base_url: str = DEFAULT_BASE_URL, poll_interval: float = 5.0) -> Extraction:
+def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
+            config: Config = Config()) -> Extraction:
     """POST the document, poll until it is done, return the extraction and what it cost.
 
     Raises rather than returning a failure: this function ran the poll loop, so it is the only
@@ -73,7 +91,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, mode: str = "ba
     # The clock starts HERE, before the upload -- not when polling begins. Upload and
     # submit are part of what the document costs.
     budget = Budget(timeout)
-    base_url = base_url.rstrip("/")
+    base_url = config.base_url.rstrip("/")
     cost: Cost = Cost()
     polls = 0
 
@@ -99,7 +117,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, mode: str = "ba
                 f"{base_url}/api/v1/extract",
                 files={"file": (pdf.name, fh, "application/pdf")},
                 data={"page_schema": json.dumps(normalize_schema(schema)),
-                      "extraction_mode": mode, "output_format": "json"})
+                      "extraction_mode": config.mode, "output_format": "json"})
         if resp.status_code != 200:
             raise VendorError(f"HTTP {resp.status_code}: {resp.text[:300]}",
                               status=resp.status_code, body=resp.text)
@@ -157,14 +175,11 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, mode: str = "ba
                     raw=body,
                     cost=cost,
                     job_id=request_id)
-            time.sleep(poll_interval)
+            time.sleep(config.poll_interval)
 
 
 def main() -> None:
-    run_cli(extract, "datalab",
-            ("--mode", {"default": "balanced",
-                        "choices": ["fast", "balanced", "accurate"]}),
-            ("--base-url", {"default": DEFAULT_BASE_URL}))
+    run_cli(extract, Config, "datalab")
 
 
 if __name__ == "__main__":

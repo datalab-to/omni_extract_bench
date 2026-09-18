@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, time
+import dataclasses, json, os, time
 from pathlib import Path
 import httpx
 
@@ -27,6 +27,17 @@ POLL_S = 5
 #: long as every other one.
 DEFAULT_TIMEOUT_S = 1800.0
 TERMINAL = {"PROCESSED", "COMPLETED", "FAILED", "CANCELLED", "ERROR"}
+
+
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """What extend can be asked, and what it is asked at its maximum tier."""
+
+    array_strategy: str = dataclasses.field(
+        default=ARRAY_STRATEGY,
+        metadata={"help": "MAX array extraction; this corpus is array-heavy"})
+    api_version: str = API_VERSION
+    base_url: str = BASE
 
 
 def headers(key: str, api_version: str = API_VERSION) -> dict:
@@ -125,8 +136,7 @@ def extraction_of(run: dict):
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = DEFAULT_TIMEOUT_S,
-            array_strategy: str = ARRAY_STRATEGY, api_version: str = API_VERSION,
-            base_url: str = BASE) -> Extraction:
+            config: Config = Config()) -> Extraction:
     """Get a generic processor, upload, submit a run, poll it to a terminal state.
 
     Extend does not report a per-document cost, so `cost.usd` is None and the record says
@@ -137,7 +147,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = DEFAULT_TIMEOUT_S,
         raise MissingCredential("EXTEND_API_KEY is not set")
 
     budget = Budget(timeout)          # before the upload: it is part of the document
-    with httpx.Client(headers=headers(key, api_version), timeout=120) as c:
+    with httpx.Client(headers=headers(key, config.api_version), timeout=120) as c:
         # THE DIALECT, applied rather than merely documented. Extend validates strictly:
         # without this the API rejects the schema outright -- "Schema must have either a
         # `type` property or an `enum` property" -- which reads like a broken vendor and is
@@ -149,15 +159,15 @@ def extract(pdf: Path, schema: dict, *, timeout: float = DEFAULT_TIMEOUT_S,
         # on the answer, so the scorer sees the field the schema asked for.
         sent = to_strict_dialect(resolve_refs(rename_reserved(schema)))
         try:
-            file_id = upload(c, pdf, base_url)
-            run_id = submit(c, file_id, sent, base_url, array_strategy)
+            file_id = upload(c, pdf, config.base_url)
+            run_id = submit(c, file_id, sent, config.base_url, config.array_strategy)
         except httpx.HTTPStatusError as exc:
             raise VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
                               status=exc.response.status_code,
                               body=exc.response.text) from None
         except RuntimeError as exc:
             raise VendorError(str(exc)[:300], status=200) from None
-        run = poll(c, run_id, budget, base_url)
+        run = poll(c, run_id, budget, config.base_url)
 
     status = str(run.get("status", "")).upper()
     payload, envelope_path = extraction_of(run)
@@ -182,10 +192,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = DEFAULT_TIMEOUT_S,
 
 
 def main() -> None:
-    run_cli(extract, "extend",
-            ("--array-strategy", {"default": ARRAY_STRATEGY}),
-            ("--api-version", {"default": API_VERSION}),
-            ("--base-url", {"default": BASE}))
+    run_cli(extract, Config, "extend")
 
 
 

@@ -5,7 +5,7 @@ them can share these without a cycle.
 
 THE CONTRACT. An adapter is a function:
 
-    extract(pdf, schema, *, timeout, **options) -> Extraction
+    extract(pdf, schema, *, timeout, config: Config) -> Extraction
 
 It makes the vendor call, parses the answer, and returns both. 
 """

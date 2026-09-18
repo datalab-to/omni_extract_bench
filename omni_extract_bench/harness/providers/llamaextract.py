@@ -22,6 +22,7 @@ Adapted from longextract_bench (MIT, (c) 2026 Micro1) -- see providers/LICENSE-m
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import os
 import time
@@ -42,6 +43,17 @@ BASE = "https://api.cloud.llamaindex.ai"
 #: silently answered a different question from the run it was meant to explain.
 TIER = "agentic_plus"
 _TERMINAL = {"SUCCESS", "COMPLETED", "FAILED", "ERROR", "CANCELLED"}
+
+
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """What llamaextract can be asked, and what it is asked at its maximum tier."""
+
+    tier: str = dataclasses.field(
+        default=TIER,
+        metadata={"choices": ["cost_effective", "agentic", "agentic_plus"],
+                  "help": "extraction tier; entitlements change, so check one against the API"})
+    poll_interval: int = 5
 
 
 def _adapt_schema(schema: dict, defs: dict | None = None) -> dict:
@@ -175,8 +187,8 @@ def _dt(v: object) -> datetime | None:
     return None
 
 
-def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, tier: str = TIER,
-            poll_interval: int = 5) -> Extraction:
+def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
+            config: Config = Config()) -> Extraction:
     """Upload, submit a v2 extract job at `tier`, poll it to a terminal state.
 
     `tier` is an argument rather than an environment variable because it is a PARITY decision:
@@ -203,7 +215,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, tier: str = TIE
                headers={"Content-Type": "application/json"},
                data=json.dumps({
                    "file_input": file_id,
-                   "configuration": {"tier": tier, "extraction_target": "per_doc",
+                   "configuration": {"tier": config.tier, "extraction_target": "per_doc",
                                      "data_schema": _adapt_schema(schema)},
                }).encode())
     job_id = job.get("id") or job.get("job_id")
@@ -230,7 +242,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, tier: str = TIE
         status = body.get("status")
         if status in _TERMINAL:
             break
-        time.sleep(poll_interval)
+        time.sleep(config.poll_interval)
 
     if status in ("FAILED", "ERROR", "CANCELLED"):
         raise VendorError(f"LlamaExtract {status}: {body.get('error_message')}", status=200)
@@ -246,17 +258,14 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, tier: str = TIE
         # The whole job body, minus the extraction itself.
         raw={**{k: v for k, v in body.items()
                 if k not in ("extract_result", "data", "result")},
-             "tier": tier,
+             "tier": config.tier,
              "server_latency_s": round((end - start).total_seconds(), 2) if start and end else None},
         cost=Cost(),                         # LlamaCloud bills in credits, not per call
         job_id=job_id)
 
 
 def main() -> None:
-    run_cli(extract, "llamaextract",
-            ("--poll-interval", {"type": int, "default": 5}),
-            ("--tier", {"default": TIER}),
-            description="LlamaExtract v2")
+    run_cli(extract, Config, "llamaextract", description="LlamaExtract v2")
 
 
 if __name__ == "__main__":

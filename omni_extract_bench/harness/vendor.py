@@ -9,9 +9,9 @@ WHAT IS UNIFORM, AND WHY EACH RULE EXISTS
   legs 300s; one vendor lost 48 documents to "analysis timed out" under a cap another never
   reached. A harness parameter must never decide a vendor's coverage.
 * MAXIMUM TIER for every provider. Parity is "as much as the vendor will give", not one number
-  for everyone, so `ADAPTERS` pins each vendor's top settings and `run_manifest.settings`
-  records what was actually sent -- `llm_single_shot.MODEL_MAX_OUTPUT` holds the published
-  output ceiling per model, beside the code that sends it, rather than a shared floor.
+  for everyone, so each adapter's `Config` defaults ARE its top settings and
+  `run_manifest.settings` records what was sent -- `llm_single_shot.MODEL_MAX_OUTPUT` holds the
+  published output ceiling per model, beside the code that sends it, not a shared floor.
 * THE SAME SCHEMA, with benchmark-only annotations removed (`evaluation_config`, `default`).
   Those tell a grader how to compare a value and tell a model nothing; one vendor validates
   strictly and rejected 8 of 40 documents over them.
@@ -26,17 +26,19 @@ WHAT IS UNIFORM, AND WHY EACH RULE EXISTS
   documents "failed" in 60 seconds after a credit ceiling, converting a recoverable pause into
   174 stored zeros.
 
-AN ADAPTER IS A FUNCTION. `providers/<name>.extract(pdf, schema, *, timeout, **opts)` makes the
-call, parses the answer and returns an `Extraction`; it RAISES its failures, from where they
-happen. There is no subprocess, no transport tap and no envelope: those existed to observe
+AN ADAPTER IS A FUNCTION AND A CONFIG. `providers/<name>.extract(pdf, schema, *, timeout,
+config)` makes the call, parses the answer and returns an `Extraction`; it RAISES its failures,
+from where they happen. Its `Config` is a frozen dataclass whose fields are exactly what the
+vendor can be asked -- the one declaration `--options`, `oeb providers` and the adapter's own
+command line all read. There is no subprocess, no transport tap and no envelope: those existed to observe
 adapters we treated as opaque programs, and cost a tempfile dance, a `sitecustomize` injection,
 a cross-process log merge, and an error channel that was the last line of stderr.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import importlib
-import inspect
 import json
 import re
 import time
@@ -57,25 +59,28 @@ DEFAULT_TIMEOUT = 1800.0
 #: it, and the answer changed whenever the alias was repointed.
 MODEL_SEPARATOR = "/"
 
-#: provider -> (adapter module, the options that put it at its maximum tier).
-#: The module is a NAME, imported on use: importing an adapter pulls its SDK, and a machine
-#: that only scores has none of them.
-ADAPTERS: dict[str, tuple[str, dict]] = {
-    "datalab": ("datalab", {"mode": "balanced"}),
-    "mistral": ("mistral", {}),
-    "reducto": ("reducto", {}),
-    "extend": ("extend", {}),
-    "llamaextract": ("llamaextract", {"tier": "agentic_plus"}),
-    "azure-cu": ("azure_cu", {}),
+#: provider -> adapter module. A NAME, imported on use: importing an adapter pulls its SDK,
+#: and a machine that only scores has none of them.
+#:
+#: The maximum-tier settings used to be pinned here as well, and they are now the adapter's
+#: own `Config` defaults -- one place, beside the code that sends them, rather than a pin here
+#: that had to agree with a default there.
+ADAPTERS: dict[str, str] = {
+    "datalab": "datalab",
+    "mistral": "mistral",
+    "reducto": "reducto",
+    "extend": "extend",
+    "llamaextract": "llamaextract",
+    "azure-cu": "azure_cu",
 }
 #: The named vendors. Any `org/model` is also accepted; see `resolve`.
 PROVIDERS = sorted(ADAPTERS)
 
 
-def resolve(provider: str) -> tuple[str, dict]:
-    """(adapter module, its options) for a provider name or a model id."""
+def resolve(provider: str) -> str:
+    """The adapter module for a provider name or a model id."""
     if MODEL_SEPARATOR in provider:
-        return "llm_single_shot", {"model": provider}
+        return "llm_single_shot"
     if provider not in ADAPTERS:
         raise ValueError(f"unknown provider {provider!r}. Known vendors: "
                          f"{', '.join(PROVIDERS)}. Any OpenRouter model id also works, "
@@ -115,13 +120,11 @@ def out_name(provider: str, options: dict | None = None) -> str:
 #: A safe concurrency per vendor. Advisory: the caller owns the pool.
 WORKERS = {"reducto": 3, "llamaextract": 3, "azure-cu": 3, "datalab": 10}
 
-#: The adapters read the environment for CREDENTIALS only -- which change whether a call is
-#: allowed, not what it asks. Everything that steers a vendor (mode, tier, array strategy, api
-#: version, base url, completion model) is a keyword argument, reaching the adapter through
-#: `options` and landing in `run_manifest.settings`. That is the whole reason: an environment
-#: variable steers a run without appearing in its record, so `LLAMAEXTRACT_TIER=cost_effective`
-#: used to produce a run indistinguishable from a maxed-out one. `test_no_steering_env` holds
-#: the line; credentials stay in the environment and out of the record.
+#: The adapters read the environment for CREDENTIALS only. Everything that steers a vendor is
+#: a `Config` field, reaching the adapter through `--options` and landing in
+#: `run_manifest.settings` -- an environment variable steers a run without appearing in its
+#: record, so `LLAMAEXTRACT_TIER=cost_effective` once produced a run indistinguishable from a
+#: maxed-out one. `test_no_steering_env` holds the line.
 
 TRANSIENT_ATTEMPTS = 4
 TRANSIENT_BACKOFF = (20, 60, 120)
@@ -146,9 +149,8 @@ def adapter(provider: str):
     a recorded one is a settled failure no resume re-attempts, and a whole provider reads as 0%
     coverage over one missing install.
     """
-    module, _ = resolve(provider)
     try:
-        return importlib.import_module(f".providers.{module}", __package__).extract
+        return _module(provider).extract
     except ImportError as exc:
         raise MissingDependency(
             f"the {provider} adapter could not import what it needs:\n"
@@ -157,51 +159,43 @@ def adapter(provider: str):
         ) from None
 
 
-#: The adapter contract's own parameters -- `extract(pdf, schema, *, timeout, **options)`.
-#: Everything else in a signature is an option.
-#:
-#: This was a longer list once, carrying `api_key`, `key`, `endpoint` and `workspace_id` so
-#: that a credential could not reach a record or a directory name. Keeping it correct meant
-#: remembering to extend it for every vendor, and a vendor whose key was called something else
-#: would have leaked. CREDENTIALS NOW COME FROM THE ENVIRONMENT AND NOWHERE ELSE, so no adapter
-#: accepts one and the whole class of mistake is gone.
-_CONTRACT = frozenset({"pdf", "schema", "timeout"})
+def _module(provider: str):
+    return importlib.import_module(f".providers.{resolve(provider)}", __package__)
+
+
+def config_for(provider: str, options: dict | None = None):
+    """This provider's adapter `Config`, with the caller's options applied.
+
+    THE CONFIG IS THE DECLARATION. Its fields are the options: what `--options` may set, what
+    `oeb providers` lists, and what `run_cli` builds this adapter's flags from. Nothing infers
+    them from a signature and nothing restates a default elsewhere.
+
+    An option the adapter does not have is refused here, by name. Passed through to a
+    `**options` catch-all, a typo was simply ignored and the run reported as stock.
+    """
+    import dataclasses
+
+    config_type = _module(provider).Config
+    # A model id IS the model: it comes from the provider name rather than being steered, so a
+    # directory and a summary cannot end up naming a different one from the run.
+    fixed = {"model": provider} if MODEL_SEPARATOR in provider else {}
+    try:
+        return config_type(**{**fixed, **(options or {})})
+    except TypeError as exc:
+        known = ", ".join(f.name for f in dataclasses.fields(config_type)) or "(none)"
+        raise ValueError(f"{provider}: {exc}. Its options are: {known}") from None
 
 
 def settings_for(provider: str, options: dict | None = None) -> dict:
-    """Everything the adapter will be sent: its own defaults, raised to this provider's
-    maximum tier by `ADAPTERS`, with the caller's options on top.
+    """What the adapter will be sent, as a plain dict: the `Config` it is handed.
 
-    ONE RESOLUTION, used three times -- to make the call, to record what the call carried, and
-    to name the run. There is no separate notion of an "override": a steered run is one whose
-    settings differ from `settings_for(provider)`, which is a comparison, not a concept.
-
-    Defaults are read off the adapter's own signature, so this cannot drift from what it
-    accepts -- and so a vendor's stock setting reads the same whether it is written in
-    `ADAPTERS` or as a parameter default. Compared against the `ADAPTERS` pin alone, datalab
-    asking for `mode=balanced` read as stock while reducto asking for its own default
-    `agentic_table_mode=max` read as a change.
-
-    There are no credentials to worry about: every adapter reads its key from the environment,
-    so nothing secret can arrive through `options` and reach a record or a directory name.
+    The record states it, `out_name` compares it against the stock settings to name a run, and
+    `oeb providers` prints it. There are no credentials in it -- every adapter reads its key
+    from the environment -- so nothing secret reaches a record or a directory name.
     """
-    extract = adapter(provider)
-    tier = resolve(provider)[1]
-    # `model` on a model id is the provider NAME, not a setting: steering it would leave the
-    # directory and the summary saying one thing and the run doing another.
-    fixed = {"model"} if MODEL_SEPARATOR in provider else set()
-    out = {}
-    for name, param in inspect.signature(extract).parameters.items():
-        if name in _CONTRACT or name in fixed or param.kind in (param.VAR_KEYWORD,
-                                                                param.VAR_POSITIONAL):
-            continue
-        out[name] = tier.get(name, None if param.default is param.empty else param.default)
-    # A pin the signature does not name -- an adapter that takes it through `**options` --
-    # would otherwise be dropped, and the provider would silently run at stock.
-    for name, value in tier.items():
-        out.setdefault(name, value)
-    out.update({k: v for k, v in (options or {}).items() if k not in _CONTRACT})
-    return out
+    import dataclasses
+
+    return dataclasses.asdict(config_for(provider, options))
 
 
 def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOUT,
@@ -219,9 +213,8 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
 
     stripped = strip_benchmark_keys(schema)
     sent = strip_benchmark_keys(SO.apply_overlay(schema)) if overlay else stripped
-    # Resolved once: the same dict is what the adapter is called with and what the record
-    # states. They were two before, because credentials had to be added back for the call.
-    settings = settings_for(provider, options)
+    # Resolved once: the adapter is handed this object, and the record states its fields.
+    config = config_for(provider, options)
     # Only what the CALLER changed, not the maximum-tier defaults. A run that was not stock
     # has to say so on every document: the benchmark's claim is that each vendor ran at its
     # maximum, and a figure produced with that turned down is a different measurement.
@@ -231,7 +224,7 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     for attempt in range(TRANSIENT_ATTEMPTS):
         attempts = attempt + 1
         try:
-            got = extract(pdf, sent, timeout=budget.remaining(), **settings)
+            got = extract(pdf, sent, timeout=budget.remaining(), config=config)
             error = None
             break
         except VendorError as exc:
@@ -279,7 +272,7 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
         "schema_sent": sent,
         "run_manifest": {
             "timeout_s": timeout,
-            "settings": settings,
+            "settings": dataclasses.asdict(config),
             "model": provider if MODEL_SEPARATOR in provider else None,
             "timed_out": isinstance(error, VendorTimeout),
             "conventions_applied": overlay and sent != stripped,

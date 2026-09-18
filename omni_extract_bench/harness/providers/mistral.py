@@ -10,6 +10,7 @@ Auth: MISTRAL_API_KEY.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -23,7 +24,13 @@ MODEL = "mistral-ocr-latest"
 URL = "https://api.mistral.ai/v1/ocr"
 
 
-def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0) -> Extraction:
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """Nothing to steer: the document and the schema go in one call and that is all."""
+
+
+def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
+            config: Config = Config()) -> Extraction:
     """One POST, one response, one parse.
 
     No polling, so the document's budget IS this request's timeout -- there is no second phase
@@ -73,7 +80,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0) -> Extraction:
 
 
 def main() -> None:
-    run_cli(extract, "mistral")
+    run_cli(extract, Config, "mistral")
 
 
 if __name__ == "__main__":

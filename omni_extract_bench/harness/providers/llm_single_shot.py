@@ -26,6 +26,7 @@ record can say which endpoint answered.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import os
 import random
@@ -75,13 +76,24 @@ MODEL_MAX_OUTPUT = {
 }
 
 
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """What a raw-model leg can be asked. `model` has no default: it IS the provider name."""
+
+    model: str = dataclasses.field(
+        metadata={"help": "an OpenRouter org/model id"})
+    max_output_tokens: int | None = dataclasses.field(
+        default=None, metadata={"help": "default: the model's published ceiling"})
+    base_url: str = DEFAULT_BASE_URL
+    attempts: int = 3
+
+
 def max_output_for(model: str) -> int:
     return MODEL_MAX_OUTPUT.get(model, DEFAULT_MAX_OUTPUT_TOKENS)
 
 
-def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, model: str,
-            max_output_tokens: int | None = None,
-            base_url: str = DEFAULT_BASE_URL, attempts: int = 3) -> Extraction:
+def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
+            config: Config) -> Extraction:
     """One completion with the schema as `response_format`, retried only for a bad ANSWER.
 
     The loop here raises the temperature after a reply that would not parse, was empty of
@@ -95,8 +107,9 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, model: str,
         raise MissingCredential("OPENROUTER_API_KEY (or OPENAI_API_KEY) must be set")
 
     budget = Budget(timeout)
-    max_output_tokens = max_output_tokens or max_output_for(model)
-    client = openai.OpenAI(base_url=base_url, api_key=key)
+    model = config.model
+    max_output_tokens = config.max_output_tokens or max_output_for(model)
+    client = openai.OpenAI(base_url=config.base_url, api_key=key)
     b64 = base64.b64encode(pdf.read_bytes()).decode("ascii")
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -110,7 +123,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, model: str,
     ]
 
     temperature, last, calls = 0.0, None, []
-    for attempt in range(attempts):
+    for attempt in range(config.attempts):
         if attempt:
             time.sleep(min((2 ** attempt) + random.uniform(0, 1), budget.remaining()))
         # Each attempt gets what is LEFT of the document's budget, not a fresh copy of it.
@@ -178,16 +191,12 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, model: str,
     # The body carries every completion, text included, so an answer that no parser could read
     # is still on disk in `record["raw"]` -- which is what this module's docstring promises and
     # what makes a parser bug a re-read rather than a re-payment.
-    raise VendorError(f"all {attempts} attempts returned an unusable answer: {last}",
+    raise VendorError(f"all {config.attempts} attempts returned an unusable answer: {last}",
                       status=200, body=json.dumps({"calls": calls, "model": model})[:4000])
 
 
 def main() -> None:
-    run_cli(extract, "llm-single-shot",
-            ("--model", {"required": True}),
-            ("--base-url", {"default": DEFAULT_BASE_URL}),
-            ("--max-output-tokens", {"type": int, "default": None,
-                                     "help": "default: the model's published ceiling"}))
+    run_cli(extract, Config, "llm-single-shot")
 
 
 if __name__ == "__main__":

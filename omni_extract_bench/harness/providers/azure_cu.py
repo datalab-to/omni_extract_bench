@@ -20,6 +20,7 @@ Auth: AZURE_CU_ENDPOINT + AZURE_CU_KEY.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -37,6 +38,21 @@ API_VERSION = "2025-05-01-preview"
 DEFAULT_COMPLETION_MODEL = "gpt-4.1-mini"
 _TERMINAL_OK = {"succeeded", "completed"}
 _TERMINAL_BAD = {"failed", "cancelled"}
+
+
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """What azure-cu can be asked.
+
+    `completion_model` is a DEPLOYMENT CHOICE, not a product tier: `gpt-4.1-mini` and `gpt-4.1`
+    are different systems behind one API, so which one ran has to be published beside the score.
+    """
+
+    completion_model: str = dataclasses.field(
+        default=DEFAULT_COMPLETION_MODEL,
+        metadata={"help": "the deployment behind the analyzer; publish it with the score"})
+    api_version: str = API_VERSION
+    poll_interval: float = 3.0
 
 
 def _field(prop: dict) -> dict:
@@ -162,8 +178,7 @@ def _await(client, op_url: str, *, budget, poll_interval: float, want_result: bo
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
-            completion_model: str = DEFAULT_COMPLETION_MODEL, api_version: str = API_VERSION,
-            poll_interval: float = 3.0) -> Extraction:
+            config: Config = Config()) -> Extraction:
     """Create (or reuse) an analyzer for this schema, analyse the document, poll for the result.
 
     Azure does not report a per-call cost, so `cost.usd` is None and the record says
@@ -179,10 +194,10 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     with httpx.Client(headers={"Ocp-Apim-Subscription-Key": key}, timeout=120) as client:
         digest = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[:16]
         analyzer_id = f"oeb-{digest}"
-        _ensure_analyzer(client, endpoint, api_version, digest, analyzer_id, schema,
-                         completion_model, budget, poll_interval)
+        _ensure_analyzer(client, endpoint, config.api_version, digest, analyzer_id, schema,
+                         config.completion_model, budget, config.poll_interval)
         r = client.post(f"{endpoint}/contentunderstanding/analyzers/{analyzer_id}:analyze"
-                        f"?api-version={api_version}",
+                        f"?api-version={config.api_version}",
                         content=pdf.read_bytes(),
                         headers={"Content-Type": "application/octet-stream"})
         if r.status_code >= 400:
@@ -193,7 +208,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
             raise VendorError("no Operation-Location header on :analyze",
                               status=r.status_code, body=r.text)
 
-        body = _await(client, op, budget=budget, poll_interval=poll_interval,
+        body = _await(client, op, budget=budget, poll_interval=config.poll_interval,
                       want_result=True)
 
     contents = ((body or {}).get("result") or {}).get("contents") or []
@@ -207,8 +222,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
 
 
 def main() -> None:
-    run_cli(extract, "azure-cu",
-            ("--completion-model", {"default": DEFAULT_COMPLETION_MODEL}))
+    run_cli(extract, Config, "azure-cu")
 
 
 if __name__ == "__main__":
