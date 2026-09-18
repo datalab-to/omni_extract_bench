@@ -8,9 +8,9 @@ from ._cli import run_cli
 from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
                           VendorError)
 
-# These three are DEFAULTS, not settings: they are overridden through `extract`'s keyword
-# arguments (and so through `oeb benchmark --options`), never out of the environment. A
-# setting the environment can change is one the run's own record cannot state.
+# These three are `Config` DEFAULTS, so `--options` can change them and the record states
+# what they came to. Never out of the environment: a setting the environment can change is one
+# the run's own record cannot state.
 BASE = "https://api.extend.ai"
 # 2026-02-09 is the current version: a resource-based API with a dedicated /extract_runs
 # endpoint that takes the schema inline, so no processor shell is needed. We were on

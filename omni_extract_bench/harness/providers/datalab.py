@@ -32,12 +32,7 @@ DEFAULT_BASE_URL = "https://www.datalab.to"
 
 @dataclasses.dataclass(frozen=True)
 class Config:
-    """What this vendor can be asked, and what it is asked at its maximum tier.
-
-    The fields ARE the options: `oeb providers datalab` lists them, `--options` sets them, and
-    `run_cli` builds this adapter's flags from them. One declaration, so nothing infers from a
-    signature and nothing restates a default somewhere else.
-    """
+    """What this vendor can be asked, and what it is asked at its maximum tier."""
 
     mode: str = dataclasses.field(
         default="balanced",

@@ -150,9 +150,8 @@ class Extraction(NamedTuple):
     means paying for every call again -- that cost 166 of them once. With `raw`, it means
     re-reading a file.
 
-    Only the response that carried the answer, not every call made getting there. A tap that
-    observed all of them existed because adapters were opaque subprocesses; an adapter that
-    makes its own calls can simply say what it got, and count its own polls.
+    Only the response that carried the answer, not every call made getting there: an adapter
+    makes its own calls, so it can say what it got and count its own polls.
     """
 
     result: dict

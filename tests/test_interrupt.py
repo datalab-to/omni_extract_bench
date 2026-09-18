@@ -143,7 +143,7 @@ calls = collections.Counter()
 
 
 def broke_adapter(prov):
-    def extract(pdf, schema, *, timeout, **o):
+    def extract(pdf, schema, *, timeout, config):
         calls[prov] += 1
         if prov == "datalab":
             raise AccountFailure("out of credits")

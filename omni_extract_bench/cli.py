@@ -253,9 +253,8 @@ def main(argv=None) -> int:
 
     b = sub.add_parser("benchmark",
                        help="fetch the corpus, run it through each vendor, score it")
-    # The provider names are not `choices`: listing them means importing the harness, which
-    # installs the transport taps as a side effect, and `oeb --help` should not monkey-patch
-    # anyone's HTTP stack. `benchmark.run` validates them and names them all when it can't.
+    # Not `choices`: any OpenRouter `org/model` id is a provider too, so the set cannot be
+    # enumerated. `benchmark.run` validates them and names the vendors when it can't.
     b.add_argument("--providers", nargs="+", required=True, metavar="NAME",
                    help="vendors and/or model ids, e.g. datalab reducto "
                         "openai/gpt-5.6-sol. `oeb providers` lists them")
@@ -282,8 +281,8 @@ def main(argv=None) -> int:
                         '\'{"datalab": {"mode": "accurate"}}\'. A LIST runs that provider '
                         'once per entry, so \'{"datalab": [{"mode": "balanced"}, '
                         '{"mode": "accurate"}]}\' compares its tiers in one run. Each is '
-                        "recorded in the document's run_manifest and in the directory name, "
-                        "because a run that is not stock must say so")
+                        "recorded in the run's settings.json and on every document, and "
+                        "digested into the directory name so two of them cannot mix")
     b.add_argument("--rescore", action="store_true",
                    help="grade every document again, ignoring the scores already on disk. "
                         "Grading otherwise resumes per document, so reach for this after "

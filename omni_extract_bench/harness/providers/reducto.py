@@ -37,8 +37,8 @@ DEFAULT_DEEP_EXTRACT_MODEL = "v2"
 # Agentic table enrichment mode. `default` enriches only tables a heuristic expects to benefit;
 # `max` enriches every table and is the higher setting. The default here is max so the
 # benchmark runs Reducto at its strongest -- Reducto is ahead on this benchmark, and running a
-# competitor below their maximum would flatter our own result. Overridden through `extract`'s
-# `agentic_table_mode` argument, which the record reports, rather than the environment.
+# competitor below their maximum would flatter our own result. A `Config` field, so
+# `--options` can turn it down and the record reports that it did.
 AGENTIC_TABLE_MODE = "max"
 _TERMINAL = {"Completed", "Failed", "Error", "Cancelled"}
 
@@ -149,11 +149,9 @@ def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
     # Resilient poll: the job keeps running server-side, so transient connection /
     # 5xx errors must NOT abandon it (that's how billed jobs got lost). Retry the GET.
     #
-    # Bounded by the harness's uniform budget. This loop ran forever and was stopped by the
-    # parent killing the process 60s later, which lost whatever the transport tap had not yet
-    # flushed -- so the one vendor most likely to reach the limit could not say it had. Giving
-    # up here instead is the same abandonment 60s earlier, except that the record names the
-    # job id, so a job that outlived its budget can still be chased by hand.
+    # Bounded by the harness's uniform budget, rather than running forever and being killed
+    # from outside: giving up here records the job id, so a job that outlived its budget can
+    # still be chased by hand.
     polls = 0
     retry = PollRetry(budget)
     while True:

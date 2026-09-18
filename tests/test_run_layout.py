@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""A steered run is stored apart from a stock one.
+"""A RUN IS A PROVIDER PLUS ITS OPTIONS, and each one is stored on its own.
 
-`--options` changes what is measured. While it did not change WHERE the answer was stored,
-`needs_run` found the stock run's records and skipped every document -- so a run that asked
-for `mode=fast` reported `balanced` results, with no override recorded anywhere, and never
-called the vendor at all. A silently wrong number, arrived at by a resume doing its job.
-
-`datalab-accurate` was the workaround: a second provider name minted so that one case had
-somewhere else to live. A run being (provider, options) rather than a provider is the general
-form of it, and the preset is gone.
+`--options` changes what is measured. When it did not change WHERE the answer was stored,
+`needs_run` found the other configuration's records and skipped every document -- so a run
+that asked for `mode=fast` reported `balanced` results and never called the vendor at all.
+A silently wrong number, arrived at by a resume doing its job.
 
 Run: python3 tests/test_run_layout.py
 """
@@ -179,8 +175,8 @@ report("...and the record states what it was sent",
        rec["run_manifest"]["settings"]["mode"] == "fast")
 
 print("\nA VENDOR'S OWN TIERS, COMPARED IN ONE INVOCATION")
-# What `datalab-accurate` used to be for. A run is (provider, options), so `--options` may
-# give one provider a LIST and each entry is its own run, directory and summary row.
+# `--options` may give one provider a LIST, and each entry is its own run, directory and
+# summary row -- rather than a second provider name minted per tier.
 out2 = pathlib.Path(tempfile.mkdtemp())
 B.fetch = lambda root: out2
 summary = B.run(["datalab"], out=out2, score_workers=1, predict_workers={"*": 1},

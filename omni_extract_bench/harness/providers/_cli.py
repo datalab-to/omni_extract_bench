@@ -34,10 +34,9 @@ def run_cli(extract, config_type, provider: str, *, description: str | None = No
     """Parse, call `extract`, write the envelope.
 
     THE FLAGS ARE BUILT FROM THE CONFIG, so this command line and `oeb benchmark --options`
-    offer the same options with the same defaults. They were written out twice before -- once
-    as the adapter's keyword arguments and once as an argparse block here -- so a default could
-    be changed in one and not the other, and a hand-run would answer a different question from
-    the benchmark it was meant to explain.
+    offer the same options with the same defaults, and cannot come to disagree -- a hand-run
+    that answers a different question from the benchmark it was meant to explain is worse than
+    no hand-run at all.
     """
     ap = argparse.ArgumentParser(description=description)
     ap.add_argument("--pdf", required=True, type=Path)

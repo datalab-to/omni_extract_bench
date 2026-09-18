@@ -1,11 +1,10 @@
 """The adapters read the environment for CREDENTIALS ONLY.
 
 Everything that steers a vendor -- mode, tier, array strategy, api version, base url,
-completion model -- is a keyword argument, so it arrives through `options` and is recorded in
-`run_manifest.overrides`. An environment variable steers a run without appearing in its
-record: `LLAMAEXTRACT_TIER=cost_effective` once produced a run indistinguishable from the
-maxed-out one the benchmark claims to publish. Recording the variables was the first fix;
-removing them is the real one, and this test is what keeps them gone.
+completion model -- is a field on the adapter's `Config`, so it arrives through `--options` and
+is recorded in `run_manifest.settings`. An environment variable steers a run without appearing
+in its record: `LLAMAEXTRACT_TIER=cost_effective` once produced a run indistinguishable from
+the maxed-out one the benchmark claims to publish.
 
 Credentials are the exception on purpose. A key changes whether a call is ALLOWED, not what it
 asks, and it must not be on a command line or in a record -- so it stays in the environment.
@@ -56,9 +55,9 @@ for path in modules:
 assert not offenders, (
     "adapters must take settings as arguments, not out of the environment:\n"
     + "\n".join(f"  {f}: {', '.join(v)}" for f, v in offenders.items())
-    + "\n\nAdd a keyword argument with the default you want and expose it in `main()`; then it "
+    + "\n\nAdd a field to the adapter's `Config` with the default you want; then it "
       "reaches the adapter through `oeb benchmark --options` and shows up in "
-      "`run_manifest.overrides`, which is what makes a non-stock run say so."
+      "`run_manifest.settings`, which is what makes a run state what it asked."
 )
 print(f"{len(modules)} adapters: no steering read from the environment")
 

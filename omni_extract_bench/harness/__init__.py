@@ -14,14 +14,14 @@ so a score cannot come to depend on a transport, a vendor dialect, or an envelop
 
 AN ADAPTER IS A FUNCTION, not a program:
 
-    extract(pdf, schema, *, timeout, **options) -> Extraction
+    extract(pdf, schema, *, timeout, config: Config) -> Extraction
 
 It makes the call, parses the answer, returns both, and RAISES its failures from where they
-happen. Adapters used to be subprocesses observed by a transport tap that monkey-patched httpx,
-requests and urllib -- which cost a tempfile dance, a `sitecustomize` injection, a cross-process
-log merge, and an error channel that was the last line of the child's stderr. All of it existed
-to reconstruct facts the adapter already had: "timed out while the vendor was still working"
-was recovered by reading an HTTP log, when the code that ran the poll loop knew it all along.
+happen. Not a subprocess watched by a transport tap, which is the shape this replaced: every
+fact that cost -- a tempfile dance, a `sitecustomize` injection, a cross-process log merge, an
+error channel that was the last line of the child's stderr -- the adapter already had. "Timed
+out while the vendor was still working" was being recovered by reading an HTTP log, from the
+code that ran the poll loop.
 
 THE SURFACE
 -----------

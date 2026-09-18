@@ -137,10 +137,10 @@ report("what the provider was actually sent is recorded, not a name for it",
        _sent == seen["opts"], f'{_sent} vs {seen["opts"]}')
 report("...and the contract's own arguments are not settings", "timeout" not in _sent)
 
-print("\nA RUN THAT IS NOT STOCK SAYS SO")
+print("\nA RUN SAYS WHAT IT ASKED FOR")
 # The benchmark's claim is that every vendor ran at its maximum. An option passed by the caller
-# can turn that down, so each one is recorded on every document -- a figure produced with a
-# vendor dialled back must not be able to look stock afterwards.
+# can turn that down, so the whole resolved settings are recorded on every document -- a figure
+# produced with a vendor dialled back must not be able to look stock afterwards.
 stub(lambda pdf, schema, **o: OK)
 import re as _re
 report("a run is named for the vendor and a digest of what it was sent",

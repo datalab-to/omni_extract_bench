@@ -30,9 +30,7 @@ AN ADAPTER IS A FUNCTION AND A CONFIG. `providers/<name>.extract(pdf, schema, *,
 config)` makes the call, parses the answer and returns an `Extraction`; it RAISES its failures,
 from where they happen. Its `Config` is a frozen dataclass whose fields are exactly what the
 vendor can be asked -- the one declaration `--options`, `oeb providers` and the adapter's own
-command line all read. There is no subprocess, no transport tap and no envelope: those existed to observe
-adapters we treated as opaque programs, and cost a tempfile dance, a `sitecustomize` injection,
-a cross-process log merge, and an error channel that was the last line of stderr.
+command line all read.
 """
 from __future__ import annotations
 
@@ -60,11 +58,8 @@ DEFAULT_TIMEOUT = 1800.0
 MODEL_SEPARATOR = "/"
 
 #: provider -> adapter module. A NAME, imported on use: importing an adapter pulls its SDK,
-#: and a machine that only scores has none of them.
-#:
-#: The maximum-tier settings used to be pinned here as well, and they are now the adapter's
-#: own `Config` defaults -- one place, beside the code that sends them, rather than a pin here
-#: that had to agree with a default there.
+#: and a machine that only scores has none of them. The maximum-tier settings are not here but
+#: in each adapter's `Config` defaults, beside the code that sends them.
 ADAPTERS: dict[str, str] = {
     "datalab": "datalab",
     "mistral": "mistral",
@@ -91,21 +86,16 @@ def resolve(provider: str) -> str:
 def out_name(provider: str, options: dict | None = None) -> str:
     """A run's directory name: the provider, and a digest of everything it was asked.
 
-    THE NAME IS A FUNCTION OF THE SETTINGS, so a directory holds one configuration and two
-    configurations never share one -- `runs/datalab-f46415c9` and `runs/datalab-01a72762` are
-    the balanced and the accurate run, and neither can be handed the other's records.
-
-    It named the DIFFERENCE from the adapter's defaults once, which fails twice. A stock run
-    came out a bare `datalab`, silent about the tier it measured. And the day a vendor's
-    maximum moves and a `Config` default follows it, the new stock run lands on that same bare
-    `datalab`: `needs_run` finds records, skips every document, and two tiers are averaged into
-    one published number.
+    THE NAME IS A FUNCTION OF THE SETTINGS, ALL OF THEM, so a directory holds one
+    configuration and two configurations never share one -- `runs/datalab-f46415c9` and
+    `runs/datalab-01a72762` are the balanced and the accurate run, and `needs_run` cannot hand
+    either the other's records. Naming what a run merely CHANGED about the defaults would tie
+    the name to the defaults, and they move: the day a vendor's maximum tier moves with them,
+    two tiers land in one directory and average into one published number.
 
     The digest is not readable, and nothing here tries to make it so. WHAT A RUN WAS ASKED IS
-    WRITTEN INTO THE RUN, by `benchmark.run`, as `settings.json` -- at the start, so it is
-    there for a run that is interrupted, and beside the answers rather than encoded in a path
-    with a width budget. A name that carries a selected field instead is a name that can be
-    read two ways.
+    WRITTEN INTO THE RUN, by `benchmark.run`, as `settings.json` -- beside the answers, where
+    there is no width budget to select fields against.
 
     `openai/gpt-5.6-sol` would otherwise nest, and a `:batch` suffix is not a filename on every
     filesystem, so the provider half is spelled out and sanitised too. Two ids that sanitise
@@ -173,20 +163,18 @@ def config_for(provider: str, options: dict | None = None):
     `oeb providers` lists, and what `run_cli` builds this adapter's flags from. Nothing infers
     them from a signature and nothing restates a default elsewhere.
 
-    An option the adapter does not have is refused here, by name. Passed through to a
-    `**options` catch-all, a typo was simply ignored and the run reported as stock.
+    An option the adapter does not have is REFUSED, by name, rather than ignored -- a typo
+    that goes through changes nothing and the run reports as stock.
     """
     import dataclasses
 
     config_type = _module(provider).Config
     options = options or {}
     # A MODEL ID IS THE MODEL. It comes from the provider name, so the directory, the summary
-    # key and the record all name the model that ran. It used to be merely a default that
-    # `options` then overrode, which is the one way that could stop being true: asking
-    # `openai/gpt-5.6-sol` for `model=anthropic/claude-opus-5` ran Claude, and stored it, under
-    # a directory spelled `openai__gpt-5.6-sol`. Refused rather than quietly overruled -- a
-    # caller who wrote it meant something, and running a different model than they typed is
-    # not it.
+    # key and the record all name the model that ran -- and `model` is therefore not an option,
+    # because an option could set it to something else and leave all three naming a model that
+    # did not run. Refused rather than quietly overruled: a caller who wrote it meant
+    # something, and running a different model than they typed is not it.
     if MODEL_SEPARATOR in provider:
         if "model" in options:
             raise ValueError(
