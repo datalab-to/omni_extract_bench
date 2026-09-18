@@ -425,34 +425,62 @@ def write_scores(out: Path, rows: list[dict]) -> None:
 
 
 # ── 4. the number ────────────────────────────────────────────────────────────────────────
-def summarise(rows: list[dict]) -> dict:
-    """Per suite, then UNIFIED: the mean of the suite means, not the mean over documents.
+#: The five ways an address can go wrong. `matched` is the sixth bucket and the only good one;
+#: together they partition every address (`METRIC_SPEC.md` section 4). Reported as RATES here,
+#: and named `_rate` for it: `scores.jsonl` spells these same five words as counts, and a
+#: reader moving between the two files should not have to work out which one they are holding.
+ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
 
-    Equal weight per suite so a large one cannot dominate (`docs/METRIC_SPEC.md` section 7).
-    The flat mean is reported too, because seeing the two differ is the point.
 
-    A document with no usable prediction scores ZERO here while its row keeps null metrics:
-    `coverage` says how often the vendor answered, the score says what it is worth to someone
-    who has to run every document. Averaging only successes would pay for failing on hard ones.
+def over(rows: list[dict]) -> dict:
+    """How a set of documents went: coverage, the three metrics, and where the errors were.
+
+    A MEAN OVER DOCUMENTS. Every document counts once, however many fields it holds -- the
+    corpus runs from 26 addresses to 35,239, and a ratio of sums would let that one document
+    decide the number for all of them (`METRIC_SPEC.md` section 7 -- a value's weight is
+    inversely proportional to the size of the document holding it).
+
+    OVER THE DOCUMENTS THAT SCORED, all of it, so one denominator holds for the whole block.
+    `precision` is why: a document with no usable prediction asserted nothing, and scoring its
+    `matched / asserted` zero would say everything it claimed was wrong. What the failures cost
+    is `coverage`, right beside these -- and `accuracy * coverage` is the mean over every
+    document with the failures counted as zero, if that is the number you want.
     """
-    by_suite: dict[str, list[float]] = collections.defaultdict(list)
-    for row in rows:
-        by_suite[row["suite"]].append(row["accuracy"] if row["status"] == "scored" else 0.0)
-
-    per_suite = {suite: {"documents": len(v), "accuracy": sum(v) / len(v)}
-                 for suite, v in sorted(by_suite.items())}
     scored = [r for r in rows if r["status"] == "scored"]
+
+    def mean(of) -> float:
+        return sum(of(r) for r in scored) / len(scored) if scored else 0.0
+
     return {
         "documents": len(rows),
         "scored": len(scored),
         "coverage": len(scored) / len(rows) if rows else 0.0,
-        "unified": (sum(s["accuracy"] for s in per_suite.values()) / len(per_suite)
-                    if per_suite else 0.0),
-        "flat_mean": sum(sum(v) for v in by_suite.values()) / len(rows) if rows else 0.0,
-        "mean_over_scored": (sum(r["accuracy"] for r in scored) / len(scored)
-                             if scored else 0.0),
-        "per_suite": per_suite,
+        "accuracy": mean(lambda r: r["accuracy"]),
+        "precision": mean(lambda r: r["precision"]),
+        "recall": mean(lambda r: r["recall"]),
+        **{f"{e}_rate": mean(lambda r, e=e: r[e] / r["total"] if r["total"] else 0.0)
+           for e in ERRORS},
     }
+
+
+def summarise(rows: list[dict]) -> dict:
+    """The run, and then each suite, in the same shape.
+
+    NO CORPUS NUMBER IS PICKED FOR YOU. Weighting the suites equally rather than by size is a
+    real choice (`METRIC_SPEC.md` section 7) and this does not make it: `per_suite` carries the
+    same block per suite, so the suite-weighted figure is a mean of four numbers you can take
+    yourself, for any of these and not just accuracy.
+
+        unified = mean(s["accuracy"] for s in summary["per_suite"].values())
+
+    The suites are not close to the same size -- 329, 202, 47, 42 -- so the top-level figures
+    and that mean are different numbers, and which one belongs in a table is the table author's
+    to say rather than this function's.
+    """
+    by_suite: dict[str, list[dict]] = collections.defaultdict(list)
+    for row in rows:
+        by_suite[row["suite"]].append(row)
+    return {**over(rows), "per_suite": {s: over(v) for s, v in sorted(by_suite.items())}}
 
 
 # ── the run ──────────────────────────────────────────────────────────────────────────────
@@ -629,7 +657,7 @@ def run(providers: list[str], *, out: Path = Path("runs"),
         write_json(dirs[label] / "summary.json",
                    {**head, **summarise(list(read_scores(dirs[label]).values()))}, indent=2)
         s = summary[label]
-        log.info("%s: unified %.4f over %d suites, coverage %d/%d",
-                 label, s["unified"], len(s["per_suite"]), s["scored"], s["documents"])
+        log.info("%s: accuracy %.4f over %d suites, coverage %d/%d",
+                 label, s["accuracy"], len(s["per_suite"]), s["scored"], s["documents"])
 
     return summary

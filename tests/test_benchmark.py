@@ -117,30 +117,67 @@ report("benchmark-only annotations are not gradable slots either way",
 report("the caller's schema is not mutated by preparing it",
        "$defs" in REF_SCHEMA and "$ref" in json.dumps(REF_SCHEMA))
 
-print("\nTHE CORPUS NUMBER IS UNIFIED, NOT A FLAT MEAN")
-# Equal weight per SUITE, not per document (METRIC_SPEC section 7), so a large suite cannot
-# decide the headline. The two coincide only when the suites are the same size, which is why
-# this uses suites that are not.
-skew = ([{"suite": "big", "status": "scored", "accuracy": 0.9} for _ in range(90)]
-        + [{"suite": "small", "status": "scored", "accuracy": 0.1} for _ in range(10)])
-s = summarise(skew)
-report("the flat mean follows the large suite", abs(s["flat_mean"] - 0.82) < 1e-9,
-       f"{s['flat_mean']}")
-report("...and UNIFIED does not", abs(s["unified"] - 0.5) < 1e-9, f"{s['unified']}")
+print("\nEVERY DOCUMENT COUNTS ONCE, WHATEVER IT WEIGHS")
+# A MEAN OVER DOCUMENTS, not a ratio of sums. The corpus runs from 26 addresses to 35,239, so
+# summing the counts and dividing lets one document decide the number for all of them --
+# measured on a real six-document run, 0.8076 against 0.9733.
+def scored(suite, matched, total, **rest):
+    misread = rest.pop("misread", total - matched)
+    r = {"suite": suite, "status": "scored", "total": total, "matched": matched,
+         "misread": misread, "unfound": 0, "fabricated": 0, "invented_item": 0,
+         "invented_field": 0}
+    r.update(rest)
+    r.setdefault("accuracy", matched / total)
+    r.setdefault("precision", matched / total)
+    r.setdefault("recall", matched / total)
+    return r
 
-# A vendor that answers nothing on the hard documents must not be paid for it: the failures
-# score zero in the headline, while `coverage` and `mean_over_scored` keep the distinction
-# visible rather than buried.
-half = ([{"suite": "s", "status": "scored", "accuracy": 1.0} for _ in range(5)]
+
+lopsided = [scored("s", 9, 10), scored("s", 500, 1000)]
+o = summarise(lopsided)
+report("a small document is worth as much as a huge one",
+       abs(o["accuracy"] - 0.7) < 1e-9, f'{o["accuracy"]} -- a ratio of sums gives 0.504')
+
+print("\nAND NO CORPUS NUMBER IS PICKED FOR YOU")
+# Weighting the suites equally rather than by size is a real choice (METRIC_SPEC section 7),
+# and `summarise` does not make it. `per_suite` carries the SAME block, so the suite-weighted
+# figure is a mean the caller takes -- of any of these, not just accuracy.
+skew = ([scored("big", 9, 10) for _ in range(90)]
+        + [scored("small", 1, 10) for _ in range(10)])
+s = summarise(skew)
+report("the top-level figure follows the large suite", abs(s["accuracy"] - 0.82) < 1e-9,
+       f'{s["accuracy"]}')
+unified = sum(x["accuracy"] for x in s["per_suite"].values()) / len(s["per_suite"])
+report("...and one line over per_suite weights the suites equally instead",
+       abs(unified - 0.5) < 1e-9, f"{unified}")
+report("every suite carries the whole block, so that works for any of them",
+       set(s["per_suite"]["big"]) == set(s) - {"per_suite"}, str(sorted(s["per_suite"]["big"])))
+
+print("\nWHERE IT WENT WRONG, NOT ONLY HOW MUCH")
+# Two vendors at the same accuracy are not the same vendor when one is missing fields and the
+# other is inventing them. Rates, and named `_rate`: scores.jsonl spells these same five words
+# as counts.
+kinds = summarise([scored("s", 5, 10, misread=0, unfound=5),
+                   scored("s", 5, 10, misread=0, fabricated=5)])
+report("the error rates are means of per-document rates",
+       (kinds["unfound_rate"], kinds["fabricated_rate"]) == (0.25, 0.25), str(kinds))
+report("...and the ones that did not happen read zero",
+       kinds["misread_rate"] == 0.0 and kinds["invented_field_rate"] == 0.0)
+
+print("\nA FAILURE COSTS COVERAGE, NOT A FALSE PRECISION")
+# A document with no usable prediction asserted nothing, so scoring its `matched / asserted`
+# zero would say everything it claimed was wrong. The block is over what scored; `coverage` is
+# what the failures cost, and `accuracy * coverage` is the mean over every document.
+half = ([scored("s", 10, 10) for _ in range(5)]
         + [{"suite": "s", "status": "error", "error": "timeout"} for _ in range(5)])
 h = summarise(half)
-report("a document with no usable prediction scores zero in the headline",
-       abs(h["unified"] - 0.5) < 1e-9, f"{h['unified']}")
-report("...while coverage says how often it answered at all", h["coverage"] == 0.5)
-report("...and mean_over_scored says what it got when it did",
-       abs(h["mean_over_scored"] - 1.0) < 1e-9)
+report("a failed document does not drag precision down to nothing", h["precision"] == 1.0)
+report("...it shows up as coverage", h["coverage"] == 0.5)
+report("...and the flat mean over every document is still one multiplication away",
+       abs(h["accuracy"] * h["coverage"] - 0.5) < 1e-9)
 report("an empty run does not divide by zero",
-       summarise([])["unified"] == 0.0 and summarise([])["coverage"] == 0.0)
+       summarise([])["accuracy"] == 0.0 and summarise([])["coverage"] == 0.0
+       and summarise([])["unfound_rate"] == 0.0)
 
 print("\nA MISSING SDK STOPS THE PROVIDER AND STORES NOTHING")
 # The failure mode this prevents: every document gets `{"__error__": "ModuleNotFoundError..."}`

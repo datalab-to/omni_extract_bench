@@ -204,11 +204,13 @@ Equal weight per subset, not per document, so a large subset cannot dominate. Th
 weightings compose: every value carries `1/total` inside its document, so a value's weight is
 **inversely proportional to the size of the document holding it**.
 
-> **Not done for you.** `score` scores one document and this repository aggregates nothing, so
-> the weighting above is the caller's to apply. Averaging `accuracy` across a corpus gives the
-> flat mean over documents that this section says must not happen: group by subset, take the
-> mean within each, then take the mean of those. A leaderboard that skips that step is not
-> UNIFIED, whatever it is labelled.
+> **Not done for you.** `score` scores one document, and the UNIFIED step is the caller's to
+> take. `benchmark.summarise` goes as far as SUBJECT and no further: `summary.json` carries the
+> mean over documents at the top and the same block per suite, and the mean of those four is
+> the line it deliberately does not write. Averaging `accuracy` across a corpus gives the flat
+> mean over documents that this section says must not happen -- group by subset, take the mean
+> within each, then take the mean of those. A leaderboard that skips that step is not UNIFIED,
+> whatever it is labelled.
 
 ## 8. What the metric pays for
 

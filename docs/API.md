@@ -153,7 +153,7 @@ summary, keyed by run.
 
 ```python
 summary = run(["datalab", "reducto"], limit=5)
-summary["datalab-f46415c9"]["unified"]
+summary["datalab-f46415c9"]["accuracy"]
 ```
 
 Keyword arguments and no argparse, so this stays callable from a notebook, and it raises rather
@@ -198,18 +198,6 @@ It's **resumable**, and safe to run twice.
 
 So a Ctrl-C, a crash or a credit ceiling costs you the documents in flight, and nothing else.
 Reinvoke the same command to carry on.
-
-Nothing notices if you edit the metric, though. `--rescore` is how you say you did:
-
-```bash
-oeb benchmark --providers datalab --score-only --rescore
-```
-
-`--rescore` grades everything again from the predictions on disk, and `--score-only` makes sure
-no vendor is called for whatever is still missing.
-
-**!!NOTE!!**: that regrades, it doesn't re-parse. The predictions on disk are already parsed,
-so fixing an *adapter's* parsing needs new predictions, not a rescore.
 
 
 ## providers
@@ -309,31 +297,81 @@ finishes.
   "run": "datalab-f46415c9",
   "provider": "datalab",
   "settings": {"mode": "balanced", "base_url": "https://www.datalab.to", "poll_interval": 5.0},
-  "documents": 1,
-  "scored": 1,
+  "documents": 6,
+  "scored": 6,
   "coverage": 1.0,
-  "unified": 0.9555555555555556,
-  "flat_mean": 0.9555555555555556,
-  "mean_over_scored": 0.9555555555555556,
+  "accuracy": 0.8076406248606786,
+  "precision": 0.8101146573593331,
+  "recall": 0.9539514921288181,
+  "misread_rate": 0.03748563782596681,
+  "unfound_rate": 0.002711187188462559,
+  "fabricated_rate": 0.14784472888803452,
+  "invented_item_rate": 0.0043178212368574645,
+  "invented_field_rate": 0.0,
   "per_suite": {
-    "extractbench": {"documents": 1, "accuracy": 0.9555555555555556}
+    "extractbench": {"documents": 6, "scored": 6, "coverage": 1.0, "accuracy": 0.8076406248606786,
+                     "...": "the same block, per suite"}
   }
 }
 ```
 
-Three numbers because they have three different denominators:
+The run and each suite are the same shape, so whatever you read at the top you can read per
+suite as well.
+
+Everything is a **mean over documents**. Each document counts once, however many fields it
+holds -- the corpus runs from 26 addresses to 35,239, and summing the counts before dividing
+would let that one document decide the number for all of them
+([`METRIC_SPEC.md`](./METRIC_SPEC.md) §7).
+
+The three metrics are the same ones `score` returns for a single document:
 
 ```python
-summary["unified"]           # mean of the SUITE means -- one vote per suite, failures count 0
-summary["flat_mean"]         # mean over every DOCUMENT -- failures count 0
-summary["mean_over_scored"]  # mean over the documents that SCORED -- failures excluded
+summary["accuracy"]     # matched addresses / addresses either document used
+summary["precision"]    # of what the vendor asserted, how much was true
+summary["recall"]       # of what the gold asked for, how much came back
 ```
 
-`unified` is the published number: equal weight per suite, so a large suite can't decide the
-benchmark ([`METRIC_SPEC.md`](./METRIC_SPEC.md) §7). `flat_mean` sits next to it so you can see
-the skew instead of taking it on trust, and `mean_over_scored` is what a vendor's number would
-look like if you only counted the documents it managed. All three are equal when there's one
-suite and nothing failed.
+Then where it went wrong, which a single number can't tell you. Two vendors at 0.72 aren't the
+same vendor when one is missing fields and the other is inventing them:
+
+```python
+summary["unfound_rate"]         # gold the vendor never produced
+summary["misread_rate"]         # both documents had it, the values disagree
+summary["fabricated_rate"]      # a slot the schema offered, the document silent on it
+summary["invented_item_rate"]   # a value under an array row that paired with nothing
+summary["invented_field_rate"]  # a name the schema never declared
+```
+
+Each is the mean of that document's `count / total`. They're named `_rate` because
+`scores.jsonl` spells the same five words as counts, and you shouldn't have to work out which
+one you're holding.
+
+### Nothing picks a corpus number for you
+
+Weighting the suites equally rather than by size is a real choice, and `summarise` doesn't make
+it. The suites are nowhere near the same size -- 329, 202, 47 and 42 documents -- so it matters
+which you publish. `per_suite` carries the same block, so the suite-weighted figure is one line:
+
+```python
+per_suite = summary["per_suite"].values()
+unified = sum(s["accuracy"] for s in per_suite) / len(per_suite)
+```
+
+That works for any of them, not just accuracy -- swap `"accuracy"` for `"fabricated_rate"` and
+you have the suite-weighted fabrication rate.
+
+### Failures cost coverage, not a false precision
+
+Everything above is over the documents that **scored**, all of it, so one denominator holds for
+the whole block. `precision` is why: a document with no usable prediction asserted nothing, and
+scoring its `matched / asserted` zero would say everything it claimed was wrong.
+
+What the failures cost is `coverage`, sitting right beside them. If you want the mean over
+every document with failures counted as zero, that's one multiplication:
+
+```python
+flat_mean = summary["accuracy"] * summary["coverage"]
+```
 
 ### predictions/&lt;doc_id&gt;.json
 
@@ -433,8 +471,8 @@ visible if a failure occupies a row. Those carry no metrics at all, just what ha
  "provider": "datalab", "status": "error", "error": "DATALAB_API_KEY must be set"}
 ```
 
-Not zeros, which would claim the vendor tried and missed every field. They count as zero when
-`unified` and `flat_mean` average, and `coverage` is what says how often the vendor answered.
+Not zeros, which would claim the vendor tried and missed every field. What they cost is
+`coverage` in `summary.json`, which is what says how often the vendor answered at all.
 
 ### verdicts/&lt;doc_id&gt;.jsonl
 
