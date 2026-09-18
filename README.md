@@ -85,6 +85,8 @@ oeb benchmark \
 
 This will execute 4 different runs -- one for each pair (provider, settings).
 
+See `docs/API.md` for more details on what `oeb benchmark` writes.
+
 ## Score
 
 Use in your own code.
