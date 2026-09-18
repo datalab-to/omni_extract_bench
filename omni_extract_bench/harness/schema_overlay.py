@@ -165,24 +165,3 @@ def apply_overlay(schema: dict, _name: str = "") -> dict:
 
     walk_structural(out)
     return out
-
-
-if __name__ == "__main__":
-    import glob, os
-    CB = os.environ.get("OEB_DATA_ROOT", ".")
-    print("Preview — fields that would receive a convention sentence:\n")
-    for f in sorted(glob.glob(f"{CB}/extract-bench/dataset/*/*/*schema*.json")):
-        s = json.load(open(f))
-        s = s.get("schema_definition", s)
-        before = json.dumps(s)
-        after = json.dumps(apply_overlay(s))
-        if before == after:
-            continue
-        dom = f.split("/dataset/")[1].split("/")[1]
-        # count touched fields per convention
-        counts = {}
-        for conv in CONVENTIONS:
-            counts[conv["id"]] = after.count(conv["text"])
-        hit = {k: v for k, v in counts.items() if v}
-        print(f"  {dom:20} {hit}")
-    print("\nApplied at request time by vendor.predict; benchmark dataset files are never edited.")
