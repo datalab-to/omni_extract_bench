@@ -28,15 +28,11 @@ class Budget:
     first run of this benchmark gave one provider 1800s and the raw-model legs 300s, and one
     vendor lost 48 documents to a cap another never reached.
 
-    It exists as a type because the rule was previously spelled seven different ways, and two
-    of them were wrong in the same direction: `azure_cu` started a fresh deadline for each of
-    its two polling phases, and `llm_single_shot` gave each of three retries the full budget --
-    so both could spend two to three times what every other vendor got. Nothing caught it
-    because a subprocess kill was enforcing the real ceiling from outside; when that went, so
-    did the ceiling.
+    A type rather than a convention, because the rule was once spelled seven ways and two
+    were wrong in the same direction -- a fresh deadline per polling phase, a full budget per
+    retry -- so those vendors got two to three times what the others did.
 
-    `monotonic`, never `time.time()`: a wall clock can step backwards under NTP, and one
-    adapter used one.
+    `monotonic`, never `time.time()`: a wall clock can step backwards under NTP.
     """
 
     __slots__ = ("total", "_deadline")
@@ -64,24 +60,15 @@ class Budget:
 class PollRetry:
     """Survive a failed POLL without abandoning the job behind it.
 
-    A POLL FAILING IS NOT THE JOB FAILING. The work is running and already billed at the
-    vendor. Letting a 429 out of the loop hands the whole document back to `predict`, which
-    reads the status as transient and retries -- from the upload -- so the running job is
-    abandoned and the same extraction is bought a second time. At $1.55 a document that is a
-    real bill, and it is silent, because the second attempt returns a perfectly good answer.
+    A POLL FAILING IS NOT THE JOB FAILING. The work is running and already billed. Letting a
+    429 out of the loop hands the document back to `predict`, which reads it as transient and
+    retries from the upload -- so the running job is abandoned and the extraction is bought
+    twice, silently, because the second attempt answers perfectly well. A 259-second document
+    polls ~51 times, so raising concurrency makes this likelier, not rarer.
 
-    It is not a rare case either. A 259-second document polls ~51 times; at
-    `--predict-workers 25` that is five requests a second for hours, and one rate limit
-    anywhere in the stream costs a full re-extraction. Raising concurrency makes it likelier.
-
-    Only a TRANSIENT status is worth asking again. A 400 or a 404 says the job is not there to
-    poll, and no amount of asking will change it -- the same rule `predict` applies one level
-    up, read off the status rather than matched in a message. A transport failure carries no
-    status and is retried too: it says nothing about the job.
-
-    `reducto` has had this since the beginning -- "transient connection / 5xx errors must NOT
-    abandon it (that's how billed jobs got lost)" -- and the other four adapters did not. This
-    is that protection written once, where all of them reach the same copy of it.
+    Only a TRANSIENT status is worth asking again; a 400 or 404 says the job is not there to
+    poll. A transport failure carries no status and is retried too -- it says nothing about
+    the job either.
     """
 
     __slots__ = ("budget", "limit", "count")

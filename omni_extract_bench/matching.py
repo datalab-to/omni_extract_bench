@@ -11,14 +11,10 @@ from scipy.sparse.csgraph import min_weight_full_bipartite_matching as _sparse_l
 #: float64. A dimension cap as well as a cell cap, so a wildly rectangular problem cannot slip
 #: through on cells alone. Past either, `match_rows` falls back to greedy and says so.
 #:
-#: The cell cap was 60 million while the scorer also held a Python dict of every priced pair,
-#: which cost ~200 bytes a pair against the matrix's 8 -- so the matrix was never what ran the
-#: machine out of memory, and a ceiling set for it was really a ceiling for the dict. That
-#: dict is gone. The largest gold array in this corpus is 26,725 x 26,725 -- 714 million
-#: cells, 5.7 GB as float64 -- so it is past this cap and takes the greedy path, as do two
-#: further documents at ~19,000 rows. The cap is not what excludes them: `MAX_EXACT` is, and
-#: raising either to reach them costs ~23 minutes and ~6 GB on the largest against 4.6 minutes
-#: and 1.86 GB today, for a measured difference of at most 0.177 accuracy points.
+#: The largest gold array here is 26,725 x 26,725 -- 714 million cells, 5.7 GB as float64 --
+#: so it takes the greedy path, as do two documents at ~19,000 rows. `MAX_EXACT` is what
+#: excludes them, and raising either cap to reach them costs ~23 minutes and ~6 GB against
+#: 4.6 minutes and 1.86 GB, for at most 0.177 accuracy points.
 MAX_EXACT = 20000
 MAX_CELLS = 250 * 10**6
 
@@ -29,15 +25,10 @@ MAX_CELLS_DENSE = 500 * 10**6
 
 #: What each path costs per unit, used to compare them between the two ceilings above.
 #:
-#: Exact holds one float64 per CELL, whether or not the pair is worth anything. Greedy holds a
-#: Python 3-tuple per POSITIVE pair -- 64 bytes for the tuple and 8 for the list slot; the
-#: integers inside are shared across pairs and amortise away. So greedy is cheaper only on a
-#: sparse block, and on a dense one it costs ~9x MORE than the matrix it exists to avoid.
-#:
-#: That is the same failure the `MAX_CELLS` note above describes and `_best_pairing` removed:
-#: a per-pair Python object dwarfing the matrix. It was fixed there and missed here, which is
-#: why a fallback taken FOR memory reasons could run the machine out of it. Until `_greedy`
-#: stores pairs compactly, the honest fix is to stop sending dense blocks down it.
+#: Exact holds one float64 per CELL, worth anything or not. Greedy holds a Python 3-tuple per
+#: POSITIVE pair -- 72 bytes with its list slot -- so it is cheaper only on a sparse block,
+#: and on a dense one costs ~9x MORE than the matrix it exists to avoid. Until `_greedy`
+#: stores pairs compactly, a fallback taken FOR memory must not be handed dense blocks.
 EXACT_BYTES_PER_CELL = 8
 GREEDY_BYTES_PER_PAIR = 72
 
@@ -48,10 +39,9 @@ def force_approximate():
     Returns:
         A callable that restores the real budget.
 
-    The greedy path IS reachable -- three documents in this corpus take it, the largest at
-    26,725 rows -- but building an array that size in a test costs minutes for no extra
-    coverage, and the two smaller ones still need a document each. The hook exercises the
-    property that an approximate score announces itself without paying for the array.
+    The greedy path is reachable -- three documents take it -- but building an array that
+    size in a test costs minutes for no extra coverage. This exercises the property that an
+    approximate score announces itself, without paying for the array.
     """
     global MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE
     saved = (MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE)
@@ -79,15 +69,10 @@ def _exact_ok(n, m, positives=None):
         Whether `optimal_pairs` may be called directly. `match_rows` falls back to greedy when
         this is False, and records that the score is approximate.
 
-    Three bands. Below `MAX_CELLS` exact is taken outright. Above `MAX_CELLS_DENSE` it is
-    refused outright, so the exact path's memory is bounded whatever the data does. Between
-    them the question is which path is actually cheaper, and that depends on density: greedy
-    stores nothing for a pair worth nothing, but ~9x more than a matrix cell for a pair worth
-    something.
-
-    Without `positives` this returns the pre-existing answer, so a caller that cannot estimate
-    density loses nothing. An over-estimate biases towards exact, whose cost is known exactly
-    before it runs; that is the safe direction to err in.
+    Three bands: below `MAX_CELLS` exact outright, above `MAX_CELLS_DENSE` refused outright
+    so its memory is bounded whatever the data does, and between them whichever is cheaper --
+    which depends on density. Without `positives` the answer is the same as before it existed;
+    an over-estimate biases towards exact, whose cost is known before it runs.
     """
     lo, hi = (n, m) if n <= m else (m, n)
     if lo > MAX_EXACT:

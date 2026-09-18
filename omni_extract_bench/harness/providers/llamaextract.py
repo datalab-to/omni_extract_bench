@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
-                          VendorError, VendorTimeout)
+                          VendorError)
 from ._cli import run_cli
 
 BASE = "https://api.cloud.llamaindex.ai"

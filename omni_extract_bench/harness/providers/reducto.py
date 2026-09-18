@@ -28,7 +28,7 @@ from pathlib import Path
 import httpx
 
 from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
-                          VendorError, as_object, VendorTimeout)
+                          VendorError, as_object)
 from ._cli import run_cli
 
 BASE_URL = "https://platform.reducto.ai"
@@ -137,8 +137,8 @@ def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
     # Bounded by the harness's uniform budget. This loop ran forever and was stopped by the
     # parent killing the process 60s later, which lost whatever the transport tap had not yet
     # flushed -- so the one vendor most likely to reach the limit could not say it had. Giving
-    # up here instead is the same abandonment 60s earlier, except the job id is on disk, the
-    # HTTP record survives, and `recover_timeouts.py` can go back for the answer.
+    # up here instead is the same abandonment 60s earlier, except that the record names the
+    # job id, so a job that outlived its budget can still be chased by hand.
     polls = 0
     retry = PollRetry(budget)
     while True:
@@ -167,9 +167,11 @@ def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
         polls += 1
         body = r.json()
         status = body.get("status") or body.get("state") or ""
-        print(f"  {status}", end="\r", file=sys.stderr, flush=True)
+        # No per-poll printing. An adapter writing to the terminal on its own account was
+        # workable when one document ran at a time; it is not now that every vendor runs at
+        # once behind a multi-line display, which a stray `\r` walks straight through.
+        # Progress belongs to `progress.py`, which is the only thing holding the cursor.
         if status in _TERMINAL or body.get("result") is not None:
-            print(file=sys.stderr)
             return body
         time.sleep(interval)
 

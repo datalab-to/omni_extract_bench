@@ -30,7 +30,7 @@ from pathlib import Path
 import httpx
 
 from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
-                          VendorError, VendorTimeout)
+                          VendorError)
 from ._cli import run_cli
 
 API_VERSION = "2025-05-01-preview"
@@ -135,7 +135,8 @@ def _await(client, op_url: str, *, budget, poll_interval: float, want_result: bo
     a timeout each it gave azure-cu two full budgets where every other vendor got one."""
     polls = 0
     retry = PollRetry(budget)
-    while not budget.expired():
+    while True:
+        budget.check(f"still analysing after {polls} polls")
         try:
             r = client.get(op_url)
         except httpx.TransportError as exc:
@@ -158,8 +159,6 @@ def _await(client, op_url: str, *, budget, poll_interval: float, want_result: bo
             raise VendorError(f"azure-cu {status}: {json.dumps(body.get('error') or {})[:300]}",
                               status=200, body=r.text)
         time.sleep(poll_interval)
-    budget.check(f"still analysing after {polls} polls")
-    raise VendorTimeout("analysis did not complete")
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,

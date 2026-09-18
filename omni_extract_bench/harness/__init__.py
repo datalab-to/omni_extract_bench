@@ -1,7 +1,7 @@
 """Everything that is not the scorer: producing predictions.
 
-The package above this one is the metric. `metric.py` reaches exactly `matching`, `normalize`
-and `values` and nothing else -- `tests/test_score_standalone.py` fails if that ever widens --
+The package above this one is the metric. `metric.py` reaches exactly `matching`, `prepare`,
+`recognise` and `values` -- `tests/test_score_standalone.py` fails if that ever widens --
 so a score cannot come to depend on a transport, a vendor dialect, or an envelope convention.
 
     vendor.py        `predict()` -- one document, one vendor, under the parity rules

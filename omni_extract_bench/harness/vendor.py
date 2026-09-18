@@ -142,7 +142,6 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     Retries only what a retry can fix. Raises `AccountFailure` and `MissingDependency` instead
     of returning them: neither is a fact about the document, both are identical for every one
     of them, and a returned failure is written down as a settled answer no resume re-attempts.
-
     """
     extract = adapter(provider)
     pdf = Path(pdf)
@@ -157,12 +156,6 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     # has to say so on every document: the benchmark's claim is that each vendor ran at its
     # maximum, and a figure produced with that turned down is a different measurement.
     overrides = {k: v for k, v in options.items() if defaults.get(k) != v} or None
-
-    # ONE budget for the document, shared by every attempt and by the waits between them.
-    # Each attempt used to get the full `timeout`, so four of them plus backoff could spend
-    # 7,400s on a document whose budget is documented as 1,800s "end to end". This is the same
-    # mistake `Budget` was written to fix inside the adapters -- azure-cu taking it twice,
-    # llm_single_shot three times -- sitting one level up, where nothing had checked for it.
     budget = Budget(timeout)
     started = time.time()
     got, error, attempts = None, None, 0
@@ -204,9 +197,6 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     return {
         "result": got.result,
         "raw": got.raw,
-        # Why it failed, as STRUCTURE. A resume has to decide whether re-running could help,
-        # and reading that back out of a message is how two spellings of one condition drifted
-        # into different behaviour. `transient` is decided once, here, by the status.
         "error": None if error is None else {
             "type": type(error).__name__,
             "status": error.status,

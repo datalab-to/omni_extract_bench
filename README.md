@@ -10,6 +10,7 @@ provides modular tooling to run your own. The README is split up into the follow
 4. **[Predict](#predict)** — predict on one document and its schema in your code or from the cli.
 5. **[Licence](#licence)** — Apache 2.0
 
+
 ## Install
 
 One scorer for document-extraction benchmarks: leaf value accuracy with optimal row matching.
@@ -22,6 +23,8 @@ uv pip install 'omni-extract-bench[benchmark]'    # + packages to orchestrate an
 ```
 
 ## Run our benchmark with one line
+
+We provide orchestration to run our benchmark around our core primitives: `predict` and `score`.
 
 See providers:
 
@@ -41,21 +44,28 @@ anthropic/claude-opus-5
 google/gemini-3.7-flash
 ```
 
-Then run the benchmark (limit to 5 documents here). **NOTE**: this will cost money and you will need your API keys set.
+Then run the benchmark (limit to 1 document here). It's resumable so you can stop and reinvoke to resume at any point. 
+
+**!!NOTE!!**: this will cost money and you will need your API keys set. 
 
 ```
-oeb benchmark --out runs/ --limit 5 \
-    --providers datalab reducto extend llamaextract 
+oeb benchmark --out runs/ --limit 1 \
+    --providers datalab reducto extend llamaextract
+```
+```
+datalab       ██████████████  1/1  ok 1  err 0  avg 13s  done in 13s
+reducto       ░░░░░░░░░░░░░░  0/1  ok 0  err 0  1/1 in flight
+extend        ░░░░░░░░░░░░░░  0/1  ok 0  err 0  1/1 in flight
+llamaextract  ██████████████  1/1  ok 1  err 0  avg 10s  done in 10s
 ```
 
-It's resumable so you can stop and reinvoke to resume at any point.
 
 ## Score
 
 Use in your code.
 
 ```python
-import omni_extract_bench as oeb
+from omni_extract_bench import score
 
 schema = {
   "type": "object",
@@ -116,9 +126,9 @@ ground_truth = {
 }
 
 result = score(prediction, ground_truth, schema)
-result["accuracy"]    # 0.5294 -- jaccard
-result["precision"]   # 0.5625 
-results["recall"]     # 0.8181
+result["accuracy"]    # 0.5294 -- matched addresses / addresses either document used
+result["precision"]   # 0.5625
+result["recall"]      # 0.8182
 ```
 
 or from the cli.
@@ -194,9 +204,9 @@ On the example above, printing one line each:
       ],
       "gold_raw": null,
       "pred_raw": "USD",
-      "gold_canon": "invented_field",
-      "pred_canon": null,
-      "verdict": "usd"
+      "gold_canon": null,
+      "pred_canon": "usd",
+      "verdict": "invented_field"
     },
     ...truncated for display
 ```

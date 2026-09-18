@@ -197,7 +197,7 @@ def _schema_leaves(schema: Any, prefix: Address = ()) -> set[Address]:
     schema never mentioned the name, it is an invented field. Those are different bugs.
 
     Gold's own `null`s cannot answer this. A gold field written `null` and a gold field left
-    out entirely mean the same thing (§10), so keying off gold would sort two identical
+    out entirely mean the same thing (§5), so keying off gold would sort two identical
     documents into different buckets. The schema is the only authority that does not move.
 
     Nothing inside an `additionalProperties` object counts, because that subtree is not

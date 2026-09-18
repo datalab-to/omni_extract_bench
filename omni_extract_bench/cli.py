@@ -175,7 +175,8 @@ def cmd_benchmark(args) -> int:
                       limit=args.limit, timeout=args.timeout,
                       predict_workers=read_workers(args.predict_workers),
                       score_workers=args.score_workers,
-                      verdicts=args.verdicts, score_only=args.score_only,
+                      verdicts=args.verdicts, rescore=args.rescore,
+                      score_only=args.score_only,
                       options=read_options(args.options))
     except (MissingCredential, MissingDependency, AccountFailure) as exc:
         print(f"  {exc}", file=sys.stderr)
@@ -235,6 +236,10 @@ def main(argv=None) -> int:
                    help='per-provider options, as JSON or a path to a JSON file: '
                         '\'{"datalab": {"mode": "accurate"}}\'. Each is recorded in the '
                         "document's run_manifest, because a run that is not stock must say so")
+    b.add_argument("--rescore", action="store_true",
+                   help="grade every document again, ignoring the scores already on disk. "
+                        "Grading otherwise resumes per document, so reach for this after "
+                        "changing the metric -- nothing else notices that")
     b.add_argument("--score-only", action="store_true",
                    help="score the predictions already on disk; call no vendor")
     b.set_defaults(fn=cmd_benchmark)

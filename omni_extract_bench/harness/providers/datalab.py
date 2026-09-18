@@ -23,7 +23,7 @@ from pathlib import Path
 import httpx
 
 from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
-                          VendorError, VendorTimeout)
+                          VendorError)
 from ._cli import run_cli
 
 DEFAULT_BASE_URL = "https://www.datalab.to"
@@ -111,7 +111,8 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, mode: str = "ba
 
         url = f"{base_url}/api/v1/extract/{request_id}"
         retry = PollRetry(budget)
-        while not budget.expired():
+        while True:
+            budget.check(f"request {request_id} was still running after {polls} polls")
             try:
                 r = client.get(url)
             except httpx.TransportError as exc:
@@ -158,9 +159,6 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0, mode: str = "ba
                     cost=cost,
                     job_id=request_id)
             time.sleep(poll_interval)
-
-    budget.check(f"request {request_id} was still running after {polls} polls")
-    raise VendorTimeout(f"request {request_id} did not complete")
 
 
 def main() -> None:

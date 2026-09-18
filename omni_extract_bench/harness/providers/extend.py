@@ -6,7 +6,7 @@ import httpx
 from ..dialects import resolve_refs, to_strict_dialect
 from ._cli import run_cli
 from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
-                          VendorError, VendorTimeout)
+                          VendorError)
 
 # These three are DEFAULTS, not settings: they are overridden through `extract`'s keyword
 # arguments (and so through `oeb benchmark --options`), never out of the environment. A
@@ -84,7 +84,8 @@ def submit(c: httpx.Client, file_id: str, schema: dict, base_url: str = BASE,
 def poll(c: httpx.Client, run_id: str, budget, base_url: str = BASE) -> dict:
     polls = 0
     retry = PollRetry(budget)
-    while not budget.expired():
+    while True:
+        budget.check(f"run {run_id} was still processing after {polls} polls")
         try:
             r = c.get(f"{base_url}/extract_runs/{run_id}", timeout=60)
         except httpx.TransportError as exc:
@@ -105,8 +106,6 @@ def poll(c: httpx.Client, run_id: str, budget, base_url: str = BASE) -> dict:
         if st in TERMINAL:
             return run
         time.sleep(POLL_S)
-    budget.check(f"run {run_id} was still processing after {polls} polls")
-    raise VendorTimeout(f"run {run_id} did not finish")
 
 
 def extraction_of(run: dict):
