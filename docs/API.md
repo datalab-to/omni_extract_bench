@@ -46,9 +46,17 @@ or from the command line.
 ```bash
 oeb score --pred pred.json --gt gold.json --schema schema.json
 ```
+```json
+{
+  "accuracy": 0.5294117647058824,
+  "precision": 0.5625,
+  "recall": 0.8181818181818182,
+  "f1": 0.6666666666666666,
+  ...truncated for display
+```
 
 Every argument is a flag of the same name, underscores as dashes, so `order_matters` is
-`--order-matters`. Results go to stdout as JSON, so `oeb score ... | jq .accuracy` is one pipe.
+`--order-matters`. It goes to stdout, so `oeb score ... | jq .accuracy` is one pipe.
 
 The README has a [worked example](../README.md#score) and
 [`docs/METRIC_SPEC.md`](./METRIC_SPEC.md) is the full specification.
@@ -104,11 +112,19 @@ You can also use the cli:
 oeb predict --provider datalab --doc invoice.pdf --schema schema.json \
     --options '{"mode": "accurate"}'
 ```
+```json
+{
+  "result": {"invoice_id": "INV-4417", "total_due": 1240.0, ...},
+  "error": null,
+  "provider": "datalab",
+  "cost": {"usd": 1.4, "wall_s": 172.4, "attempts": 1, ...},
+  ...truncated for display
+```
 
-Same flag names, except `pdf` is `--doc`. It prints the whole record, not just the answer --
-the cost and the response are how you check a number later.
+Same flag names, except `pdf` is `--doc`. It prints the whole record, not just the answer. The
+cost and the response are how you check a number later.
 
-Three things raise instead of returning, because none of them is a fact about the document:
+Three things raise instead of returning, because none of them is about the document:
 
 ```python
 MissingCredential    # an unset API key
@@ -159,13 +175,19 @@ summary["datalab-f46415c9"]["accuracy"]
 Keyword arguments and no argparse, so this stays callable from a notebook, and it raises rather
 than exits for the same reason.
 
-The cli is the same thing, one flag per argument:
+The cli is the same thing, one flag per argument.
+
+**!!NOTE!!**: this will cost money and you will need your API keys set.
 
 ```bash
 oeb benchmark --out runs/ --limit 1 --providers datalab reducto
 ```
+```
+datalab-f46415c9  ██████████████  1/1  ok 1  err 0  avg 13s  done in 13s
+reducto-e54d3a1d  ░░░░░░░░░░░░░░  0/1  ok 0  err 0  1/1 in flight
+```
 
-### A run is a provider plus its options
+### Settings per provider
 
 `--options` can give one provider a **list**, and each entry is its own run -- its own
 directory, its own summary, its own line in the progress display. This is how you compare a
@@ -207,8 +229,19 @@ See providers:
 ```bash
 oeb providers
 ```
+```
+azure-cu
+datalab
+extend
+llamaextract
+mistral
+reducto
+openai/gpt-5.6-sol
+anthropic/claude-opus-5
+google/gemini-3.7-flash
+```
 
-Any OpenRouter `org/model` works, so the model ids it lists are examples and not the set.
+Any OpenRouter `org/model` works, so the model ids are examples and not the set.
 
 See what settings each takes and its default values. For example, datalab:
 
@@ -262,9 +295,10 @@ runs/
 ```
 
 Each is named for the provider and an eight-character digest of everything it was asked. That's
-what keeps two configurations of one vendor apart -- `datalab-f46415c9` is the balanced run and
-`datalab-01a72762` is the accurate one, and neither can be handed the other's answers. The
-digest isn't meant to be read. `settings.json` is where you read what a run was.
+what keeps two configurations of one vendor apart. `datalab-f46415c9` is the balanced run,
+`datalab-01a72762` is the accurate one, and neither can be handed the other's answers.
+
+The digest isn't meant to be read. `settings.json` is where you read what a run was.
 
 There's no summary across runs. `runs/*/summary.json` is one, aggregated however you like.
 
@@ -319,8 +353,8 @@ The run and each suite are the same shape, so whatever you read at the top you c
 suite as well.
 
 Everything is a **mean over documents**. Each document counts once, however many fields it
-holds -- the corpus runs from 26 addresses to 35,239, and summing the counts before dividing
-would let that one document decide the number for all of them
+holds. Our corpus runs from 26 addresses in one document to 35,239 in another, so summing the
+counts before dividing would let that one document decide the number for all of them
 ([`METRIC_SPEC.md`](./METRIC_SPEC.md) §7).
 
 The three metrics are the same ones `score` returns for a single document:
@@ -331,8 +365,8 @@ summary["precision"]    # of what the vendor asserted, how much was true
 summary["recall"]       # of what the gold asked for, how much came back
 ```
 
-Then where it went wrong, which a single number can't tell you. Two vendors at 0.72 aren't the
-same vendor when one is missing fields and the other is inventing them:
+Then where it went wrong, which one number can't tell you. Two vendors at 0.72 aren't the same
+vendor when one is missing fields and the other is inventing them:
 
 ```python
 summary["unfound_rate"]         # gold the vendor never produced
@@ -346,33 +380,6 @@ Each is the mean of that document's `count / total`. They're named `_rate` becau
 `scores.jsonl` spells the same five words as counts, and you shouldn't have to work out which
 one you're holding.
 
-### Nothing picks a corpus number for you
-
-Weighting the suites equally rather than by size is a real choice, and `summarise` doesn't make
-it. The suites are nowhere near the same size -- 329, 202, 47 and 42 documents -- so it matters
-which you publish. `per_suite` carries the same block, so the suite-weighted figure is one line:
-
-```python
-per_suite = summary["per_suite"].values()
-unified = sum(s["accuracy"] for s in per_suite) / len(per_suite)
-```
-
-That works for any of them, not just accuracy -- swap `"accuracy"` for `"fabricated_rate"` and
-you have the suite-weighted fabrication rate.
-
-### Failures cost coverage, not a false precision
-
-Everything above is over the documents that **scored**, all of it, so one denominator holds for
-the whole block. `precision` is why: a document with no usable prediction asserted nothing, and
-scoring its `matched / asserted` zero would say everything it claimed was wrong.
-
-What the failures cost is `coverage`, sitting right beside them. If you want the mean over
-every document with failures counted as zero, that's one multiplication:
-
-```python
-flat_mean = summary["accuracy"] * summary["coverage"]
-```
-
 ### predictions/&lt;doc_id&gt;.json
 
 The bare extraction, shaped like the schema. This is what scoring reads, and it's the same
@@ -380,9 +387,8 @@ thing `predict` returns as `record["result"]`.
 
 ### records/&lt;doc_id&gt;.json
 
-Everything else about that document. Two files because they're read at different times and are
-very different sizes -- scoring wants the answer, an audit wants all of it, and only one of
-them is worth loading 620 of.
+Everything else about that document. Two files because scoring wants the answer and an audit
+wants all of it, and only one of those is worth loading 620 of.
 
 ```json
 {
@@ -413,26 +419,10 @@ them is worth loading 620 of.
 }
 ```
 
-A few worth knowing about:
-
-```python
-record["raw"]                         # the response before our parsing, so fixing a parser
-                                      # means re-reading a file, not buying 620 calls again
-record["cost"]["source"]              # the field the figure was read from, so you can check it
-record["cost"]["credits"]             # vendors that bill in their own unit. Never converted:
-                                      # the rate is contract-specific
-record["cost"]["billed_out_of_band"]  # true when the vendor reported no per-document cost.
-                                      # Different from free, and from a made-up figure
-record["schema_sent"]                 # what predict handed the adapter. An adapter that needs
-                                      # a dialect reshape does that afterwards
-record["run_manifest"]["timed_out"]   # the budget ran out while the vendor was still working,
-                                      # as opposed to the vendor answering unusably
-```
 
 ### scores.jsonl
 
-One line per document, in document order whatever order the workers finished in, so a run stays
-comparable with the one before it.
+One line per document, in document order whatever order the workers finished in.
 
 ```json
 {
@@ -463,22 +453,12 @@ comparable with the one before it.
 }
 ```
 
-Every document gets a line, including the ones with no usable prediction -- coverage is only
-visible if a failure occupies a row. Those carry no metrics at all, just what happened:
-
-```json
-{"doc_id": "long__dd1155_schedule_continuation_0011", "suite": "extractbench",
- "provider": "datalab", "status": "error", "error": "DATALAB_API_KEY must be set"}
-```
-
-Not zeros, which would claim the vendor tried and missed every field. What they cost is
-`coverage` in `summary.json`, which is what says how often the vendor answered at all.
 
 ### verdicts/&lt;doc_id&gt;.jsonl
 
-Only with `--verdicts`. One line per address: what happened there, and what each side was
-compared as. This is the same shape `score(..., verdicts=True)` returns, and it's how you get
-from "0.95" to the four fields that went wrong.
+Only written when `--verdicts` passed. One line per address: what happened there, and what
+each side was compared as. This is the same shape `score(..., verdicts=True)` returns, and
+it's a low-level address breakdown of how scoring happened.
 
 One line looks like this:
 
@@ -492,18 +472,19 @@ One line looks like this:
 `gold_raw` and `pred_raw` are what each document said; `gold_canon` and `pred_canon` are what
 they were actually compared as, after normalising.
 
-| verdict | what it means |
-| --- | --- |
-| `matched` | both documents addressed it and agree, after normalising |
-| `misread` | both addressed it and they disagree |
-| `unfound` | the gold has it, the prediction doesn't |
-| `fabricated` | the schema offered the slot, the document is silent, the model asserted a value anyway |
-| `invented_field` | a name the schema never declared |
-| `invented_item` | a value under an array row that paired with nothing |
+There are six verdicts, and every address gets exactly one:
 
-Two of those are worth a second look. `fabricated` keys off the **schema**, not gold's `null`s
--- the schema offered `purchase_order`, the document doesn't cite one, and the model produced
-`PO-88231` from nowhere.
+```
+matched          both documents addressed it and agree
+misread          both addressed it and the values disagree
+unfound          the gold has it, the prediction doesn't
+fabricated       the schema offered the slot, the document is silent
+invented_field   a name the schema never declared
+invented_item    a value under an array row that paired with nothing
+```
+
+`fabricated` keys off the **schema**, not gold's `null`s. The schema offered `purchase_order`,
+the document doesn't cite one, and the model produced `PO-88231` from nowhere.
 
 And in the `invented_item` line the index is `"p2"`, not a number. A predicted row that paired
 with a gold row takes gold's index; one that paired with nothing gets a made-up label
