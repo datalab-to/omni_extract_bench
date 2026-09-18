@@ -337,8 +337,9 @@ def score_all(docs: list[Doc], provider: str, out: Path, verdicts: bool = False,
     """Grade the predictions on disk, and write one line per document.
 
     EVERY DOCUMENT COMES BACK, including ones with no usable prediction: coverage is only
-    visible if a failure occupies a row. Such a row carries NULL metrics rather than zero,
-    which would claim the model tried and missed every field.
+    visible if a failure occupies a row. Such a row carries NO metrics -- just the status and
+    what happened -- rather than zeros, which would claim the model tried and missed every
+    field. `summarise` is where they count as zero, when it averages.
 
     PROCESSES, not threads: this is the one CPU-bound half of a run, and
     `_worth_if_paired`'s recursion is interpreted Python that would serialise on the GIL.

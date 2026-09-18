@@ -25,6 +25,7 @@ import contextlib
 import inspect
 import io
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -107,27 +108,45 @@ for verb, (argv, handler_name) in INVOCATIONS.items():
 
 
 # ── every `oeb ...` line in the README parses ───────────────────────────────────
-# Commands wrap, so continuations are joined before parsing -- otherwise a `\`-wrapped
-# example reads as a truncated command and fails for the wrong reason.
-_joined, _buf = [], ""
-for _ln in (ROOT / "README.md").read_text().splitlines():
-    _ln = _ln.strip()
-    if _buf or re.match(rf"^oeb\s+({'|'.join(VERBS)})\b", _ln):
-        _buf += " " + _ln.rstrip("\\") if _buf else _ln.rstrip("\\")
-        if not _ln.endswith("\\"):
-            # Cut shell plumbing: a README may pipe or redirect a command, and `> pred.json`
-            # is the shell's business, not argparse's.
-            _cmd = re.split(r"\s(?:\||>>?|&&|;)\s", _buf)[0]
-            _joined.append(" ".join(_cmd.split()))
-            _buf = ""
-lines = _joined
-check("the README shows commands to check", len(lines) >= 1, f"found {len(lines)}")
-for line in lines:
+# A command in prose wraps two ways, and both have to be followed or an example reads as a
+# truncated command and fails for the wrong reason: a trailing `\`, and an argument whose
+# quote is still open -- which is how the `--options` examples span lines, their JSON being
+# easier to read laid out than on one line.
+def _incomplete(buf: str) -> bool:
     try:
-        parse(line.split()[1:])
-        check(f"README: {line}", True)
+        shlex.split(buf)
+        return False
+    except ValueError:                 # "No closing quotation"
+        return True
+
+
+# EVERY markdown file that documents the CLI, not only the README: `docs/API.md` spells the
+# flags out one by one, which is exactly the kind of list that goes quietly out of date.
+_joined, _buf = [], ""
+for _doc in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
+    for _ln in _doc.read_text().splitlines():
+        _ln = _ln.strip()
+        if _buf or re.match(rf"^oeb\s+({'|'.join(VERBS)})\b", _ln):
+            _buf = (_buf + " " if _buf else "") + _ln.rstrip("\\")
+            if not _ln.endswith("\\") and not _incomplete(_buf):
+                # Cut shell plumbing: a doc may pipe or redirect a command, and `> pred.json`
+                # is the shell's business, not argparse's.
+                _cmd = re.split(r"\s(?:\||>>?|&&|;)\s", _buf)[0]
+                _joined.append((_doc.name, " ".join(_cmd.split())))
+                _buf = ""
+    _buf = ""                       # a command cannot run on past the end of its own file
+# A `...` is a SHAPE, not an invocation -- `oeb providers datalab` prints one to show where
+# the options go, and `{"mode": ...}` is not JSON anyone should be able to run.
+lines = [(doc, ln) for doc, ln in _joined if "..." not in ln]
+check("the docs show commands to check", len(lines) >= 1, f"found {len(lines)}")
+for doc, line in lines:
+    try:
+        # `shlex`, not `split()`: `--options '{"datalab": {"mode": "accurate"}}'` is ONE
+        # argument, and split on whitespace it arrives as five that argparse cannot place.
+        parse(shlex.split(line)[1:])
+        check(f"{doc}: {line}", True)
     except AssertionError as exc:
-        check(f"README: {line}", False, str(exc))
+        check(f"{doc}: {line}", False, str(exc))
 
 
 # ── no verb goes unchecked ──────────────────────────────────────────────────────

@@ -56,7 +56,7 @@ datalab
   oeb benchmark --providers datalab --options '{"datalab": {"mode": ...}}'
 ```
 
-Then run the benchmark (limit to 1 document here). It's resumable so you can stop and reinvoke to resume at any point. 
+Then run the benchmark (limit to 1 document here). It's **resumable** so you can stop and reinvoke to resume at any point. 
 
 **!!NOTE!!**: this will cost money and you will need your API keys set. 
 
@@ -83,7 +83,7 @@ oeb benchmark \
   --out runs/
 ```
 
-This will execute 4 different runs -- one for each pair (provider, settings). 
+This will execute 4 different runs -- one for each pair (provider, settings).
 
 ## Score
 
@@ -250,13 +250,11 @@ Full specification: [`docs/METRIC_SPEC.md`](./docs/METRIC_SPEC.md).
 
 ## Predict
 
-Vendor adapters, and the parity rules that decide what each vendor is given.
+Predict using our provider harnesses.
 
 ```bash
 uv pip install 'omni-extract-bench[harness]'
 ```
-
-One document, one provider, at that provider's maximum tier:
 
 ```python
 from omni_extract_bench.harness import predict
@@ -267,7 +265,7 @@ record["raw"]
 record["cost"]
 ```
 
-Score directly.
+Score directly from the predictions.
 
 ```python
 from omni_extract_bench import score
