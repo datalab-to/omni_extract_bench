@@ -30,7 +30,7 @@ from pathlib import Path
 
 import httpx
 
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry, Settings,
+from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
                           VendorError)
 from ._cli import run_cli
 
@@ -41,7 +41,7 @@ _TERMINAL_BAD = {"failed", "cancelled"}
 
 
 @dataclasses.dataclass(frozen=True)
-class Config(Settings):
+class Config:
     """What azure-cu can be asked.
 
     `completion_model` is a DEPLOYMENT CHOICE, not a product tier: `gpt-4.1-mini` and `gpt-4.1`
@@ -53,9 +53,6 @@ class Config(Settings):
         metadata={"help": "the deployment behind the analyzer; publish it with the score"})
     api_version: str = API_VERSION
     poll_interval: float = 3.0
-
-    def label(self) -> str:
-        return f"completion_model={self.completion_model}"
 
 
 def _field(prop: dict) -> dict:

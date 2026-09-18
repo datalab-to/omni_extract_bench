@@ -37,7 +37,7 @@ import openai
 
 from ..dialects import parse_model_json
 
-from ..extraction import Budget, Cost, Extraction, MissingCredential, Settings, VendorError
+from ..extraction import Budget, Cost, Extraction, MissingCredential, VendorError
 from ._cli import run_cli
 
 SYSTEM_PROMPT = """\
@@ -77,7 +77,7 @@ MODEL_MAX_OUTPUT = {
 
 
 @dataclasses.dataclass(frozen=True)
-class Config(Settings):
+class Config:
     """What a raw-model leg can be asked. `model` has no default: it IS the provider name."""
 
     model: str = dataclasses.field(
@@ -96,10 +96,6 @@ class Config(Settings):
         ("as much as each will give"), so what that came to has to be on the document."""
         if self.max_output_tokens is None:
             object.__setattr__(self, "max_output_tokens", max_output_for(self.model))
-
-    def label(self) -> str:
-        # Not the model: it is the directory name already.
-        return f"max_output_tokens={self.max_output_tokens}"
 
 
 def max_output_for(model: str) -> int:

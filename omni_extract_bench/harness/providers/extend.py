@@ -5,7 +5,7 @@ import httpx
 
 from ..dialects import resolve_refs, to_strict_dialect
 from ._cli import run_cli
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry, Settings,
+from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
                           VendorError)
 
 # These three are DEFAULTS, not settings: they are overridden through `extract`'s keyword
@@ -30,7 +30,7 @@ TERMINAL = {"PROCESSED", "COMPLETED", "FAILED", "CANCELLED", "ERROR"}
 
 
 @dataclasses.dataclass(frozen=True)
-class Config(Settings):
+class Config:
     """What extend can be asked, and what it is asked at its maximum tier."""
 
     array_strategy: str = dataclasses.field(
@@ -38,9 +38,6 @@ class Config(Settings):
         metadata={"help": "MAX array extraction; this corpus is array-heavy"})
     api_version: str = API_VERSION
     base_url: str = BASE
-
-    def label(self) -> str:
-        return f"array_strategy={self.array_strategy}"
 
 
 def headers(key: str, api_version: str = API_VERSION) -> dict:

@@ -537,11 +537,18 @@ def run(providers: list[str], *, out: Path = Path("runs"),
     if not docs:
         raise ValueError("no documents selected: check --suites and --limit")
 
-    # The label carries the steering, so a run with `--options` neither reads nor overwrites
-    # the stock run's records.
+    # WHAT THIS RUN IS, WRITTEN BEFORE IT STARTS. The directory is `<provider>-<digest of the
+    # settings>`, which keeps two configurations apart and says nothing a person can read.
+    # This is where they read it -- at the start, because `summary.json` is written at the end
+    # and a run that is interrupted, or stopped by a credit ceiling, never reaches it. The
+    # alternative was a record: they carry `run_manifest.settings` too, but only once a
+    # document has landed, and a directory should not need one to say what it is.
     dirs = {label: out / label for label, _, _ in runs}
-    for run_out in dirs.values():
-        run_out.mkdir(parents=True, exist_ok=True)
+    for label, provider, opts in runs:
+        dirs[label].mkdir(parents=True, exist_ok=True)
+        write_json(dirs[label] / "settings.json",
+                   {"provider": provider, "settings": settings_for(provider, opts),
+                    "timeout_s": timeout})
 
     # PREDICT EVERY VENDOR AT ONCE, THEN GRADE. Predicting is network wait -- a document's
     # `wall_s` is the vendor's own server-side time plus a couple of seconds -- so vendors do

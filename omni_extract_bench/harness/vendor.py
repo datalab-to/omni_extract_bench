@@ -89,37 +89,35 @@ def resolve(provider: str) -> str:
 
 
 def out_name(provider: str, options: dict | None = None) -> str:
-    """A run's directory name: the provider, how it was asked, and a digest of the whole ask.
+    """A run's directory name: the provider, and a digest of everything it was asked.
 
     THE NAME IS A FUNCTION OF THE SETTINGS, so a directory holds one configuration and two
-    configurations never share one. Both halves read the RESOLVED settings, so neither moves
-    when a default does.
+    configurations never share one -- `runs/datalab-f46415c9` and `runs/datalab-01a72762` are
+    the balanced and the accurate run, and neither can be handed the other's records.
 
-    It used to name the difference from the defaults instead, which fails twice. A stock run
-    was a bare `datalab` -- silent about the tier it measured, sitting beside
-    `datalab@mode=accurate` as though it were the absence of a choice rather than the other
-    one. And the day a vendor's maximum tier moves and a `Config` default follows it, the new
-    stock run lands on that same bare `datalab`: `needs_run` finds records, skips every
-    document, and two tiers are averaged into one published number.
+    It named the DIFFERENCE from the adapter's defaults once, which fails twice. A stock run
+    came out a bare `datalab`, silent about the tier it measured. And the day a vendor's
+    maximum moves and a `Config` default follows it, the new stock run lands on that same bare
+    `datalab`: `needs_run` finds records, skips every document, and two tiers are averaged into
+    one published number.
 
-    The readable half is the adapter's own `Config.label()` -- the tier, not every field,
-    because `base_url` and `poll_interval` would crowd out the ask and the name is a column in
-    the progress display. The digest covers ALL of the settings and is always there, so what
-    the label leaves out can still never put two configurations in one directory.
+    The digest is not readable, and nothing here tries to make it so. WHAT A RUN WAS ASKED IS
+    WRITTEN INTO THE RUN, by `benchmark.run`, as `settings.json` -- at the start, so it is
+    there for a run that is interrupted, and beside the answers rather than encoded in a path
+    with a width budget. A name that carries a selected field instead is a name that can be
+    read two ways.
 
-    `openai/gpt-5.6-sol` would otherwise nest, so the separator is spelled out.
+    `openai/gpt-5.6-sol` would otherwise nest, and a `:batch` suffix is not a filename on every
+    filesystem, so the provider half is spelled out and sanitised too. Two ids that sanitise
+    alike still differ: the model is one of the settings the digest covers.
     """
-    config = config_for(provider, options)
-    name = provider.replace(MODEL_SEPARATOR, "__")
     # `sort_keys` so the spelling does not depend on the order the options were written in, and
     # `sha256` rather than `hash()`, which is salted per process and would name the same run
     # differently tomorrow.
-    spelled = json.dumps(dataclasses.asdict(config), sort_keys=True, default=str)
+    spelled = json.dumps(settings_for(provider, options), sort_keys=True, default=str)
     digest = hashlib.sha256(spelled.encode()).hexdigest()[:8]
-    # Sanitised and capped HERE rather than in each adapter: `label` writes prose, and only one
-    # place has to know it is about to become a path component.
-    label = re.sub(r"[^A-Za-z0-9._=,-]+", "_", config.label())[:40]
-    return f"{name}@{label}-{digest}" if label else f"{name}-{digest}"
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", provider.replace(MODEL_SEPARATOR, "__"))
+    return f"{name}-{digest}"
 
 
 #: A safe concurrency per vendor. Advisory: the caller owns the pool.

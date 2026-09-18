@@ -143,9 +143,9 @@ print("\nA RUN THAT IS NOT STOCK SAYS SO")
 # vendor dialled back must not be able to look stock afterwards.
 stub(lambda pdf, schema, **o: OK)
 import re as _re
-report("a run is named for the vendor, what it was asked, and a digest of all of it",
-       _re.fullmatch(r"datalab@mode=balanced-[0-9a-f]{8}", vendor.out_name("datalab"))
-       is not None, vendor.out_name("datalab"))
+report("a run is named for the vendor and a digest of what it was sent",
+       _re.fullmatch(r"datalab-[0-9a-f]{8}", vendor.out_name("datalab")) is not None,
+       vendor.out_name("datalab"))
 _rec = vendor.predict("datalab", PDF, SCHEMA, mode="accurate")
 report("an overridden option reaches the adapter", seen["opts"]["mode"] == "accurate")
 report("...and is recorded in the run manifest",
@@ -183,7 +183,7 @@ report("...and cannot be overridden into naming a different one than it ran",
 report("a bare alias is refused, naming the vendors",
        (lambda: [False for _ in ()] or _refused("gpt"))())
 report("a model id gets one directory, not a nested pair",
-       vendor.out_name("openai/gpt-5.6-sol").startswith("openai__gpt-5.6-sol@"),
+       vendor.out_name("openai/gpt-5.6-sol").startswith("openai__gpt-5.6-sol-"),
        vendor.out_name("openai/gpt-5.6-sol"))
 
 print("\nRETRY ONLY WHAT A RETRY CAN FIX")

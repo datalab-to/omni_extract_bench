@@ -26,8 +26,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
 import omni_extract_bench.harness.vendor as V                                  # noqa: E402
-from omni_extract_bench.harness.extraction import (Cost, Extraction,           # noqa: E402
-                                                   Settings)
+from omni_extract_bench.harness.extraction import Cost, Extraction             # noqa: E402
 from omni_extract_bench.harness.vendor import out_name                          # noqa: E402
 
 ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
@@ -47,16 +46,15 @@ def named(provider, **opts):
 print("\nA NAME IS A FUNCTION OF THE SETTINGS")
 # Every name carries a digest of the WHOLE resolved settings, so a directory holds one
 # configuration. The readable half is the difference from the defaults and is decoration.
-report("a run is named for the vendor, what it was asked, and a digest of all of it",
-       re.fullmatch(r"datalab@mode=balanced-[0-9a-f]{8}", named("datalab")) is not None,
-       named("datalab"))
+report("a run is named for the vendor and a digest of what it was sent",
+       re.fullmatch(r"datalab-[0-9a-f]{8}", named("datalab")) is not None, named("datalab"))
 report("an option set to the stock value names the same run",
        named("datalab", mode="balanced") == named("datalab"))
 report("a model id still gets one directory, not a nested pair",
-       named("openai/gpt-5.6-sol").startswith("openai__gpt-5.6-sol@"),
+       named("openai/gpt-5.6-sol").startswith("openai__gpt-5.6-sol-"),
        named("openai/gpt-5.6-sol"))
-report("a steered run is marked, and readably",
-       named("datalab", mode="accurate").startswith("datalab@mode=accurate-"),
+report("a steered run is a different directory, not a suffix on the stock one",
+       named("datalab", mode="accurate") != named("datalab"),
        named("datalab", mode="accurate"))
 
 print("\nDISTINCT STEERINGS GET DISTINCT DIRECTORIES")
@@ -64,10 +62,10 @@ print("\nDISTINCT STEERINGS GET DISTINCT DIRECTORIES")
 # digest -- not the readable prefix -- is what carries the guarantee.
 apart = [named("datalab", mode="accurate"), named("datalab", mode="fast"),
          named("datalab", mode="fast", poll_interval=2.5),
-         named("reducto", system_prompt="a b"),      # `label` names the tier, so these
-         named("reducto", system_prompt="a_b"),      # four read identically -- the digest
-         named("reducto", system_prompt="L" * 300),  # covers every field, which is what
-         named("reducto", system_prompt="M" * 300)]  # keeps them in four directories
+         named("reducto", system_prompt="a b"),      # the name shows none of these, so
+         named("reducto", system_prompt="a_b"),      # only the digest keeps them in four
+         named("reducto", system_prompt="L" * 300),  # directories -- which is why it
+         named("reducto", system_prompt="M" * 300)]  # covers every field and not a few
 report("every one of them is unique", len(set(apart)) == len(apart), str(apart))
 
 print("\nAND NOT ON WHAT THE DEFAULT HAPPENED TO BE THAT DAY")
@@ -80,13 +78,10 @@ def _datalab_defaulting_to(tier):
     module = types.ModuleType("fake_datalab")
 
     @dataclasses.dataclass(frozen=True)
-    class Config(Settings):
+    class Config:
         mode: str = tier
         base_url: str = "https://www.datalab.to"
         poll_interval: float = 5.0
-
-        def label(self):
-            return f"mode={self.mode}"
 
     module.Config = Config
     return lambda provider: module
@@ -131,6 +126,13 @@ report("a huge value cannot become a huge path",
 report("nothing unsafe reaches the filesystem",
        not (set(named("reducto", system_prompt="a/b c:d")) & set("/\\:*?\"<>|")),
        named("reducto", system_prompt="a/b c:d"))
+# The PROVIDER half too, which went unsanitised while only the readable half was checked: an
+# OpenRouter suffix is part of the id, and `mistral-medium-3-5:batch` is not a filename on
+# every filesystem. Two ids that sanitise alike still differ -- the model is one of the
+# settings the digest covers.
+report("...including the model id, suffix and all",
+       not (set(named("mistralai/mistral-medium-3-5:batch")) & set("/\\:*?\"<>|")),
+       named("mistralai/mistral-medium-3-5:batch"))
 
 print("\nA STEERED RUN DOES NOT INHERIT THE STOCK RUN'S RECORDS")
 out = pathlib.Path(tempfile.mkdtemp())
@@ -160,6 +162,13 @@ report("the steered run calls the vendor again, at the asked-for setting",
 steered_dir = named("datalab", mode="fast")
 report("...into a directory of its own",
        (out / steered_dir).is_dir() and (out / named("datalab")).is_dir(), steered_dir)
+
+# A DIRECTORY SAYS WHAT IT IS WITHOUT BEING FINISHED. The name is a digest, `summary.json`
+# is written at the end and an interrupted run never reaches it, and a record states the
+# settings only once a document has landed.
+asked = json.loads((out / steered_dir / "settings.json").read_text())
+report("the run says what it was asked, in the directory, from the start",
+       (asked["provider"], asked["settings"]["mode"]) == ("datalab", "fast"), str(asked))
 
 stock = json.loads((out / named("datalab") / "predictions" / "d0.json").read_text())
 steered = json.loads((out / steered_dir / "predictions" / "d0.json").read_text())

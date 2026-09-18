@@ -3,12 +3,20 @@
 A leaf module: it imports nothing from this package, so every adapter and the runner above
 them can share these without a cycle.
 
-THE CONTRACT. An adapter is a function and a `Settings`:
+THE CONTRACT. An adapter is a function and a `Config`:
 
     extract(pdf, schema, *, timeout, config: Config) -> Extraction
 
-It makes the vendor call, parses the answer, and returns both. Its `Config` is a frozen
-dataclass whose fields are exactly what the vendor can be asked.
+It makes the vendor call, parses the answer, and returns both.
+
+`Config` is a frozen dataclass whose FIELDS are what the vendor can be asked -- one
+declaration, read by `--options`, by `oeb providers`, by `run_cli` for the adapter's own
+flags, and by `run_manifest.settings` for the record. Nothing infers an option from a
+signature and nothing restates a default somewhere else.
+
+A field must hold what the vendor is actually SENT. A `None` that `extract` later resolves
+into a real value is a setting the record cannot state: it writes down `None` while the
+vendor was handed 128000. Resolve it in `__post_init__`, where the Config still says it.
 """
 from __future__ import annotations
 
@@ -19,35 +27,6 @@ from typing import Any, NamedTuple
 #: answer -- usually our schema, sometimes a real vendor limit -- and retrying it only hides
 #: the evidence, so it is deliberately absent.
 TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
-
-
-class Settings:
-    """Base for an adapter's `Config`. Its FIELDS are what the vendor can be asked.
-
-    One declaration, read by `--options`, by `oeb providers`, by `run_cli` for the adapter's
-    own flags, and by `run_manifest.settings` for the record -- so nothing infers an option
-    from a signature and nothing restates a default somewhere else.
-
-    A field must hold what the vendor is actually SENT. A `None` that `extract` later resolves
-    into a real value is a setting the record cannot state: it writes down `None` while the
-    vendor was handed 128000. Resolve it in `__post_init__` instead, where the Config still
-    says it.
-    """
-
-    def label(self) -> str:
-        """How a run of these settings reads in its directory name. "" for nothing to say.
-
-        WHAT THE VENDOR WAS ASKED, not what differs from the defaults. Naming only the
-        difference left the stock run a bare `datalab`, silent about the tier it measured and
-        sitting next to `datalab@mode=accurate` as though it were the absence of a choice --
-        and it re-read the day a default moved, which is a name changing under a resume.
-
-        The tier, not every field: `base_url` and `poll_interval` are plumbing, and the name
-        is a column in the progress display before it is anything else. What is left out is
-        still carried by the digest `out_name` appends, so this is legibility only and cannot
-        let two configurations share a directory.
-        """
-        return ""
 
 
 class Budget:

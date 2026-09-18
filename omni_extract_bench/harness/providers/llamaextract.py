@@ -31,7 +31,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry, Settings,
+from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
                           VendorError)
 from ._cli import run_cli
 
@@ -46,7 +46,7 @@ _TERMINAL = {"SUCCESS", "COMPLETED", "FAILED", "ERROR", "CANCELLED"}
 
 
 @dataclasses.dataclass(frozen=True)
-class Config(Settings):
+class Config:
     """What llamaextract can be asked, and what it is asked at its maximum tier."""
 
     tier: str = dataclasses.field(
@@ -54,9 +54,6 @@ class Config(Settings):
         metadata={"choices": ["cost_effective", "agentic", "agentic_plus"],
                   "help": "extraction tier; entitlements change, so check one against the API"})
     poll_interval: int = 5
-
-    def label(self) -> str:
-        return f"tier={self.tier}"
 
 
 def _adapt_schema(schema: dict, defs: dict | None = None) -> dict:

@@ -28,7 +28,7 @@ from pathlib import Path
 
 import httpx
 
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry, Settings,
+from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
                           VendorError, as_object)
 from ._cli import run_cli
 
@@ -44,7 +44,7 @@ _TERMINAL = {"Completed", "Failed", "Error", "Cancelled"}
 
 
 @dataclasses.dataclass(frozen=True)
-class Config(Settings):
+class Config:
     """What reducto can be asked, and what it is asked at its maximum tier."""
 
     deep_extract_model: str = DEFAULT_DEEP_EXTRACT_MODEL
@@ -55,11 +55,6 @@ class Config(Settings):
         metadata={"choices": ["default", "max"],
                   "help": "agentic table enrichment; `max` enriches every table"})
     poll_interval: int = 5
-
-    def label(self) -> str:
-        # The tier knob: `max` enriches every table. `deep_extract_model` rides the digest --
-        # it is a model VERSION, and two of them in the column costs 22 characters of width.
-        return f"agentic_table_mode={self.agentic_table_mode}"
 
 
 #: How far back down the /jobs listing to look for our own job. It has to cover everything
