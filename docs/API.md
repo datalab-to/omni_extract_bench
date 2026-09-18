@@ -300,8 +300,6 @@ what keeps two configurations of one vendor apart. `datalab-f46415c9` is the bal
 
 The digest isn't meant to be read. `settings.json` is where you read what a run was.
 
-There's no summary across runs. `runs/*/summary.json` is one, aggregated however you like.
-
 ### settings.json
 
 What the run asked for, written **before** the first document -- so an interrupted run still
@@ -352,33 +350,6 @@ finishes.
 The run and each suite are the same shape, so whatever you read at the top you can read per
 suite as well.
 
-Everything is a **mean over documents**. Each document counts once, however many fields it
-holds. Our corpus runs from 26 addresses in one document to 35,239 in another, so summing the
-counts before dividing would let that one document decide the number for all of them
-([`METRIC_SPEC.md`](./METRIC_SPEC.md) §7).
-
-The three metrics are the same ones `score` returns for a single document:
-
-```python
-summary["accuracy"]     # matched addresses / addresses either document used
-summary["precision"]    # of what the vendor asserted, how much was true
-summary["recall"]       # of what the gold asked for, how much came back
-```
-
-Then where it went wrong, which one number can't tell you. Two vendors at 0.72 aren't the same
-vendor when one is missing fields and the other is inventing them:
-
-```python
-summary["unfound_rate"]         # gold the vendor never produced
-summary["misread_rate"]         # both documents had it, the values disagree
-summary["fabricated_rate"]      # a slot the schema offered, the document silent on it
-summary["invented_item_rate"]   # a value under an array row that paired with nothing
-summary["invented_field_rate"]  # a name the schema never declared
-```
-
-Each is the mean of that document's `count / total`. They're named `_rate` because
-`scores.jsonl` spells the same five words as counts, and you shouldn't have to work out which
-one you're holding.
 
 ### predictions/&lt;doc_id&gt;.json
 
@@ -388,7 +359,7 @@ thing `predict` returns as `record["result"]`.
 ### records/&lt;doc_id&gt;.json
 
 Everything else about that document. Two files because scoring wants the answer and an audit
-wants all of it, and only one of those is worth loading 620 of.
+wants all of it.
 
 ```json
 {
