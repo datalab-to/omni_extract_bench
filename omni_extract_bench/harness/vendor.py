@@ -89,42 +89,37 @@ def resolve(provider: str) -> str:
 
 
 def out_name(provider: str, options: dict | None = None) -> str:
-    """A run's directory name: the provider, and a digest of everything it was asked.
+    """A run's directory name: the provider, how it was asked, and a digest of the whole ask.
 
     THE NAME IS A FUNCTION OF THE SETTINGS, so a directory holds one configuration and two
-    configurations never share one. It used to digest only what DIFFERED from the adapter's
-    defaults, which holds within a version of this code and breaks across one: the day a
-    vendor's maximum tier moves and a `Config` default follows it, the new stock run is stored
-    under the same plain `datalab` as the old one, `needs_run` finds records and skips every
-    document, and two tiers are averaged into one published number. That is the same mixing
-    `--options` already forced this directory apart for, displaced in time.
+    configurations never share one. Both halves read the RESOLVED settings, so neither moves
+    when a default does.
 
-    So the digest covers the WHOLE resolved settings, and there is no case without one -- a
-    name that does not encode the settings cannot identify them, and `datalab` was exactly
-    that name.
+    It used to name the difference from the defaults instead, which fails twice. A stock run
+    was a bare `datalab` -- silent about the tier it measured, sitting beside
+    `datalab@mode=accurate` as though it were the absence of a choice rather than the other
+    one. And the day a vendor's maximum tier moves and a `Config` default follows it, the new
+    stock run lands on that same bare `datalab`: `needs_run` finds records, skips every
+    document, and two tiers are averaged into one published number.
 
-    The readable half is the difference from the current defaults, and is DECORATION: it keeps
-    `datalab@mode=accurate` legible in `ls` and in the progress display, and it carries no part
-    of the guarantee. Being decoration it can read differently after a default moves, so a run
-    pinned to the old value lands in a new directory and is bought again. That is the cost, and
-    it is the affordable one: a re-run is loud and a directory holding two measurements is not.
+    The readable half is the adapter's own `Config.label()` -- the tier, not every field,
+    because `base_url` and `poll_interval` would crowd out the ask and the name is a column in
+    the progress display. The digest covers ALL of the settings and is always there, so what
+    the label leaves out can still never put two configurations in one directory.
 
     `openai/gpt-5.6-sol` would otherwise nest, so the separator is spelled out.
     """
+    config = config_for(provider, options)
     name = provider.replace(MODEL_SEPARATOR, "__")
-    settings = settings_for(provider, options)
     # `sort_keys` so the spelling does not depend on the order the options were written in, and
     # `sha256` rather than `hash()`, which is salted per process and would name the same run
     # differently tomorrow.
-    digest = hashlib.sha256(
-        json.dumps(settings, sort_keys=True, default=str).encode()).hexdigest()[:8]
-    stock = settings_for(provider)
-    changed = {k: v for k, v in settings.items() if stock.get(k) != v}
-    if not changed:
-        return f"{name}-{digest}"
-    readable = re.sub(r"[^A-Za-z0-9._=,-]+", "_",
-                      ",".join(f"{k}={changed[k]}" for k in sorted(changed)))[:40]
-    return f"{name}@{readable}-{digest}"
+    spelled = json.dumps(dataclasses.asdict(config), sort_keys=True, default=str)
+    digest = hashlib.sha256(spelled.encode()).hexdigest()[:8]
+    # Sanitised and capped HERE rather than in each adapter: `label` writes prose, and only one
+    # place has to know it is about to become a path component.
+    label = re.sub(r"[^A-Za-z0-9._=,-]+", "_", config.label())[:40]
+    return f"{name}@{label}-{digest}" if label else f"{name}-{digest}"
 
 
 #: A safe concurrency per vendor. Advisory: the caller owns the pool.
@@ -186,11 +181,23 @@ def config_for(provider: str, options: dict | None = None):
     import dataclasses
 
     config_type = _module(provider).Config
-    # A model id IS the model: it comes from the provider name rather than being steered, so a
-    # directory and a summary cannot end up naming a different one from the run.
-    fixed = {"model": provider} if MODEL_SEPARATOR in provider else {}
+    options = options or {}
+    # A MODEL ID IS THE MODEL. It comes from the provider name, so the directory, the summary
+    # key and the record all name the model that ran. It used to be merely a default that
+    # `options` then overrode, which is the one way that could stop being true: asking
+    # `openai/gpt-5.6-sol` for `model=anthropic/claude-opus-5` ran Claude, and stored it, under
+    # a directory spelled `openai__gpt-5.6-sol`. Refused rather than quietly overruled -- a
+    # caller who wrote it meant something, and running a different model than they typed is
+    # not it.
+    if MODEL_SEPARATOR in provider:
+        if "model" in options:
+            raise ValueError(
+                f"{provider}: `model` is the provider name, not an option -- otherwise the "
+                f"run would be stored and published under a model it did not use. Run the "
+                f"one you want: --providers {options['model']}")
+        options = {**options, "model": provider}
     try:
-        return config_type(**{**fixed, **(options or {})})
+        return config_type(**options)
     except TypeError as exc:
         known = ", ".join(f.name for f in dataclasses.fields(config_type)) or "(none)"
         raise ValueError(f"{provider}: {exc}. Its options are: {known}") from None
@@ -199,8 +206,9 @@ def config_for(provider: str, options: dict | None = None):
 def settings_for(provider: str, options: dict | None = None) -> dict:
     """What the adapter will be sent, as a plain dict: the `Config` it is handed.
 
-    The record states it, `out_name` digests it to name a run, and `oeb providers` prints it. There are no credentials in it -- every adapter reads its key
-    from the environment -- so nothing secret reaches a record or a directory name.
+    The record states it, `out_name` digests it to name a run, and `oeb providers` prints it.
+    There are no credentials in it -- every adapter reads its key from the environment -- so
+    nothing secret reaches a record or a directory name.
     """
     import dataclasses
 

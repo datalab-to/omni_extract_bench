@@ -17,7 +17,7 @@ from pathlib import Path
 
 import httpx
 
-from ..extraction import Cost, Extraction, MissingCredential, VendorError
+from ..extraction import Cost, Extraction, MissingCredential, Settings, VendorError
 from ._cli import run_cli
 
 MODEL = "mistral-ocr-latest"
@@ -25,7 +25,7 @@ URL = "https://api.mistral.ai/v1/ocr"
 
 
 @dataclasses.dataclass(frozen=True)
-class Config:
+class Config(Settings):
     """Nothing to steer: the document and the schema go in one call and that is all."""
 
 

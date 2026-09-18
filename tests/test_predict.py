@@ -143,9 +143,9 @@ print("\nA RUN THAT IS NOT STOCK SAYS SO")
 # vendor dialled back must not be able to look stock afterwards.
 stub(lambda pdf, schema, **o: OK)
 import re as _re
-report("a run is named for the vendor and a digest of what it was sent",
-       _re.fullmatch(r"datalab-[0-9a-f]{8}", vendor.out_name("datalab")) is not None,
-       vendor.out_name("datalab"))
+report("a run is named for the vendor, what it was asked, and a digest of all of it",
+       _re.fullmatch(r"datalab@mode=balanced-[0-9a-f]{8}", vendor.out_name("datalab"))
+       is not None, vendor.out_name("datalab"))
 _rec = vendor.predict("datalab", PDF, SCHEMA, mode="accurate")
 report("an overridden option reaches the adapter", seen["opts"]["mode"] == "accurate")
 report("...and is recorded in the run manifest",
@@ -153,6 +153,14 @@ report("...and is recorded in the run manifest",
 report("an option equal to the stock value names the same run",
        vendor.out_name("datalab", {"mode": "balanced"}) == vendor.out_name("datalab"),
        vendor.out_name("datalab", {"mode": "balanced"}))
+
+def _refused_with(provider, options, wanted):
+    try:
+        vendor.config_for(provider, options)
+        return False
+    except ValueError as exc:
+        return wanted in str(exc)
+
 
 print("\nA MODEL IS NAMED IN FULL, NOT ALIASED")
 # `gpt` said nothing about which model produced a row, and changed meaning whenever the alias
@@ -165,10 +173,17 @@ report("a vendor name still routes to its own adapter",
 report("an OpenRouter suffix is part of the id, not a separator",
        vendor.settings_for("mistralai/mistral-medium-3-5:batch")["model"]
        == "mistralai/mistral-medium-3-5:batch")
+# `model` was a DEFAULT that `options` then overrode, so asking `openai/gpt-5.6-sol` for
+# `model=anthropic/claude-opus-5` ran Claude and stored it under a directory, a summary key and
+# a record spelled `openai__gpt-5.6-sol` -- the aliasing this whole rule exists to stop, by
+# another route.
+report("...and cannot be overridden into naming a different one than it ran",
+       _refused_with("openai/gpt-5.6-sol", {"model": "anthropic/claude-opus-5"},
+                     "is the provider name"))
 report("a bare alias is refused, naming the vendors",
        (lambda: [False for _ in ()] or _refused("gpt"))())
 report("a model id gets one directory, not a nested pair",
-       vendor.out_name("openai/gpt-5.6-sol").startswith("openai__gpt-5.6-sol-"),
+       vendor.out_name("openai/gpt-5.6-sol").startswith("openai__gpt-5.6-sol@"),
        vendor.out_name("openai/gpt-5.6-sol"))
 
 print("\nRETRY ONLY WHAT A RETRY CAN FIX")

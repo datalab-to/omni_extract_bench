@@ -26,7 +26,8 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
 import omni_extract_bench.harness.vendor as V                                  # noqa: E402
-from omni_extract_bench.harness.extraction import Cost, Extraction             # noqa: E402
+from omni_extract_bench.harness.extraction import (Cost, Extraction,           # noqa: E402
+                                                   Settings)
 from omni_extract_bench.harness.vendor import out_name                          # noqa: E402
 
 ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
@@ -46,12 +47,13 @@ def named(provider, **opts):
 print("\nA NAME IS A FUNCTION OF THE SETTINGS")
 # Every name carries a digest of the WHOLE resolved settings, so a directory holds one
 # configuration. The readable half is the difference from the defaults and is decoration.
-report("a run is named for the vendor and what it was sent",
-       re.fullmatch(r"datalab-[0-9a-f]{8}", named("datalab")) is not None, named("datalab"))
+report("a run is named for the vendor, what it was asked, and a digest of all of it",
+       re.fullmatch(r"datalab@mode=balanced-[0-9a-f]{8}", named("datalab")) is not None,
+       named("datalab"))
 report("an option set to the stock value names the same run",
        named("datalab", mode="balanced") == named("datalab"))
 report("a model id still gets one directory, not a nested pair",
-       named("openai/gpt-5.6-sol").startswith("openai__gpt-5.6-sol-"),
+       named("openai/gpt-5.6-sol").startswith("openai__gpt-5.6-sol@"),
        named("openai/gpt-5.6-sol"))
 report("a steered run is marked, and readably",
        named("datalab", mode="accurate").startswith("datalab@mode=accurate-"),
@@ -62,10 +64,10 @@ print("\nDISTINCT STEERINGS GET DISTINCT DIRECTORIES")
 # digest -- not the readable prefix -- is what carries the guarantee.
 apart = [named("datalab", mode="accurate"), named("datalab", mode="fast"),
          named("datalab", mode="fast", poll_interval=2.5),
-         named("reducto", system_prompt="a b"),      # sanitising is lossy: both of these
-         named("reducto", system_prompt="a_b"),      # spell `a_b` in the readable half
-         named("reducto", system_prompt="L" * 300),
-         named("reducto", system_prompt="M" * 300)]  # differs past the readable cut
+         named("reducto", system_prompt="a b"),      # `label` names the tier, so these
+         named("reducto", system_prompt="a_b"),      # four read identically -- the digest
+         named("reducto", system_prompt="L" * 300),  # covers every field, which is what
+         named("reducto", system_prompt="M" * 300)]  # keeps them in four directories
 report("every one of them is unique", len(set(apart)) == len(apart), str(apart))
 
 print("\nAND NOT ON WHAT THE DEFAULT HAPPENED TO BE THAT DAY")
@@ -78,10 +80,13 @@ def _datalab_defaulting_to(tier):
     module = types.ModuleType("fake_datalab")
 
     @dataclasses.dataclass(frozen=True)
-    class Config:
+    class Config(Settings):
         mode: str = tier
         base_url: str = "https://www.datalab.to"
         poll_interval: float = 5.0
+
+        def label(self):
+            return f"mode={self.mode}"
 
     module.Config = Config
     return lambda provider: module
@@ -97,14 +102,13 @@ finally:
     V._module = _real_module
 report("the same name never means two different settings", was_stock != now_stock,
        f"{was_stock} vs {now_stock}")
-report("...and the digest of one setting is the same either way",
-       was_stock.rsplit("-", 1)[1] == now_pinned.rsplit("-", 1)[1],
+# And the other direction, which is what naming the RESOLVED settings buys over naming the
+# difference from them: a run pinned to the old value is the same run, so it resumes into its
+# own directory instead of being bought a second time under a new name.
+report("...and the same settings always mean the same name", was_stock == now_pinned,
        f"{was_stock} vs {now_pinned}")
-# What the readable half costs: it is decoration, so it re-reads when a default moves, and a
-# run pinned to the old value is bought again. Loud -- a new directory -- where the mixing
-# above was silent.
-report("the readable half is decoration and may re-read", was_stock != now_pinned
-       and was_pinned != now_stock, f"{was_pinned} vs {now_stock}")
+report("...however the defaults moved around them", was_pinned == now_stock,
+       f"{was_pinned} vs {now_stock}")
 
 print("\nAND THE NAME DOES NOT DEPEND ON HOW IT WAS WRITTEN")
 report("option order does not change it",

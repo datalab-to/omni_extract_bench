@@ -37,7 +37,7 @@ import openai
 
 from ..dialects import parse_model_json
 
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, VendorError)
+from ..extraction import Budget, Cost, Extraction, MissingCredential, Settings, VendorError
 from ._cli import run_cli
 
 SYSTEM_PROMPT = """\
@@ -77,7 +77,7 @@ MODEL_MAX_OUTPUT = {
 
 
 @dataclasses.dataclass(frozen=True)
-class Config:
+class Config(Settings):
     """What a raw-model leg can be asked. `model` has no default: it IS the provider name."""
 
     model: str = dataclasses.field(
@@ -86,6 +86,20 @@ class Config:
         default=None, metadata={"help": "default: the model's published ceiling"})
     base_url: str = DEFAULT_BASE_URL
     attempts: int = 3
+
+    def __post_init__(self):
+        """Resolve `None` to the model's published ceiling HERE, not in `extract`.
+
+        `extract` used to do it, so the record wrote down `max_output_tokens: null` while the
+        model was handed 128000 -- a setting stated by neither the Config nor the manifest,
+        which is the whole thing `settings` exists to rule out. The parity rule is per-model
+        ("as much as each will give"), so what that came to has to be on the document."""
+        if self.max_output_tokens is None:
+            object.__setattr__(self, "max_output_tokens", max_output_for(self.model))
+
+    def label(self) -> str:
+        # Not the model: it is the directory name already.
+        return f"max_output_tokens={self.max_output_tokens}"
 
 
 def max_output_for(model: str) -> int:
@@ -108,7 +122,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
 
     budget = Budget(timeout)
     model = config.model
-    max_output_tokens = config.max_output_tokens or max_output_for(model)
+    max_output_tokens = config.max_output_tokens      # resolved by Config.__post_init__
     client = openai.OpenAI(base_url=config.base_url, api_key=key)
     b64 = base64.b64encode(pdf.read_bytes()).decode("ascii")
     messages = [

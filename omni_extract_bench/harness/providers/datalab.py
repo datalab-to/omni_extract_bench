@@ -23,7 +23,7 @@ from pathlib import Path
 
 import httpx
 
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
+from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry, Settings,
                           VendorError)
 from ._cli import run_cli
 
@@ -31,7 +31,7 @@ DEFAULT_BASE_URL = "https://www.datalab.to"
 
 
 @dataclasses.dataclass(frozen=True)
-class Config:
+class Config(Settings):
     """What this vendor can be asked, and what it is asked at its maximum tier.
 
     The fields ARE the options: `oeb providers datalab` lists them, `--options` sets them, and
@@ -45,6 +45,9 @@ class Config:
                   "help": "extraction tier; the published runs use balanced and accurate"})
     base_url: str = DEFAULT_BASE_URL
     poll_interval: float = 5.0
+
+    def label(self) -> str:
+        return f"mode={self.mode}"
 
 
 def normalize_schema(schema: dict) -> dict:
