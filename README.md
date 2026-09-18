@@ -32,7 +32,6 @@ oeb providers
 ```
 azure-cu
 datalab
-datalab-accurate
 extend
 llamaextract
 mistral

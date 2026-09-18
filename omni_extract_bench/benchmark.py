@@ -22,7 +22,7 @@ are decisions about a corpus. What this file does, you can do differently.
     pip install 'omni-extract-bench[benchmark,harness]'
 
 Credentials come from the environment. Everything else a vendor is told comes from `--options`,
-so `run_manifest.overrides` is a complete account of how a run was steered.
+so `run_manifest.settings` is a complete account of what each vendor was asked.
 """
 from __future__ import annotations
 
@@ -131,7 +131,7 @@ def needs_run(record_path: Path) -> bool:
 
 
 def predict_all(docs: list[Doc], provider: str, out: Path, timeout: float, workers: int,
-                options: dict | None = None, progress=NULL,
+                options: dict | None = None, progress=NULL, label: str | None = None,
                 stop: threading.Event | None = None) -> None:
     """Every document through one vendor, concurrently, leaving the answer and the evidence.
 
@@ -141,12 +141,15 @@ def predict_all(docs: list[Doc], provider: str, out: Path, timeout: float, worke
     Two files because they are read at different times and are different sizes: scoring wants
     the answer, an audit wants everything, and only one of them is worth loading 620 of.
     """
+    # What this run is CALLED, which is the provider plus its options; `provider` alone would
+    # log two configurations of one vendor under the same name.
+    label = label or provider
     preds, records = out / "predictions", out / "records"
     preds.mkdir(parents=True, exist_ok=True)
     records.mkdir(parents=True, exist_ok=True)
 
     todo = [d for d in docs if needs_run(records / f"{d.doc_id}.json")]
-    log.info("%s: %d documents, %d to run", provider, len(docs), len(todo))
+    log.info("%s: %d documents, %d to run", label, len(docs), len(todo))
     progress.start(len(todo), workers)
     if not todo:
         progress.finish()
@@ -172,7 +175,7 @@ def predict_all(docs: list[Doc], provider: str, out: Path, timeout: float, worke
         with halt:
             if not mine.is_set():
                 if why:
-                    log.error("%s: %s -- %s", provider, why, exc)
+                    log.error("%s: %s -- %s", label, why, exc)
                 fatal.append(exc)
                 mine.set()
         return "skipped", None, None, None
@@ -467,6 +470,45 @@ def workers_for(provider: str, requested: dict[str, int] | int | None) -> int:
             or WORKERS.get(provider, DEFAULT_WORKERS))
 
 
+def plan(providers: list[str], options: dict | None = None) -> list[tuple[str, str, dict]]:
+    """(label, provider, options) for every configuration this invocation measures.
+
+    A RUN IS A PROVIDER PLUS ITS OPTIONS, not a provider. `--options` may give one provider a
+    LIST of option sets, and each is its own run -- which is how one invocation compares a
+    vendor's tiers:
+
+        --providers datalab --options '{"datalab": [{"mode": "balanced"},
+                                                    {"mode": "accurate"}]}'
+
+    The label is `out_name`, so the same string is the directory, the summary key and the
+    progress line. Deduplicating on it means two spellings of one configuration cannot be
+    bought twice -- `--providers datalab datalab` is one run, and so is naming the stock
+    settings explicitly.
+    """
+    from .harness.vendor import out_name
+
+    # A KEY THAT MATCHES NO PROVIDER IS A TYPO, and a silent one: the options are dropped and
+    # the run reports as stock, which is a steered measurement wearing a stock label.
+    unknown = sorted(set(options or {}) - set(providers))
+    if unknown:
+        raise ValueError(
+            f"--options names {unknown[0]!r}, which is not in --providers "
+            f"({', '.join(providers)}). Its options would be silently ignored.")
+
+    runs: dict[str, tuple[str, str, dict]] = {}
+    for provider in providers:
+        asked = (options or {}).get(provider)
+        if isinstance(asked, list) and not asked:
+            # Otherwise the provider silently contributes no runs, and an empty `runs` reaches
+            # the pool as `max_workers=0`.
+            raise ValueError(f"--options gives {provider!r} an empty list, so it would not "
+                             f"run at all. Give it options, or leave it out.")
+        for one in (asked if isinstance(asked, list) else [asked]):
+            label = out_name(provider, one)
+            runs.setdefault(label, (label, provider, one or {}))
+    return list(runs.values())
+
+
 def run(providers: list[str], *, out: Path = Path("runs"),
         data_root: Path = Path("benchmark"), suites: list[str] | None = None, limit: int = 0,
         timeout: float = 1800.0, predict_workers: dict[str, int] | int | None = None,
@@ -477,29 +519,29 @@ def run(providers: list[str], *, out: Path = Path("runs"),
     Keyword arguments and no argparse, so this stays callable from a notebook; it raises
     rather than exits, for the same reason.
 
-    `options` is `{provider: {option: value}}` and lands in `run_manifest.overrides`, because
+    `options` is `{provider: {option: value}}` and lands in `run_manifest.settings`, because
     a run that turned a vendor down must not be able to look stock afterwards.
 
     `predict_workers` is `{provider: count}` (see `workers_for`). It is separate from
     `score_workers` because they buy different resources: documents a vendor holds at once,
     against local cores that grade.
     """
-    from .harness.vendor import out_name, resolve
+    from .harness.vendor import resolve, settings_for
 
-    # Deduplicated, order kept: naming a provider twice gave both copies the same output
-    # directory and the same `needs_run` answers, so every document was bought twice.
-    providers = list(dict.fromkeys(providers))
     for provider in providers:
         resolve(provider)          # raises ValueError naming the vendors, before any download
+    runs = plan(providers, options)
 
     root = fetch(data_root)
     docs = read_manifest(root / MANIFEST, root, suites=suites, limit=limit)
     if not docs:
         raise ValueError("no documents selected: check --suites and --limit")
 
-    dirs = {p: out / out_name(p) for p in providers}  # `openai/gpt-5.6-sol` would nest
-    for provider_out in dirs.values():
-        provider_out.mkdir(parents=True, exist_ok=True)
+    # The label carries the steering, so a run with `--options` neither reads nor overwrites
+    # the stock run's records.
+    dirs = {label: out / label for label, _, _ in runs}
+    for run_out in dirs.values():
+        run_out.mkdir(parents=True, exist_ok=True)
 
     # PREDICT EVERY VENDOR AT ONCE, THEN GRADE. Predicting is network wait -- a document's
     # `wall_s` is the vendor's own server-side time plus a couple of seconds -- so vendors do
@@ -507,14 +549,19 @@ def run(providers: list[str], *, out: Path = Path("runs"),
     # it overlap a vendor call would put local CPU load inside a published latency figure.
     stop = threading.Event()           # one Ctrl-C stops every provider, not just one
     if not score_only:
-        with Progress(providers) as bars, \
-                cf.ThreadPoolExecutor(max_workers=len(providers)) as pool:
-            futures = {pool.submit(predict_all, docs, provider, dirs[provider], timeout=timeout,
-                                   workers=workers_for(provider, predict_workers),
-                                   options=(options or {}).get(provider),
-                                   progress=bars.reporter(provider),
-                                   stop=stop): provider
-                       for provider in providers}
+        # THE CAP IS THE VENDOR'S, AND IT IS SHARED. Two runs of one provider go at once, so
+        # a cap applied to each would put twice as many documents in flight as the vendor
+        # tolerates -- measured, `WORKERS["datalab"] = 10` reached 20. Split it between them.
+        per_vendor = collections.Counter(provider for _, provider, _ in runs)
+        with Progress([label for label, _, _ in runs]) as bars, \
+                cf.ThreadPoolExecutor(max_workers=len(runs)) as pool:
+            futures = {pool.submit(predict_all, docs, provider, dirs[label], timeout=timeout,
+                                   workers=max(1, workers_for(provider, predict_workers)
+                                               // per_vendor[provider]),
+                                   options=opts, label=label,
+                                   progress=bars.reporter(label),
+                                   stop=stop): label
+                       for label, provider, opts in runs}
             # `result()` re-raises what a provider raised. Leaving the loop still drains the
             # pool, so the other vendors finish and their predictions are on disk.
             try:
@@ -535,14 +582,22 @@ def run(providers: list[str], *, out: Path = Path("runs"),
                             "documents not yet written come back on the next run")
                 raise
 
+    # KEYED BY THE RUN, NOT BY THE VENDOR, and it is the same string that named the directory.
+    # A measured configuration is (provider, what it was steered with); keyed by the vendor
+    # alone, a steered run and a stock one are one row, and the second silently replaces the
+    # first. `provider` and `settings` ride along in the row, so a published table can be
+    # labelled however its author likes without parsing the key back apart.
     summary = {}
-    for provider in providers:
-        summary[provider] = summarise(
-            score_all(docs, provider, dirs[provider], verdicts=verdicts,
-                      workers=score_workers, rescore=rescore))
-        s = summary[provider]
+    for label, provider, opts in runs:
+        summary[label] = {
+            "provider": provider,
+            "settings": settings_for(provider, opts),
+            **summarise(score_all(docs, provider, dirs[label], verdicts=verdicts,
+                                  workers=score_workers, rescore=rescore)),
+        }
+        s = summary[label]
         log.info("%s: unified %.4f over %d suites, coverage %d/%d",
-                 provider, s["unified"], len(s["per_suite"]), s["scored"], s["documents"])
+                 label, s["unified"], len(s["per_suite"]), s["scored"], s["documents"])
 
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     return summary

@@ -3,7 +3,7 @@
     oeb score      --pred p.json --gt g.json --schema s.json [--verdicts]
     oeb benchmark  --providers datalab reducto --out runs/
     oeb predict    --provider datalab --doc x.pdf --schema s.json
-    oeb providers
+    oeb providers [datalab]
 
 `score` grades one document: three JSON files in, the metrics dict out as JSON on stdout.
 `benchmark` is the whole published benchmark -- fetch the corpus, run it through each
@@ -55,21 +55,57 @@ def cmd_score(args) -> int:
     return 0
 
 
+#: Model ids are open-ended -- any OpenRouter `org/model` works -- so a few stand in for the
+#: shape rather than the set.
+EXAMPLE_MODELS = ("openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash")
+
+
+#: Where a default stops being a column and starts being a paragraph. A prompt or a long URL
+#: is a value to look up in the adapter, not to read out of a table.
+MAX_DEFAULT = 48
+
+
+def show_default(value) -> str:
+    """One default, fit to a column: `''` for empty, cut with `...` where it runs long."""
+    text = "''" if value == "" else str(value)
+    return text if len(text) <= MAX_DEFAULT else text[:MAX_DEFAULT - 3] + "..."
+
+
 def cmd_providers(args) -> int:
-    """Every name `oeb benchmark --providers` accepts, one per line.
+    """The names `--providers` accepts, or one provider's options in detail.
 
-    The named vendors are a closed set; the model ids are examples, since any OpenRouter
-    `org/model` works. One column so the output pipes into something else without cutting.
+        oeb providers            every name, one per line
+        oeb providers datalab    what `--options` takes for it, and what each is by default
 
-    A verb of its own rather than a flag on `benchmark`, because listing them means importing
-    the harness -- more than `--help` should do -- and `--providers` is required on that verb.
+    ONE VERB, NOT TWO. The list is the question usually being asked and the options are a
+    follow-up about one entry -- printing every provider's defaults in the list drowned the
+    names. Bare, it stays one column, so `oeb providers | ...` is still a clean list.
+
+    The options come from `vendor.settings_for`, which reads the adapter's own signature, so
+    this cannot drift from what the adapter accepts.
     """
     from .harness import PROVIDERS
+    from .harness.vendor import settings_for
 
-    for provider in PROVIDERS:
-        print(provider)
-    for example in ("openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash"):
-        print(example)
+    if not args.provider:
+        for provider in (*PROVIDERS, *EXAMPLE_MODELS):
+            print(provider)
+        return 0
+
+    # An unknown name raises out of `resolve`, naming the vendors; a missing SDK raises
+    # `MissingDependency`. `main`'s boundary prints both without a traceback.
+    options = settings_for(args.provider)
+    print(args.provider)
+    if not options:
+        print("\n  no options: it takes the document and the schema and nothing else")
+        return 0
+
+    width = max(len(key) for key in options)
+    print()
+    for key, value in options.items():
+        print(f"  {key:<{width}}  {show_default(value)}")
+    print(f"\n  oeb benchmark --providers {args.provider} "
+          f"--options '{{\"{args.provider}\": {{\"{next(iter(options))}\": ...}}}}'")
     return 0
 
 
@@ -97,9 +133,18 @@ def read_options(value: str | None, *, per_provider: bool = True) -> dict:
         raise ValueError(f"--options: not JSON -- {exc}") from None
     if not isinstance(parsed, dict):
         raise ValueError("--options must be a JSON object")
-    if per_provider and not all(isinstance(v, dict) for v in parsed.values()):
-        raise ValueError('--options must map a provider to its options, e.g. '
-                         '\'{"datalab": {"mode": "accurate"}}\'')
+    # A LIST means run that provider once per entry -- how one invocation compares a vendor's
+    # own tiers against each other.
+    def ok(value):
+        return (isinstance(value, dict)
+                or (isinstance(value, list) and value
+                    and all(isinstance(x, dict) for x in value)))
+
+    if per_provider and not all(ok(v) for v in parsed.values()):
+        raise ValueError('--options maps a provider to its options, or to a LIST of them to '
+                         'run it once for each:\n'
+                         '    \'{"datalab": {"mode": "accurate"}}\'\n'
+                         '    \'{"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}\'')
     return parsed
 
 
@@ -234,8 +279,11 @@ def main(argv=None) -> int:
                    help="also write one verdict per address, per document")
     b.add_argument("--options", metavar="JSON",
                    help='per-provider options, as JSON or a path to a JSON file: '
-                        '\'{"datalab": {"mode": "accurate"}}\'. Each is recorded in the '
-                        "document's run_manifest, because a run that is not stock must say so")
+                        '\'{"datalab": {"mode": "accurate"}}\'. A LIST runs that provider '
+                        'once per entry, so \'{"datalab": [{"mode": "balanced"}, '
+                        '{"mode": "accurate"}]}\' compares its tiers in one run. Each is '
+                        "recorded in the document's run_manifest and in the directory name, "
+                        "because a run that is not stock must say so")
     b.add_argument("--rescore", action="store_true",
                    help="grade every document again, ignoring the scores already on disk. "
                         "Grading otherwise resumes per document, so reach for this after "
@@ -255,7 +303,10 @@ def main(argv=None) -> int:
                    help='options for this provider, as JSON or a path: \'{"mode": "accurate"}\'')
     d.set_defaults(fn=cmd_predict)
 
-    pl = sub.add_parser("providers", help="list the vendors benchmark can run, and their tiers")
+    pl = sub.add_parser("providers",
+                        help="list the vendors benchmark can run, or detail one of them")
+    pl.add_argument("provider", nargs="?",
+                    help="name one to see what --options takes for it, and the defaults")
     pl.set_defaults(fn=cmd_providers)
 
     args = ap.parse_args(argv)
