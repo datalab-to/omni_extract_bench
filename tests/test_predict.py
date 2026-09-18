@@ -52,8 +52,18 @@ seen = {}
 
 
 def stub(fn):
-    """Install `fn` as every provider's adapter."""
-    def counted(pdf, schema, **opts):
+    """Install `fn` as every provider's adapter.
+
+    The signature names the options the real adapters take, because `settings_for` reads
+    defaults off it -- a stub with only `**opts` declares no options, so nothing would be
+    resolved and the tier pins would never be sent.
+    """
+    def counted(pdf, schema, *, mode="balanced", tier="agentic_plus",
+                base_url=None, poll_interval=5.0, **rest):
+        # Named so `settings_for` can read the defaults off this signature, then folded back
+        # into one dict so the assertions below see everything the adapter was handed.
+        opts = {"mode": mode, "tier": tier, "base_url": base_url,
+                "poll_interval": poll_interval, **rest}
         seen.clear()
         seen.update(pdf=pdf, schema=schema, opts=opts)
         counted.calls += 1
@@ -91,8 +101,8 @@ report("overlay=False leaves the description alone",
 report("the caller's schema is never mutated",
        "evaluation_config" in SCHEMA["properties"]["capex"])
 report("the provider's maximum-tier options are passed to the adapter",
-       vendor.predict("datalab-accurate", PDF, SCHEMA) is not None
-       and seen["opts"]["mode"] == "accurate", str(seen["opts"]))
+       vendor.predict("datalab", PDF, SCHEMA) is not None
+       and seen["opts"]["mode"] == "balanced", str(seen["opts"]))
 report("the uniform budget is passed to the adapter",
        vendor.predict("mistral", PDF, SCHEMA, timeout=900) is not None
        and 899 < seen["opts"]["timeout"] <= 900, str(seen["opts"]))
@@ -121,23 +131,29 @@ report("...with the field it was read from", rec["cost"]["source"] == "usage.cos
 report("a vendor that reports no cost is billed out of band, not guessed",
        (stub(lambda p, s, **o: Extraction(result={"a": 1})) is not None
         and vendor.predict("extend", PDF, SCHEMA)["cost"]["billed_out_of_band"] is True))
-report("the tier the provider ran at is recorded",
-       rec["run_manifest"]["tier"] == vendor.PROVIDER_TIER["mistral"])
+# A fresh call, because `seen` holds whatever the LAST adapter was handed and `rec` above
+# came from an earlier one.
+_sent = vendor.predict("datalab", PDF, SCHEMA)["run_manifest"]["settings"]
+# `timeout` is the adapter CONTRACT, not a setting, so it is deliberately absent -- the
+# record states what the vendor was asked, not how long we were willing to wait for it.
+_handed = {k: v for k, v in seen["opts"].items() if k != "timeout"}
+report("what the provider was actually sent is recorded, not a name for it",
+       _sent == _handed, f"{_sent} vs {_handed}")
+report("...and the contract's own arguments are not settings", "timeout" not in _sent)
 
 print("\nA RUN THAT IS NOT STOCK SAYS SO")
 # The benchmark's claim is that every vendor ran at its maximum. An option passed by the caller
 # can turn that down, so each one is recorded on every document -- a figure produced with a
 # vendor dialled back must not be able to look stock afterwards.
 stub(lambda pdf, schema, **o: OK)
-report("a stock run records no overrides",
-       vendor.predict("datalab", PDF, SCHEMA)["run_manifest"]["overrides"] is None)
+report("a stock run is named for the vendor alone", vendor.out_name("datalab") == "datalab")
 _rec = vendor.predict("datalab", PDF, SCHEMA, mode="accurate")
 report("an overridden option reaches the adapter", seen["opts"]["mode"] == "accurate")
 report("...and is recorded in the run manifest",
-       _rec["run_manifest"]["overrides"] == {"mode": "accurate"}, str(_rec["run_manifest"]))
-report("an option equal to the default is not an override",
-       vendor.predict("datalab", PDF, SCHEMA,
-                      mode="balanced")["run_manifest"]["overrides"] is None)
+       _rec["run_manifest"]["settings"]["mode"] == "accurate", str(_rec["run_manifest"]))
+report("an option equal to the stock value is not a change",
+       vendor.out_name("datalab", {"mode": "balanced"}) == "datalab",
+       vendor.out_name("datalab", {"mode": "balanced"}))
 
 print("\nA MODEL IS NAMED IN FULL, NOT ALIASED")
 # `gpt` said nothing about which model produced a row, and changed meaning whenever the alias

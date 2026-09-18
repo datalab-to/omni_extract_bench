@@ -32,7 +32,7 @@ THE SURFACE
     AccountFailure                   raised, never returned: not a fact about a document
     MissingCredential                likewise: an unset API key
     MissingDependency                likewise: an adapter that could not import its SDK
-    PROVIDERS, PROVIDER_TIER, WORKERS, DEFAULT_TIMEOUT      advisory, for building a loop
+    PROVIDERS, WORKERS, DEFAULT_TIMEOUT                     advisory, for building a loop
 
 Orchestration is absent on purpose. Which documents, in what order, and how many at once are
 decisions about a corpus, not about a document, and a library that made them would be deciding
@@ -50,7 +50,7 @@ calls, which is what it cost once.
 from .extraction import (AccountFailure, Cost, Extraction, MissingCredential,
                          MissingDependency, VendorError, VendorTimeout)
 
-_LAZY = ("predict", "adapter", "PROVIDERS", "PROVIDER_TIER", "WORKERS", "DEFAULT_TIMEOUT")
+_LAZY = ("predict", "adapter", "settings_for", "PROVIDERS", "WORKERS", "DEFAULT_TIMEOUT")
 
 
 def __getattr__(name):
@@ -71,5 +71,5 @@ __all__ = [
     "Extraction", "Cost",
     "VendorError", "VendorTimeout",
     "AccountFailure", "MissingCredential", "MissingDependency",
-    "PROVIDERS", "PROVIDER_TIER", "WORKERS", "DEFAULT_TIMEOUT",
+    "PROVIDERS", "WORKERS", "DEFAULT_TIMEOUT", "settings_for",
 ]

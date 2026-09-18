@@ -9,9 +9,9 @@ WHAT IS UNIFORM, AND WHY EACH RULE EXISTS
   legs 300s; one vendor lost 48 documents to "analysis timed out" under a cap another never
   reached. A harness parameter must never decide a vendor's coverage.
 * MAXIMUM TIER for every provider. Parity is "as much as the vendor will give", not one number
-  for everyone, so `PROVIDER_TIER` names the top tier per vendor, and each adapter chooses its
-  own maximum -- `llm_single_shot.MODEL_MAX_OUTPUT` holds the published output ceiling per
-  model, beside the code that sends it, rather than a shared floor that truncates the big ones.
+  for everyone, so `ADAPTERS` pins each vendor's top settings and `run_manifest.settings`
+  records what was actually sent -- `llm_single_shot.MODEL_MAX_OUTPUT` holds the published
+  output ceiling per model, beside the code that sends it, rather than a shared floor.
 * THE SAME SCHEMA, with benchmark-only annotations removed (`evaluation_config`, `default`).
   Those tell a grader how to compare a value and tell a model nothing; one vendor validates
   strictly and rejected 8 of 40 documents over them.
@@ -34,7 +34,11 @@ a cross-process log merge, and an error channel that was the last line of stderr
 """
 from __future__ import annotations
 
+import hashlib
 import importlib
+import inspect
+import json
+import re
 import time
 from pathlib import Path
 
@@ -58,7 +62,6 @@ MODEL_SEPARATOR = "/"
 #: that only scores has none of them.
 ADAPTERS: dict[str, tuple[str, dict]] = {
     "datalab": ("datalab", {"mode": "balanced"}),
-    "datalab-accurate": ("datalab", {"mode": "accurate"}),
     "mistral": ("mistral", {}),
     "reducto": ("reducto", {}),
     "extend": ("extend", {}),
@@ -80,23 +83,42 @@ def resolve(provider: str) -> tuple[str, dict]:
     return ADAPTERS[provider]
 
 
-def out_name(provider: str) -> str:
-    """A provider as a single directory name: `openai/gpt-5.6-sol` would otherwise nest."""
-    return provider.replace(MODEL_SEPARATOR, "__")
+def out_name(provider: str, options: dict | None = None) -> str:
+    """A run's directory name: the provider, plus whatever it changes about the vendor's stock.
 
-PROVIDER_TIER = {
-    "reducto": "super_agent", "llamaextract": "agentic_plus", "extend": "default processor",
-    "mistral": "mistral-ocr-latest", "azure-cu": "gpt-4.1-mini", "datalab": "balanced",
-    "datalab-accurate": "accurate",
-}
+    `openai/gpt-5.6-sol` would otherwise nest. A STEERED RUN GETS ITS OWN DIRECTORY: options
+    change what is measured, and while they did not change where the answer was stored,
+    `needs_run` handed a run that asked for `mode=fast` the records of a stock one -- three
+    documents reported `balanced` results for a `fast` run.
+
+    Named for what CHANGED, not for every setting, so a stock run stays plain `datalab` and is
+    the same directory however it was reached -- asked for by name, or as one leg of a sweep
+    that happens to include the stock value. Naming it for every setting would make each of
+    those a separate directory and buy the same documents twice.
+    """
+    name = provider.replace(MODEL_SEPARATOR, "__")
+    stock = settings_for(provider)
+    changed = {k: v for k, v in settings_for(provider, options).items() if stock.get(k) != v}
+    if not changed:
+        return name
+    # THE DIGEST IS WHAT MAKES IT DISTINCT; the prefix is only there to read. No condition
+    # decides between them, because a rule that sometimes appends a digest is a rule that can
+    # be wrong about when -- and two steerings sharing a directory is the mixing this exists
+    # to stop. `sha256` over the canonical JSON, never `hash()`, which is salted per process
+    # and would name the same run differently tomorrow.
+    spelled = json.dumps(changed, sort_keys=True, default=str)       # sorted == stable
+    digest = hashlib.sha256(spelled.encode()).hexdigest()[:8]
+    readable = re.sub(r"[^A-Za-z0-9._=,-]+", "_",
+                      ",".join(f"{k}={changed[k]}" for k in sorted(changed)))[:40]
+    return f"{name}@{readable}-{digest}"
+
 #: A safe concurrency per vendor. Advisory: the caller owns the pool.
-WORKERS = {"reducto": 3, "llamaextract": 3, "azure-cu": 3, "datalab": 10,
-           "datalab-accurate": 10}
+WORKERS = {"reducto": 3, "llamaextract": 3, "azure-cu": 3, "datalab": 10}
 
 #: The adapters read the environment for CREDENTIALS only -- which change whether a call is
 #: allowed, not what it asks. Everything that steers a vendor (mode, tier, array strategy, api
 #: version, base url, completion model) is a keyword argument, reaching the adapter through
-#: `options` and landing in `run_manifest.overrides`. That is the whole reason: an environment
+#: `options` and landing in `run_manifest.settings`. That is the whole reason: an environment
 #: variable steers a run without appearing in its record, so `LLAMAEXTRACT_TIER=cost_effective`
 #: used to produce a run indistinguishable from a maxed-out one. `test_no_steering_env` holds
 #: the line; credentials stay in the environment and out of the record.
@@ -135,6 +157,53 @@ def adapter(provider: str):
         ) from None
 
 
+#: The adapter contract's own parameters -- `extract(pdf, schema, *, timeout, **options)`.
+#: Everything else in a signature is an option.
+#:
+#: This was a longer list once, carrying `api_key`, `key`, `endpoint` and `workspace_id` so
+#: that a credential could not reach a record or a directory name. Keeping it correct meant
+#: remembering to extend it for every vendor, and a vendor whose key was called something else
+#: would have leaked. CREDENTIALS NOW COME FROM THE ENVIRONMENT AND NOWHERE ELSE, so no adapter
+#: accepts one and the whole class of mistake is gone.
+_CONTRACT = frozenset({"pdf", "schema", "timeout"})
+
+
+def settings_for(provider: str, options: dict | None = None) -> dict:
+    """Everything the adapter will be sent: its own defaults, raised to this provider's
+    maximum tier by `ADAPTERS`, with the caller's options on top.
+
+    ONE RESOLUTION, used three times -- to make the call, to record what the call carried, and
+    to name the run. There is no separate notion of an "override": a steered run is one whose
+    settings differ from `settings_for(provider)`, which is a comparison, not a concept.
+
+    Defaults are read off the adapter's own signature, so this cannot drift from what it
+    accepts -- and so a vendor's stock setting reads the same whether it is written in
+    `ADAPTERS` or as a parameter default. Compared against the `ADAPTERS` pin alone, datalab
+    asking for `mode=balanced` read as stock while reducto asking for its own default
+    `agentic_table_mode=max` read as a change.
+
+    There are no credentials to worry about: every adapter reads its key from the environment,
+    so nothing secret can arrive through `options` and reach a record or a directory name.
+    """
+    extract = adapter(provider)
+    tier = resolve(provider)[1]
+    # `model` on a model id is the provider NAME, not a setting: steering it would leave the
+    # directory and the summary saying one thing and the run doing another.
+    fixed = {"model"} if MODEL_SEPARATOR in provider else set()
+    out = {}
+    for name, param in inspect.signature(extract).parameters.items():
+        if name in _CONTRACT or name in fixed or param.kind in (param.VAR_KEYWORD,
+                                                                param.VAR_POSITIONAL):
+            continue
+        out[name] = tier.get(name, None if param.default is param.empty else param.default)
+    # A pin the signature does not name -- an adapter that takes it through `**options` --
+    # would otherwise be dropped, and the provider would silently run at stock.
+    for name, value in tier.items():
+        out.setdefault(name, value)
+    out.update({k: v for k, v in (options or {}).items() if k not in _CONTRACT})
+    return out
+
+
 def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOUT,
             overlay: bool = True, **options) -> dict:
     """Run one document through one provider and return the answer with its evidence.
@@ -150,19 +219,19 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
 
     stripped = strip_benchmark_keys(schema)
     sent = strip_benchmark_keys(SO.apply_overlay(schema)) if overlay else stripped
-    defaults = resolve(provider)[1]
-    opts = {**defaults, **options}
+    # Resolved once: the same dict is what the adapter is called with and what the record
+    # states. They were two before, because credentials had to be added back for the call.
+    settings = settings_for(provider, options)
     # Only what the CALLER changed, not the maximum-tier defaults. A run that was not stock
     # has to say so on every document: the benchmark's claim is that each vendor ran at its
     # maximum, and a figure produced with that turned down is a different measurement.
-    overrides = {k: v for k, v in options.items() if defaults.get(k) != v} or None
     budget = Budget(timeout)
     started = time.time()
     got, error, attempts = None, None, 0
     for attempt in range(TRANSIENT_ATTEMPTS):
         attempts = attempt + 1
         try:
-            got = extract(pdf, sent, timeout=budget.remaining(), **opts)
+            got = extract(pdf, sent, timeout=budget.remaining(), **settings)
             error = None
             break
         except VendorError as exc:
@@ -210,11 +279,10 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
         "schema_sent": sent,
         "run_manifest": {
             "timeout_s": timeout,
-            "tier": PROVIDER_TIER.get(provider, provider),
+            "settings": settings,
             "model": provider if MODEL_SEPARATOR in provider else None,
             "timed_out": isinstance(error, VendorTimeout),
             "conventions_applied": overlay and sent != stripped,
-            "overrides": overrides,
             "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         },
     }
