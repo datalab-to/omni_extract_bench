@@ -1,151 +1,338 @@
 """Command-line interface.
 
-    oeb score     --manifest jobs.parquet --out run/   [--jobs N] [--batch-size N]
-    oeb predict   --manifest jobs.parquet --out preds/ [--jobs N] [--batch-size N]
-    oeb score-one --pred p.json --gt g.json --schema s.json
+    oeb score      --pred p.json --gt g.json --schema s.json [--verdicts]
+    oeb benchmark  --providers datalab reducto --out runs/
+    oeb predict    --provider datalab --doc x.pdf --schema s.json
+    oeb providers [datalab]
 
-Two verbs and an escape hatch. `score` and `predict` each take one tabular manifest and write
-a directory of parquet parts; `score-one` grades a single triple and prints it, for when there
-is no table involved at all.
+`score` grades one document: three JSON files in, the metrics dict out as JSON on stdout.
+`benchmark` is the whole published benchmark -- fetch the corpus, run it through each
+vendor, score, write it down -- and lives in `benchmark.py`, which is a script rather than
+library code precisely because it makes the orchestration decisions the library refuses to.
 
-A manifest is any parquet or CSV whose rows name their inputs -- `run_score` and
-`run_predict` document the columns. Paths go through fsspec, so `s3://`, `gs://` and a local
-path are the same thing here and there is no separate remote runner.
+There is no manifest and no runner. Scoring a corpus is a loop over this command, or better
+over `score` itself -- written the way your corpus is laid out, rather than the way a table
+would have to be. That loop is the caller's, because it is where the decisions live that this
+package has no business making: which documents, in what order, how many at once, what to do
+with a prediction that came back as a recorded failure, and how to aggregate at the end
+(`docs/METRIC_SPEC.md` section 7 on why a flat mean over documents is not the right one).
 
-`score-one` builds a one-row manifest and calls the same `score_row` a run does, rather than
-repeating the resolve-and-grade path. Two definitions of what scoring a row means is one more
-than there should be.
-
-A manifest may also be a DIRECTORY of parquet parts, because a dataset is what gets opened --
-so `predict --out preds/` is followed by `score --manifest preds/manifest.parquet` with nothing in
-between.
+A subcommand rather than a bare `oeb`, because producing predictions is the other half of this
+repository and will want a verb of its own.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import os
+import pathlib
 import sys
 
-from .run_score import open_uri, score_row
 
+def read_json(path: str):
+    """Parse one local JSON file, naming the file when it will not parse.
 
-def read_bytes(uri):
-    with open_uri(uri) as fh:
-        return fh.read()
-
-
-def add_root(parser) -> None:
-    """`--root` on every verb that reads a manifest.
-
-    `OEB_ROOT` sits behind it so that a corpus someone downloaded is named once per shell
-    rather than once per command -- the flag still wins where it is given. An environment
-    variable rather than a rewrite of the manifest on arrival: the root is a fact about this
-    machine, and writing it into the data would make the data untrue on the next one.
+    The bare `json` message says line and column and not which of the three documents it came
+    from, which is the only thing a reader needs when two of them are vendor output.
     """
-    parser.add_argument("--root", default=os.environ.get("OEB_ROOT", "."),
-                        help="what a relative path in a manifest is relative to; absolute\n"
-                             "paths and URIs are used as written. Default: $OEB_ROOT, or .")
+    try:
+        return json.loads(pathlib.Path(path).read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: not JSON -- {exc}") from None
 
 
 def cmd_score(args) -> int:
-    from . import run_score
+    from .metric import score
 
-    tally = run_score.run(args.manifest, args.out, jobs=args.jobs,
-                          batch_size=args.batch_size, root=args.root,
-                          overwrite=args.overwrite)
-    print(f"{args.out}: " + "  ".join(f"{k}={v}" for k, v in tally.items()))
-    # Zero: the run did its job. Documents the system under test could not answer are the
-    # benchmark's findings, not this command's failure, and they are all in the table with
-    # their reasons. A manifest that cannot be read still exits non-zero, from main().
+    result = score(read_json(args.pred), read_json(args.gt), read_json(args.schema),
+                   order_matters=args.order_matters or (), verdicts=args.verdicts)
+    if args.verdicts:
+        # A Verdict is a NamedTuple, which json would write as an array; as an object each
+        # field is named at the point someone reads it.
+        result["verdicts"] = [v._asdict() for v in result["verdicts"]]
+    json.dump(result, sys.stdout, indent=2, default=str)
+    sys.stdout.write("\n")
     return 0
 
 
+#: Model ids are open-ended -- any OpenRouter `org/model` works -- so a few stand in for the
+#: shape rather than the set.
+EXAMPLE_MODELS = ("openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash")
+
+
+#: Where a default stops being a column and starts being a paragraph. A prompt or a long URL
+#: is a value to look up in the adapter, not to read out of a table.
+MAX_DEFAULT = 48
+
+
+def show_default(value) -> str:
+    """One default, fit to a column: `''` for empty, cut with `...` where it runs long."""
+    text = "''" if value == "" else str(value)
+    return text if len(text) <= MAX_DEFAULT else text[:MAX_DEFAULT - 3] + "..."
+
+
+def cmd_providers(args) -> int:
+    """The names `--providers` accepts, or one provider's options in detail.
+
+        oeb providers            every name, one per line
+        oeb providers datalab    what `--options` takes for it, and what each is by default
+
+    ONE VERB, NOT TWO. The list is the question usually being asked and the options are a
+    follow-up about one entry -- printing every provider's defaults in the list drowned the
+    names. Bare, it stays one column, so `oeb providers | ...` is still a clean list.
+
+    The options come from `vendor.settings_for`, which reads the adapter's own `Config`, so
+    this cannot drift from what the adapter accepts.
+    """
+    from .harness import PROVIDERS
+    from .harness.vendor import settings_for
+
+    if not args.provider:
+        for provider in (*PROVIDERS, *EXAMPLE_MODELS):
+            print(provider)
+        return 0
+
+    # An unknown name raises out of `resolve`, naming the vendors; a missing SDK raises
+    # `MissingDependency`. `main`'s boundary prints both without a traceback.
+    options = settings_for(args.provider)
+    print(args.provider)
+    if not options:
+        print("\n  no options: it takes the document and the schema and nothing else")
+        return 0
+
+    width = max(len(key) for key in options)
+    print()
+    for key, value in options.items():
+        print(f"  {key:<{width}}  {show_default(value)}")
+    print(f"\n  oeb benchmark --providers {args.provider} "
+          f"--options '{{\"{args.provider}\": {{\"{next(iter(options))}\": ...}}}}'")
+    return 0
+
+
+def read_options(value: str | None, *, per_provider: bool = True) -> dict:
+    """`--options` as JSON, given literally or as a path to a file.
+
+    Keyed by provider for `benchmark`, which runs several; flat for `predict`, which runs one.
+
+    JSON rather than an inline `provider:key=value` syntax, because OpenRouter model ids
+    already use the colon -- `mistralai/mistral-medium-3-5:batch`, `:free`, `:nitro` -- so any
+    colon-separated form is ambiguous exactly where model ids appear. JSON also keeps types:
+    `8000` stays an integer instead of arriving as a string the adapter has to guess about.
+    """
+    if not value:
+        return {}
+    text = value
+    path = pathlib.Path(value)
+    if not value.lstrip().startswith("{"):
+        if not path.exists():
+            raise ValueError(f"--options: {value!r} is neither JSON nor a file that exists")
+        text = path.read_text()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--options: not JSON -- {exc}") from None
+    if not isinstance(parsed, dict):
+        raise ValueError("--options must be a JSON object")
+    # A LIST means run that provider once per entry -- how one invocation compares a vendor's
+    # own tiers against each other.
+    def ok(value):
+        return (isinstance(value, dict)
+                or (isinstance(value, list) and value
+                    and all(isinstance(x, dict) for x in value)))
+
+    if per_provider and not all(ok(v) for v in parsed.values()):
+        raise ValueError('--options maps a provider to its options, or to a LIST of them to '
+                         'run it once for each:\n'
+                         '    \'{"datalab": {"mode": "accurate"}}\'\n'
+                         '    \'{"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}\'')
+    return parsed
+
+
+def read_workers(value: str | None) -> dict[str, int]:
+    """`--predict-workers` as `{provider: count}`, `"*"` being a bare number meaning all.
+
+        --predict-workers 25                     -> {"*": 25}
+        --predict-workers reducto=25,datalab=40  -> {"reducto": 25, "datalab": 40}
+
+    Per provider rather than one global number, because the right value is a fact about the
+    vendor: these are documents in flight at it, and a run naming several vendors has no one
+    number that fits them all.
+    """
+    if not value:
+        return {}
+    if value.strip().isdigit():
+        return {"*": _count(value, value)}
+    out = {}
+    for part in value.split(","):
+        name, sep, count = part.partition("=")
+        if not sep:
+            raise ValueError(f"--predict-workers: {part.strip()!r} is neither a number nor "
+                             f"NAME=COUNT, e.g. '25' or 'reducto=25,datalab=40'")
+        out[name.strip()] = _count(count, part)
+    return out
+
+
+def _count(text: str, shown: str) -> int:
+    """One `--predict-workers` count: a whole number of documents, so at least one."""
+    if not text.strip().isdigit() or int(text) < 1:
+        raise ValueError(f"--predict-workers: {shown.strip()!r} needs a count of 1 or more")
+    return int(text)
+
+
 def cmd_predict(args) -> int:
-    from . import run_predict
+    """One document through one vendor. The mirror of `oeb score`: files in, JSON out."""
+    from .harness import (AccountFailure, MissingCredential, MissingDependency, VendorError,
+                          predict)
 
-    tally = run_predict.run(args.manifest, args.out, args.provider, jobs=args.jobs,
-                            batch_size=args.batch_size, timeout=args.timeout, mode=args.mode,
-                            completion_model=args.completion_model, root=args.root,
-                            overwrite=args.overwrite)
-    print(f"{args.out}: " + "  ".join(f"{k}={v}" for k, v in tally.items()))
-    return 1 if tally["error"] else 0
-
-
-def cmd_score_one(args) -> int:
-    # The schema is inline in a manifest; here it is a path like the other two, because a
-    # path is what someone at a terminal has.
-    row, _ = score_row({"doc_id": "one", "gt_path": args.gt, "pred_path": args.pred,
-                        "schema": read_bytes(args.schema)})
-    if row["status"] != "scored":
-        print(f"{row['status']}: {row['error']}", file=sys.stderr)
+    try:
+        record = predict(args.provider, args.doc, read_json(args.schema), timeout=args.timeout,
+                         **read_options(args.options, per_provider=False))
+    except (MissingCredential, MissingDependency, AccountFailure, VendorError) as exc:
+        # Handled here rather than in `main`'s boundary, because these types live behind the
+        # harness extra and naming them in an `except` clause up there would import it for
+        # every verb -- including `oeb score`, which needs no vendor SDK at all.
+        print(f"  {exc}", file=sys.stderr)
         return 1
-    print(json.dumps({k: v for k, v in row.items() if k not in ("status", "error")}, indent=2))
+    # The whole record by default -- what was asked, what came back, what it cost -- because
+    # that is what the library produces and what makes an answer checkable. `--result-only`
+    # gives the bare extraction, so `oeb predict ... --result-only > p.json` feeds `oeb score`.
+    # The whole record, always. It carries the answer AND what it cost, what was sent and what
+    # came back -- and a flag to print just the answer would be a way to throw that away by
+    # accident, which is the habit this harness exists to prevent. `| jq .result` is one pipe,
+    # and explicit where someone reads it.
+    json.dump(record, sys.stdout, indent=2, default=str)
+    sys.stdout.write("\n")
+    return 1 if record.get("error") else 0
+
+
+
+
+def cmd_benchmark(args) -> int:
+    # Imported here rather than at module scope: `oeb score` is the base install, and nothing
+    # on that path should need the benchmark extra present until this verb is actually used.
+    from .benchmark import run
+
+    from .harness import AccountFailure, MissingCredential, MissingDependency
+
+    try:
+        summary = run(args.providers, out=args.out, data_root=args.data_root,
+                      suites=args.suites,
+                      limit=args.limit, timeout=args.timeout,
+                      predict_workers=read_workers(args.predict_workers),
+                      score_workers=args.score_workers,
+                      verdicts=args.verdicts, rescore=args.rescore,
+                      score_only=args.score_only,
+                      options=read_options(args.options))
+    except (MissingCredential, MissingDependency, AccountFailure) as exc:
+        print(f"  {exc}", file=sys.stderr)
+        return 1
+    json.dump(summary, sys.stdout, indent=2)
+    sys.stdout.write("\n")
     return 0
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="omni-extract-bench",
-                                 description="Score document-extraction predictions.")
+    ap = argparse.ArgumentParser(prog="oeb",
+                                 description="Score one document-extraction prediction.")
     ap.add_argument("-q", "--quiet", action="store_true", help="progress off; results only")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("score", help="score a manifest of documents")
-    s.add_argument("--manifest", required=True, help="parquet or CSV naming the work")
-    s.add_argument("--out", required=True,
-                   help="written as <out>/scores.parquet and <out>/verdicts.parquet")
-    s.add_argument("--jobs", type=int, default=1, help="worker processes")
-    s.add_argument("--batch-size", type=int,
-                   help="manifest rows per part, and the unit one worker takes; "
-                        "default: about four batches per job")
-    add_root(s)
-    s.add_argument("--overwrite", action="store_true",
-                   help="replace a run already in --out, instead of refusing")
+    s = sub.add_parser("score", help="score one prediction against one ground truth")
+    s.add_argument("--pred", required=True, help="the prediction, JSON")
+    s.add_argument("--gt", required=True, help="the ground truth, JSON")
+    s.add_argument("--schema", required=True,
+                   help="the JSON Schema the prediction was generated against")
+    s.add_argument("--verdicts", action="store_true",
+                   help="include one verdict per address: what happened there, and what each "
+                        "side was compared as")
+    s.add_argument("--order-matters", nargs="*", metavar="ARRAY",
+                   help="arrays whose order is part of the answer, e.g. steps, "
+                        "'books[*].chapters'. Default: none -- the order rows appear in a "
+                        "document is usually an accident of layout")
     s.set_defaults(fn=cmd_score)
 
-    p = sub.add_parser("predict", help="run a manifest of documents through their providers")
-    p.add_argument("--manifest", required=True)
-    p.add_argument("--out", required=True,
-                   help="written as <out>/predictions and <out>/manifest.parquet")
-    # The provider is a run, not a manifest column -- one manifest, nine runs of it. The
-    # names are not `choices` here because listing them means importing the harness, and a
-    # machine that only scores does not have it installed; `run_predict` validates the name
-    # against PROVIDERS and names them all when it does not know one.
-    p.add_argument("--provider", required=True,
-                   help="which vendor runs the manifest, e.g. datalab, reducto, mistral")
-    p.add_argument("--jobs", type=int, default=4, help="concurrent requests")
-    p.add_argument("--batch-size", type=int, default=256)
-    # One timeout for every provider, so that a slow vendor is recorded as slow rather than
-    # given more room than the others.
-    p.add_argument("--timeout", type=float, default=1800,
-                   help="seconds one document may take, per provider. Default: 1800")
-    p.add_argument("--mode", help="provider-specific tier, where it has one")
-    p.add_argument("--completion-model",
-                   help="model name, for the providers that are a chat completion")
-    add_root(p)
-    p.add_argument("--overwrite", action="store_true",
-                   help="replace a run already in --out, instead of refusing")
-    p.set_defaults(fn=cmd_predict)
+    b = sub.add_parser("benchmark",
+                       help="fetch the corpus, run it through each vendor, score it")
+    # Not `choices`: any OpenRouter `org/model` id is a provider too, so the set cannot be
+    # enumerated. `benchmark.run` validates them and names the vendors when it can't.
+    b.add_argument("--providers", nargs="+", required=True, metavar="NAME",
+                   help="vendors and/or model ids, e.g. datalab reducto "
+                        "openai/gpt-5.6-sol. `oeb providers` lists them")
+    b.add_argument("--out", type=pathlib.Path, default=pathlib.Path("runs"),
+                   help="where predictions, scores and the summary go. Default: runs/")
+    b.add_argument("--data-root", type=pathlib.Path, default=pathlib.Path("benchmark"),
+                   help="where the corpus is downloaded to. Default: benchmark/")
+    b.add_argument("--suites", nargs="+", help="limit to these suites")
+    b.add_argument("--limit", type=int, default=0, help="first N documents; for a smoke test")
+    b.add_argument("--timeout", type=float, default=1800,
+                   help="seconds one document may take, the same for every vendor")
+    b.add_argument("--predict-workers", metavar="N|NAME=N,...",
+                   help="documents in flight at one vendor -- one number for every provider, "
+                        "or per provider: 'reducto=25,datalab=40'. Default: the harness's "
+                        "per-vendor limit")
+    b.add_argument("--score-workers", type=int, default=0, metavar="N",
+                   help="processes used to grade. Scoring is the CPU-bound half and is "
+                        "independent per document. Default: one per core, capped at 8; "
+                        "1 grades in this process")
+    b.add_argument("--verdicts", action="store_true",
+                   help="also write one verdict per address, per document")
+    b.add_argument("--options", metavar="JSON",
+                   help='per-provider options, as JSON or a path to a JSON file: '
+                        '\'{"datalab": {"mode": "accurate"}}\'. A LIST runs that provider '
+                        'once per entry, so \'{"datalab": [{"mode": "balanced"}, '
+                        '{"mode": "accurate"}]}\' compares its tiers in one run. Each is '
+                        "recorded in the run's settings.json and on every document, and "
+                        "digested into the directory name so two of them cannot mix")
+    b.add_argument("--rescore", action="store_true",
+                   help="grade every document again, ignoring the scores already on disk. "
+                        "Grading otherwise resumes per document, so reach for this after "
+                        "changing the metric -- nothing else notices that")
+    b.add_argument("--score-only", action="store_true",
+                   help="score the predictions already on disk; call no vendor")
+    b.set_defaults(fn=cmd_benchmark)
 
-    o = sub.add_parser("score-one", help="score a single prediction/gt/schema triple")
-    o.add_argument("--pred", required=True)
-    o.add_argument("--gt", required=True)
-    o.add_argument("--schema", required=True)
-    o.set_defaults(fn=cmd_score_one)
+    d = sub.add_parser("predict", help="run one document through one vendor")
+    d.add_argument("--provider", required=True,
+                   help="a vendor or a model id; `oeb providers` lists them")
+    d.add_argument("--doc", required=True, help="the document, PDF")
+    d.add_argument("--schema", required=True, help="the JSON Schema to extract against")
+    d.add_argument("--timeout", type=float, default=1800,
+                   help="seconds this document may take, end to end")
+    d.add_argument("--options", metavar="JSON",
+                   help='options for this provider, as JSON or a path: \'{"mode": "accurate"}\'')
+    d.set_defaults(fn=cmd_predict)
+
+    pl = sub.add_parser("providers",
+                        help="list the vendors benchmark can run, or detail one of them")
+    pl.add_argument("provider", nargs="?",
+                    help="name one to see what --options takes for it, and the defaults")
+    pl.set_defaults(fn=cmd_providers)
 
     args = ap.parse_args(argv)
-    # Progress on stderr, results on stdout, so `oeb score-one | jq` stays a pipe.
-    logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO,
-                        format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    # Progress on stderr, results on stdout, so `oeb score ... | jq` stays a pipe.
+    #
+    # The ROOT logger stays at WARNING and only OUR namespace is turned up. The obvious thing
+    # -- `basicConfig(level=INFO)` -- sets the level for every library in the process, and then
+    # each one has to be muted by name: httpx logs a line per request, and `openai` logs its
+    # own copy of the same line through `openai._base_client`, so silencing httpx was not
+    # enough. That list would need extending for every dependency anyone ever adds. Turning up
+    # one namespace instead means a new library is quiet by default and still free to warn.
+    handler = logging.StreamHandler()          # stderr
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+    root = logging.getLogger()
+    root.handlers[:] = [handler]
+    root.setLevel(logging.WARNING)
+    logging.getLogger(__package__).setLevel(logging.WARNING if args.quiet else logging.INFO)
+
     try:
         return args.fn(args)
-    except (ValueError, FileNotFoundError, ImportError) as exc:
-        # One boundary for everything a manifest can get wrong -- a missing column, a name
-        # that collides with ours, a repeated doc_id, a path that is not there. These are
-        # already written to be read, so print the message and not a traceback. ImportError
-        # joins them because a missing extra is the same kind of thing: something to install,
-        # not a defect, and the messages raised for it name the extra to install.
+    except (ValueError, TypeError, OSError, ImportError) as exc:
+        # One boundary for everything the three documents can get wrong -- a file that is not
+        # there, one that will not parse, a ground truth that is not an object, a schema that
+        # is missing or still holds `$ref`. `score` raises these with the reason and the fix
+        # already written out, so print the message and not a traceback. ImportError joins
+        # them because a missing extra is the same kind of thing -- something to install, not
+        # a defect -- and the messages raised for it name what to install.
         print(f"  {exc}", file=sys.stderr)
         return 1
 

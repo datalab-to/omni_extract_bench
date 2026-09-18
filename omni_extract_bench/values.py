@@ -364,7 +364,7 @@ def canon_trace(v) -> Trace:
     >>> [c.step for c in t.changes]
     ['punctuation']
     >>> print(t.changes[0].why)
-    Whitespace, commas, hyphens and periods are removed from anywhere, so PO BOX 125 matches P.O. BOX 125 and 31-1440073 matches 311440073.
+    Whitespace, commas and hyphens are removed from anywhere, so PO BOX 125 matches P.O. BOX 125 and 31-1440073 matches 311440073. Periods go too, EXCEPT a single one between digits, which is a decimal point and is kept: 1.5 mg is not 15 mg. Two or more are separators rather than decimal points, so 1.000.000 matches 1,000,000 and 512.784.7407 matches 512-784-7407.
 
     A value can also take a non-text route, in which case no fold ran at all:
 

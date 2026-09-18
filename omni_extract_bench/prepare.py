@@ -2,7 +2,7 @@
 
 This runs BEFORE any value is compared, and it is about the container rather than the contents:
 strip the envelope a vendor wrapped an answer in, drop the metadata it hung beside it, and find
-the parts of a schema the scorer must not grade.
+the parts of a schema the scorer must not score.
 
 Nothing here alters an extracted value. That is `values.py`'s job, and keeping the two apart is
 what makes it possible to say exactly where a value can change.
@@ -121,3 +121,29 @@ def unwrap_schema(node):
             if isinstance(sub, dict) and sub.get("type") != "null":
                 return sub
     return node
+
+
+def resolve_refs(schema, root=None, depth=0, max_depth=12):
+    """Inline local ``$ref`` so a schema is self-describing.
+
+    Some vendors resolve ``$defs`` themselves; others reject a bare ``$ref`` because it declares
+    no type. Inlining changes nothing semantically. Recursive definitions stop at ``max_depth``
+    rather than expanding forever.
+    """
+    if root is None:
+        root = schema
+    if depth > max_depth or not isinstance(schema, (dict, list)):
+        return schema
+    if isinstance(schema, list):
+        return [resolve_refs(x, root, depth + 1, max_depth) for x in schema]
+    ref = schema.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/"):
+        cur = root
+        for part in ref[2:].split("/"):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+        if isinstance(cur, dict):
+            merged = {k: v for k, v in schema.items() if k != "$ref"}
+            merged.update({k: v for k, v in cur.items() if k not in merged})
+            return resolve_refs(merged, root, depth + 1, max_depth)
+    return {k: (resolve_refs(v, root, depth + 1, max_depth) if k != "$defs" else v)
+            for k, v in schema.items() if k != "$defs"}

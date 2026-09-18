@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Property-based tests for the metric spec (METRIC_SPEC.md P1..P23), against `score.py`.
+"""Property-based tests for the metric spec (METRIC_SPEC.md P1..P23), against `metric.py`.
 
 Generative, not example-based: random nested documents are built and perturbed, so the
 properties are checked over a space of shapes rather than a handful of cases I happened to
 think of. Deterministic seeds — a failure is always reproducible.
 
-This file was written against the paired walker that `score.py` replaced, and was pointed at
-`score.py` when that walker was deleted. Worth knowing, because the spec's property table had
+This file was written against the paired walker that `metric.py` replaced, and was pointed at
+`metric.py` when that walker was deleted. Worth knowing, because the spec's property table had
 until then been asserted only against an implementation the benchmark no longer ran: the
 properties passed unchanged, but they had never been checked against the scorer that produces
 the published numbers.
@@ -23,14 +23,14 @@ import copy, json, os, random, sys
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench import matching as OM         # noqa: E402
-from omni_extract_bench.score import grade as _grade   # noqa: E402
+from omni_extract_bench.metric import score as _grade   # noqa: E402
 from omni_extract_bench.values import canon_key, cmp_leaf   # noqa: E402
 
 
 def _schema_from(doc):
     """Derive a schema from gold, so these property tests stay about scoring.
 
-    `score.grade` requires one -- without it an `additionalProperties` subtree cannot be
+    `score.score` requires one -- without it an `additionalProperties` subtree cannot be
     found, and a fabricated value cannot be told from an invented one. Deriving it from GOLD
     alone is deliberate: a key the PREDICTION invented genuinely is not a slot the model was
     offered.
@@ -47,7 +47,7 @@ def _schema_from(doc):
 
 
 def fair_grade(pred, gt, schema=None):
-    """`score.grade` under the name this file was written against."""
+    """`score.score` under the name this file was written against."""
     return _grade(pred, gt, schema or _schema_from(gt))
 
 FAILS = []
@@ -187,10 +187,10 @@ for s in range(N_CASES):
     rnd = random.Random(s)
     g = rand_doc(rnd)
     r = fair_grade(copy.deepcopy(g), copy.deepcopy(g), {})
-    if r["total"] and abs(r["accuracy"] - 100.0) > 1e-9:
+    if r["total"] and abs(r["accuracy"] - 1.0) > 1e-9:
         ok = check("P1 identity", False, f"seed {s} -> {r['accuracy']}")
         break
-report("P1  identity: grade(G,G) == 100", ok)
+report("P1  identity: score(G,G) == 100", ok)
 
 # ── P2 permutation invariance ────────────────────────────────────────────────────
 ok = True
@@ -377,8 +377,8 @@ variants = [
 ]
 for nm, gold, got in variants:
     sc = fair_grade({"rows": got}, {"rows": gold}, SCH_ROWS)["accuracy"]
-    if abs(sc - 100.0) > 1e-6:
-        ok = check("P14 pairing/scoring agreement", False, f"{nm} scored {sc:.1f}, want 100.0")
+    if abs(sc - 1.0) > 1e-6:
+        ok = check("P14 pairing/scoring agreement", False, f"{nm} scored {sc:.4f}, want 1.0")
         break
 report("P14 pairing honours the same equivalences as scoring", ok)
 
@@ -427,7 +427,7 @@ small = {"rows": [{"i": n} for n in range(20)]}
 r_small = fair_grade(small, small, SCH_ROWS)
 # The budget is shrunk through `force_approximate` rather than by building an array big
 # enough to exceed the real ceiling: the real ceiling now depends on which solver is
-# installed, and a 20,000-row identity document costs minutes to grade for no extra coverage.
+# installed, and a 20,000-row identity document costs minutes to score for no extra coverage.
 _restore = OM.force_approximate()
 huge = {"rows": [{"i": n, "v": n % 7} for n in range(40)]}
 r_huge = fair_grade(huge, huge, SCH_ROWS)
@@ -446,9 +446,9 @@ gold_d = [{"segment_type": "company", "v": 10}, {"segment_type": "segment", "v":
 pred_d = [{"segment_type": "company", "v": 10}, {"segment_type": "segment", "v": 20}]
 r_diff = fair_grade({"rows": pred_d}, {"rows": gold_d}, SCH_R)
 report("P16 blocking uses the scorer's equality, and still separates real differences",
-       check("P16", abs(r_case["accuracy"] - 100.0) < 1e-6
-             and abs(r_diff["accuracy"] - 75.0) < 1e-6,
-             f"casing={r_case['accuracy']:.1f} (want 100) "
+       check("P16", abs(r_case["accuracy"] - 1.0) < 1e-6
+             and abs(r_diff["accuracy"] - 0.75) < 1e-6,
+             f"casing={r_case['accuracy']:.4f} (want 1.0) "
              f"distinct={r_diff['accuracy']:.1f} (want 75)"))
 
 report("P15 greedy fallback is reported, not silent",
@@ -460,7 +460,7 @@ report("P15 greedy fallback is reported, not silent",
 # (REGRESSION) Rows whose payload is entirely null are ignored for fairness -- a provider
 # should not be scored on a row that states nothing. That filter was applied to GROUND TRUTH
 # ONLY, so a prediction mirroring ground truth exactly still carried the rows ground truth had
-# just discarded; they counted as spurious and grade(gt, gt) came out at 95.09 on a real 10-Q.
+# just discarded; they counted as spurious and score(gt, gt) came out at 95.09 on a real 10-Q.
 # The most faithful possible extraction was penalised. P1 could not catch it because the
 # generator never produces an all-null row -- so this builds one explicitly.
 SCH_P17 = {"properties": {"rows": {"type": "array"}}}
@@ -475,8 +475,8 @@ r_id = fair_grade(copy.deepcopy(doc_with_empty), copy.deepcopy(doc_with_empty), 
 partial = {"rows": [{"id": 1, "value": 10}]}
 r_part = fair_grade(partial, copy.deepcopy(doc_with_empty), SCH_P17)
 report("P17 identity holds when a document contains all-null rows",
-       check("P17", abs(r_id["accuracy"] - 100.0) < 1e-6 and r_part["accuracy"] < 99.0,
-             f"identity={r_id['accuracy']:.2f} (want 100) partial={r_part['accuracy']:.2f} (want <100)"))
+       check("P17", abs(r_id["accuracy"] - 1.0) < 1e-6 and r_part["accuracy"] < 0.99,
+             f"identity={r_id['accuracy']:.4f} (want 1.0) partial={r_part['accuracy']:.4f} (want <1.0)"))
 
 
 # ── P18 object keys are addresses, matched literally ────────────────────────────
@@ -487,8 +487,8 @@ report("P17 identity holds when a document contains all-null rows",
 SCH_P18 = {"type": "object", "properties": {"total": {"type": "number"}}}
 same = fair_grade({"total": 5.0}, {"total": 5.0}, SCH_P18)
 cased = fair_grade({"Total": 5.0}, {"total": 5.0}, SCH_P18)
-report("P18 an exact key match scores 100",
-       check("P18", abs(same["accuracy"] - 100.0) < 1e-9, f"got {same['accuracy']:.2f}"))
+report("P18 an exact key match scores 1.0",
+       check("P18", abs(same["accuracy"] - 1.0) < 1e-9, f"got {same['accuracy']:.4f}"))
 report("P18b a key that is not exactly gold's is charged, both ways",
        check("P18b", cased["matched"] == 0 and cased["total"] == 2,
              f"got {cased['matched']}/{cased['total']}, want 0/2 "

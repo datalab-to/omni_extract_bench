@@ -23,7 +23,11 @@ is not -- that belongs in the schema itself, identically for everyone.
 """
 from __future__ import annotations
 
-import copy
+# `resolve_refs` lives with the SCORER now, not here: the metric has to resolve
+# its own input and may not import this package. Re-exported so adapters and the
+# rest of this module keep one name for it.
+from ..prepare import resolve_refs  # noqa: F401
+
 import json
 import re
 
@@ -45,30 +49,6 @@ def strip_benchmark_keys(node, keys=BENCHMARK_ONLY_KEYS):
     return {k: strip_benchmark_keys(v, keys) for k, v in node.items() if k not in keys}
 
 
-def resolve_refs(schema, root=None, depth=0, max_depth=12):
-    """Inline local ``$ref`` so a schema is self-describing.
-
-    Some vendors resolve ``$defs`` themselves; others reject a bare ``$ref`` because it declares
-    no type. Inlining changes nothing semantically. Recursive definitions stop at ``max_depth``
-    rather than expanding forever.
-    """
-    if root is None:
-        root = schema
-    if depth > max_depth or not isinstance(schema, (dict, list)):
-        return schema
-    if isinstance(schema, list):
-        return [resolve_refs(x, root, depth + 1, max_depth) for x in schema]
-    ref = schema.get("$ref")
-    if isinstance(ref, str) and ref.startswith("#/"):
-        cur = root
-        for part in ref[2:].split("/"):
-            cur = cur.get(part) if isinstance(cur, dict) else None
-        if isinstance(cur, dict):
-            merged = {k: v for k, v in schema.items() if k != "$ref"}
-            merged.update({k: v for k, v in cur.items() if k not in merged})
-            return resolve_refs(merged, root, depth + 1, max_depth)
-    return {k: (resolve_refs(v, root, depth + 1, max_depth) if k != "$defs" else v)
-            for k, v in schema.items() if k != "$defs"}
 
 
 def collapse_nullable_union(node):

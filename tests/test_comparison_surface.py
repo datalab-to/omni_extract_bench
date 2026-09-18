@@ -163,18 +163,22 @@ print("\nA VERDICT CARRIES BOTH FORMS, AND `None` MEANS ONE THING")
 # The surface a UI reads. `gold_raw`/`pred_raw` are what the document and the model wrote;
 # `gold_canon`/`pred_canon` are what they were compared AS. A match between two visibly
 # different strings is then self-explaining, and `values.canon_trace(raw)` names the step.
-from omni_extract_bench.score import explain, show, Verdict          # noqa: E402
+from omni_extract_bench.metric import score, show, Verdict            # noqa: E402
+
+def verdicts_of(pred, gt, schema):
+    """Per-address verdicts. `score` is the only entry point; the list comes off it."""
+    return score(pred, gt, schema, verdicts=True)["verdicts"]
 from omni_extract_bench.values import states_nothing, canon_trace, canon_key    # noqa: E402
 
 _SCH = {"type": "object", "properties": {
     "a": {"type": "string"}, "b": {"type": "string"}, "c": {"type": "string"},
     "g": {"type": "object", "additionalProperties": {"type": "string"}}}}
-_V = {v.verdict: v for v in explain({"a": "X", "c": "Z", "g": {"k": "v"}},
+_V = {v.verdict: v for v in verdicts_of({"a": "X", "c": "Z", "g": {"k": "v"}},
                                     {"a": "X", "b": "Y", "g": {"k": "v"}}, _SCH)}
 
 report("Verdict carries raw and canon for each side",
-       Verdict._fields == ("address", "gold_raw", "pred_raw", "verdict",
-                           "gold_canon", "pred_canon"), f"{Verdict._fields}")
+       Verdict._fields == ("address", "gold_raw", "pred_raw",
+                           "gold_canon", "pred_canon", "verdict"), f"{Verdict._fields}")
 report("a missing address has no pred side",
        _V["unfound"].pred_raw is None and _V["unfound"].pred_canon is None
        and _V["unfound"].gold_raw == "Y")
@@ -195,7 +199,7 @@ _cases = [({"a": "X", "c": "Z"}, {"a": "X", "b": "Y"}),
           ({}, {"a": "Y"}), ({"a": "Y"}, {})]
 _bad = []
 for _p, _g in _cases:
-    for v in explain(_p, _g, _SCH):
+    for v in verdicts_of(_p, _g, _SCH):
         if (v.gold_raw is None) != (v.gold_canon is None): _bad.append(("gold disagree", v))
         if (v.pred_raw is None) != (v.pred_canon is None): _bad.append(("pred disagree", v))
         if v.gold_raw is not None and states_nothing(v.gold_raw): _bad.append(("gold blank", v))
@@ -214,7 +218,7 @@ for _p, _g in _cases + [
          {"a": "311440073", "b": "x", "c": "2024-03-31"}),
         ({"a": "NIKE, Inc.", "b": "12.90", "c": "\u00bd"},
          {"a": "Nike", "b": "12.9", "c": "1/2"})]:
-    for v in explain(_p, _g, _SCH):
+    for v in verdicts_of(_p, _g, _SCH):
         if v.gold_raw is not None and v.gold_canon != canon_key(v.gold_raw):
             _carry.append(("gold", v.gold_raw, v.gold_canon, canon_key(v.gold_raw)))
         if v.pred_raw is not None and v.pred_canon != canon_key(v.pred_raw):
@@ -234,7 +238,7 @@ report("canon_trace explains a match between two raw forms",
        f"{canon_trace(_m.pred_raw)}")
 report("canon_trace agrees with the Verdict on every raw value it carries",
        all(canon_trace(r).canon == c
-           for _p, _g in _cases for v in explain(_p, _g, _SCH)
+           for _p, _g in _cases for v in verdicts_of(_p, _g, _SCH)
            for r, c in ((v.gold_raw, v.gold_canon), (v.pred_raw, v.pred_canon))
            if r is not None))
 

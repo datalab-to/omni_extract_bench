@@ -16,23 +16,29 @@ Three behaviours here exist because getting them wrong decides a vendor's score:
     returned to the caller either way, so a fenced or otherwise unparseable answer can be
     salvaged from the record rather than re-paid for.
 
-Auth: OPENROUTER_API_KEY (or OEB_LLM_API_KEY with --base-url for another endpoint).
+Auth: OPENROUTER_API_KEY, or OPENAI_API_KEY. Another OpenAI-compatible endpoint is selected
+with `base_url=` (`--base-url`), which is an argument and not an environment variable, so the
+record can say which endpoint answered.
 
     python -m omni_extract_bench.harness.providers.llm_single_shot --pdf doc.pdf --schema s.json --out out.json \\
         --model anthropic/claude-opus-5
 """
 from __future__ import annotations
 
-import argparse
 import base64
+import dataclasses
 import json
 import os
 import random
-import sys
 import time
 from pathlib import Path
 
-from .envelope import write_output
+import openai
+
+from ..dialects import parse_model_json
+
+from ..extraction import Budget, Cost, Extraction, MissingCredential, VendorError
+from ._cli import run_cli
 
 SYSTEM_PROMPT = """\
 You are a document data extraction system. You will be given a PDF document \
@@ -56,106 +62,151 @@ field. Use an empty array [] only when the category applies but has zero items.
 Return a single JSON object conforming to the schema."""
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MAX_OUTPUT_TOKENS = 64000
+DEFAULT_MAX_OUTPUT_TOKENS = 64000        # floor for models with no published ceiling
+
+#: Published output ceiling per model. A shared floor would silently truncate the models with
+#: bigger ones, so parity here is "as much as each model will give" rather than one number for
+#: everyone. Lives beside the adapter that sends it, so a hand-run and the benchmark cannot
+#: disagree about how much a model was allowed to say.
+MODEL_MAX_OUTPUT = {
+    "anthropic/claude-opus-5": 128000,
+    "openai/gpt-5.6-sol": 128000,
+    "openai/gpt-5.6-sol-pro": 128000,
+    "google/gemini-3.7-flash": 65536,
+}
 
 
-class LLMSingleShot:
-    def __init__(self, *, api_key: str, model: str, base_url: str = DEFAULT_BASE_URL,
-                 max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS, timeout: float = 1800,
-                 max_retries: int = 3):
-        import openai
-        self._openai = openai
-        self.model = model
-        self.max_output_tokens = max_output_tokens
-        self.timeout = timeout
-        self.max_retries = max_retries
-        self.client = openai.OpenAI(base_url=base_url, api_key=api_key)
-        self.calls: list[dict] = []          # every completion, pre-parse
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """What a raw-model leg can be asked. `model` has no default: it IS the provider name."""
 
-    def __call__(self, pdf: Path, schema: dict):
-        b64 = base64.b64encode(pdf.read_bytes()).decode("ascii")
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": [
-                {"type": "file", "file": {"filename": pdf.name,
-                                          "file_data": f"data:application/pdf;base64,{b64}"}},
-                {"type": "text", "text": ("Extract the data from this document according to the "
-                                          "following JSON schema:\n\n"
-                                          f"```json\n{json.dumps(schema, indent=2)}\n```")},
-            ]},
-        ]
-        temp, last = 0.0, None
-        for attempt in range(self.max_retries):
-            if attempt:
-                time.sleep((2 ** attempt) + random.uniform(0, 1))
-            try:
-                resp = self.client.chat.completions.create(
-                    model=self.model, messages=messages,
-                    response_format={"type": "json_schema",
-                                     "json_schema": {"name": "extraction", "schema": schema,
-                                                     "strict": False}},
-                    max_tokens=self.max_output_tokens, temperature=temp, timeout=self.timeout,
-                    extra_body={"usage": {"include": True}},   # real billing, not a token count
-                )
-            except (self._openai.RateLimitError, self._openai.APIStatusError) as e:
-                last = f"{type(e).__name__}: {e}"[:300]; temp = min(temp + 0.1, 1.0); continue
-            except Exception as e:  # noqa: BLE001
-                return {"__error__": f"{type(e).__name__}: {e}"[:300]}
+    model: str = dataclasses.field(
+        metadata={"help": "an OpenRouter org/model id"})
+    max_output_tokens: int | None = dataclasses.field(
+        default=None, metadata={"help": "default: the model's published ceiling"})
+    base_url: str = DEFAULT_BASE_URL
+    attempts: int = 3
 
-            choices = getattr(resp, "choices", None)
-            usage = resp.usage.model_dump() if getattr(resp, "usage", None) else None
-            if not choices:
-                err = getattr(resp, "error", None) or {}
-                msg = err.get("message") if isinstance(err, dict) else str(err)
-                last = str(msg or "provider returned no choices")[:300]
-                self.calls.append({"error": last, "usage": usage})
-                temp = min(temp + 0.1, 1.0); continue
+    def __post_init__(self):
+        """Resolve `None` to the model's published ceiling HERE, not in `extract`.
 
-            ch = choices[0]
-            text = getattr(getattr(ch, "message", None), "content", None)
-            self.calls.append({"finish_reason": getattr(ch, "finish_reason", None),
-                               "content": text, "usage": usage,
-                               "cost_usd": (usage or {}).get("cost"),
-                               "model": getattr(resp, "model", None)})
-            if ch.finish_reason == "length":
-                return {"__error__": (f"truncated at max_tokens={self.max_output_tokens}; not "
-                                      f"retried (a retry cannot fit a shorter answer)")}
-            if not text:
-                return {"__error__": "empty completion"}
-            try:
-                parsed = json.loads(text)
-            except json.JSONDecodeError as e:
-                last = f"JSON parse error: {e}"[:200]; temp = min(temp + 0.1, 1.0); continue
-            if isinstance(parsed, dict) and parsed:
-                return parsed
-            last = f"model returned {type(parsed).__name__}, not an object"
-        return {"__error__": f"all {self.max_retries} attempts failed: {last}"}
+        `extract` used to do it, so the record wrote down `max_output_tokens: null` while the
+        model was handed 128000 -- a setting stated by neither the Config nor the manifest,
+        which is the whole thing `settings` exists to rule out. The parity rule is per-model
+        ("as much as each will give"), so what that came to has to be on the document."""
+        if self.max_output_tokens is None:
+            object.__setattr__(self, "max_output_tokens", max_output_for(self.model))
+
+
+def max_output_for(model: str) -> int:
+    return MODEL_MAX_OUTPUT.get(model, DEFAULT_MAX_OUTPUT_TOKENS)
+
+
+def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
+            config: Config) -> Extraction:
+    """One completion with the schema as `response_format`, retried only for a bad ANSWER.
+
+    The loop here raises the temperature after a reply that would not parse, was empty of
+    choices, or was not an object -- it is trying to get a usable answer out of a model that
+    gave a malformed one. Transport failures are NOT retried here: a rate limit or a 5xx
+    becomes a `VendorError` carrying its status, and the harness's own retry decides, so the
+    two loops cannot multiply into 12 attempts on one document.
+    """
+    key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not key:
+        raise MissingCredential("OPENROUTER_API_KEY (or OPENAI_API_KEY) must be set")
+
+    budget = Budget(timeout)
+    model = config.model
+    max_output_tokens = config.max_output_tokens      # resolved by Config.__post_init__
+    client = openai.OpenAI(base_url=config.base_url, api_key=key)
+    b64 = base64.b64encode(pdf.read_bytes()).decode("ascii")
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": [
+            {"type": "file", "file": {"filename": pdf.name,
+                                      "file_data": f"data:application/pdf;base64,{b64}"}},
+            {"type": "text", "text": ("Extract the data from this document according to the "
+                                      "following JSON schema:\n\n"
+                                      f"```json\n{json.dumps(schema, indent=2)}\n```")},
+        ]},
+    ]
+
+    temperature, last, calls = 0.0, None, []
+    for attempt in range(config.attempts):
+        if attempt:
+            time.sleep(min((2 ** attempt) + random.uniform(0, 1), budget.remaining()))
+        # Each attempt gets what is LEFT of the document's budget, not a fresh copy of it.
+        # With the full timeout each, three attempts could spend three times what every other
+        # vendor was given -- and nothing noticed while a subprocess kill capped it from
+        # outside.
+        budget.check(f"after {attempt} attempt(s) that produced no usable answer")
+        try:
+            resp = client.chat.completions.create(
+                model=model, messages=messages,
+                response_format={"type": "json_schema",
+                                 "json_schema": {"name": "extraction", "schema": schema,
+                                                 "strict": False}},
+                max_tokens=max_output_tokens, temperature=temperature,
+                timeout=budget.remaining(),
+                extra_body={"usage": {"include": True}},   # real billing, not a token count
+            )
+        except openai.APIStatusError as exc:
+            raise VendorError(f"{type(exc).__name__}: {exc}"[:300],
+                              status=getattr(exc, "status_code", None)) from None
+        except openai.APIError as exc:
+            raise VendorError(f"{type(exc).__name__}: {exc}"[:300]) from None
+
+        usage = resp.usage.model_dump() if getattr(resp, "usage", None) else {}
+        calls.append({"usage": usage, "model": getattr(resp, "model", None)})
+        choices = getattr(resp, "choices", None)
+        if not choices:
+            err = getattr(resp, "error", None) or {}
+            last = str((err.get("message") if isinstance(err, dict) else err)
+                       or "provider returned no choices")[:300]
+            temperature = min(temperature + 0.1, 1.0)
+            continue
+
+        choice = choices[0]
+        text = getattr(getattr(choice, "message", None), "content", None)
+        if choice.finish_reason == "length":
+            # Not retried, and not a transport problem: the answer does not FIT. A second
+            # attempt cannot produce a shorter one, and would cost the same again.
+            raise VendorError(f"truncated at max_tokens={max_output_tokens} "
+                              f"({model}'s published ceiling)", status=200)
+        if not text:
+            raise VendorError("empty completion", status=200)
+        # `parse_model_json`, not `json.loads`: some models wrap their answer in a ```json
+        # fence, and a parser that accepts only bare JSON scores those at zero. One run
+        # discarded 12 of 24 documents from the most accurate provider in the field over a
+        # backtick. The helper existed for this and no adapter was calling it.
+        parsed = parse_model_json(text)
+        if parsed is None:
+            last = f"not JSON, even allowing a code fence: {text[:120]!r}"
+            calls[-1]["text"] = text          # keep it: a parser fix re-reads instead of re-paying
+            temperature = min(temperature + 0.1, 1.0)
+            continue
+        if isinstance(parsed, dict) and parsed:
+            return Extraction(
+                result=parsed,
+                # The ceiling is recorded because a truncated answer cannot be read without
+                # it: "finish_reason: length" means nothing unless you know what the limit was.
+                raw={"calls": calls, "finish_reason": choice.finish_reason,
+                     "max_output_tokens": max_output_tokens, "model": model},
+                cost=Cost.reported(usage.get("cost"), "usage.cost",
+                                   tokens_in=usage.get("prompt_tokens"),
+                                   tokens_out=usage.get("completion_tokens")))
+        last = f"model returned {type(parsed).__name__}, not an object"
+
+    # The body carries every completion, text included, so an answer that no parser could read
+    # is still on disk in `record["raw"]` -- which is what this module's docstring promises and
+    # what makes a parser bug a re-read rather than a re-payment.
+    raise VendorError(f"all {config.attempts} attempts returned an unusable answer: {last}",
+                      status=200, body=json.dumps({"calls": calls, "model": model})[:4000])
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--pdf", required=True, type=Path)
-    ap.add_argument("--schema", required=True, type=Path)
-    ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--model", required=True)
-    ap.add_argument("--base-url", default=os.environ.get("OEB_LLM_BASE_URL", DEFAULT_BASE_URL))
-    ap.add_argument("--max-output-tokens", type=int,
-                    default=int(os.environ.get("OEB_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS)))
-    ap.add_argument("--timeout", type=float, default=float(os.environ.get("OEB_TIMEOUT", 1800)))
-    a = ap.parse_args()
-    key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OEB_LLM_API_KEY")
-    if not key:
-        raise SystemExit("OPENROUTER_API_KEY (or OEB_LLM_API_KEY) must be set")
-    p = LLMSingleShot(api_key=key, model=a.model, base_url=a.base_url,
-                      max_output_tokens=a.max_output_tokens, timeout=a.timeout)
-    t0 = time.time()
-    result = p(a.pdf, json.loads(a.schema.read_text()))
-    write_output(a.out, provider=a.model, result=result, latency_s=time.time() - t0,
-                 usage={"model": a.model, "max_output_tokens": a.max_output_tokens,
-                        "calls": p.calls})
-    if isinstance(result, dict) and "__error__" in result:
-        print(result["__error__"], file=sys.stderr)
-        raise SystemExit(1)
+    run_cli(extract, Config, "llm-single-shot")
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ import random
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.score import grade                                 # noqa: E402
+from omni_extract_bench.metric import score                                 # noqa: E402
 
 FAILS = []
 
@@ -69,11 +69,11 @@ for _ in range(4000):
     P = {"rows": [P["rows"][j] for j in order]}
     where = {j: idx for idx, j in enumerate(order)}
 
-    before = grade(copy.deepcopy(P), copy.deepcopy(G), SCHEMA)
+    before = score(copy.deepcopy(P), copy.deepcopy(G), SCHEMA)
     i, f = rng.choice(corrupt)                           # restore exactly one wrong value
     after_doc = copy.deepcopy(P)
     after_doc["rows"][where[i]][f] = G["rows"][i][f]
-    after = grade(after_doc, copy.deepcopy(G), SCHEMA)
+    after = score(after_doc, copy.deepcopy(G), SCHEMA)
 
     tried += 1
     if after["total"] != before["total"]:
@@ -98,9 +98,9 @@ for _ in range(3000):
                    "v": i if rng.random() < .6 else 900 + i,
                    "w": i * 2 if rng.random() < .6 else 900 + i} for i in range(n)]}
     rng.shuffle(P["rows"])
-    before = grade(copy.deepcopy(P), copy.deepcopy(G), SCHEMA)
+    before = score(copy.deepcopy(P), copy.deepcopy(G), SCHEMA)
     junk = [{"k": f"ZZ{j}", "v": -1 - j, "w": -100 - j} for j in range(rng.randint(1, 5))]
-    after = grade({"rows": P["rows"] + junk}, copy.deepcopy(G), SCHEMA)
+    after = score({"rows": P["rows"] + junk}, copy.deepcopy(G), SCHEMA)
 
     kept_matched = kept_matched and after["matched"] == before["matched"]
     if after["accuracy"] > before["accuracy"] + 1e-12:
@@ -126,15 +126,15 @@ G = gold(3)
 honest = {"rows": [{"k": f"k{i}", "v": i, "w": 999} for i in range(3)]}
 spam = {"rows": [{"k": f"k{i}", "v": i, "w": i * 2} for i in range(3)]
         + [{"k": f"z{j}", "v": 900 + j, "w": 900 + j} for j in range(10)]}
-h = grade(honest, copy.deepcopy(G), SCHEMA)
-s = grade(spam, copy.deepcopy(G), SCHEMA)
+h = score(honest, copy.deepcopy(G), SCHEMA)
+s = score(spam, copy.deepcopy(G), SCHEMA)
 
 report("a prediction with MORE correct values can score lower",
        s["matched"] > h["matched"] and s["accuracy"] < h["accuracy"],
        f"honest {h['matched']}/{h['accuracy']:.2f}  spam {s['matched']}/{s['accuracy']:.2f}")
 report("the figures quoted in §8 and §9 are the ones the scorer produces",
-       (round(h["accuracy"], 2), round(s["accuracy"], 2)) == (66.67, 23.08),
-       f"got {h['accuracy']:.2f} and {s['accuracy']:.2f}, want 66.67 and 23.08")
+       (round(h["accuracy"], 4), round(s["accuracy"], 4)) == (0.6667, 0.2308),
+       f"got {h['accuracy']:.4f} and {s['accuracy']:.4f}, want 0.6667 and 0.2308")
 note(f"spam recovered every gold value ({s['matched']} of {s['matched']}) and scored "
      f"{s['accuracy']:.2f}; honest recovered {h['matched']} and scored {h['accuracy']:.2f}")
 note("a metric forbidding this would make emitting rows free, which is the attack")
@@ -150,7 +150,7 @@ for combo in itertools.product(["omit", "right", "wrong"], repeat=3):
             rows.append({"k": f"k{i}", "v": i, "w": i * 2})
         elif c == "wrong":
             rows.append({"k": f"X{i}", "v": 900 + i, "w": 900 + i})
-    r = grade({"rows": rows}, copy.deepcopy(G), SCHEMA)
+    r = score({"rows": rows}, copy.deepcopy(G), SCHEMA)
     best[r["matched"]] = max(best.get(r["matched"], 0.0), r["accuracy"])
 
 ordered = [best[k] for k in sorted(best)]

@@ -9,23 +9,39 @@ Auth: MISTRAL_API_KEY.
 """
 from __future__ import annotations
 
-import argparse
 import base64
+import dataclasses
 import json
 import os
-import sys
-import time
 from pathlib import Path
 
 import httpx
 
-from .envelope import write_output
+from ..extraction import Cost, Extraction, MissingCredential, VendorError
+from ._cli import run_cli
 
 MODEL = "mistral-ocr-latest"
 URL = "https://api.mistral.ai/v1/ocr"
 
 
-def extract(pdf: Path, schema: dict, *, api_key: str, timeout: float = 1800):
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """Nothing to steer: the document and the schema go in one call and that is all."""
+
+
+def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
+            config: Config = Config()) -> Extraction:
+    """One POST, one response, one parse.
+
+    No polling, so the document's budget IS this request's timeout -- there is no second phase
+    to share it with. Note that httpx applies it per socket operation rather than to total
+    elapsed time, so a server trickling bytes could outlast it; for a single call that is the
+    closest an HTTP client gets to a wall-clock cap.
+    """
+    key = os.environ.get("MISTRAL_API_KEY")
+    if not key:
+        raise MissingCredential("MISTRAL_API_KEY is not set")
+
     b64 = base64.b64encode(pdf.read_bytes()).decode()
     body = {
         "model": MODEL,
@@ -35,41 +51,36 @@ def extract(pdf: Path, schema: dict, *, api_key: str, timeout: float = 1800):
             "type": "json_schema",
             "json_schema": {"name": "extraction", "schema": schema, "strict": False}},
     }
-    r = httpx.post(URL, headers={"Authorization": f"Bearer {api_key}",
+    r = httpx.post(URL, headers={"Authorization": f"Bearer {key}",
                                  "Content-Type": "application/json"},
                    json=body, timeout=timeout)
     if r.status_code >= 400:
-        return {"__error__": f"HTTP {r.status_code}: {r.text[:300]}"}, None
+        raise VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
+                          status=r.status_code, body=r.text)
+
     payload = r.json()
+    # Everything except the extraction itself: the vendor's own usage block, which is where
+    # the cost is, kept as `raw` so a parsing mistake here is re-read rather than re-paid for.
     annotation = payload.get("document_annotation")
-    usage = {k: v for k, v in payload.items() if k != "document_annotation"}
     if annotation is None:
-        return {"__error__": "200 with no document_annotation"}, usage
+        raise VendorError("200 with no document_annotation", status=200, body=r.text[:300])
     try:
         parsed = json.loads(annotation) if isinstance(annotation, str) else annotation
-    except json.JSONDecodeError as e:
-        return {"__error__": f"document_annotation is not JSON: {e}"}, usage
-    return (parsed if isinstance(parsed, dict) and parsed
-            else {"__error__": "document_annotation was empty"}), usage
+    except json.JSONDecodeError as exc:
+        raise VendorError(f"document_annotation is not JSON: {exc}",
+                          status=200, body=str(annotation)[:300]) from None
+    if not isinstance(parsed, dict) or not parsed:
+        raise VendorError("document_annotation was empty", status=200, body=r.text[:300])
+
+    usage = payload.get("usage_info") or {}
+    return Extraction(
+        result=parsed,
+        raw={k: v for k, v in payload.items() if k != "document_annotation"},
+        cost=Cost.reported(usage.get("cost"), "usage_info.cost"))
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--pdf", required=True, type=Path)
-    ap.add_argument("--schema", required=True, type=Path)
-    ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--timeout", type=float, default=float(os.environ.get("OEB_TIMEOUT", 1800)))
-    a = ap.parse_args()
-    key = os.environ.get("MISTRAL_API_KEY")
-    if not key:
-        raise SystemExit("MISTRAL_API_KEY must be set")
-    t0 = time.time()
-    result, usage = extract(a.pdf, json.loads(a.schema.read_text()), api_key=key, timeout=a.timeout)
-    write_output(a.out, provider="mistral", result=result, latency_s=time.time() - t0,
-                 usage=usage or {"model": MODEL})
-    if isinstance(result, dict) and "__error__" in result:
-        print(result["__error__"], file=sys.stderr)
-        raise SystemExit(1)
+    run_cli(extract, Config, "mistral")
 
 
 if __name__ == "__main__":

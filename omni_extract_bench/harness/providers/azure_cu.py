@@ -20,22 +20,39 @@ Auth: AZURE_CU_ENDPOINT + AZURE_CU_KEY.
 """
 from __future__ import annotations
 
-import argparse
+import dataclasses
 import hashlib
 import json
 import os
-import sys
+import threading
 import time
 from pathlib import Path
 
 import httpx
 
-from .envelope import write_output
+from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
+                          VendorError)
+from ._cli import run_cli
 
 API_VERSION = "2025-05-01-preview"
 DEFAULT_COMPLETION_MODEL = "gpt-4.1-mini"
 _TERMINAL_OK = {"succeeded", "completed"}
 _TERMINAL_BAD = {"failed", "cancelled"}
+
+
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """What azure-cu can be asked.
+
+    `completion_model` is a DEPLOYMENT CHOICE, not a product tier: `gpt-4.1-mini` and `gpt-4.1`
+    are different systems behind one API, so which one ran has to be published beside the score.
+    """
+
+    completion_model: str = dataclasses.field(
+        default=DEFAULT_COMPLETION_MODEL,
+        metadata={"help": "the deployment behind the analyzer; publish it with the score"})
+    api_version: str = API_VERSION
+    poll_interval: float = 3.0
 
 
 def _field(prop: dict) -> dict:
@@ -89,97 +106,123 @@ def fields_to_dict(fields: dict) -> dict:
     return {k: _value(v) for k, v in (fields or {}).items()}
 
 
-class AzureContentUnderstanding:
-    def __init__(self, endpoint: str, key: str, *, completion_model: str = DEFAULT_COMPLETION_MODEL,
-                 api_version: str = API_VERSION, poll_interval: float = 3, timeout: float = 1800):
-        self.endpoint = endpoint.rstrip("/")
-        self.key = key
-        self.completion_model = completion_model
-        self.api_version = api_version
-        self.poll_interval = poll_interval
-        self.timeout = timeout
-        self._analyzers: dict[str, str] = {}
-        self.client = httpx.Client(headers={"Ocp-Apim-Subscription-Key": key}, timeout=120)
+#: Analyzer ids are a pure function of the schema, and creating one is idempotent (409 means
+#: it already exists). Cached across documents so a 620-document run makes one PUT per distinct
+#: schema rather than 620.
+_ANALYZERS: dict[str, str] = {}
+_ANALYZER_LOCK = threading.Lock()
 
-    # -- analyzers -----------------------------------------------------------------
-    def analyzer_for(self, schema: dict) -> str:
-        h = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[:16]
-        if h in self._analyzers:
-            return self._analyzers[h]
-        analyzer_id = f"oeb-{h}"
-        url = f"{self.endpoint}/contentunderstanding/analyzers/{analyzer_id}?api-version={self.api_version}"
-        body = {"baseAnalyzerId": "prebuilt-documentAnalyzer",
-                "config": {"returnDetails": False, "completion": self.completion_model},
-                "fieldSchema": field_schema(schema)}
-        r = self.client.put(url, json=body)
-        if r.status_code == 409:                       # already exists: reuse it
-            self._analyzers[h] = analyzer_id
-            return analyzer_id
-        r.raise_for_status()
-        op = r.headers.get("Operation-Location")
-        if op:
-            self._await(op, want_result=False)
-        self._analyzers[h] = analyzer_id
-        return analyzer_id
 
-    # -- analysis ------------------------------------------------------------------
-    def __call__(self, pdf: Path, schema: dict) -> dict:
-        analyzer_id = self.analyzer_for(schema)
-        url = (f"{self.endpoint}/contentunderstanding/analyzers/{analyzer_id}:analyze"
-               f"?api-version={self.api_version}")
-        r = self.client.post(url, content=pdf.read_bytes(),
-                             headers={"Content-Type": "application/octet-stream"})
+def _ensure_analyzer(client, endpoint: str, api_version: str, digest: str, analyzer_id: str,
+                     schema: dict, completion_model: str, budget, poll_interval: float) -> None:
+    """Create the analyzer for this schema once per process, not once per thread.
+
+    UNDER THE LOCK FOR THE WHOLE CREATE-AND-WAIT, not just the cache lookup. A 409 says the
+    analyzer EXISTS, not that it is READY -- so a thread that lost the race would skip the
+    readiness wait below and analyse against an analyzer still provisioning. Checking the cache
+    without holding anything is what let several threads reach the PUT at once, and widening
+    `--predict-workers` makes that likelier rather than rarer.
+
+    Threads that block here are waiting for something they need anyway, and the wait is bounded
+    by the holding document's own budget.
+    """
+    with _ANALYZER_LOCK:
+        if digest in _ANALYZERS:
+            return
+        r = client.put(
+            f"{endpoint}/contentunderstanding/analyzers/{analyzer_id}"
+            f"?api-version={api_version}",
+            json={"baseAnalyzerId": "prebuilt-documentAnalyzer",
+                  "config": {"returnDetails": False, "completion": completion_model},
+                  "fieldSchema": field_schema(schema)})
+        if r.status_code != 409:                              # 409: already exists, reuse it
+            if r.status_code >= 400:
+                raise VendorError(f"creating analyzer: HTTP {r.status_code}: {r.text[:300]}",
+                                  status=r.status_code, body=r.text)
+            if r.headers.get("Operation-Location"):
+                _await(client, r.headers["Operation-Location"], budget=budget,
+                       poll_interval=poll_interval, want_result=False)
+        _ANALYZERS[digest] = analyzer_id
+
+
+def _await(client, op_url: str, *, budget, poll_interval: float, want_result: bool):
+    """Poll one operation. Takes the DOCUMENT's budget, not a fresh timeout: this is
+    called twice per document -- once for the analyzer, once for the analysis -- and with
+    a timeout each it gave azure-cu two full budgets where every other vendor got one."""
+    polls = 0
+    retry = PollRetry(budget)
+    while True:
+        budget.check(f"still analysing after {polls} polls")
+        try:
+            r = client.get(op_url)
+        except httpx.TransportError as exc:
+            if retry.again():
+                continue
+            raise VendorError(f"polling failed: {exc}"[:300], status=None) from None
         if r.status_code >= 400:
-            return {"__error__": f"HTTP {r.status_code}: {r.text[:300]}"}
+            # A failed poll is not a failed analysis: it is still running, and already billed.
+            if retry.again(r.status_code):
+                continue
+            raise VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
+                              status=r.status_code, body=r.text)
+        retry.ok()
+        polls += 1
+        body = r.json()
+        status = str(body.get("status", "")).lower()
+        if status in _TERMINAL_OK:
+            return body if want_result else True
+        if status in _TERMINAL_BAD:
+            raise VendorError(f"azure-cu {status}: {json.dumps(body.get('error') or {})[:300]}",
+                              status=200, body=r.text)
+        time.sleep(poll_interval)
+
+
+def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
+            config: Config = Config()) -> Extraction:
+    """Create (or reuse) an analyzer for this schema, analyse the document, poll for the result.
+
+    Azure does not report a per-call cost, so `cost.usd` is None and the record says
+    `billed_out_of_band` -- rather than inventing a figure from a price list.
+    """
+    endpoint = os.environ.get("AZURE_CU_ENDPOINT")
+    key = os.environ.get("AZURE_CU_KEY")
+    if not endpoint or not key:
+        raise MissingCredential("AZURE_CU_ENDPOINT and AZURE_CU_KEY must be set")
+    endpoint = endpoint.rstrip("/")
+    budget = Budget(timeout)      # one per document, shared by both phases below
+
+    with httpx.Client(headers={"Ocp-Apim-Subscription-Key": key}, timeout=120) as client:
+        digest = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[:16]
+        analyzer_id = f"oeb-{digest}"
+        _ensure_analyzer(client, endpoint, config.api_version, digest, analyzer_id, schema,
+                         config.completion_model, budget, config.poll_interval)
+        r = client.post(f"{endpoint}/contentunderstanding/analyzers/{analyzer_id}:analyze"
+                        f"?api-version={config.api_version}",
+                        content=pdf.read_bytes(),
+                        headers={"Content-Type": "application/octet-stream"})
+        if r.status_code >= 400:
+            raise VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
+                              status=r.status_code, body=r.text)
         op = r.headers.get("Operation-Location")
         if not op:
-            return {"__error__": "no Operation-Location header on :analyze"}
-        body = self._await(op, want_result=True)
-        if isinstance(body, dict) and "__error__" in body:
-            return body
-        contents = ((body or {}).get("result") or {}).get("contents") or []
-        if not contents:
-            return {"__error__": "analysis returned no contents"}
-        return fields_to_dict(contents[0].get("fields") or {})
+            raise VendorError("no Operation-Location header on :analyze",
+                              status=r.status_code, body=r.text)
 
-    def _await(self, op_url: str, *, want_result: bool):
-        deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline:
-            r = self.client.get(op_url)
-            if r.status_code >= 400:
-                return {"__error__": f"HTTP {r.status_code}: {r.text[:300]}"}
-            body = r.json()
-            status = str(body.get("status", "")).lower()
-            if status in _TERMINAL_OK:
-                return body if want_result else True
-            if status in _TERMINAL_BAD:
-                return {"__error__": f"azure-cu {status}: {json.dumps(body.get('error') or {})[:300]}"}
-            time.sleep(self.poll_interval)
-        return {"__error__": f"timeout after {self.timeout}s while polling"}
+        body = _await(client, op, budget=budget, poll_interval=config.poll_interval,
+                      want_result=True)
+
+    contents = ((body or {}).get("result") or {}).get("contents") or []
+    if not contents:
+        raise VendorError("analysis returned no contents", status=200,
+                          body=json.dumps(body)[:300])
+    return Extraction(result=fields_to_dict(contents[0].get("fields") or {}),
+                      raw=body,
+                      cost=Cost(),                 # Azure reports none: billed out of band
+                      job_id=analyzer_id)
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--pdf", required=True, type=Path)
-    ap.add_argument("--schema", required=True, type=Path)
-    ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--completion-model", default=os.environ.get("AZURE_CU_COMPLETION_MODEL", DEFAULT_COMPLETION_MODEL))
-    ap.add_argument("--timeout", type=float, default=float(os.environ.get("OEB_TIMEOUT", 1800)))
-    a = ap.parse_args()
-    endpoint, key = os.environ.get("AZURE_CU_ENDPOINT"), os.environ.get("AZURE_CU_KEY")
-    if not endpoint or not key:
-        raise SystemExit("AZURE_CU_ENDPOINT and AZURE_CU_KEY must be set")
-    p = AzureContentUnderstanding(endpoint, key, completion_model=a.completion_model, timeout=a.timeout)
-    t0 = time.time()
-    try:
-        result = p(a.pdf, json.loads(a.schema.read_text()))
-    except Exception as exc:  # noqa: BLE001 -- the runner records the message as the result
-        result = {"__error__": f"{type(exc).__name__}: {exc}"[:600]}
-    write_output(a.out, provider="azure-cu", result=result, latency_s=time.time() - t0,
-                 usage={"completion_model": a.completion_model, "api_version": a.api_version})
-    if isinstance(result, dict) and "__error__" in result:
-        print(result["__error__"], file=sys.stderr)
-        raise SystemExit(1)
+    run_cli(extract, Config, "azure-cu")
 
 
 if __name__ == "__main__":

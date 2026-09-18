@@ -31,8 +31,8 @@ import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench import matching as OM                              # noqa: E402
-from omni_extract_bench.score import (                                     # noqa: E402
-    KEY, Row, _content_key, _extract_rows_at, flatten, grade)
+from omni_extract_bench.metric import (                                     # noqa: E402
+    KEY, Row, _content_key, _extract_rows_at, flatten, score)
 
 FAILS = []
 
@@ -91,10 +91,10 @@ def shuffled_everywhere(doc, rng):
 
 def disagreement(gold, pred, variants, schema, **kw):
     """Fields whose value is not the same for every variant of the prediction."""
-    base = grade({"r": pred}, {"r": gold}, schema, **kw)
+    base = score({"r": pred}, {"r": gold}, schema, **kw)
     moved = set()
     for variant in variants:
-        r = grade({"r": variant}, {"r": gold}, schema, **kw)
+        r = score({"r": variant}, {"r": gold}, schema, **kw)
         moved |= {k for k in base if r[k] != base[k]}
     return moved, base
 
@@ -110,9 +110,9 @@ for _ in range(120):
                          [[pred[i] for i in p]
                           for p in itertools.permutations(range(len(pred)))], FLAT)
     moved_pred |= m
-    base = grade({"r": pred}, {"r": gold}, FLAT)
+    base = score({"r": pred}, {"r": gold}, FLAT)
     for perm in itertools.permutations(range(len(gold))):
-        r = grade({"r": pred}, {"r": [gold[i] for i in perm]}, FLAT)
+        r = score({"r": pred}, {"r": [gold[i] for i in perm]}, FLAT)
         moved_gold |= {k for k in base if r[k] != base[k]}
 report("permuting the PREDICTION's rows moves nothing", not moved_pred, str(sorted(moved_pred)))
 report("permuting the GOLD's rows moves nothing", not moved_gold, str(sorted(moved_gold)))
@@ -189,13 +189,13 @@ report("every Row is built with its key; the empty default never reaches the sor
 print("\nTHE DOCUMENT THAT EXPOSED IT, PINNED")
 gold = [{"c": 2, "a": 0, "d": 1, "e": 1}, {"b": 1}]
 pred = [{"e": 1, "a": 0, "c": 1, "b": 1}, {"b": 0, "e": 2, "d": 1}]
-a = grade({"r": pred}, {"r": gold}, FLAT)
-b = grade({"r": pred[::-1]}, {"r": gold}, FLAT)
+a = score({"r": pred}, {"r": gold}, FLAT)
+b = score({"r": pred[::-1]}, {"r": gold}, FLAT)
 report("two pairings weigh the same; the reported split no longer depends on which",
        (a["fabricated"], a["invented_item"]) == (b["fabricated"], b["invented_item"]),
        f"{a['fabricated']}/{a['invented_item']} vs {b['fabricated']}/{b['invented_item']}")
 report("...and the accuracy was never the thing that moved",
-       a["accuracy"] == b["accuracy"] == 22.22222222222222)
+       a["accuracy"] == b["accuracy"] == 0.2222222222222222)
 
 print(f"\n{'PAIRING IS ORDER-INDEPENDENT' if not FAILS else 'FAILURES:'}")
 for f in FAILS:

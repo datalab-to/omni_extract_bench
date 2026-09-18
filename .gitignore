@@ -16,3 +16,8 @@ runs/
 
 # agent worktrees and session state
 .claude/
+
+# The benchmark corpus: 846 MB of PDFs, downloaded by `oeb benchmark` into the default
+# --data-root. Not ours to commit, and `git add -A` in a clean checkout would stage all 1265
+# files of it.
+benchmark/
