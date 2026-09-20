@@ -189,7 +189,10 @@ def predict_provider(legs: list[Leg], docs: list[Doc], adapter: str, timeout: fl
         leg.progress.start(len(todo), workers)
         todo_of[leg.label] = len(todo)
         work += [(leg, doc) for doc in todo]
+        if not todo:
+            leg.progress.finish()
 
+    left = dict(todo_of)               # documents still outstanding, per run
     mine = threading.Event()
     stopping = lambda: mine.is_set() or (stop is not None and stop.is_set())   # noqa: E731
     fatal: list[Exception] = []
@@ -252,6 +255,13 @@ def predict_provider(legs: list[Leg], docs: list[Doc], adapter: str, timeout: fl
                 if status != "skipped":
                     by_label[label].progress.record(error=status == "error", usd=usd,
                                                     credits=credits, wall_s=wall_s)
+                # WHEN THIS RUN'S LAST DOCUMENT LANDS, not when the vendor's queue empties.
+                # One queue serves every run of a vendor, so finishing them together reported
+                # the whole vendor's wall time on each line -- two reducto tiers both "done in
+                # 4m44s" while one of them had been finished for minutes.
+                left[label] -= 1
+                if not left[label]:
+                    by_label[label].progress.finish()
         except KeyboardInterrupt:
             mine.set()
             for future in futures:
@@ -280,7 +290,6 @@ def predict_provider(legs: list[Leg], docs: list[Doc], adapter: str, timeout: fl
                      sum(got["billed"]), len(got["billed"]), n)
         if n and not got["spend"] and not got["billed"]:
             log.info("%s: no per-document cost reported (billed out of band)", leg.label)
-        leg.progress.finish()
 
     # After the pool drains, so no worker is still writing. The documents it stopped keep no
     # file, so they stay resumable.

@@ -314,6 +314,43 @@ report("...and the whole cap is in use, not half of it each",
        f'peak {live["peak"]}, which a cap split two ways could not exceed '
        f'{WORKERS["datalab"] // 2}')
 
+print("\nEACH RUN IS TIMED FOR ITSELF, NOT FOR THE QUEUE IT SHARES")
+# One queue serves every run of a vendor, so finishing them together reported the whole
+# vendor's wall time on every line -- two reducto tiers both "done in 4m44s" while one of them
+# had been finished for minutes.
+from omni_extract_bench.progress import Progress                               # noqa: E402
+
+timed = pathlib.Path(tempfile.mkdtemp())
+B.fetch = lambda root: timed
+landed = {}
+_t0 = _time.monotonic()
+
+
+def uneven(prov):
+    def extract(pdf, schema, *, timeout, config):
+        _time.sleep(0.02 if config.mode == "balanced" else 0.5)
+        with guard:
+            landed[config.mode] = _time.monotonic() - _t0
+        return Extraction(result={"a": "x"}, cost=Cost(usd=0.1))
+    return extract
+
+
+V.adapter = uneven
+_exit, elapsed = Progress.__exit__, {}
+Progress.__exit__ = lambda self, *a: (elapsed.update(
+    {n: s.elapsed for n, s in self.stats.items()}), _exit(self, *a))[1]
+try:
+    B.run(["datalab"], out=timed, score_workers=1,
+          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+finally:
+    Progress.__exit__ = _exit
+quick, slow = named("datalab", mode="balanced"), named("datalab", mode="accurate")
+report("the run that finished first says so", elapsed[quick] < elapsed[slow] / 2,
+       f'{elapsed[quick]:.2f}s against the vendor\'s {elapsed[slow]:.2f}s')
+report("...and it matches when its last document actually landed",
+       abs(elapsed[quick] - landed["balanced"]) < 0.1,
+       f'reported {elapsed[quick]:.2f}s, landed at {landed["balanced"]:.2f}s')
+
 print("\nAND THE CAP BELONGS TO THE SERVICE, NOT TO THE NAME YOU TYPED")
 # Every `org/model` id is one `llm_single_shot`, one OpenRouter endpoint and one key. Keyed by
 # provider name each of them got a pool of its own -- measured, three models put 15 against a
