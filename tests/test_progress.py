@@ -43,15 +43,6 @@ report("mean_wall is the average document", s.mean_wall == 20.0)
 report("no documents yet means no average, not zero", Stats().mean_wall is None,
        "a zero would read as instant")
 
-print("\nETA COMES OFF THE WALL CLOCK, NOT THE DOCUMENT AVERAGE")
-# Documents overlap -- 25 at once -- so the mean of their durations says nothing about how
-# fast the queue is draining. Half done in 100s means about 100s left, whatever each took.
-s = Stats(total=10, ok=5, started=time.monotonic() - 100)
-report("half done after 100s -> about 100s left", 90 < s.eta < 115, str(s.eta))
-report("nothing finished yet -> no estimate", Stats(total=10, started=time.monotonic()).eta is None)
-report("a finished provider has no eta",
-       Stats(total=10, ok=10, started=1.0, finished=2.0).eta is None)
-
 print("\nDURATIONS READ AT A GLANCE")
 for seconds, want in [(None, "--"), (0, "0.0s"), (0.36, "0.4s"), (9.9, "9.9s"), (10, "10s"), (42, "42s"), (60, "1m00s"),
                       (259, "4m19s"), (3600, "1h00m"), (8700, "2h25m")]:
@@ -76,11 +67,11 @@ waiting = format_provider("mistral", Stats())
 report("a provider that has not started says so", "waiting" in waiting, waiting)
 line = format_provider("datalab", Stats(total=620, ok=118, usd=183.49,
                                         waits=[259.0], started=time.monotonic() - 3600))
-for want in ("datalab", "118/620", "ok 118", "err 0", "$183.49", "avg 4m19s", "eta"):
+for want in ("datalab", "118/620", "ok 118", "err 0", "$183.49", "avg 4m19s"):
     report(f"the line carries {want!r}", want in line, line)
 done = format_provider("reducto", Stats(total=5, ok=5, started=1.0, finished=61.0))
-report("a finished provider reports its total time, not an eta",
-       "done in 1m00s" in done and "eta" not in done, done)
+report("a finished provider reports its total time",
+       "done in 1m00s" in done, done)
 
 print("\nCALLS IN FLIGHT")
 # The denominator is the useful half: 25/25 means the pool is the limit and more workers

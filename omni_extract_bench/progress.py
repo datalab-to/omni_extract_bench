@@ -1,7 +1,7 @@
 """A live line per provider, while the benchmark runs.
 
-    datalab       ██████░░░░░░░░   118/620  ok 118  err 0    $183.49  avg 4m19s  eta 2h24m
-    reducto       ███░░░░░░░░░░░    64/620  ok  63  err 1   17951 cr  avg 3m12s  eta 4h57m
+    datalab       ██████░░░░░░░░   118/620  ok 118  err 0    $183.49  avg 4m19s
+    reducto       ███░░░░░░░░░░░    64/620  ok  63  err 1   17951 cr  avg 3m12s
     mistral       ░░░░░░░░░░░░░░         waiting
 
 A run takes hours and the vendors now go at once, so "how far along is each one, and what is
@@ -77,18 +77,6 @@ class Stats:
             return None
         return (self.finished or time.monotonic()) - self.started
 
-    @property
-    def eta(self) -> float | None:
-        """Seconds left at the rate observed so far, or None when that means nothing yet.
-
-        Off the WALL CLOCK of this provider's own run, not off `mean_wall`: documents overlap,
-        so the mean of their durations says nothing about how fast the queue is draining.
-        """
-        if not self.total or not self.done or self.finished is not None:
-            return None
-        rate = (self.elapsed or 0.0) / self.done
-        return rate * (self.total - self.done)
-
 
 # ── 2. the layout ────────────────────────────────────────────────────────────────────────
 def format_duration(seconds: float | None) -> str:
@@ -159,8 +147,6 @@ def format_provider(name: str, stats: Stats, name_width: int = 12) -> str:
         parts.append(f"avg {format_duration(stats.mean_wall)}")
     if stats.finished is not None:
         parts.append(f"done in {format_duration(stats.elapsed)}")
-    elif stats.eta is not None:
-        parts.append(f"eta {format_duration(stats.eta)}")
     return "  ".join(parts)
 
 
