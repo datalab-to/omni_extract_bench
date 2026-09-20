@@ -20,7 +20,7 @@ import time
 import tracemalloc
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench import matching as OM                           # noqa: E402
+from tests.approximate import approximate                  # noqa: E402
 from omni_extract_bench.values import cmp_leaf, canon_key                         # noqa: E402
 from omni_extract_bench.metric import (                          # noqa: E402
     node_key, format_node, _find_arrays, KEY, INDEX,
@@ -740,15 +740,14 @@ report("an empty row {} is not counted as a row", er["gt_rows"] == 1,
        f"gt_rows={er['gt_rows']}, want 1")
 
 print("\nAN APPROXIMATE SCORE SAYS SO")
-restore = OM.force_approximate()            # shrink the budget, whichever solver is active
 # The rows must be INSEPARABLE: component decomposition now splits an array before the solver
 # sees it, so rows that share nothing never reach the fallback at all. These all share a
 # column, which is what a real un-splittable table looks like (one segment label on every row,
 # or a column of repeated zeros).
 big_gold = [{"seg": "same", "b": float(i)} for i in range(40)]
 big_pred = list(reversed(big_gold))
-r_greedy = ACC({"rows": big_pred}, {"rows": big_gold})
-restore()
+with approximate():
+    r_greedy = ACC({"rows": big_pred}, {"rows": big_gold})
 r_exact = ACC({"rows": big_pred}, {"rows": big_gold})
 report("a score that used the greedy fallback reports matching_exact=False",
        r_greedy["matching_exact"] is False and r_greedy["approximated"],
@@ -768,9 +767,8 @@ INNER_P = {"rows": [{"seg": "same",
                      "xs": [{"v": i % 3, "w": "same"} for i in reversed(range(30))]}]}
 report("an inner array solved exactly reports matching_exact=True",
        ACC(INNER_P, INNER_G)["matching_exact"] is True)
-restore = OM.force_approximate()
-r_inner = ACC(INNER_P, INNER_G)
-restore()
+with approximate():
+    r_inner = ACC(INNER_P, INNER_G)
 report("an approximate INNER solve is reported, not hidden under an exact outer one",
        r_inner["matching_exact"] is False and r_inner["approximated"],
        f"matching_exact={r_inner['matching_exact']} greedy_blocks={r_inner['approximated']}")

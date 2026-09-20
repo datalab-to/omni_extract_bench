@@ -23,6 +23,7 @@ import copy, json, os, random, sys
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench import matching as OM         # noqa: E402
+from tests.approximate import approximate                  # noqa: E402
 from omni_extract_bench.metric import score as _grade   # noqa: E402
 from omni_extract_bench.values import canon_key, cmp_leaf   # noqa: E402
 
@@ -425,13 +426,12 @@ report(f"P14b equal values always share a pairing key  ({pairs_checked} pairs)",
 # rows, solver is O(n^3)); reporting a greedy score AS IF exact is not.
 small = {"rows": [{"i": n} for n in range(20)]}
 r_small = fair_grade(small, small, SCH_ROWS)
-# The budget is shrunk through `force_approximate` rather than by building an array big
-# enough to exceed the real ceiling: the real ceiling now depends on which solver is
-# installed, and a 20,000-row identity document costs minutes to score for no extra coverage.
-_restore = OM.force_approximate()
+# The budget is shrunk rather than exceeded by building an array big enough to pass the real
+# ceiling: that ceiling depends on which solver is installed, and a 20,000-row identity
+# document costs minutes to score for no extra coverage.
 huge = {"rows": [{"i": n, "v": n % 7} for n in range(40)]}
-r_huge = fair_grade(huge, huge, SCH_ROWS)
-_restore()
+with approximate():
+    r_huge = fair_grade(huge, huge, SCH_ROWS)
 # ── P16 one equality everywhere (REGRESSION: blocking used a third definition) ───
 # Blocking asserts "these rows can never pair". If it uses a STRICTER notion of equality than
 # the scorer, it silently forbids pairings the scorer would accept. It used bare str(), so rows

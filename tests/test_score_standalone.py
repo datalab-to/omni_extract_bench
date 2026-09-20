@@ -31,10 +31,9 @@ PKG = _ROOT / "omni_extract_bench"
 #:   matching    optimal row assignment
 #:   values      the comparison rule -- folds, canon_key, states_nothing
 #:   recognise   is this text a date, a time, a number
-#:   prepare     shaping a document and reading a schema, before any value is compared
 #: The set is the point, not its size: nothing here reaches a transport, a vendor dialect or
 #: an envelope convention, so a score cannot move when one of those changes.
-SCORING_PATH = {"matching", "values", "recognise", "prepare"}
+SCORING_PATH = {"matching", "values", "recognise"}
 FAILS = []
 
 
@@ -100,14 +99,12 @@ note(f"metric.py reaches {sorted(direct)} directly; `recognise` arrives through 
 report("values.py, the shared layer, stays below the scorer",
        "score" not in imports_of(PKG / "values.py"),
        f"values imports {sorted(imports_of(PKG / 'values.py'))}")
-# The split is only worth having if the pieces stay separable. `recognise` and `prepare` each
-# answer a question that has nothing to do with the other two, so neither may reach back up.
-for low, subject in (("recognise", "is this text a date / a number"),
-                     ("prepare", "shaping a document")):
-    report(f"{low}.py depends on nothing in the package ({subject})",
-           not imports_of(PKG / f"{low}.py"),
-           f"{low} imports {sorted(imports_of(PKG / f'{low}.py'))}")
-report("values.py reaches recognise but not prepare",
+# The split is only worth having if the pieces stay separable. `recognise` answers a question
+# that has nothing to do with the other two, so it may not reach back up.
+report("recognise.py depends on nothing in the package (is this text a date / a number)",
+       not imports_of(PKG / "recognise.py"),
+       f"recognise imports {sorted(imports_of(PKG / 'recognise.py'))}")
+report("values.py reaches recognise and nothing else",
        imports_of(PKG / "values.py") == {"recognise"},
        f"values imports {sorted(imports_of(PKG / 'values.py'))}")
 # Implied by the closure above, but named so the directory's purpose survives a reader who
@@ -121,7 +118,7 @@ print("\nTHE TWO SCHEMA QUESTIONS THE SCORER ASKS")
 # `unwrap_schema` resolves a union to its non-null branch. `allOf` was handled and asserted
 # nowhere; `evaluation_config` used to be carried through it, propagating a concept the
 # harness strips before a vendor ever sees a schema and that nothing here reads.
-from omni_extract_bench.prepare import is_open_map, unwrap_schema      # noqa: E402
+from omni_extract_bench.metric import is_open_map, unwrap_schema       # noqa: E402
 for _br in ("anyOf", "oneOf", "allOf"):
     report(f"{_br} resolves to the non-null branch",
            unwrap_schema({_br: [{"type": "null"}, {"type": "string"}]}) == {"type": "string"},

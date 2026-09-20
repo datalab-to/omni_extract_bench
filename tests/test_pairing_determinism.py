@@ -30,7 +30,7 @@ import random
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench import matching as OM                              # noqa: E402
+from tests.approximate import approximate                  # noqa: E402
 from omni_extract_bench.metric import (                                     # noqa: E402
     KEY, Row, _content_key, _extract_rows_at, flatten, score)
 
@@ -135,8 +135,7 @@ note("the key is recursive; one that read positions would still have passed at d
 # ── 3. the greedy fallback takes the same path ────────────────────────────────────────
 print("\nINCLUDING WHEN THE ARRAY IS TOO BIG TO SOLVE EXACTLY")
 rng = random.Random(29)
-restore = OM.force_approximate()       # the repo's own hook: shrink the exactness budget
-try:
+with approximate():
     moved_greedy = set()
     for _ in range(60):
         gold = [flat_row(rng) for _ in range(rng.randint(2, 4))]
@@ -145,8 +144,6 @@ try:
                              [[pred[i] for i in p]
                               for p in itertools.permutations(range(len(pred)))], FLAT)
         moved_greedy |= m
-finally:
-    restore()
 report("the greedy path is order-independent too", not moved_greedy, str(sorted(moved_greedy)))
 note("greedy breaks its own ties on position, which is canonical once the rows are sorted")
 

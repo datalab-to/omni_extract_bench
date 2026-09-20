@@ -16,7 +16,7 @@ import random
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench import matching as OM                              # noqa: E402
+from tests.approximate import approximate                  # noqa: E402
 from omni_extract_bench.metric import (                             # noqa: E402
     INDEX, KEY, flatten, show, score, node_key,
     format_node, _find_arrays)
@@ -355,9 +355,8 @@ BIG_G = {"rows": [{"k": i % 2, "xs": [{"v": j % 3, "w": "s"} for j in range(12)]
                   for i in range(4)]}
 BIG_P = {"rows": [{"k": i % 2, "xs": [{"v": j % 3, "w": "s"} for j in reversed(range(12))]}
                   for i in range(4)]}
-restore = OM.force_approximate()
-big = score(BIG_P, BIG_G)
-restore()
+with approximate():
+    big = score(BIG_P, BIG_G)
 report("greedy_blocks reports distinct sizes, not one entry per weight evaluation",
        len(big["approximated"]) == 1 and big["matching_exact"] is False,
        f"got {big['approximated']}")
