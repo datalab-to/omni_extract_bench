@@ -255,10 +255,7 @@ def predict_provider(legs: list[Leg], docs: list[Doc], adapter: str, timeout: fl
                 if status != "skipped":
                     by_label[label].progress.record(error=status == "error", usd=usd,
                                                     credits=credits, wall_s=wall_s)
-                # WHEN THIS RUN'S LAST DOCUMENT LANDS, not when the vendor's queue empties.
-                # One queue serves every run of a vendor, so finishing them together reported
-                # the whole vendor's wall time on each line -- two reducto tiers both "done in
-                # 4m44s" while one of them had been finished for minutes.
+                # when this run's, not when the vendor's queue empties.
                 left[label] -= 1
                 if not left[label]:
                     by_label[label].progress.finish()

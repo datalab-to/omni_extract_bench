@@ -23,10 +23,7 @@ is not -- that belongs in the schema itself, identically for everyone.
 """
 from __future__ import annotations
 
-# `resolve_refs` lives with the SCORER now, not here: the metric has to resolve
-# its own input and may not import this package. Re-exported so adapters and the
-# rest of this module keep one name for it.
-from ..prepare import resolve_refs  # noqa: F401
+from ..metric import resolve_refs  # noqa: F401
 
 import json
 import re

@@ -1,6 +1,6 @@
 # Omni Extract Bench
 
-This repository contains a way to run our benchmark on [HuggingFace](https://huggingface.co/datasets/datalab-to/omni_extract_bench) and also
+This repository contains a way to run our benchmark dataset on [HuggingFace](https://huggingface.co/datasets/datalab-to/omni_extract_bench) and also
 provides primitives (`score` and `predict`) to run your own! The README is split up into the following table of contents.
 
 1. **[Install](#install)** — the scorer on its own, or with the vendor adapters.
@@ -85,7 +85,7 @@ oeb benchmark \
 
 This will execute 4 different runs -- one for each pair (provider, settings).
 
-See `docs/API.md` for more details on what `oeb benchmark` writes.
+See [`docs/API.md`](./docs/API.md) for more details on what `oeb benchmark` writes.
 
 ## Score
 

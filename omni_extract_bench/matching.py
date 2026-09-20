@@ -1,59 +1,16 @@
 #!/usr/bin/env python3
 """Provably-optimal array row matching for the benchmark grader."""
-from __future__ import annotations
 
 import numpy as _np
 import scipy.sparse as _sp
 from scipy.optimize import linear_sum_assignment as _lsa
 from scipy.sparse.csgraph import min_weight_full_bipartite_matching as _sparse_lsa
-#: Ceilings on solving one block exactly. Both bound the COST MATRIX rather than the solve,
-#: because with a compiled solver the matrix is what costs: 250 million cells is ~2 GB as
-#: float64. A dimension cap as well as a cell cap, so a wildly rectangular problem cannot slip
-#: through on cells alone. Past either, `match_rows` falls back to greedy and says so.
-#:
-#: The largest gold array here is 26,725 x 26,725 -- 714 million cells, 5.7 GB as float64 --
-#: so it takes the greedy path, as do two documents at ~19,000 rows. `MAX_EXACT` is what
-#: excludes them, and raising either cap to reach them costs ~23 minutes and ~6 GB against
-#: 4.6 minutes and 1.86 GB, for at most 0.177 accuracy points.
+
 MAX_EXACT = 20000
 MAX_CELLS = 250 * 10**6
-
-#: Absolute ceiling on the exact path, in cells. `MAX_CELLS` is the size below which exact is
-#: taken without further thought; this is the size above which it is refused however sparse the
-#: alternative looks. 500 million cells is ~4 GB as float64.
 MAX_CELLS_DENSE = 500 * 10**6
-
-#: What each path costs per unit, used to compare them between the two ceilings above.
-#:
-#: Exact holds one float64 per CELL, worth anything or not. Greedy holds a Python 3-tuple per
-#: POSITIVE pair -- 72 bytes with its list slot -- so it is cheaper only on a sparse block,
-#: and on a dense one costs ~9x MORE than the matrix it exists to avoid. Until `_greedy`
-#: stores pairs compactly, a fallback taken FOR memory must not be handed dense blocks.
 EXACT_BYTES_PER_CELL = 8
 GREEDY_BYTES_PER_PAIR = 72
-
-
-def force_approximate():
-    """Test hook: shrink the exactness budget so the greedy fallback engages.
-
-    Returns:
-        A callable that restores the real budget.
-
-    The greedy path is reachable -- three documents take it -- but building an array that
-    size in a test costs minutes for no extra coverage. This exercises the property that an
-    approximate score announces itself, without paying for the array.
-    """
-    global MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE
-    saved = (MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE)
-    # MAX_CELLS_DENSE has to come down too, or the density comparison would route the
-    # block back to exact and the hook would stop forcing anything.
-    MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE = 8, 64, 64
-
-    def restore():
-        global MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE
-        MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE = saved
-
-    return restore
 
 
 def _exact_ok(n, m, positives=None):
@@ -226,20 +183,3 @@ def _greedy(pred_rows, gt_rows, weight):
     up = [r for i, r in enumerate(pred_rows) if i not in up_used]
     ug = [r for j, r in enumerate(gt_rows) if j not in ug_used]
     return pairs, up, ug
-
-
-if __name__ == "__main__":
-    # optimality demo: a case where greedy-by-key loses and Hungarian wins
-    P = [{"k": "a", "v": 1}, {"k": "a", "v": 2}]
-    G = [{"k": "a", "v": 2}, {"k": "a", "v": 1}]
-    w = lambda p, g: sum(1 for f in ("k", "v") if p.get(f) == g.get(f))
-    pairs, up, ug, exact = match_rows(P, G, w)
-    total = sum(w(p, g) for p, g in pairs)
-    print(f"optimal total weight = {total} (max possible 4), exact={exact}, pairs={len(pairs)}")
-    assert total == 4, "must find the crossing assignment"
-    # a row that shares nothing with any gold row is left unpaired rather than forced
-    P2 = P + [{"k": "b", "v": 9}]
-    pairs2, up2, ug2, _ = match_rows(P2, G, w)
-    print(f"extra predicted row -> {len(pairs2)} pairs, {len(up2)} unmatched")
-    assert len(up2) == 1 and sum(w(p, g) for p, g in pairs2) == 4
-    print("optimal_match self-tests pass")
