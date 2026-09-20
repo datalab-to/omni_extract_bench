@@ -22,7 +22,8 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
 import omni_extract_bench.harness.vendor as V                                  # noqa: E402
-from omni_extract_bench.harness.extraction import Cost, Extraction             # noqa: E402
+from omni_extract_bench.harness.extraction import (AccountFailure, Cost,       # noqa: E402
+                                                   Extraction)
 from omni_extract_bench.harness.vendor import out_name                          # noqa: E402
 
 ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
@@ -306,6 +307,63 @@ B.run(["datalab"], out=wide, score_workers=1,
 report("two runs of one vendor share its concurrency cap, not double it",
        live["peak"] <= WORKERS["datalab"],
        f'peak {live["peak"]} in flight against a cap of {WORKERS["datalab"]}')
+# AND SHARE IT DYNAMICALLY. Dividing the cap between the runs also keeps the count legal --
+# and leaves half of it idle whichever run has work. One queue per vendor uses the lot.
+report("...and the whole cap is in use, not half of it each",
+       live["peak"] > WORKERS["datalab"] // 2,
+       f'peak {live["peak"]}, which a cap split two ways could not exceed '
+       f'{WORKERS["datalab"] // 2}')
+
+print("\nAND THE CAP BELONGS TO THE SERVICE, NOT TO THE NAME YOU TYPED")
+# Every `org/model` id is one `llm_single_shot`, one OpenRouter endpoint and one key. Keyed by
+# provider name each of them got a pool of its own -- measured, three models put 15 against a
+# budget of 5 -- and no name-keyed table could ever cover them, since model ids are open-ended.
+models = pathlib.Path(tempfile.mkdtemp())
+B.fetch = lambda root: models
+live["n"] = live["peak"] = 0
+V.adapter = counting
+ids = ["openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash"]
+B.run(ids, out=models, score_workers=1)
+report("three model ids share one budget, not one each",
+       live["peak"] <= WORKERS["llm_single_shot"],
+       f'peak {live["peak"]} against a cap of {WORKERS["llm_single_shot"]}; '
+       f'a pool per name gives {len(ids) * WORKERS["llm_single_shot"]}')
+report("...while each still runs its own model, into its own directory",
+       len([d for d in models.iterdir() if d.is_dir()]) == len(ids),
+       str(sorted(d.name for d in models.iterdir() if d.is_dir())))
+report("a name people type still sets the cap",
+       B.workers_for(["openai/gpt-5.6-sol"], {"openai/gpt-5.6-sol": 2}) == 2)
+report("...and where several names in one group disagree, the smallest wins",
+       B.workers_for(ids, {"openai/gpt-5.6-sol": 2, "anthropic/claude-opus-5": 20}) == 2)
+report("...falling back to the adapter's own limit when nobody says",
+       B.workers_for(ids, None) == WORKERS["llm_single_shot"])
+
+print("\nAN ACCOUNT FAILURE IS ABOUT THE ACCOUNT, SO IT STOPS EVERY RUN OF THAT VENDOR")
+# The key is the same for both tiers, so the second cannot pay either. Given a pool per run it
+# found that out for itself, a wave of documents later; given one per vendor it is told.
+acct = pathlib.Path(tempfile.mkdtemp())
+B.fetch = lambda root: acct
+tried = []
+
+
+def broke(prov):
+    def extract(pdf, schema, *, timeout, config):
+        with guard:
+            tried.append(config.mode)
+        raise AccountFailure("out of credits")
+    return extract
+
+
+V.adapter = broke
+try:
+    B.run(["datalab"], out=acct, score_workers=1,
+          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+    report("the account failure reaches the caller", False, "it was swallowed")
+except AccountFailure:
+    report("the account failure reaches the caller", True)
+report("...and the other tier is not asked to pay it again",
+       len(tried) <= WORKERS["datalab"],
+       f'{len(tried)} documents attempted across both tiers: {sorted(set(tried))}')
 
 print(f"\n{'RUNS DO NOT MIX' if not FAILS else 'FAILURES:'}")
 for f in FAILS:

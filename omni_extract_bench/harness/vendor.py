@@ -110,8 +110,27 @@ def out_name(provider: str, options: dict | None = None) -> str:
     return f"{name}-{digest}"
 
 
-#: A safe concurrency per vendor. Advisory: the caller owns the pool.
-WORKERS = {"reducto": 3, "llamaextract": 3, "azure-cu": 3, "datalab": 10}
+#: How many documents to have in flight at one vendor. Advisory: the caller owns the pool.
+#:
+#: KEYED BY ADAPTER, NOT BY PROVIDER NAME, because the limit belongs to the service and not to
+#: the name you typed. Every `org/model` id is one `llm_single_shot`, one OpenRouter endpoint
+#: and one key, so keyed by name three model ids in one invocation put three pools of five
+#: against that single key -- measured, 15 in flight where the budget is one.
+#:
+#: It also closes a hole a name-keyed table cannot: model ids are open-ended, so no dict can
+#: enumerate them, and every one of them used to fall through to the default.
+WORKERS = {
+    "datalab": 10,
+    "reducto": 3,
+    "llamaextract": 3,
+    "azure_cu": 3,
+    # Nothing has been measured for these three, so they are the default written down rather
+    # than a limit anyone established. Listed anyway: an absent key reads the same whether a
+    # vendor has no limit or nobody has looked, and those are different facts.
+    "llm_single_shot": 5,
+    "mistral": 5,
+    "extend": 5,
+}
 
 #: The adapters read the environment for CREDENTIALS only. Everything that steers a vendor is
 #: a `Config` field, reaching the adapter through `--options` and landing in

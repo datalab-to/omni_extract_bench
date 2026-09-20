@@ -268,8 +268,9 @@ def main(argv=None) -> int:
                    help="seconds one document may take, the same for every vendor")
     b.add_argument("--predict-workers", metavar="N|NAME=N,...",
                    help="documents in flight at one vendor -- one number for every provider, "
-                        "or per provider: 'reducto=25,datalab=40'. Default: the harness's "
-                        "per-vendor limit")
+                        "or per provider: 'reducto=25,datalab=40'. Model ids share one "
+                        "budget, being one OpenRouter key. Default: the harness's per-vendor "
+                        "limit")
     b.add_argument("--score-workers", type=int, default=0, metavar="N",
                    help="processes used to grade. Scoring is the CPU-bound half and is "
                         "independent per document. Default: one per core, capped at 8; "
