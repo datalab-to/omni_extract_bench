@@ -24,7 +24,7 @@ import sys as _sys
 
 _ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 _sys.path.insert(0, _ROOT)
-import omni_extract_bench.score as sc                                       # noqa: E402
+import omni_extract_bench.metric as sc                                       # noqa: E402
 
 FAILS = []
 
@@ -76,7 +76,7 @@ def compare_every_cell(seeds, force_small=True):
     """Grade generated documents, checking each block's matrix cell by cell as it is built."""
     saved = sc.MIN_VECTOR_CELLS
     if force_small:
-        sc.MIN_VECTOR_CELLS = 1        # tiny blocks too; the default skips them as not worth it
+        sc.MIN_VECTOR_CELLS = 1
     seen = {"blocks": 0, "deep": 0, "cells": 0, "bad": 0, "inexact": 0, "shared_used": 0}
     real = sc._best_pairing
 
@@ -106,7 +106,7 @@ def compare_every_cell(seeds, force_small=True):
             rnd = random.Random(seed)
             gold = doc(rnd)
             pred = shuffled(gold, rnd) if seed % 3 else doc(rnd)
-            sc.grade(pred, gold, NESTED)
+            sc.score(pred, gold, NESTED)
     finally:
         sc._best_pairing = real
         sc.MIN_VECTOR_CELLS = saved
@@ -144,22 +144,16 @@ sc._worth_if_paired = counted
 saved = sc.MIN_VECTOR_CELLS
 sc.MIN_VECTOR_CELLS = 1
 try:
-    r = sc.grade(pred, gold, NESTED)
+    r = sc.score(pred, gold, NESTED)
 finally:
     sc._worth_if_paired = real_worth
     sc.MIN_VECTOR_CELLS = saved
-report("a document whose every row is nested still scores 100 after reordering",
-       r["accuracy"] == 100.0, str(r["accuracy"]))
+report("a document whose every row is nested still scores 1.0 after reordering",
+       r["accuracy"] == 1.0, str(r["accuracy"]))
 report("and the scalar function was still called for those pairs",
        calls["n"] > 0, f"{calls['n']} calls")
 
 print("\nNESTING ONE SIDE NEVER HAD IS NOT NESTING")
-# `_worth_if_paired` walks `set(pred.arrays) | set(gold.arrays)` and descends into
-# `_best_pairing`, which returns immediately when either side is empty. So a predicted row
-# nesting something the gold never nested adds nothing, and the product already has the
-# answer. Asking only "does this row have arrays?" would send those pairs down the slow path
-# to add zero -- which on the corpus's three largest arrays is 95%, 99.98% and 76% of
-# 704, 379 and 342 million pairs respectively.
 addr_tag = (("k", "tag"),)
 inner = sc.Row(named={(("k", "z"),): "v"}, arrays={}, key=())
 gold_rows = {i: sc.Row(named={addr_tag: f"g{i}"}, arrays={}, key=(f"g{i}",))
@@ -196,21 +190,19 @@ for seed in range(160):
     gold = doc(rnd)
     pred = shuffled(gold, rnd) if seed % 2 else doc(rnd)
     sc.MIN_VECTOR_CELLS, sc.MAX_VECTOR_CELLS = 1, 64 * 10**6
-    a = sc.grade(pred, gold, NESTED)
-    sc.MAX_VECTOR_CELLS = 0                      # forces the scalar loop everywhere
-    b = sc.grade(pred, gold, NESTED)
+    a = sc.score(pred, gold, NESTED)
+    sc.MAX_VECTOR_CELLS = 0
+    b = sc.score(pred, gold, NESTED)
     sc.MIN_VECTOR_CELLS, sc.MAX_VECTOR_CELLS = 16 * 16, 64 * 10**6
     same += a == b
     differing += a != b
-report("160 generated documents grade identically on every key", differing == 0,
+report("160 generated documents score identically on every key", differing == 0,
        f"{differing} differ")
 note("not just accuracy: matched, total, matching_exact, approximated, all of them")
 
 print("\nIT DECLINES WHAT IT CANNOT DO, RATHER THAN RAISING")
 report("a block smaller than the threshold is not vectorised",
        sc._pair_weights({}, {}, [], [], 3, None) is None)
-# Past the DENSE ceiling the matrix cannot be held, and the sparse form is offered instead --
-# but only when no pair needs the recursion, because corrections write individual cells.
 import scipy.sparse as _sp                                                  # noqa: E402
 
 flat_p = {i: sc.Row(named={(("k", "t"),): f"v{i%3}"}, arrays={}, key=(i,)) for i in range(6)}
@@ -234,9 +226,6 @@ try:
 finally:
     sc.MAX_VECTOR_CELLS, sc.MIN_VECTOR_CELLS = saved_max, saved_min
 
-# A vocabulary needs hashable features. Leaves are scalars today, so this is a guard against a
-# future where one is not -- and the point is that it declines rather than taking the whole
-# run down with a TypeError from inside a matrix build.
 addr = (("k", "a"),)
 plain = sc.Row(named={addr: "x"}, arrays={}, key=())
 odd = sc.Row(named={addr: ["not", "hashable"]}, arrays={}, key=())

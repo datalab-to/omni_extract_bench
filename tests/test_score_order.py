@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Edge cases for order-dependent array scoring (`grade(..., order_matters=...)`).
+"""Edge cases for order-dependent array scoring (`score(..., order_matters=...)`).
 
 Declaring an array ordered says its index is an ADDRESS rather than a position, which touches
 three things at once: `align` stops solving that node, `_prepare` folds its leaves in with the
@@ -16,18 +16,12 @@ import random
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench import matching as OM                              # noqa: E402
-from omni_extract_bench.score import (                             # noqa: E402
-    INDEX, KEY, explain, flatten, show, grade, node_key,
+from tests.approximate import approximate                  # noqa: E402
+from omni_extract_bench.metric import (                             # noqa: E402
+    INDEX, KEY, flatten, show, score, node_key,
     format_node, _find_arrays)
 
-# ── the scorer now requires a schema ──────────────────────────────────────────────────
-# These tests are about scoring, not schema plumbing, so derive one from the ground truth.
-# That is the realistic case anyway: gold conforms to the schema that was sent. Deriving it
-# from gold alone is deliberate -- a key the PREDICTION invented genuinely is not a slot the
-# model was offered, which is what tells `invented field` from `fabricated`.
-from omni_extract_bench.score import grade as _grade_impl          # noqa: E402
-from omni_extract_bench.score import explain as _explain_impl      # noqa: E402
+from omni_extract_bench.metric import score as _score_impl          # noqa: E402
 
 
 def _schema_from(doc):
@@ -42,13 +36,14 @@ def _schema_from(doc):
     return {}
 
 
-def grade(pred, gt, schema=None, *a, **kw):
-    return _grade_impl(pred, gt, schema or _schema_from(gt), *a, **kw)
+def score(pred, gt, schema=None, *a, **kw):
+    return _score_impl(pred, gt, schema or _schema_from(gt), *a, **kw)
 
 
 def explain(pred, gt, schema=None, *a, **kw):
-    return _explain_impl(pred, gt, schema or _schema_from(gt), *a, **kw)
-# ──────────────────────────────────────────────────────────────────────────────────────
+    """The per-address view. `score` is the only entry point; verdicts come off it."""
+    return _score_impl(pred, gt, schema or _schema_from(gt), *a,
+                       verdicts=True, **kw)["verdicts"]
 
 
 FAILS = []
@@ -75,15 +70,14 @@ def _raises(exc_type, fn):
 
 
 def acc(pred, gold, ordered=(), schema=None):
-    return grade(copy.deepcopy(pred), copy.deepcopy(gold), schema, ordered)["accuracy"]
+    return score(copy.deepcopy(pred), copy.deepcopy(gold), schema, ordered)["accuracy"]
 
 
 def parts(pred, gold, ordered=(), schema=None):
-    r = grade(copy.deepcopy(pred), copy.deepcopy(gold), schema, ordered)
+    r = score(copy.deepcopy(pred), copy.deepcopy(gold), schema, ordered)
     return r["matched"], r["total"]
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nLENGTH MISMATCH IN AN ORDERED ARRAY")
 G = {"steps": ["mix", "bake", "cool"]}
 STEPS = ["steps"]
@@ -110,7 +104,7 @@ report("an ordered array of OBJECTS is positional too",
              ["rows"]) == (0, 2))
 report("...and identity still holds for one",
        abs(acc({"rows": [{"a": 1}, {"a": 2}]},
-               {"rows": [{"a": 1}, {"a": 2}]}, ["rows"]) - 100) < 1e-9)
+               {"rows": [{"a": 1}, {"a": 2}]}, ["rows"]) - 1) < 1e-9)
 nulls = parts({"xs": ["a", None, "c"]}, {"xs": ["a", None, "c"]}, XS)
 report("a null inside an ordered array occupies no address", nulls == (2, 2), f"got {nulls}")
 note("index 1 yields no path on either side, so index 2 keeps its own address")
@@ -120,43 +114,35 @@ GRID = {"grid": [[1, 2], [3, 4]]}
 SWAP_OUTER = {"grid": [[3, 4], [1, 2]]}
 SWAP_INNER = {"grid": [[2, 1], [4, 3]]}
 report("nothing ordered: both levels are free",
-       abs(acc(SWAP_OUTER, GRID) - 100) < 1e-9 and abs(acc(SWAP_INNER, GRID) - 100) < 1e-9)
+       abs(acc(SWAP_OUTER, GRID) - 1) < 1e-9 and abs(acc(SWAP_INNER, GRID) - 1) < 1e-9)
 oo, oi = acc(SWAP_OUTER, GRID, ["grid"]), acc(SWAP_INNER, GRID, ["grid"])
 io, ii = acc(SWAP_OUTER, GRID, ["grid[*]"]), acc(SWAP_INNER, GRID, ["grid[*]"])
 report("outer ordered only: the outer swap is charged, the inner is not",
-       oo < 1e-9 and abs(oi - 100) < 1e-9, f"outer {oo:.2f} (want 0), inner {oi:.2f} (want 100)")
+       oo < 1e-9 and abs(oi - 1) < 1e-9, f"outer {oo:.2f} (want 0), inner {oi:.2f} (want 1)")
 report("inner ordered only: the inner swap is charged, the outer is not",
-       abs(io - 100) < 1e-9 and ii < 1e-9, f"outer {io:.2f} (want 100), inner {ii:.2f} (want 0)")
+       abs(io - 1) < 1e-9 and ii < 1e-9, f"outer {io:.2f} (want 1), inner {ii:.2f} (want 0)")
 report("both ordered: a matrix, fully positional",
-       abs(acc(GRID, GRID, ["grid", "grid[*]"]) - 100) < 1e-9
+       abs(acc(GRID, GRID, ["grid", "grid[*]"]) - 1) < 1e-9
        and acc(SWAP_OUTER, GRID, ["grid", "grid[*]"]) < 1e-9)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nTHE PAIRING WEIGHT MUST AGREE WITH THE SCORE")
-# The first implementation only stopped ALIGNING ordered nodes. The weight still compared them
-# order-free, so rows whose only difference was inside an ordered array all tied at (2,2), the
-# matcher broke the tie arbitrarily, and a perfect extraction scored 0.00.
 NEST_G = {"books": [{"chapters": ["a", "b"]}, {"chapters": ["b", "a"]}]}
 NEST_P = {"books": [{"chapters": ["b", "a"]}, {"chapters": ["a", "b"]}]}
 nest = acc(NEST_P, NEST_G, ["books[*].chapters"])
 report("rows distinguished ONLY by an ordered inner array still pair correctly",
-       abs(nest - 100) < 1e-9, f"got {nest:.2f}, want 100 (was 0.00)")
-# and the same when the discriminator is deeper still
+       abs(nest - 1) < 1e-9, f"got {nest:.2f}, want 1 (was 0.00)")
 DEEP_G = {"a": [{"b": [{"c": ["x", "y"]}]}, {"b": [{"c": ["y", "x"]}]}]}
 DEEP_P = {"a": [{"b": [{"c": ["y", "x"]}]}, {"b": [{"c": ["x", "y"]}]}]}
 deep = acc(DEEP_P, DEEP_G, ["a[*].b[*].c"])
-report("the same holds three levels down", abs(deep - 100) < 1e-9, f"got {deep:.2f}")
+report("the same holds three levels down", abs(deep - 1) < 1e-9, f"got {deep:.2f}")
 report("declaring an array ordered never LOWERS a correct answer's score",
-       all(abs(acc(d, d, [format_node(n) for n in _find_arrays(list(flatten(d)))]) - 100) < 1e-9
+       all(abs(acc(d, d, [format_node(n) for n in _find_arrays(list(flatten(d)))]) - 1) < 1e-9
            for d in (NEST_G, DEEP_G, GRID, G, DUP)))
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nPATTERNS NAME SCHEMA LOCATIONS, AND ARE UNAMBIGUOUS")
 report("one pattern covers every instance of a nested array",
        format_node(((KEY, "b"), (INDEX, 0), (KEY, "c")))
        == format_node(((KEY, "b"), (INDEX, 99), (KEY, "c"))) == "b[*].c")
-# A key containing the path delimiters must not be mistakable for structure -- the same hazard
-# the tagged key entries exist to prevent, re-established after formatting throws the tags away.
 report("a nested path and a dotted key are DIFFERENT names, structurally",
        node_key(((KEY, "a"), (KEY, "b"))) == ((KEY, "a"), (KEY, "b"))
        and node_key(((KEY, "a.b"),)) == ((KEY, "a.b"),)
@@ -181,24 +167,14 @@ report("format_node remains available for display, and quotes the dotted key",
        and format_node(((KEY, "a.b"),)) == "['a.b']")
 
 print("\nNODE KEYS SURVIVE A SECOND COPY OF THE MODULE")
-# There used to be an EACH sentinel object standing in for an index inside a node key, and it
-# compared by IDENTITY. A second copy of this module (vendored, reloaded, imported by two
-# paths) built its own, so a node key from one copy matched nothing in the other: the array
-# was aligned instead of held in order, silently, with no error. Found exactly that way,
-# comparing this module against a refactored copy of itself.
-#
-# A node key is now an address with the index VALUES blanked and the ('i', ...) tag kept, so
-# it is plain tuples of strings and None all the way down. Two copies cannot disagree about
-# those. The class of bug is gone rather than guarded, but the check stays: it is the thing
-# that would notice a sentinel creeping back in.
 import importlib.util as _ilu                                              # noqa: E402
 
 _spec = _ilu.spec_from_file_location(
     "omni_extract_bench._score_second_copy",
     _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
-                  "omni_extract_bench", "score.py"))
+                  "omni_extract_bench", "metric.py"))
 _copy = _ilu.module_from_spec(_spec)
-_copy.__package__ = "omni_extract_bench"          # so its relative imports resolve
+_copy.__package__ = "omni_extract_bench"
 _sys.modules[_spec.name] = _copy
 _spec.loader.exec_module(_copy)
 
@@ -212,12 +188,11 @@ report("so a node key built by one copy matches a frozenset built by the other",
 CROSS_G = {"books": [{"chapters": ["a", "b"]}]}
 CROSS_P = {"books": [{"chapters": ["b", "a"]}]}
 report("and a name resolved by one copy applies in the other",
-       _copy.grade(copy.deepcopy(CROSS_P), copy.deepcopy(CROSS_G),
+       _copy.score(copy.deepcopy(CROSS_P), copy.deepcopy(CROSS_G),
                    _schema_from(CROSS_G), ["books[*].chapters"])["accuracy"] < 1e-9
        and acc(CROSS_P, CROSS_G, ["books[*].chapters"]) < 1e-9)
 note("under the old identity comparison this scored 100.00: the config silently did not apply")
 
-# The blanked index must stay distinguishable from every key a document can hold.
 report("a blanked index equals no key a document can contain",
        all(node_key(((INDEX, 0),)) != node_key(((KEY, v),))
            for v in ("*", "EACH", "None", "", 0, 1, True, False, None, (), 3.5)))
@@ -225,9 +200,6 @@ report("...including a key literally named \"*\"",
        node_key(((KEY, "*"),)) != node_key(((INDEX, 0),)))
 
 print("\nA NAME THAT FITS NO ARRAY IS AN ERROR, NOT A NO-OP")
-# This was silent. A typo left the array order-free -- which is the DEFAULT -- so the run
-# finished and reported a number that looked entirely plausible. Every mistake below scored
-# 100.00 before, on a document whose steps are reversed.
 SG, SP = {"steps": ["a", "b"]}, {"steps": ["b", "a"]}
 for why, name in (("a misspelt key", "stepz"),
                   ("the right key in the wrong case", "Steps"),
@@ -250,8 +222,6 @@ for kind, value in (("list", ["steps"]),
     report(f"accepts a {kind}", acc(SP, SG, value) < 1e-9)
 note("a name is a string now, so a tuple of names is no longer mistakable for one name")
 
-# A bare string is iterable, so without a guard `order_matters="steps"` would iterate as
-# characters and complain about 's'.
 report("a bare string is refused, with the fix in the message",
        _raises(TypeError, lambda: acc(SP, SG, "steps")))
 try:
@@ -259,7 +229,6 @@ try:
 except TypeError as exc:
     report("...naming the list the caller meant", "['steps']" in str(exc), str(exc))
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nPATTERNS ARE ABSOLUTE, SO DEPTH IS NOT INVARIANT (by design)")
 FLAT_G, FLAT_P = {"steps": ["a", "b"]}, {"steps": ["b", "a"]}
 report("wrapping a document makes the old name an error rather than a quiet no-op",
@@ -271,7 +240,6 @@ note("a name locates an array; move the array and the name must move with it -- 
 note("the stale name says so, instead of scoring the document order-free")
 note("nesting invariance still holds with NO configuration, which is the tested property")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nPROPERTIES THAT MUST SURVIVE A CONFIGURATION")
 def rand_doc(rnd, depth=0):
     d = {}
@@ -296,11 +264,11 @@ for s_ in range(150):
         continue
     every = [format_node(n) for n in _find_arrays(list(flatten(gold)))]
     subset = [p for p in every if rnd.random() < 0.5]
-    if abs(acc(gold, gold, every) - 100) > 1e-9 or abs(acc(gold, gold, subset) - 100) > 1e-9:
+    if abs(acc(gold, gold, every) - 1) > 1e-9 or abs(acc(gold, gold, subset) - 1) > 1e-9:
         ok_id = False
         report("identity", False, f"seed {s_} with ordered={subset}")
         break
-    runs = {repr(sorted(grade(copy.deepcopy(gold), copy.deepcopy(gold), None,
+    runs = {repr(sorted(score(copy.deepcopy(gold), copy.deepcopy(gold), None,
                                     subset).items(), key=str)) for _ in range(3)}
     if len(runs) != 1:
         ok_det = False
@@ -332,14 +300,13 @@ for s_ in range(200):
         break
 report("correcting a leaf never lowers the score of an ordered array", ok_mono)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nINTERACTION WITH EVERYTHING ELSE")
 OM_SCH = {"type": "object", "properties": {
     "bag": {"type": "object", "additionalProperties": {"type": "array",
                                                        "items": {"type": "string"}}}}}
 OM_D = {"bag": {"H": ["a", "b"]}}
 report("an ordered array inside a skipped open map is simply never reached",
-       grade(copy.deepcopy(OM_D), copy.deepcopy(OM_D), OM_SCH,
+       score(copy.deepcopy(OM_D), copy.deepcopy(OM_D), OM_SCH,
                    [])["skipped_open_maps"] == ["bag"])
 report("explain reports positional verdicts for an ordered array",
        [v.verdict for v in explain({"steps": ["b", "a"]}, {"steps": ["a", "b"]},
@@ -348,20 +315,16 @@ report("show and format_node agree except for the blanked indices",
        show(((KEY, "b"), (INDEX, 3), (KEY, "c"))) == "b[3].c"
        and format_node(((KEY, "b"), (INDEX, 3), (KEY, "c"))) == "b[*].c")
 
-# An inner array is re-priced once per candidate outer pairing, so an approximate inner solve
-# would otherwise be reported once per evaluation -- 20 entries for one array in a 4-row doc.
 BIG_G = {"rows": [{"k": i % 2, "xs": [{"v": j % 3, "w": "s"} for j in range(12)]}
                   for i in range(4)]}
 BIG_P = {"rows": [{"k": i % 2, "xs": [{"v": j % 3, "w": "s"} for j in reversed(range(12))]}
                   for i in range(4)]}
-restore = OM.force_approximate()
-big = grade(BIG_P, BIG_G)
-restore()
+with approximate():
+    big = score(BIG_P, BIG_G)
 report("greedy_blocks reports distinct sizes, not one entry per weight evaluation",
        len(big["approximated"]) == 1 and big["matching_exact"] is False,
        f"got {big['approximated']}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nDEGENERATE SHAPES, WITH A CONFIGURATION")
 DEGEN = [({}, {}), ({"a": []}, {"a": []}), ({"a": [[]]}, {"a": [[]]}),
          ({"a": [{}]}, {"a": [{}]}), ({"a": []}, {"a": ["x"]}), ({"a": ["x"]}, {"a": []}),
@@ -371,8 +334,8 @@ for pred, gold in DEGEN:
     try:
         names = [format_node(n) for n in
                  _find_arrays(list(flatten(gold)) + list(flatten(pred)))]
-        r = grade(copy.deepcopy(pred), copy.deepcopy(gold), None, names)
-        if not (0.0 <= r["accuracy"] <= 100.0):
+        r = score(copy.deepcopy(pred), copy.deepcopy(gold), None, names)
+        if not (0.0 <= r["accuracy"] <= 1.0):
             ok, detail = False, f"{pred} vs {gold} -> {r['accuracy']}"
             break
     except Exception as exc:                                        # noqa: BLE001

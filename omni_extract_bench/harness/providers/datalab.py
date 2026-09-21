@@ -15,18 +15,31 @@ Auth: DATALAB_API_KEY.
 """
 from __future__ import annotations
 
-import argparse
+import dataclasses
 import json
 import os
-import sys
 import time
 from pathlib import Path
 
-import requests
+import httpx
 
-from .envelope import write_output
+from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
+                          VendorError)
+from ._cli import run_cli
 
 DEFAULT_BASE_URL = "https://www.datalab.to"
+
+
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """What this vendor can be asked, and what it is asked at its maximum tier."""
+
+    mode: str = dataclasses.field(
+        default="balanced",
+        metadata={"choices": ["fast", "balanced", "accurate"],
+                  "help": "extraction tier; the published runs use balanced and accurate"})
+    base_url: str = DEFAULT_BASE_URL
+    poll_interval: float = 5.0
 
 
 def normalize_schema(schema: dict) -> dict:
@@ -57,92 +70,102 @@ def normalize_schema(schema: dict) -> dict:
     return schema
 
 
-class DatalabAPI:
-    def __init__(self, *, api_key: str, base_url: str = DEFAULT_BASE_URL, mode: str = "balanced",
-                 poll_interval: float = 5, timeout: float = 1800):
-        self.base_url = base_url.rstrip("/")
-        self.mode = mode
-        self.poll_interval = poll_interval
-        self.timeout = timeout
-        self.session = requests.Session()
-        self.session.headers["X-Api-Key"] = api_key
-        self.cost_usd: float | None = None
+def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
+            config: Config = Config()) -> Extraction:
+    """POST the document, poll until it is done, return the extraction and what it cost.
 
-    def __call__(self, pdf: Path, schema: dict):
-        url = f"{self.base_url}/api/v1/extract"
+    Raises rather than returning a failure: this function ran the poll loop, so it is the only
+    place that knows the difference between "the vendor said no" and "we ran out of budget
+    while it was still working" -- a distinction the harness used to reconstruct from an HTTP
+    log afterwards.
+    """
+    key = os.environ.get("DATALAB_API_KEY")
+    if not key:
+        raise MissingCredential("DATALAB_API_KEY is not set")
+
+    budget = Budget(timeout)
+    base_url = config.base_url.rstrip("/")
+    cost: Cost = Cost()
+    polls = 0
+
+    def read_cost(body: dict) -> Cost | None:
+        """The cost the vendor stated, or None if this response does not say.
+
+        Returns the SOURCE as well as the figure, because the two fields below are different
+        claims and a cost that cannot be traced back to the vendor's own response cannot be
+        checked. `bool` is excluded explicitly: `isinstance(True, int)` is True in Python, so
+        a JSON `true` in a cost field would otherwise be read as one cent.
+        """
+        for field, value in (("cost_breakdown.final_cost_cents",
+                              (body.get("cost_breakdown") or {}).get("final_cost_cents")),
+                             ("total_cost", body.get("total_cost"))):
+            found = Cost.reported(value, field, cents=True)
+            if found.usd is not None:
+                return found
+        return None
+
+    with httpx.Client(headers={"X-Api-Key": key}, timeout=120) as client:
         with pdf.open("rb") as fh:
-            resp = self.session.post(
-                url,
+            resp = client.post(
+                f"{base_url}/api/v1/extract",
                 files={"file": (pdf.name, fh, "application/pdf")},
                 data={"page_schema": json.dumps(normalize_schema(schema)),
-                      "extraction_mode": self.mode, "output_format": "json"},
-                timeout=120)
+                      "extraction_mode": config.mode, "output_format": "json"})
         if resp.status_code != 200:
-            return {"__error__": f"HTTP {resp.status_code}: {resp.text[:300]}"}
+            raise VendorError(f"HTTP {resp.status_code}: {resp.text[:300]}",
+                              status=resp.status_code, body=resp.text)
         request_id = resp.json().get("request_id")
         if not request_id:
-            return {"__error__": f"no request_id: {resp.text[:200]}"}
-        return self._poll(request_id)
+            raise VendorError(f"no request_id in the response: {resp.text[:200]}",
+                              status=resp.status_code, body=resp.text)
 
-    def _poll(self, request_id: str):
-        url = f"{self.base_url}/api/v1/extract/{request_id}"
-        deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline:
-            r = self.session.get(url, timeout=60)
+        url = f"{base_url}/api/v1/extract/{request_id}"
+        retry = PollRetry(budget)
+        while True:
+            budget.check(f"request {request_id} was still running after {polls} polls")
+            try:
+                r = client.get(url)
+            except httpx.TransportError as exc:
+                if retry.again():
+                    continue
+                raise VendorError(f"polling failed: {exc}"[:300], status=None) from None
             if r.status_code != 200:
-                return {"__error__": f"HTTP {r.status_code}: {r.text[:300]}"}
+                if retry.again(r.status_code):
+                    continue
+                raise VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
+                                  status=r.status_code, body=r.text)
+            retry.ok()
+            polls += 1
             body = r.json()
-            cents = (body.get("cost_breakdown") or {}).get("final_cost_cents", body.get("total_cost"))
-            if isinstance(cents, (int, float)):
-                self.cost_usd = round(float(cents) / 100.0, 6)     # CENTS -> USD, once
+            found = read_cost(body)
+            if found is not None:
+                cost = found
             status = body.get("status")
+            if status == "error":
+                raise VendorError(f"vendor reported failure: {str(body.get('error'))[:300]}",
+                                  status=200, body=r.text)
             if status == "complete":
-                if self.cost_usd is None:
-                    # Billing is populated on a re-fetch AFTER completion: the poll that first
-                    # reports `complete` carries `total_cost: null`. Without this second GET the
-                    # cost column reads null and the vendor looks like it bills out of band.
-                    self._refetch_cost(url)
+                if cost.usd is None:
+                    try:
+                        found = read_cost(client.get(url).json())
+                        if found is not None:
+                            cost = found
+                    except Exception:  # noqa: BLE001 -- cost must never lose the extraction
+                        pass
                 extraction = body.get("extraction_schema_json")
                 if extraction is None:
-                    return {"__error__": "status complete but no extraction_schema_json"}
-                return json.loads(extraction) if isinstance(extraction, str) else extraction
-            if status == "error":
-                return {"__error__": f"vendor reported failure: {str(body.get('error'))[:300]}"}
-            time.sleep(self.poll_interval)
-        return {"__error__": f"timeout after {self.timeout}s; request {request_id} still running",
-                "__timeout__": True}
-
-    def _refetch_cost(self, url: str) -> None:
-        try:
-            body = self.session.get(url, timeout=60).json()
-            cents = (body.get("cost_breakdown") or {}).get("final_cost_cents", body.get("total_cost"))
-            if isinstance(cents, (int, float)):
-                self.cost_usd = round(float(cents) / 100.0, 6)     # CENTS -> USD, once
-        except Exception:  # noqa: BLE001 -- cost capture must never break extraction
-            pass
+                    raise VendorError("status complete but no extraction_schema_json",
+                                      status=200, body=r.text)
+                return Extraction(
+                    result=json.loads(extraction) if isinstance(extraction, str) else extraction,
+                    raw=body,
+                    cost=cost,
+                    job_id=request_id)
+            time.sleep(config.poll_interval)
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--pdf", required=True, type=Path)
-    ap.add_argument("--schema", required=True, type=Path)
-    ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--mode", default=os.environ.get("DATALAB_MODE", "balanced"),
-                    choices=["fast", "balanced", "accurate"])
-    ap.add_argument("--base-url", default=os.environ.get("DATALAB_BASE_URL", DEFAULT_BASE_URL))
-    ap.add_argument("--timeout", type=float, default=float(os.environ.get("OEB_TIMEOUT", 1800)))
-    a = ap.parse_args()
-    key = os.environ.get("DATALAB_API_KEY")
-    if not key:
-        raise SystemExit("DATALAB_API_KEY must be set")
-    p = DatalabAPI(api_key=key, base_url=a.base_url, mode=a.mode, timeout=a.timeout)
-    t0 = time.time()
-    result = p(a.pdf, json.loads(a.schema.read_text()))
-    write_output(a.out, provider=f"datalab-{a.mode}", result=result, latency_s=time.time() - t0,
-                 usage={"mode": a.mode, "cost_usd": p.cost_usd})
-    if isinstance(result, dict) and "__error__" in result:
-        print(result["__error__"], file=sys.stderr)
-        raise SystemExit(1)
+    run_cli(extract, Config, "datalab")
 
 
 if __name__ == "__main__":

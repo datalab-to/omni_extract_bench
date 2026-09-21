@@ -23,16 +23,12 @@ is not -- that belongs in the schema itself, identically for everyone.
 """
 from __future__ import annotations
 
-import copy
+from ..metric import resolve_refs  # noqa: F401
+
 import json
 import re
 
-# ── universal ────────────────────────────────────────────────────────────────────
 
-#: Keys a benchmark harness may add that mean nothing to an extractor. `evaluation_config` is a
-#: per-field *scoring* annotation: it tells a grader how to compare a value. Shipping it to
-#: vendors went unnoticed for a long time because permissive APIs ignore unknown keys -- until
-#: a strict one rejected 8 of 40 documents over it.
 BENCHMARK_ONLY_KEYS = ("evaluation_config", "default")
 
 
@@ -43,32 +39,6 @@ def strip_benchmark_keys(node, keys=BENCHMARK_ONLY_KEYS):
     if not isinstance(node, dict):
         return node
     return {k: strip_benchmark_keys(v, keys) for k, v in node.items() if k not in keys}
-
-
-def resolve_refs(schema, root=None, depth=0, max_depth=12):
-    """Inline local ``$ref`` so a schema is self-describing.
-
-    Some vendors resolve ``$defs`` themselves; others reject a bare ``$ref`` because it declares
-    no type. Inlining changes nothing semantically. Recursive definitions stop at ``max_depth``
-    rather than expanding forever.
-    """
-    if root is None:
-        root = schema
-    if depth > max_depth or not isinstance(schema, (dict, list)):
-        return schema
-    if isinstance(schema, list):
-        return [resolve_refs(x, root, depth + 1, max_depth) for x in schema]
-    ref = schema.get("$ref")
-    if isinstance(ref, str) and ref.startswith("#/"):
-        cur = root
-        for part in ref[2:].split("/"):
-            cur = cur.get(part) if isinstance(cur, dict) else None
-        if isinstance(cur, dict):
-            merged = {k: v for k, v in schema.items() if k != "$ref"}
-            merged.update({k: v for k, v in cur.items() if k not in merged})
-            return resolve_refs(merged, root, depth + 1, max_depth)
-    return {k: (resolve_refs(v, root, depth + 1, max_depth) if k != "$defs" else v)
-            for k, v in schema.items() if k != "$defs"}
 
 
 def collapse_nullable_union(node):
@@ -94,12 +64,6 @@ def collapse_nullable_union(node):
     return node
 
 
-# ── vendor dialects ──────────────────────────────────────────────────────────────
-
-#: Keys one strict vendor accepts. Everything else is rejected one key per request, so
-#: denylisting turns into whack-a-mole: removing `evaluation_config` surfaced `default`, then
-#: `title`. An allowlist ends it in one step, and the keys kept are exactly those that describe
-#: the task -- what the fields are, what types they hold, what they mean, which are required.
 STRICT_ALLOWED_KEYS = ("type", "enum", "properties", "items", "required", "description")
 
 
@@ -144,11 +108,6 @@ def to_strict_dialect(node, in_items=False, allowed=STRICT_ALLOWED_KEYS):
         out["type"] = "object"
 
     if in_items:
-        # A SCALAR array item accepts `type` and NOTHING else -- not even `description`, which
-        # the allowlist legitimately keeps everywhere else. Leaving it rejected the whole
-        # request ("Array items only support \"type\" property. Found: description"), scoring
-        # the provider zero on documents it could handle. Object items keep `properties`,
-        # which is how they declare their shape.
         if isinstance(out.get("type"), str) and out["type"] in (
                 "string", "number", "integer", "boolean"):
             return {"type": out["type"]}
@@ -205,8 +164,6 @@ def to_typed_enum_dialect(node):
         out["items"] = to_typed_enum_dialect(out["items"])
     return out
 
-
-# ── response handling ────────────────────────────────────────────────────────────
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.S)
 

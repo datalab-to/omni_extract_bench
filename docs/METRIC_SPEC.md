@@ -63,7 +63,7 @@ gets no address at all (§5).
 string and there is no partial credit; §10 rules out the mechanisms that would soften it. For a
 name, code, date or amount, spelling is the whole job. For prose it is not, so a prose-valued
 leaf measures verbatim transcription — on a 1081-entry bibliography, dropping a trailing DOI
-from every entry scores 91.42 and eliding authors to "et al." scores 8.35. Fix that in the
+from every entry scores 0.9142 and eliding authors to "et al." scores 0.0835. Fix that in the
 schema by decomposing prose into fields, not in the scorer.
 
 ## 3. Aligning arrays
@@ -88,7 +88,7 @@ in `order_matters` makes its index an address again; §8 covers what that trades
 ## 4. What is reported
 
 Every address falls into exactly one bucket. These are the verdicts `explain()` returns and
-the counts `grade()` reports:
+the counts `score()` reports:
 
 | bucket | meaning |
 | --- | --- |
@@ -114,19 +114,19 @@ contributes a value per column while one invented field contributes one.
 
 **Why `accuracy` and not `f1` or Jaccard.** Those are functions of `matched`, `|gold|` and
 `|asserted|` alone, so they cannot tell *misread* from *missed and invented elsewhere* — both
-score 50.00 under `f1`. `accuracy` scores them 50.00 and 33.33, because it knows the first
+score 0.5 under `f1`. `accuracy` scores them 0.5 and 0.3333, because it knows the first
 pair shares an address, and locating a field is a different problem from not finding it.
 
 **It cannot be inflated.** `total = |gold| + invented`, so `accuracy ≤ matched / |gold|`.
-Proposing all 27 combinations of a three-key row to guarantee one hit scores 3.70. Ten gold
-rows returned perfectly score 100.00; the same ten with a thousand invented ones score 0.99.
+Proposing all 27 combinations of a three-key row to guarantee one hit scores 0.037. Ten gold
+rows returned perfectly score 1.0; the same ten with a thousand invented ones score 0.0099.
 
 **It is indifferent in exactly one place:** where gold has a value, a wrong value costs what a
 blank costs. Both recovered nothing there. *Can I trust what it said* is `precision`'s question.
 
 **Honesty flags.** `matching_exact` and `approximated` say when an array was too large to solve
 exactly; `skipped_open_maps` says which subtrees were not graded (§5). Asserted by
-`tests/test_false_assertions.py`, including that `grade`'s counts equal `explain`'s histogram.
+`tests/test_false_assertions.py`, including that `score`'s counts equal `explain`'s histogram.
 
 ## 5. What is not scored
 
@@ -150,7 +150,7 @@ entry point:
 > `canon_key(v) == ""` **implies** `states_nothing(v)`
 
 Seventeen spellings once violated it. `[1]` through `[14]` as reference numbers all keyed
-empty, so reversing every reference scored 100.00. Asserted by construction over 128 probe
+empty, so reversing every reference scored 1.0. Asserted by construction over 128 probe
 values in `tests/test_canon_properties.py`, not by a list — a list is what let them sit.
 
 **`additionalProperties` objects are not graded.** The keyword is not forwarded to strict
@@ -175,7 +175,7 @@ change this, and nothing here licenses the ground truth to normalise.
 
 **The scorer enforces nothing the model was not shown.** No rule may read a field's name,
 description or position to decide how to compare its value; the comparison depends on the value
-alone. Otherwise the benchmark would grade a question it never asked.
+alone. Otherwise the benchmark would score a question it never asked.
 
 ### 5.3 Where the fold is lenient on purpose, and what that costs
 
@@ -204,20 +204,23 @@ Equal weight per subset, not per document, so a large subset cannot dominate. Th
 weightings compose: every value carries `1/total` inside its document, so a value's weight is
 **inversely proportional to the size of the document holding it**.
 
-> **Not yet implemented.** `run_score.py` takes a flat mean over documents, which is the thing
-> this section says must not happen. Doing it properly needs each document's subset, which a
-> manifest can carry as an ordinary column. Until then a leaderboard printed by this repository
-> is not UNIFIED.
+> **Not done for you.** `score` scores one document, and the UNIFIED step is the caller's to
+> take. `benchmark.summarise` goes as far as SUBJECT and no further: `summary.json` carries the
+> mean over documents at the top and the same block per suite, and the mean of those four is
+> the line it deliberately does not write. Averaging `accuracy` across a corpus gives the flat
+> mean over documents that this section says must not happen -- group by subset, take the mean
+> within each, then take the mean of those. A leaderboard that skips that step is not UNIFIED,
+> whatever it is labelled.
 
 ## 8. What the metric pays for
 
 Recovering a value is the only thing that raises a score. Two consequences worth stating:
 
-**Omission is charged.** Returning 44 of 349 rows scores about 12, not 100. A metric that lets
+**Omission is charged.** Returning 44 of 349 rows scores about 0.12, not 1.0. A metric that lets
 an extractor skip rows for free ranks a truncating system above a complete one.
 
-**Volume is not rewarded.** A document whose every gold value is returned scores 23.08 when it
-also emits ten invented rows, against 66.67 for one. Output that produces no correct value
+**Volume is not rewarded.** A document whose every gold value is returned scores 0.2308 when it
+also emits ten invented rows, against 0.6667 for one. Output that produces no correct value
 never raises a score and strictly lowers it whenever the score was above zero (P21).
 
 **Order-freedom is a trade.** A wrong value costs more inside a scalar array than in an object,

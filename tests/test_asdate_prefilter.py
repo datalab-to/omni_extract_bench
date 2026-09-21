@@ -95,25 +95,18 @@ DAYS = [date(y, m, d)
 
 print("\nASDATE PREFILTER\n")
 
-# ── the prefilter is actually installed ───────────────────────────────────────────────
-# `values` falls back to the plain loop if the stdlib internals move, which keeps the
-# answers right and quietly loses the speed this code exists for. Say so out loud.
 report("the prefilter is installed, not silently fallen back to the slow loop",
        hasattr(V, "_union_regex")
        and bool(V._union_regex(tuple(V._DATEFMTS)).match("2024-01-15"))
        and bool(V._union_regex(tuple(V._DATETIMEFMTS)).match("2024-10-31T00:00:00Z")),
        "no _union_regex: _strptime internals moved and values.py fell back")
 
-# ── timestamps ────────────────────────────────────────────────────────────────────────
-# `_asdate` has a second phase: a timestamp is a date, but only at midnight. The prefilter
-# gates that phase too, so it can swallow timestamps if its union is built from the wrong
-# list. These are the cases from the commit that introduced the fold.
 ts_cases = [
-    ("2024-10-31T00:00:00Z", "2024-10-31"),        # midnight: a date in timestamp clothes
+    ("2024-10-31T00:00:00Z", "2024-10-31"),
     ("2024-10-31 00:00:00", "2024-10-31"),
-    ("2024-10-31T00:00:00+00:00", "2024-10-31"),   # 25 chars -- past the old length guard
-    ("2024-10-31T00:00:00.000000Z", "2024-10-31"),  # 27 chars
-    ("2024-10-31T09:00:00Z", None),                # a real time is not a date
+    ("2024-10-31T00:00:00+00:00", "2024-10-31"),
+    ("2024-10-31T00:00:00.000000Z", "2024-10-31"),
+    ("2024-10-31T09:00:00Z", None),
 ]
 bad = [(s, want, V._asdate(s)) for s, want in ts_cases if V._asdate(s) != want]
 report("a timestamp at midnight is still a date, and a real time still is not",
@@ -129,33 +122,26 @@ bad = [s for s in ["2024-10-31T09:00:00Z", "2024-10-31T09:00:00+00:00",
 report("`_astime` shares the prefiltered parse and still agrees",
        not bad, f"disagreed: {bad!r}")
 
-# ── whitespace ────────────────────────────────────────────────────────────────────────
-# The case that broke the hand-rolled filter, and its neighbours.
 ws_cases = ["January\t15\t2024", "Jan\t15, 2024", "Jan\n15 2024",
             "15\xa0January 2024", "Jan  15,  2024"]
 bad = [s for s in ws_cases if V._asdate(s) != unfiltered(s) or V._asdate(s) is None]
 report("whitespace separators still parse, because strptime matches them with \\s+",
        not bad, f"disagreed or stopped parsing: {bad!r}")
 
-# ── round trip ────────────────────────────────────────────────────────────────────────
-# Anything a format can render, that same format must still read back.
 checked = 0
 lost = []
 for fmt in list(V._DATEFMTS) + list(V._DATETIMEFMTS):
     for dt in DAYS:
-        # Render at midnight AND at a real time, so the timestamp formats exercise both
-        # sides of the fold rather than only the branch that returns a date.
         for when in (datetime(dt.year, dt.month, dt.day),
                      datetime(dt.year, dt.month, dt.day, 9, 30, 15)):
             rendered = when.strftime(fmt)
-            # strptime accepts unpadded numbers that strftime always pads.
             for s in {rendered, re.sub(r"\b0(\d)", r"\1", rendered)}:
                 if len(s) > 34 or not re.search(r"\d", s):
                     continue
                 try:
                     datetime.strptime(s, fmt)
                 except ValueError:
-                    continue                    # not parseable anyway
+                    continue
                 checked += 1
                 if V._asdate(s) != unfiltered(s) or V._astime(s) != unfiltered_time(s):
                     lost.append((fmt, s))
@@ -164,15 +150,11 @@ report("every format can still read back everything it can write, padded or not"
 note(f"{checked:,} rendered strings checked across "
      f"{len(V._DATEFMTS)} date and {len(V._DATETIMEFMTS)} timestamp formats")
 
-# ── values the spec says are not dates ────────────────────────────────────────────────
 not_dates = ["1/2", "Q1", "2-3-13", "5", "T", "", "hello", "2024", "-98.2"]
 bad = [s for s in not_dates if V._asdate(s) != unfiltered(s)]
 report("values the spec refuses as dates are refused exactly as before",
        not bad, f"changed: {bad!r}")
 
-# ── fuzz ──────────────────────────────────────────────────────────────────────────────
-# Random strings and mutated dates: shapes no corpus is guaranteed to contain, which is
-# the whole point.
 rnd = random.Random(0)
 alphabet = "0123456789/-. ,:+TZ\t\xa0JanFebMarchXQ"
 pool = ([d.strftime(f) for f in V._DATEFMTS for d in DAYS[:20]]
@@ -205,7 +187,6 @@ for _ in range(N):
 
 report("filtered and unfiltered agree on random and mutated input",
        not disagreements, f"{disagreements!r}")
-# A fuzz run that produced no dates would only be exercising the reject path.
 report("the fuzz actually generated dates, so it tests the accept path too",
        positives > 500, f"only {positives} real dates in {N:,} inputs")
 note(f"{N:,} fuzz inputs, {positives:,} of them real dates")
@@ -214,10 +195,7 @@ print(f"\n{'ASDATE PREFILTER HOLDS' if not FAILS else 'FAILURES:'}")
 for f in FAILS:
     print(f"   {f}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nAMBIGUOUS DATES RESOLVE BY SEPARATOR, DELIBERATELY")
-# 01/02/2024 and 01.02.2024 are each two possible dates. Which one wins is decided by the
-# order of _DATEFMTS, so it is pinned here rather than left to whoever edits the list next.
 for _v, _want, _why in (
         ("01/02/2024", "2024-01-02", "slash: month first, US convention"),
         ("01-02-2024", "2024-01-02", "hyphen: month first"),
@@ -225,8 +203,6 @@ for _v, _want, _why in (
         ("6.12.2013",  "2013-12-06", "dot: day first"),
 ):
     report(f"{_v} -> {_want}  ({_why})", V._asdate(_v) == _want, f"got {V._asdate(_v)}")
-# An impossible month falls through to the next format, so only genuinely ambiguous dates
-# turn on the order at all.
 for _v, _want in (("31.07.2024", "2024-07-31"), ("25.12.2024", "2024-12-25"),
                   ("12/31/2024", "2024-12-31")):
     report(f"unambiguous dates parse the same either way: {_v}", V._asdate(_v) == _want,

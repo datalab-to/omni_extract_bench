@@ -90,10 +90,6 @@ report("nothing that merely contains digits is swallowed as a date",
 note("the offset is dropped rather than converted: extraction reads the printed wall clock")
 
 print("\nPRECISION BELONGS TO THE FRACTION, NOT TO THE WHOLE NUMBER")
-# Rounding the whole number to 7 significant digits spent its budget on the integer part
-# first, so it got these two cases backwards: cents merged once an amount reached six
-# figures, while a small rate got no more leniency than a large one. The integer part is now
-# compared exactly and the FRACTION keeps 7 significant digits of its own.
 report("the same printed rate at two precisions matches -- the case leniency is FOR",
        cmp_leaf(33.33333333, 33.3333333) >= 1.0)
 report("...and a fraction agreeing to 7 figures matches however small it is",
@@ -130,11 +126,6 @@ report("...and a disagreement about the sign is a mismatch",
        cmp_leaf(98.2, -98.2) < 1.0)
 
 print("\nAN ID KEYS THE SAME WHETHER IT ARRIVES AS AN INTEGER OR A FLOAT")
-# This was a real defect. Only values containing a "." are parsed as numbers, which is what
-# keeps an ID exact -- but a vendor emitting the same ID as a JSON float had it rounded to 7
-# significant digits: 8303911426.0 keyed as 8303911000. So a CORRECT account number scored as
-# wrong, and two IDs differing in their last three digits scored as equal. An integral float
-# now keys as its integer.
 report("the same ID as an int and as a float agree",
        cmp_leaf(8303911426, 8303911426.0) >= 1.0
        and cmp_leaf(8303911426, "8303911426.0") >= 1.0,
@@ -158,23 +149,23 @@ print(f"\n{'COMPARISON SURFACE IS AS DOCUMENTED' if not FAILS else 'FAILURES:'}"
 for f in FAILS:
     print(f"   {f}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nA VERDICT CARRIES BOTH FORMS, AND `None` MEANS ONE THING")
-# The surface a UI reads. `gold_raw`/`pred_raw` are what the document and the model wrote;
-# `gold_canon`/`pred_canon` are what they were compared AS. A match between two visibly
-# different strings is then self-explaining, and `values.canon_trace(raw)` names the step.
-from omni_extract_bench.score import explain, show, Verdict          # noqa: E402
+from omni_extract_bench.metric import score, show, Verdict            # noqa: E402
+
+def verdicts_of(pred, gt, schema):
+    """Per-address verdicts. `score` is the only entry point; the list comes off it."""
+    return score(pred, gt, schema, verdicts=True)["verdicts"]
 from omni_extract_bench.values import states_nothing, canon_trace, canon_key    # noqa: E402
 
 _SCH = {"type": "object", "properties": {
     "a": {"type": "string"}, "b": {"type": "string"}, "c": {"type": "string"},
     "g": {"type": "object", "additionalProperties": {"type": "string"}}}}
-_V = {v.verdict: v for v in explain({"a": "X", "c": "Z", "g": {"k": "v"}},
+_V = {v.verdict: v for v in verdicts_of({"a": "X", "c": "Z", "g": {"k": "v"}},
                                     {"a": "X", "b": "Y", "g": {"k": "v"}}, _SCH)}
 
 report("Verdict carries raw and canon for each side",
-       Verdict._fields == ("address", "gold_raw", "pred_raw", "verdict",
-                           "gold_canon", "pred_canon"), f"{Verdict._fields}")
+       Verdict._fields == ("address", "gold_raw", "pred_raw",
+                           "gold_canon", "pred_canon", "verdict"), f"{Verdict._fields}")
 report("a missing address has no pred side",
        _V["unfound"].pred_raw is None and _V["unfound"].pred_canon is None
        and _V["unfound"].gold_raw == "Y")
@@ -187,15 +178,13 @@ report("a skipped open map carries neither side",
                                _V["skipped_open_map"].gold_canon,
                                _V["skipped_open_map"].pred_canon)))
 
-# The property that lets a caller test `is None` and be done: nothing that states nothing ever
-# reaches a Verdict, so None cannot mean "an empty value" -- only "no value here".
 _cases = [({"a": "X", "c": "Z"}, {"a": "X", "b": "Y"}),
           ({"a": None, "b": ""}, {"a": "Y", "b": "Z"}),
           ({"a": "  ", "b": []}, {"a": "Y", "b": {}}),
           ({}, {"a": "Y"}), ({"a": "Y"}, {})]
 _bad = []
 for _p, _g in _cases:
-    for v in explain(_p, _g, _SCH):
+    for v in verdicts_of(_p, _g, _SCH):
         if (v.gold_raw is None) != (v.gold_canon is None): _bad.append(("gold disagree", v))
         if (v.pred_raw is None) != (v.pred_canon is None): _bad.append(("pred disagree", v))
         if v.gold_raw is not None and states_nothing(v.gold_raw): _bad.append(("gold blank", v))
@@ -206,20 +195,17 @@ report("raw and canon are None together, and a set value is never blank", not _b
 note("`flatten` gates on states_nothing before an address exists, so None on a Verdict means")
 note("'no value at this address' -- never 'a value that happened to be empty'.")
 
-# THE CARRY-THROUGH ITSELF: the canon a Verdict reports must be the canon the scorer used.
-# A UI that showed a different one would be explaining a comparison that never happened.
 _carry = []
 for _p, _g in _cases + [
         ({"a": "31-1440073", "b": "\u2022 x", "c": "03/31/2024"},
          {"a": "311440073", "b": "x", "c": "2024-03-31"}),
         ({"a": "NIKE, Inc.", "b": "12.90", "c": "\u00bd"},
          {"a": "Nike", "b": "12.9", "c": "1/2"})]:
-    for v in explain(_p, _g, _SCH):
+    for v in verdicts_of(_p, _g, _SCH):
         if v.gold_raw is not None and v.gold_canon != canon_key(v.gold_raw):
             _carry.append(("gold", v.gold_raw, v.gold_canon, canon_key(v.gold_raw)))
         if v.pred_raw is not None and v.pred_canon != canon_key(v.pred_raw):
             _carry.append(("pred", v.pred_raw, v.pred_canon, canon_key(v.pred_raw)))
-        # and the verdict must follow from the two canons, not from anything else
         if v.gold_raw is not None and v.pred_raw is not None:
             want = "matched" if v.gold_canon == v.pred_canon else "misread"
             if v.verdict != want:
@@ -234,18 +220,12 @@ report("canon_trace explains a match between two raw forms",
        f"{canon_trace(_m.pred_raw)}")
 report("canon_trace agrees with the Verdict on every raw value it carries",
        all(canon_trace(r).canon == c
-           for _p, _g in _cases for v in explain(_p, _g, _SCH)
+           for _p, _g in _cases for v in verdicts_of(_p, _g, _SCH)
            for r, c in ((v.gold_raw, v.gold_canon), (v.pred_raw, v.pred_canon))
            if r is not None))
 
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nA NUMBER TOO ABSURD TO BE PRINTED IS COMPARED AS TEXT")
-# `Decimal` has an unbounded exponent where `float` saturates, so `1.0e1000000000` parses
-# happily and `int()` of it then tries to materialise a billion digits -- it HANGS rather than
-# failing. The magnitude guard in `_asdecimal` is what stops that, and nothing tested it:
-# mutation-testing the recognisers removed the guard and the whole suite still passed.
 from omni_extract_bench.recognise import _asdecimal, _fraction_places   # noqa: E402
 from decimal import Decimal                                             # noqa: E402
 
@@ -260,8 +240,6 @@ note("they fall through to text comparison, which is exact and cheap. The failur
 note("prevents is a hang, not a wrong answer, so it cannot be caught by a score check.")
 
 print("\nPRECISION IS A PROPERTY OF THE FRACTION, NOT OF THE NUMBER")
-# Leading zeros after the point do not spend the 7-significant-digit budget. Documented in
-# `_fraction_places` and, until now, asserted nowhere.
 for _v, _want, _why in (("0.5", 7, "no leading zeros, 7 places"),
                         ("0.0025", 9, "two leading zeros, so 7 significant digits start later"),
                         ("9825.000082185", 11, "a wide integer part spends none of the budget"),

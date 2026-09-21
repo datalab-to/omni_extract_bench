@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """The command line, checked against the handlers behind it and against the README.
 
-Nothing else here drives the CLI: the other tests call `run_score.run` and `grade` directly,
-which is why `oeb predict` shipped in 0.1.1 with no `--provider` flag at all while
-`cmd_predict` read `args.provider` on its first line. Every invocation raised AttributeError,
-and the form the README documents failed one step earlier on an unrecognized argument.
+Nothing else here drives the CLI: the other tests call `score` directly, which is why `oeb
+predict` shipped in 0.1.1 with no `--provider` flag at all while `cmd_predict` read
+`args.provider` on its first line. Every invocation raised AttributeError, and the form the
+README documented failed one step earlier on an unrecognized argument.
 
 So the first test reads each `cmd_*` handler's source for every `args.X` it touches and
 asserts the parser produces it -- a flag a handler needs and the parser does not define is
-caught whoever adds it, without anyone having to remember this file exists.
+caught whoever adds it, without anyone having to remember this file exists. The third test
+keeps that honest as the CLI grows: a handler with no invocation listed below is a verb
+nothing checks, and it fails here rather than in someone's shell.
 
 The second reads the README's own `oeb ...` lines and parses them. A documented command the
 parser rejects is a bug in one of the two, and which one does not matter to whoever types it.
 
-Nothing is executed: the handlers are swapped for a spy, so this needs no manifest, no
-network and no extras.
+Nothing is executed: the handlers are swapped for a spy, so this needs no network, no files
+and no extras.
 
 Run: python3 tests/test_cli_surface.py
 """
@@ -23,17 +25,18 @@ import contextlib
 import inspect
 import io
 import re
+import shlex
 import sys
 from pathlib import Path
 
-# run from anywhere: `python tests/x.py` puts tests/ on the path, not the repo root
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 from omni_extract_bench import cli  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-HANDLERS = ("cmd_score", "cmd_predict", "cmd_score_one")
+HANDLERS = tuple(sorted(n for n in dir(cli) if n.startswith("cmd_")))
+VERBS = ("score", "benchmark", "providers", "predict")
 FAILS = []
 
 
@@ -76,17 +79,17 @@ def parse(argv):
     return captured.get("args")
 
 
-# A representative invocation of each verb: every required flag and nothing optional, so
-# what the namespace carries is what the parser defaults rather than what the line supplied.
 INVOCATIONS = {
-    "score": (["score", "--manifest", "m.parquet", "--out", "run/"], cli.cmd_score),
-    "predict": (["predict", "--manifest", "m.parquet", "--out", "p/",
-                 "--provider", "datalab"], cli.cmd_predict),
-    "score-one": (["score-one", "--gt", "g.json", "--pred", "p.json",
-                   "--schema", "s.json"], cli.cmd_score_one),
+    "score": (["score", "--gt", "g.json", "--pred", "p.json",
+               "--schema", "s.json"], "cmd_score"),
+    "benchmark": (["benchmark", "--providers", "datalab"], "cmd_benchmark"),
+    "providers": (["providers"], "cmd_providers"),
+    "predict": (["predict", "--provider", "datalab", "--doc", "d.pdf",
+                 "--schema", "s.json"], "cmd_predict"),
 }
 
-for verb, (argv, handler) in INVOCATIONS.items():
+for verb, (argv, handler_name) in INVOCATIONS.items():
+    readers = [getattr(cli, handler_name)]
     try:
         ns = parse(argv)
     except AssertionError as exc:
@@ -95,21 +98,99 @@ for verb, (argv, handler) in INVOCATIONS.items():
     check(f"`oeb {verb}` parses", ns is not None, "the handler was never reached")
     if ns is None:
         continue
-    missing = sorted(a for a in attrs_read(handler) if not hasattr(ns, a))
-    check(f"`oeb {verb}` supplies every flag its handler reads", not missing,
-          f"handler reads args.{', args.'.join(missing)}; the parser defines none of it")
+    missing = sorted({a for fn in readers for a in attrs_read(fn) if not hasattr(ns, a)})
+    check(f"`oeb {verb}` supplies every flag it reads", not missing,
+          f"reads args.{', args.'.join(missing)}; the parser defines none of it")
 
 
-# ── every `oeb ...` line in the README parses ───────────────────────────────────
-lines = [ln.strip() for ln in (ROOT / "README.md").read_text().splitlines()
-         if re.match(r"^oeb\s+(score|predict|score-one)\b", ln.strip())]
-check("the README shows commands to check", len(lines) >= 3, f"found {len(lines)}")
-for line in lines:
+def _incomplete(buf: str) -> bool:
     try:
-        parse(line.split()[1:])
-        check(f"README: {line}", True)
+        shlex.split(buf)
+        return False
+    except ValueError:
+        return True
+
+
+_joined, _dangling, _buf = [], [], ""
+for _doc in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
+    for _n, _raw in enumerate(_doc.read_text().splitlines(), 1):
+        _ln = _raw.strip()
+        if _buf or re.match(rf"^oeb\s+({'|'.join(VERBS)})\b", _ln):
+            # THE RAW LINE DECIDES WHETHER IT CONTINUES. A backslash with anything after it
+            # escapes that -- a space, not the newline -- so the shell ends the command there
+            # and runs the next line as its own. Stripping first hid a line with 126 spaces
+            # after its backslash: this joined what bash would not, and passed.
+            _continues = _raw.endswith("\\")
+            if _raw.rstrip().endswith("\\") and not _continues:
+                _dangling.append(f"{_doc.name}:{_n}")
+                _continues = True          # join it anyway, so the report is the one above
+            _buf = (_buf + " " if _buf else "") + _ln.rstrip("\\")
+            if not _continues and not _incomplete(_buf):
+                _cmd = re.split(r"\s(?:\||>>?|&&|;)\s", _buf)[0]
+                _joined.append((_doc.name, " ".join(_cmd.split())))
+                _buf = ""
+    _buf = ""
+check("no line continuation has whitespace after its backslash", not _dangling,
+      f"{', '.join(_dangling)} -- bash ends the command there and runs the rest as its own")
+lines = [(doc, ln) for doc, ln in _joined if "..." not in ln]
+check("the docs show commands to check", len(lines) >= 1, f"found {len(lines)}")
+for doc, line in lines:
+    try:
+        parse(shlex.split(line)[1:])
+        check(f"{doc}: {line}", True)
     except AssertionError as exc:
-        check(f"README: {line}", False, str(exc))
+        check(f"{doc}: {line}", False, str(exc))
+
+
+unchecked = sorted(set(HANDLERS) - {h for _, h in INVOCATIONS.values()})
+check("every cmd_* handler has an invocation in this file", not unchecked,
+      f"no line checks {', '.join(unchecked)}")
+
+import logging                                                          # noqa: E402
+
+parse(["score", "--gt", "g.json", "--pred", "p.json", "--schema", "s.json"])
+for lib in ("httpx", "openai._base_client", "urllib3", "a_library_added_next_year"):
+    check(f"{lib} does not narrate at INFO",
+          logging.getLogger(lib).getEffectiveLevel() > logging.INFO)
+check("...but a third-party WARNING still gets through",
+      logging.getLogger("httpx").getEffectiveLevel() <= logging.WARNING)
+check("our own logger reports progress",
+      logging.getLogger("omni_extract_bench.benchmark").getEffectiveLevel() <= logging.INFO)
+
+print("\nA BENCHMARK ASKS BEFORE IT SPENDS")
+import builtins                                                          # noqa: E402
+
+
+class _Stdin:
+    def __init__(self, tty):
+        self.tty = tty
+
+    def isatty(self):
+        return self.tty
+
+
+def _asked(answer, tty=True):
+    """What `confirm_plan` decides, given a terminal that answers `answer`."""
+    saved_in, saved_input = cli.sys.stdin, builtins.input
+    shown = io.StringIO()
+    cli.sys.stdin = _Stdin(tty)
+    builtins.input = ((lambda _="": (_ for _ in ()).throw(EOFError))
+                      if answer is EOFError else (lambda _="": answer))
+    try:
+        with contextlib.redirect_stderr(shown):
+            return cli.confirm_plan("benchmark: 1 run"), shown.getvalue()
+    finally:
+        cli.sys.stdin, builtins.input = saved_in, saved_input
+
+
+for answer, want in (("y", True), ("yes", True), ("Y", True),
+                     ("n", False), ("", False), ("nonsense", False)):
+    got, _ = _asked(answer)
+    check(f"a terminal answering {answer!r} -> {want}", got is want, str(got))
+check("the plan is shown before the question", "benchmark: 1 run" in _asked("y")[1])
+check("...on stderr, so stdout stays the summary", _asked("y")[1].strip() == "benchmark: 1 run")
+check("no terminal proceeds without asking", _asked("n", tty=False)[0] is True)
+check("...and a closed terminal does not", _asked(EOFError)[0] is False)
 
 print(f"\n{'ALL CLI TESTS PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}")
 sys.exit(1 if FAILS else 0)

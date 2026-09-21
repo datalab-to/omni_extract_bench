@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "properties": {
+    "invoice_id": {
+      "type": "string",
+      "description": "The invoice number as printed on the document."
+    },
+    "invoice_date": {
+      "type": "string",
+      "description": "Date of issue, ISO 8601 (YYYY-MM-DD)."
+    },
+    "total_due": {
+      "type": "number",
+      "description": "Total amount payable, in the invoice currency."
+    },
+    "purchase_order": {
+      "type": "string",
+      "description": "Buyer's purchase order number, where the invoice cites one."
+    },
+    "line_items": {
+      "type": "array",
+      "description": "One entry per billed line.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sku": {"type": "string", "description": "Stock code for the item."},
+          "description": {"type": "string", "description": "Item description as printed."},
+          "qty": {"type": "integer", "description": "Units billed."},
+          "unit_price": {"type": "number", "description": "Price per unit."}
+        }
+      }
+    }
+  }
+}

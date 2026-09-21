@@ -30,9 +30,9 @@ import random
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench import matching as OM                              # noqa: E402
-from omni_extract_bench.score import (                                     # noqa: E402
-    KEY, Row, _content_key, _extract_rows_at, flatten, grade)
+from tests.approximate import approximate                  # noqa: E402
+from omni_extract_bench.metric import (                                     # noqa: E402
+    KEY, Row, _content_key, _extract_rows_at, flatten, score)
 
 FAILS = []
 
@@ -47,7 +47,6 @@ def note(text):
     print(f"          {text}")
 
 
-# ── schemas ───────────────────────────────────────────────────────────────────────────
 def _obj(**props):
     return {"type": "object", "properties": props}
 
@@ -55,7 +54,6 @@ def _obj(**props):
 STR = {"type": "string"}
 FLAT = {"type": "object", "required": ["r"], "properties": {
     "r": {"type": "array", "items": _obj(**{k: STR for k in "abcde"})}}}
-# depth 3: rows -> items -> parts
 DEEP = {"type": "object", "required": ["r"], "properties": {
     "r": {"type": "array", "items": _obj(
         k=STR,
@@ -91,15 +89,14 @@ def shuffled_everywhere(doc, rng):
 
 def disagreement(gold, pred, variants, schema, **kw):
     """Fields whose value is not the same for every variant of the prediction."""
-    base = grade({"r": pred}, {"r": gold}, schema, **kw)
+    base = score({"r": pred}, {"r": gold}, schema, **kw)
     moved = set()
     for variant in variants:
-        r = grade({"r": variant}, {"r": gold}, schema, **kw)
+        r = score({"r": variant}, {"r": gold}, schema, **kw)
         moved |= {k for k in base if r[k] != base[k]}
     return moved, base
 
 
-# ── 1. flat rows, every ordering of both sides ────────────────────────────────────────
 print("EVERY REPORTED FIELD SURVIVES REORDERING THE ROWS")
 rng = random.Random(17)
 moved_pred, moved_gold = set(), set()
@@ -110,15 +107,14 @@ for _ in range(120):
                          [[pred[i] for i in p]
                           for p in itertools.permutations(range(len(pred)))], FLAT)
     moved_pred |= m
-    base = grade({"r": pred}, {"r": gold}, FLAT)
+    base = score({"r": pred}, {"r": gold}, FLAT)
     for perm in itertools.permutations(range(len(gold))):
-        r = grade({"r": pred}, {"r": [gold[i] for i in perm]}, FLAT)
+        r = score({"r": pred}, {"r": [gold[i] for i in perm]}, FLAT)
         moved_gold |= {k for k in base if r[k] != base[k]}
 report("permuting the PREDICTION's rows moves nothing", not moved_pred, str(sorted(moved_pred)))
 report("permuting the GOLD's rows moves nothing", not moved_gold, str(sorted(moved_gold)))
 note("before the content-key sort: 35/600 and 11/600 documents moved fabricated/invented_item")
 
-# ── 2. depth 3 ────────────────────────────────────────────────────────────────────────
 print("\nAND SURVIVES IT AT EVERY DEPTH, NOT JUST THE TOP ONE")
 rng = random.Random(23)
 moved_deep = set()
@@ -132,11 +128,9 @@ report("rows, their nested items, and the parts inside those -- all reorderable"
        not moved_deep, str(sorted(moved_deep)))
 note("the key is recursive; one that read positions would still have passed at depth 1")
 
-# ── 3. the greedy fallback takes the same path ────────────────────────────────────────
 print("\nINCLUDING WHEN THE ARRAY IS TOO BIG TO SOLVE EXACTLY")
 rng = random.Random(29)
-restore = OM.force_approximate()       # the repo's own hook: shrink the exactness budget
-try:
+with approximate():
     moved_greedy = set()
     for _ in range(60):
         gold = [flat_row(rng) for _ in range(rng.randint(2, 4))]
@@ -145,12 +139,9 @@ try:
                              [[pred[i] for i in p]
                               for p in itertools.permutations(range(len(pred)))], FLAT)
         moved_greedy |= m
-finally:
-    restore()
 report("the greedy path is order-independent too", not moved_greedy, str(sorted(moved_greedy)))
 note("greedy breaks its own ties on position, which is canonical once the rows are sorted")
 
-# ── 4. the negative case: ordered arrays MUST move ────────────────────────────────────
 print("\nBUT AN ORDERED ARRAY IS SUPPOSED TO MOVE -- THERE THE INDEX IS THE ADDRESS")
 rng = random.Random(31)
 ordered_moved = 0
@@ -164,7 +155,6 @@ report("declaring the inner array ordered makes reordering it a real change",
        ordered_moved > 0, f"{ordered_moved}/60 documents moved")
 note("a fix that froze these too would be a bug, not a stronger guarantee")
 
-# ── 5. the key itself ─────────────────────────────────────────────────────────────────
 print("\nTHE CONTENT KEY IS READ OFF STRUCTURE, NOT OFF A RENDERED ADDRESS")
 one = _extract_rows_at(flatten({"r": [{"a.b": 1}]}), ((KEY, "r"),), frozenset())[0]
 two = _extract_rows_at(flatten({"r": [{"a": {"b": 1}}]}), ((KEY, "r"),), frozenset())[0]
@@ -185,17 +175,16 @@ report("every Row is built with its key; the empty default never reaches the sor
        Row.at(flatten({"a": 1}), (), frozenset()).key != ()
        and _content_key({}, {}) == ((), ()))
 
-# ── 6. the case this was found on ─────────────────────────────────────────────────────
 print("\nTHE DOCUMENT THAT EXPOSED IT, PINNED")
 gold = [{"c": 2, "a": 0, "d": 1, "e": 1}, {"b": 1}]
 pred = [{"e": 1, "a": 0, "c": 1, "b": 1}, {"b": 0, "e": 2, "d": 1}]
-a = grade({"r": pred}, {"r": gold}, FLAT)
-b = grade({"r": pred[::-1]}, {"r": gold}, FLAT)
+a = score({"r": pred}, {"r": gold}, FLAT)
+b = score({"r": pred[::-1]}, {"r": gold}, FLAT)
 report("two pairings weigh the same; the reported split no longer depends on which",
        (a["fabricated"], a["invented_item"]) == (b["fabricated"], b["invented_item"]),
        f"{a['fabricated']}/{a['invented_item']} vs {b['fabricated']}/{b['invented_item']}")
 report("...and the accuracy was never the thing that moved",
-       a["accuracy"] == b["accuracy"] == 22.22222222222222)
+       a["accuracy"] == b["accuracy"] == 0.2222222222222222)
 
 print(f"\n{'PAIRING IS ORDER-INDEPENDENT' if not FAILS else 'FAILURES:'}")
 for f in FAILS:

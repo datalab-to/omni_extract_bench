@@ -6,9 +6,9 @@ A near-wordless walkthrough of the scorer, for the OmniExtractBench write-up.
     Gold & Prediction -> Flatten -> Normalize scalars -> Hungarian match
       -> Align -> Verdicts -> Metrics
 
-The numbers in it are real. They come from `score.py`'s own demo documents, and every
+The numbers in it are real. They come from `metric.py`'s own demo documents, and every
 figure shown -- the pairing weights, the six verdict counts, accuracy 44.4, recall and
-precision 0.571 -- is what `grade()` returns for them.
+precision 0.571 -- is what `score()` returns for them.
 
 Two details worth keeping right if this is ever re-cut:
 
@@ -18,7 +18,7 @@ Two details worth keeping right if this is ever re-cut:
   `states_nothing` gate that runs just before an address is assigned -- never getting an
   address IS how it is dropped.
 - **Adding `currency` changed no metric.** `null` on the gold side and `""` on the
-  prediction side were added purely so the null rule does visible work; the grade is
+  prediction side were added purely so the null rule does visible work; the score is
   identical with and without them.
 
 ## Rebuilding

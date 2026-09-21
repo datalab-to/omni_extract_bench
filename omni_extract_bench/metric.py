@@ -28,7 +28,7 @@ same problem one level down:
         _worth_if_paired(book A, book B)             are these the same book?
             _best_pairing(A.chapters, B.chapters)    only the chapters can say
 """
-__all__ = ["grade", "explain", "Verdict",
+__all__ = ["score", "Verdict",
            "node_key", "show", "format_node", "KEY", "INDEX"]
 
 import collections
@@ -36,17 +36,147 @@ from collections.abc import Hashable, Iterable
 from typing import Any, Literal, NamedTuple
 
 from . import matching as OM
-from .prepare import is_open_map, prep_ground_truth, prep_prediction, unwrap_schema
 from .values import canon_key, cmp_leaf, states_nothing
 
-# An address is a tuple of steps. Each step is tagged, because a document may contain the key
-# "0" and ("k", "0") must not join ("i", 0).
+Json = Any
+
+_SIDECAR_SUFFIXES = ("_citations", "_meta")
+
+
+_ENVELOPE_METADATA = frozenset({
+    "citations", "citation", "confidence", "score", "reasoning", "evidence", "provenance",
+    "source", "sources", "page", "pages", "bbox", "span", "spans", "offset", "offsets",
+    "extraction_status", "status", "meta",
+})
+
 Kind = Literal["k", "i"]
 KEY: Kind = "k"
 INDEX: Kind = "i"
 
 Address = tuple[tuple[Kind, Hashable], ...]
 Leaves = dict[Address, Any]
+
+
+def unwrap(o: Json) -> Json:
+    """Strip a {value, metadata} envelope down to the value, recursively.
+
+    An envelope has a "value" key, at least one metadata key, and nothing else. The last
+    clause matters: "value" is also an ordinary field name, and rows like
+    {"value": 12.4, "unit": "USD"} must survive intact -- 7,130 of them in the corpus.
+    Matching on which keys are present rather than how many is what distinguishes
+    {"value": x, "citations": [...]} from {"value": x, "citations": [...], "unit": "USD"}.
+
+    Fires zero times on the present corpus; kept because vendors do emit envelopes.
+    """
+    if isinstance(o, dict):
+        others = set(o) - {"value"}
+        if "value" in o and others and others <= _ENVELOPE_METADATA:
+            return unwrap(o["value"])
+        return {k: unwrap(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [unwrap(x) for x in o]
+    return o
+
+
+def _drop_field_sidecars(obj: Json) -> Json:
+    """Drop per-field provenance siblings so they are not charged as predicted values.
+
+    A key is dropped only if it ends in a sidecar suffix AND its base name is a sibling in the
+    same object. That protects a real field that merely ends the same way: `regulatory_citations`
+    survives unless `regulatory` sits beside it.
+
+    Applied to every vendor identically; the rule is about shape, not origin.
+    """
+    if isinstance(obj, dict):
+        out: dict[str, Json] = {}
+        for k, v in obj.items():
+            sidecar = any(k.endswith(suf) and k[: -len(suf)] in obj
+                          for suf in _SIDECAR_SUFFIXES)
+            if not sidecar:
+                out[k] = _drop_field_sidecars(v)
+        return out
+    if isinstance(obj, list):
+        return [_drop_field_sidecars(x) for x in obj]
+    return obj
+
+
+def prep_prediction(obj):
+    """Unwrap common response envelopes and drop per-field metadata sidecars.
+
+    Some extractors decorate each field `X` with sibling keys `X_citations` (provenance) and
+    `X_meta` (status/reasoning). That metadata is absent from the schema and from ground truth,
+    so it is ignored when scoring rather than counted as extra predicted leaves -- otherwise a
+    provider would be penalised for returning provenance.
+    """
+    obj = unwrap(obj)
+    if isinstance(obj, dict):
+        obj = _drop_field_sidecars(obj)
+    return obj if isinstance(obj, dict) else {}
+
+
+def prep_ground_truth(obj):
+    """Unwrap common envelopes around ground truth."""
+    obj = unwrap(obj)
+    return obj if isinstance(obj, dict) else {}
+
+
+def is_open_map(node) -> bool:
+    """True when a schema node declares an object whose KEYS come from the document.
+
+    ``additionalProperties`` asks the extractor to invent the property names by reading them
+    off the page. This benchmark does not evaluate that shape: extraction APIs are built around
+    a schema that names its fields, and `dialects.STRICT_ALLOWED_KEYS` does not even forward
+    the keyword, so a strict vendor receives a bare ``{"type": "object"}`` and has nothing to
+    answer with. Grading such a node would score a request the harness never delivered.
+
+    Detection reads EXPLICIT presence as intent rather than JSON Schema semantics, under which
+    ``additionalProperties`` defaults to true and every object would qualify.
+    """
+    if not isinstance(node, dict):
+        return False
+    for branch in ("anyOf", "oneOf", "allOf"):
+        for sub in node.get(branch, []) or []:
+            if is_open_map(sub):
+                return True
+    extra = node.get("additionalProperties")
+    return extra is True or isinstance(extra, dict)
+
+
+def unwrap_schema(node):
+    """Resolve anyOf/oneOf to the non-null branch."""
+    if not isinstance(node, dict):
+        return {}
+    for br in ("anyOf", "oneOf", "allOf"):
+        for sub in node.get(br, []) or []:
+            if isinstance(sub, dict) and sub.get("type") != "null":
+                return sub
+    return node
+
+
+def resolve_refs(schema, root=None, depth=0, max_depth=12):
+    """Inline local ``$ref`` so a schema is self-describing.
+
+    Some vendors resolve ``$defs`` themselves; others reject a bare ``$ref`` because it declares
+    no type. Inlining changes nothing semantically. Recursive definitions stop at ``max_depth``
+    rather than expanding forever.
+    """
+    if root is None:
+        root = schema
+    if depth > max_depth or not isinstance(schema, (dict, list)):
+        return schema
+    if isinstance(schema, list):
+        return [resolve_refs(x, root, depth + 1, max_depth) for x in schema]
+    ref = schema.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/"):
+        cur = root
+        for part in ref[2:].split("/"):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+        if isinstance(cur, dict):
+            merged = {k: v for k, v in schema.items() if k != "$ref"}
+            merged.update({k: v for k, v in cur.items() if k not in merged})
+            return resolve_refs(merged, root, depth + 1, max_depth)
+    return {k: (resolve_refs(v, root, depth + 1, max_depth) if k != "$defs" else v)
+            for k, v in schema.items() if k != "$defs"}
 
 
 def node_key(prefix: Address) -> Address:
@@ -116,7 +246,7 @@ def flatten(node: Any, schema: Any = None, prefix: Address = (),
 
     An `additionalProperties` object is skipped entirely, and its address is added to
     `skipped`. Those objects ask the model to invent the key names by reading headings off
-    the page. We do not grade that. The schema we send to strict vendors drops the keyword
+    the page. We do not score that. The schema we send to strict vendors drops the keyword
     anyway, so the model was never actually asked.
 
     >>> for a, v in flatten({"date": "2024-03-31", "rows": [{"x": 1}],
@@ -196,7 +326,7 @@ def _schema_leaves(schema: Any, prefix: Address = ()) -> set[Address]:
     schema never mentioned the name, it is an invented field. Those are different bugs.
 
     Gold's own `null`s cannot answer this. A gold field written `null` and a gold field left
-    out entirely mean the same thing (§10), so keying off gold would sort two identical
+    out entirely mean the same thing (§5), so keying off gold would sort two identical
     documents into different buckets. The schema is the only authority that does not move.
 
     Nothing inside an `additionalProperties` object counts, because that subtree is not
@@ -281,9 +411,9 @@ class Row(NamedTuple):
     position, and the two would disagree.
     """
 
-    named: Leaves                                # address -> canonical value
+    named: Leaves
     arrays: dict[Address, dict[Hashable, "Row"]]
-    key: tuple = ()                              # canonical content key; see `_content_key`
+    key: tuple = ()
 
     def is_object(self) -> bool:
         """True if this element is an object, meaning it has children with names.
@@ -332,10 +462,6 @@ def _content_key(named: Leaves, arrays: dict) -> tuple:
     pass rather than one pass per comparison.
     """
     def addr(a: Address) -> tuple:
-        # Structure, not `show()`. `show` renders both `{"a.b": 1}` and `{"a": {"b": 1}}` as
-        # "a.b", so rendering would let two different rows key alike and hand the tie back to
-        # arrival order -- the bug this key exists to remove. The step kind separates a field
-        # named "0" from index 0; `str` only makes the names orderable.
         return tuple((kind, str(name)) for kind, name in a)
 
     return (tuple(sorted((addr(a), str(v)) for a, v in named.items())),
@@ -409,7 +535,7 @@ def _positive_pair_bound(pred: dict, gold: dict) -> int | None:
     if not n or not m:
         return None
     if min(n, m) > OM.MAX_EXACT or n * m <= OM.MAX_CELLS or n * m > OM.MAX_CELLS_DENSE:
-        return None                      # decided by the ceilings; density cannot move it
+        return None
     counts: dict = {}
     for row in pred.values():
         for item in row.named.items():
@@ -420,14 +546,8 @@ def _positive_pair_bound(pred: dict, gold: dict) -> int | None:
     return min(sum(p * g for p, g in counts.values()), n * m)
 
 
-#: Cells below which the vectorised weights are not worth building. Two sparse products and
-#: their index arrays cost more than the Python loop they replace on a small block, and almost
-#: every block in a corpus is small -- a median document's longest array is 6 rows.
 MIN_VECTOR_CELLS = 16 * 16
 
-#: Cells above which they are not built at all. Peak here is ~16 bytes a cell -- two int32
-#: products and the float64 result -- against the 8 the matrix `optimal_pairs` needs anyway,
-#: so this sits well inside the 250 million cells `matching.MAX_CELLS` already budgets for.
 MAX_VECTOR_CELLS = 64 * 10**6
 
 
@@ -487,7 +607,7 @@ def _pair_weights(pred: dict[Hashable, Row], gold: dict[Hashable, Row],
         pv, pa = columns(pi, pred)
         gv, ga = columns(gi, gold)
     except TypeError:
-        return None                      # an unhashable value; the scalar path handles it
+        return None
 
     def csr(built, rows, width):
         ptr, idx = built
@@ -498,17 +618,11 @@ def _pair_weights(pred: dict[Hashable, Row], gold: dict[Hashable, Row],
     shared_sp = (csr(pa, n, len(addresses)) @ csr(ga, m, len(addresses)).T).tocsr()
     matched_sp.eliminate_zeros()
 
-    # Rows carrying their own arrays are worth what their sub-pairings are worth. Price those
-    # pairs with the function that knows how, and leave the rest read off the product.
     deep_p = {i: {a for a, sub in pred[k].arrays.items() if sub} for i, k in enumerate(pi)}
     deep_g = {j: {a for a, sub in gold[k].arrays.items() if sub} for j, k in enumerate(gi)}
     shared_paths = set().union(*deep_p.values()) & set().union(*deep_g.values()) \
         if deep_p and deep_g else set()
 
-    # Past the dense ceiling the matrix cannot be held at all, and only the sparse form is
-    # possible. Corrections write individual cells, which a sparse matrix cannot absorb
-    # cheaply and which may need cells the product does not have -- so the sparse form is
-    # offered only when no pair needs one. Declining sends the block where it went before.
     if n * m > MAX_VECTOR_CELLS:
         if shared_paths:
             return None
@@ -522,7 +636,7 @@ def _pair_weights(pred: dict[Hashable, Row], gold: dict[Hashable, Row],
     weights = weights.astype(np.float64)
     weights *= scale
     weights += shared
-    weights[~nonzero] = 0.0              # the same bar `cost` applies: no match, no pair
+    weights[~nonzero] = 0.0
     del shared, nonzero
 
     if shared_paths:
@@ -553,7 +667,6 @@ def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: i
         matched, shared = _worth_if_paired(pred[i], gold[j], scale, inexact)
         return matched * scale + shared if matched else 0
 
-    # Canonical order, so the solver sees the SAME problem however the rows arrived. 
     pi = sorted(pred, key=lambda i: pred[i].key)
     gi = sorted(gold, key=lambda j: gold[j].key)
     weights = _pair_weights(pred, gold, pi, gi, scale, inexact)
@@ -564,7 +677,7 @@ def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: i
     out = []
     for i, j in pairs:
         matched, shared = _worth_if_paired(pred[i], gold[j], scale, inexact)
-        if matched:                      # the same test `cost` makes: no match, no pair
+        if matched:
             out.append((i, j, matched, shared))
     return out
 
@@ -587,7 +700,6 @@ def align(gold: Leaves, pred: Leaves, ordered: frozenset = frozenset()) -> tuple
     True
     """
     inexact: list = []
-    # One bound on shared for the whole document: any pairing shares at most this many.
     scale = 1 + len(pred)
     done: set[Address] = set()
     while True:
@@ -624,7 +736,7 @@ def _align_one(gold: Leaves, pred: Leaves, prefix: Address, scale: int,
     for a, v in pred.items():
         if len(a) > d and a[:d] == prefix and a[d][0] == INDEX:
             i = a[d][1]
-            fresh = i if isinstance(i, str) else f"p{i}"   # already relabelled? leave it
+            fresh = i if isinstance(i, str) else f"p{i}"
             out[a[:d] + ((INDEX, remap.get(i, fresh)),) + a[d + 1:]] = v
         else:
             out[a] = v
@@ -634,13 +746,9 @@ def _align_one(gold: Leaves, pred: Leaves, prefix: Address, scale: int,
 def _has_ref(node: Any) -> bool:
     """Is there a `$ref` left anywhere in this schema?
 
-    The scorer reads a schema for one purpose: finding `additionalProperties` objects, which
-    it does not grade. A `$ref` hides that keyword behind a pointer this module does not
-    follow, so an open map written as a ref would be graded while the same map written inline
-    is skipped -- the same document scored two ways depending on how its schema was spelled.
-
-    Rather than resolve refs here, say so. `dialects.resolve_refs` already does it, and it is
-    what the harness sends to vendors anyway.
+    Asked AFTER `resolve_refs`, so a hit means the schema is recursive beyond the resolver's
+    depth limit rather than merely unprepared -- which is the case that cannot be scored
+    consistently, and the one worth refusing.
     """
     if isinstance(node, dict):
         return "$ref" in node or any(_has_ref(v) for v in node.values())
@@ -703,12 +811,9 @@ def _resolve_order(order_matters: Iterable[str], schema: Any,
     return frozenset(out)
 
 
-def _both(pred: Any, gt: Any, schema: Any,
-          order_matters: Iterable[str]) -> tuple[Leaves, Leaves, list, list]:
-    """Address both documents, then renumber the prediction to line up with the ground truth.
-
-    Everything `grade` and `explain` need. They share it so they cannot drift apart.
-    """
+def score(pred: Any, gt: Any, schema: Any,
+          order_matters: Iterable[str] = (), verdicts: bool = False) -> dict:
+    """Score one prediction against one ground truth."""
     if gt is not None and not isinstance(gt, dict):
         raise TypeError(
             f"ground truth must be a JSON object, got {type(gt).__name__}. A schema whose root "
@@ -723,225 +828,99 @@ def _both(pred: Any, gt: Any, schema: Any,
             "model was offered are unknown, so a fabricated value cannot be told from an "
             "invented one. Pass the schema the prediction was generated against."
         )
+    schema = resolve_refs(schema)
     if _has_ref(schema):
         raise ValueError(
-            "schema still contains $ref. Resolve it first with dialects.resolve_refs: an "
-            "additionalProperties object behind a ref would be graded, while the same object "
-            "written inline is skipped."
+            "schema still contains $ref after inlining, which means it is recursive beyond "
+            "the resolver's depth limit. An additionalProperties object behind a surviving "
+            "ref would be graded, while the same object written inline is skipped -- so this "
+            "schema cannot be scored consistently. Flatten the recursion first."
         )
     raw_gt, pred_raw = gt or {}, pred or {}
     gt = prep_ground_truth(raw_gt)
     pred = prep_prediction(pred_raw)
     ordered = _resolve_order(order_matters, schema, (raw_gt, pred_raw, gt, pred))
-    skipped: list[Address] = []
-    gold_leaves = flatten(gt, schema, skipped=skipped)
-    pred_leaves, inexact = align(gold_leaves, flatten(pred, schema, skipped=skipped), ordered)
-    return gold_leaves, pred_leaves, inexact, sorted(set(skipped), key=_reading_order)
-
-
-def grade(pred: Any, gt: Any, schema: Any,
-          order_matters: Iterable[str] = (), verdicts: bool = False) -> dict:
-    """Score one prediction against one ground truth.
-
-    `schema` is only used to find `additionalProperties` objects, which are not graded.
-    Nothing else reads it. Comparing values never needed it: `canon_key` decides how strict
-    to be from the value itself, so an ID-like integer stays exact whether the schema calls
-    it an integer or a number.
-
-    `order_matters` lists arrays whose order is part of the answer, written the way
-    `explain` prints them: `["steps"]`, or `["books[*].chapters"]` for the chapters inside
-    each book. `[*]` means "each element of", so for `{"matrix": [[1, 2], [3, 4]]}` the name
-    `"matrix"` is the outer list and `"matrix[*]"` are the lists inside it.
-
-    By default no array is ordered, because the order rows appear in a document is usually
-    an accident of layout and a model should not be punished for it. A name that fits no
-    array raises, rather than quietly leaving that array unordered.
-
-    What comes back:
-
-    `accuracy` is the score, 0 to 100. `matched` over `total` is where it comes from.
-
-    `found` counts addresses, not values: of every address either document used, the share
-    both used. An address counts even if the value sitting there is wrong; whether it is
-    right is `read_right`.
-
-    `precision`, `recall` and `f1` treat a keypath-and-value as one detection, so a value
-    read wrongly is charged on both sides. Report `f1` next to `accuracy`: accuracy cannot
-    tell a useful guess from a hopeless one, because a wrong value at a gold address costs
-    exactly what leaving it blank costs. `f1` charges the guess, so filling in fields the
-    model cannot read stops being free.
-
-    `found` and `read_right` multiply to give the accuracy. `found` is the share of
-    addresses that appear in both documents: did the model pick out the right cells?
-    `read_right` is the share of those whose values agree: did it read them correctly? A
-    model that returns half the table perfectly and one that returns the whole table with
-    half the values wrong get similar accuracies. These two tell them apart.
-    """
-    gold, pred_addr, inexact, skipped = _both(pred, gt, schema, order_matters)
-    shared = set(gold) & set(pred_addr)
-    union = set(gold) | set(pred_addr)
-    matched = sum(1 for a in shared if cmp_leaf(pred_addr[a], gold[a]) >= 1.0)
-    total = len(union)
-
-    # Rows at EVERY depth, not just the top. A table nested one level down is still a table,
-    # and counting only the outer array counts the wrapper object instead of its contents.
+    found_open: list[Address] = []
+    gold_leaves = flatten(gt, schema, skipped=found_open)
+    pred_leaves, inexact = align(gold_leaves, flatten(pred, schema, skipped=found_open), ordered)
+    skipped = sorted(set(found_open), key=_reading_order)
+    shared = set(gold_leaves) & set(pred_leaves)
+    only_gold = set(gold_leaves) - shared
+    only_pred = set(pred_leaves) - shared
+    union = shared | only_gold | only_pred
+    matched = sum(1 for a in shared if cmp_leaf(pred_leaves[a], gold_leaves[a]) >= 1.0)
+    misread = len(shared) - matched
+    unfound = len(only_gold)
+    slots = _schema_leaves(schema)
+    extra_kind = {a: _classify_extra(a, slots) for a in only_pred}
+    extra = collections.Counter(extra_kind.values())
     gt_rows = pred_rows = paired = 0
     for prefix in _find_arrays(union):
-        g = _extract_rows_at(gold, prefix, frozenset())
-        p = _extract_rows_at(pred_addr, prefix, frozenset())
+        g = _extract_rows_at(gold_leaves, prefix, frozenset())
+        p = _extract_rows_at(pred_leaves, prefix, frozenset())
         grow = {i for i, r in g.items() if r.is_object()}
         prow = {i for i, r in p.items() if r.is_object()}
         gt_rows += len(grow)
         pred_rows += len(prow)
         paired += len(grow & prow)
 
-    # Why the prediction is wrong, split so the three failures have different names.
-    # misread: the document has this value and the model read it wrongly.
-    # fabricated: the schema offered the slot, the document is silent, the model filled it.
-    # invented item / field: structure the schema never asked for.
-    slots = _schema_leaves(schema)
-    misread = len(shared) - matched
-    unfound = len(gold) - len(shared)
-    extra = collections.Counter(_classify_extra(a, slots)
-                                for a in pred_addr if a not in gold)
+    total = len(union)               
+    asserted = len(pred_leaves)
+    accuracy = (matched / total) if total else 0.0
+    found = len(shared) / total if total else 0.0
+    read_right = matched / len(shared) if shared else 0.0
+    recall = matched / len(gold_leaves) if gold_leaves else 0.0
+    precision = matched / asserted if asserted else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if precision + recall else 0.0
+    per_address: list[Verdict] = []
+    if verdicts:
+        per_address = [Verdict(a, None, None, None, None, verdict="skipped_open_map")
+                       for a in skipped]
+        for a in sorted(union, key=_reading_order):
+            gold_canon = canon_key(gold_leaves[a]) if a in gold_leaves else None
+            pred_canon = canon_key(pred_leaves[a]) if a in pred_leaves else None
+            if a in shared:
+                verdict = "matched" if gold_canon == pred_canon else "misread"
+            elif a in only_gold:
+                verdict = "unfound"
+            else:
+                verdict = extra_kind[a]
+            per_address.append(Verdict(a, gold_leaves.get(a), pred_leaves.get(a),
+                                       gold_canon=gold_canon, pred_canon=pred_canon,
+                                       verdict=verdict))
 
-    recall = matched / len(gold) if gold else 0.0
-    precision = matched / len(pred_addr) if pred_addr else 0.0
     return {
-        "accuracy": (100 * matched / total) if total else 0.0,
-        "matched": matched,
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
         "total": total,
-        "asserted": len(pred_addr),
+        "matched": matched,
         "misread": misread,
         "unfound": unfound,
         "fabricated": extra["fabricated"],
         "invented_item": extra["invented_item"],
         "invented_field": extra["invented_field"],
-        "found": len(shared) / total if total else 0.0,
-        "read_right": matched / len(shared) if shared else 0.0,
+        "asserted": asserted,
+        "addresses_found": found,
+        "addresses_read_right": read_right,
         "gt_rows": gt_rows,
         "pred_rows": pred_rows,
         "matched_rows": paired,
-        "recall": recall,
-        "precision": precision,
-        "f1": (2 * precision * recall / (precision + recall)
-               if precision + recall else 0.0),
         "matching_exact": not inexact,
         "approximated": sorted(set(inexact), reverse=True),
         "skipped_open_maps": [show(a) for a in skipped],
-        **({"verdicts": _verdicts(gold, pred_addr, skipped, slots)} if verdicts else {}),
+        **({"verdicts": per_address} if verdicts else {}),
     }
-    
 
 class Verdict(NamedTuple):
-    """What happened at one address. Returned by `explain`, one per address.
-
-    Each side is carried twice, raw and canonical, and that is the point: a reader who sees
-    `31-1440073` and `311440073` recorded as a match can tell that a fold did the work, and can
-    disagree with it. `values.canon_trace(raw)` then names the step responsible -- computed on
-    demand rather than stored here, because `explain` runs over every address and a trace is
-    wanted only for the handful someone clicks on.
-
-    `_canon` rather than `_key` because `key` already means something else in this scorer:
-    `Row.key` is a row's identity for pairing, not a canonicalised value.
-
-    WHEN A SIDE IS `None`. All six fields are always present -- this is a NamedTuple -- but a
-    side is `None` when that side has nothing at this address:
-
-        missing                 pred_raw, pred_canon are None
-        fabricated              gold_raw, gold_canon are None
-        invented field/item     gold_raw, gold_canon are None
-        skipped (open map)      all four are None; only address and verdict mean anything
-        match, wrong value      all six are set
-
-    `None` is UNAMBIGUOUS here, which is worth relying on. `flatten` gates on `states_nothing`
-    before an address exists, so a value that reaches a `Verdict` is never `null`, never `""`,
-    never whitespace-only -- `None` therefore means "no value at this address", never "a value
-    that happened to be empty". `canon_key`'s invariant extends it: a canon that is set is
-    never `""`. So `gold_raw is None`, `gold_canon is None` and "gold said nothing here" are
-    the same test, and the two always agree. Asserted in `tests/test_comparison_surface.py`.
-    """
-
+    """What happened at one address. One per address, from `score(..., verdicts=True)`."""
     address: Address
-    gold_raw: Any                   # exactly as the document wrote it
-    pred_raw: Any                   # exactly as the model returned it
-    verdict: str        # matched | misread | unfound | fabricated |
-                        # invented_item | invented_field | skipped_open_map
-                        # -- the same words the summary counts them under, so
-                        # count(verdict='misread') == summary['misread']
-                        # fabricated | invented item | invented field
-    gold_canon: str | None = None   # what gold was compared AS; None where there is no gold
-    pred_canon: str | None = None   # what the prediction was compared AS; None if none given
-
-
-def explain(pred: Any, gt: Any, schema: Any,
-            order_matters: Iterable[str] = ()) -> list[Verdict]:
-    """List what happened at every address, so you can see why a score is what it is.
-
-    `grade(..., verdicts=True)` is the same work and also gives you the score; this is the
-    shorthand for when the score is not what you are after.
-
-    One `Verdict` per address, in reading order. Anything skipped shows up too, as its own
-    line, rather than quietly not appearing.
-
-    A value the prediction has and the ground truth does not is labelled by WHY: `fabricated`
-    if the schema offered that slot, `invented field` if it never declared the name, and
-    `invented item` for a value under an array element that paired with nothing. See section
-    4 of the spec.
-
-    >>> schema = {"properties": {"a": {"type": "number"}, "b": {"type": "number"},
-    ...                          "c": {"type": "number"}}}
-    >>> for v in explain({"a": 1, "c": 3}, {"a": 2, "b": 9}, schema):
-    ...     print(f"{show(v.address):4} {str(v.gold_raw):5} {str(v.pred_raw):5} {v.verdict}")
-    a    2     1     wrong value
-    b    9     None  missing
-    c    None  3     fabricated
-
-    Both documents are reported in ONE address space. A predicted row that arrived in a
-    different position has already been renumbered onto the gold row it matched, so
-    `lines[0]` means the same line on both sides. A predicted row that matched nothing keeps
-    an index of its own, written `lines[p2]`, so it can never be read as a gold row.
-
-    That is what lets you roll these up into a stricter view than the score gives. To count a
-    row as correct only when every value under it is correct, group by the address up to the
-    last index step:
-
-    >>> sch = {"properties": {"lines": {"type": "array", "items": {"properties": {
-    ...     "sku": {"type": "string"}, "qty": {"type": "number"}}}}}}
-    >>> gold = {"lines": [{"sku": "x", "qty": 2}, {"sku": "y", "qty": 7}]}
-    >>> pred = {"lines": [{"sku": "y", "qty": 7}, {"sku": "x", "qty": 9}]}
-    >>> rows: dict = {}
-    >>> for v in explain(pred, gold, sch):
-    ...     cut = max(i for i, (kind, _) in enumerate(v.address) if kind == INDEX)
-    ...     rows.setdefault(show(v.address[:cut + 1]), set()).add(v.verdict)
-    >>> {row: kinds == {"matched"} for row, kinds in sorted(rows.items())}
-    {'lines[0]': False, 'lines[1]': True}
-    >>> round(grade(pred, gold, sch)["accuracy"], 1)   # the leaf view is kinder: 3 of 4
-    75.0
-    """
-    return grade(pred, gt, schema, order_matters, verdicts=True)["verdicts"]
-
-
-def _verdicts(gold, pred_addr, skipped, slots) -> list:
-    """Build the per-address view from an already-aligned pair.
-
-    Split out so `grade` can return it from the pass it has already done. Aligning the two
-    documents is essentially all of the cost -- 44.85s against 44.08s on an 89,000-leaf
-    document -- so a caller that wanted a score and an explanation used to pay for the
-    matching twice.
-    """
-    out = [Verdict(a, None, None, "skipped_open_map") for a in skipped]
-    for a in sorted(set(gold) | set(pred_addr), key=_reading_order):
-        gc = canon_key(gold[a]) if a in gold else None
-        pc = canon_key(pred_addr[a]) if a in pred_addr else None
-        if a in gold and a in pred_addr:
-            verdict = "matched" if gc == pc else "misread"
-        elif a in gold:
-            verdict = "unfound"
-        else:
-            verdict = _classify_extra(a, slots)
-        out.append(Verdict(a, gold.get(a), pred_addr.get(a), verdict, gc, pc))
-    return out
+    gold_raw: Any   
+    pred_raw: Any   
+    gold_canon: str 
+    pred_canon: str 
+    verdict: str    
 
 
 if __name__ == "__main__":
@@ -962,11 +941,9 @@ if __name__ == "__main__":
         "filing_date": {"type": "string"},
         "holdings": {"type": "array", "items": {"properties": {
             "issuer": {"type": "string"}, "value": {"type": "number"}}}}}}
-    r = grade(PRED, GOLD, SCHEMA)
-    print(f"\naccuracy {r['accuracy']:.2f}  "
-          f"= found {r['found']:.4f} x read_right {r['read_right']:.4f}")
-    for v in explain(PRED, GOLD, SCHEMA):
-        print(f"  {show(v.address):24} gold={v.gold_raw!r:12} "
-              f"pred={v.pred_raw!r:12} {v.verdict}")
+    r = score(PRED, GOLD, SCHEMA)
+    print(f"\naccuracy {r['accuracy']:.4f}  "
+          f"= addresses_found {r['addresses_found']:.4f}"
+          f" x addresses_read_right {r['addresses_read_right']:.4f}")
     assert failures == 0
     print("\nok")

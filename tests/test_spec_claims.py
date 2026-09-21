@@ -14,7 +14,11 @@ import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench import matching as OM                              # noqa: E402
-from omni_extract_bench.score import explain, grade                        # noqa: E402
+from omni_extract_bench.metric import score                                 # noqa: E402
+
+def verdicts_of(pred, gt, schema):
+    """Per-address verdicts. `score` is the only entry point; the list comes off it."""
+    return score(pred, gt, schema, verdicts=True)["verdicts"]
 
 FAILS = []
 
@@ -33,13 +37,9 @@ GT = {"n": "INV", "t": 100.0, "d": None,
       "lines": [{"sku": "a", "qty": 1}, {"sku": "b", "qty": 2}]}
 PRED = {"n": "INV", "t": 999.0, "d": 5.0, "z": "x",
         "lines": [{"sku": "a", "qty": 1}, {"sku": "zz", "qty": 9}]}
-R = grade(PRED, GT, SCH)
+R = score(PRED, GT, SCH)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nTHE DOCUMENT REFERS TO SECTIONS THAT EXIST")
-# Renumbering during a rewrite left two references pointing at the wrong section: the header
-# sent readers to the wrong place for the properties, and section 3 sent them to Aggregation
-# for the order-freedom trade. Cheap to check, so it is checked.
 import re                                                                   # noqa: E402
 from pathlib import Path as _P                                              # noqa: E402
 
@@ -76,8 +76,8 @@ report("the corpus's largest array (6881 rows) is ~19% of the cap, so it solves 
 
 print("\nSECTION 4 -- EVERY KEY THE SPEC NAMES EXISTS")
 named = ["matched", "misread", "unfound", "fabricated", "invented_item", "invented_field",
-         "asserted", "total", "accuracy", "precision", "recall", "f1", "found",
-         "read_right", "gt_rows", "pred_rows", "matched_rows", "matching_exact",
+         "asserted", "total", "accuracy", "precision", "recall", "f1",
+         "addresses_found", "addresses_read_right", "gt_rows", "pred_rows", "matched_rows", "matching_exact",
          "approximated", "skipped_open_maps"]
 report("all 20 reported keys are present, and nothing else is",
        sorted(R) == sorted(named),
@@ -90,8 +90,8 @@ report("asserted = matched + misread + fabricated + invented_item + invented_fie
 report("total = the six buckets summed",
        R["total"] == R["matched"] + R["misread"] + R["unfound"] + R["fabricated"]
        + R["invented_item"] + R["invented_field"])
-report("accuracy = 100 * matched / total",
-       abs(R["accuracy"] - 100 * R["matched"] / R["total"]) < 1e-12)
+report("accuracy = matched / total",
+       abs(R["accuracy"] - R["matched"] / R["total"]) < 1e-12)
 report("precision = matched / asserted",
        abs(R["precision"] - R["matched"] / R["asserted"]) < 1e-12)
 report("recall = matched / (matched + misread + unfound)",
@@ -100,51 +100,47 @@ report("f1 = harmonic mean of precision and recall",
        abs(R["f1"] - 2 * R["precision"] * R["recall"]
            / (R["precision"] + R["recall"])) < 1e-12)
 report("found = (matched + misread) / total",
-       abs(R["found"] - (R["matched"] + R["misread"]) / R["total"]) < 1e-12)
+       abs(R["addresses_found"] - (R["matched"] + R["misread"]) / R["total"]) < 1e-12)
 report("read_right = matched / (matched + misread)",
-       abs(R["read_right"] - R["matched"] / (R["matched"] + R["misread"])) < 1e-12)
-report("found * read_right = accuracy / 100",
-       abs(R["found"] * R["read_right"] - R["accuracy"] / 100) < 1e-12)
+       abs(R["addresses_read_right"] - R["matched"] / (R["matched"] + R["misread"])) < 1e-12)
+report("addresses_found * addresses_read_right = accuracy",
+       abs(R["addresses_found"] * R["addresses_read_right"] - R["accuracy"]) < 1e-12)
 
 print("\nSECTION 4 -- WHEN accuracy AND f1 AGREE")
-# The section used to say misread appearing twice was "the entire reason accuracy and f1
-# differ". It is not: they AGREE on a misread and diverge with misread = 0. What is counted
-# twice in `gold + asserted` and once in `total` is matched + misread -- every address both
-# documents use -- so they agree exactly when the documents use the same set of addresses.
 AF_S = {"properties": {k: {"type": "number"} for k in "abc"}}
 rows = {
-    "perfect":            ({"a": 1, "b": 2},         {"a": 1, "b": 2}, 100.00, 100.00),
-    "one value misread":  ({"a": 1, "b": 99},        {"a": 1, "b": 2},  50.00,  50.00),
-    "one value missing":  ({"a": 1},                 {"a": 1, "b": 2},  50.00,  66.67),
-    "one value invented": ({"a": 1, "b": 2, "c": 9}, {"a": 1, "b": 2},  66.67,  80.00),
+    "perfect":            ({"a": 1, "b": 2},         {"a": 1, "b": 2}, 1.0000, 1.0000),
+    "one value misread":  ({"a": 1, "b": 99},        {"a": 1, "b": 2}, 0.5000, 0.5000),
+    "one value missing":  ({"a": 1},                 {"a": 1, "b": 2}, 0.5000, 0.6667),
+    "one value invented": ({"a": 1, "b": 2, "c": 9}, {"a": 1, "b": 2}, 0.6667, 0.8000),
 }
 for lbl, (pred, gold, want_acc, want_f1) in rows.items():
-    r = grade(pred, gold, AF_S)
+    r = score(pred, gold, AF_S)
     report(f"{lbl}: accuracy {want_acc}, f1 {want_f1}",
-           abs(round(r["accuracy"], 2) - want_acc) < 1e-9
-           and abs(round(r["f1"] * 100, 2) - want_f1) < 1e-9,
-           f"got acc {r['accuracy']:.2f}, f1 {r['f1']*100:.2f}")
+           abs(round(r["accuracy"], 4) - want_acc) < 1e-9
+           and abs(round(r["f1"], 4) - want_f1) < 1e-9,
+           f"got acc {r['accuracy']:.4f}, f1 {r['f1']:.4f}")
 
 agree = []
 for lbl, (pred, gold, _a, _f) in rows.items():
-    r = grade(pred, gold, AF_S)
+    r = score(pred, gold, AF_S)
     same_addresses = r["unfound"] == 0 and r["fabricated"] == 0 \
         and r["invented_item"] == 0 and r["invented_field"] == 0
-    matches = abs(r["accuracy"] / 100 - r["f1"]) < 1e-12
+    matches = abs(r["accuracy"] - r["f1"]) < 1e-12
     agree.append((lbl, same_addresses == matches))
 report("they agree exactly when both documents use the same set of addresses",
        all(ok for _l, ok in agree), str(agree))
 report("...and a misread is NOT what splits them",
-       abs(grade({"a": 1, "b": 99}, {"a": 1, "b": 2}, AF_S)["accuracy"] / 100
-           - grade({"a": 1, "b": 99}, {"a": 1, "b": 2}, AF_S)["f1"]) < 1e-12)
+       abs(score({"a": 1, "b": 99}, {"a": 1, "b": 2}, AF_S)["accuracy"]
+           - score({"a": 1, "b": 99}, {"a": 1, "b": 2}, AF_S)["f1"]) < 1e-12)
 
 print("\nSECTION 3 -- CLEARING THE PAIRING BAR DOES NOT MAKE A ROW FREE")
 BAR_S = {"properties": {"lines": {"type": "array", "items": {"properties": {
     "sku": {"type": "string"},
     "tags": {"type": "array", "items": {"type": "string"}}}}}}}
 BAR_G = {"lines": [{"sku": "a", "tags": ["t1", "t2"]}]}
-omitted = grade({"lines": []}, BAR_G, BAR_S)
-cleared = grade({"lines": [{"sku": "a", "tags": ["X", "Y"]}]}, BAR_G, BAR_S)
+omitted = score({"lines": []}, BAR_G, BAR_S)
+cleared = score({"lines": [{"sku": "a", "tags": ["X", "Y"]}]}, BAR_G, BAR_S)
 report("a row that clears the bar can still enlarge the denominator",
        cleared["total"] > omitted["total"],
        f"omitted {omitted['total']}, cleared {cleared['total']}")
@@ -152,7 +148,7 @@ report("...so 'charged once' would be wrong: it is charged for what it invents t
        cleared["invented_item"] > 0, f"invented_item {cleared['invented_item']}")
 
 print("\nSECTION 4 -- THE BUCKETS PARTITION EVERY ADDRESS (P16)")
-verdicts = [v for v in explain(PRED, GT, SCH) if not v.verdict.startswith("skipped")]
+verdicts = [v for v in verdicts_of(PRED, GT, SCH) if not v.verdict.startswith("skipped")]
 report("every address gets exactly one of the six verdicts",
        len(verdicts) == R["total"]
        and {v.verdict for v in verdicts} <= {"matched", "misread", "unfound", "fabricated",
@@ -163,23 +159,23 @@ report("every address gets exactly one of the six verdicts",
 print("\nSECTION 4 -- matched_rows IS NOT ROW CORRECTNESS")
 CUR_S = {"properties": {"lines": {"type": "array", "items": {"properties": {
     "cur": {"type": "string"}, "sku": {"type": "string"}}}}}}
-cur = grade({"lines": [{"cur": "USD", "sku": "q"}, {"cur": "USD", "sku": "r"}]},
+cur = score({"lines": [{"cur": "USD", "sku": "q"}, {"cur": "USD", "sku": "r"}]},
             {"lines": [{"cur": "USD", "sku": "x"}, {"cur": "USD", "sku": "y"}]}, CUR_S)
 report("a value repeated on every row pairs rows whose content is entirely wrong",
-       cur["matched_rows"] == 2 and cur["accuracy"] == 50.0,
+       cur["matched_rows"] == 2 and cur["accuracy"] == 0.5,
        f"matched_rows {cur['matched_rows']}, accuracy {cur['accuracy']}")
 
 print("\nSECTION 9 -- P18 AND P19")
 try:
-    grade(PRED, GT, SCH, order_matters=["nope"])
+    score(PRED, GT, SCH, order_matters=["nope"])
     report("P18: an order_matters name fitting no array raises", False, "no error")
 except ValueError:
     report("P18: an order_matters name fitting no array raises", True)
 try:
-    grade(PRED, GT, None)
-    report("P19: a grade without a schema raises", False, "no error")
+    score(PRED, GT, None)
+    report("P19: a score without a schema raises", False, "no error")
 except TypeError:
-    report("P19: a grade without a schema raises", True)
+    report("P19: a score without a schema raises", True)
 
 print(f"\n{'SPEC CLAIMS HOLD' if not FAILS else 'FAILURES:'}")
 for f in FAILS:

@@ -12,48 +12,73 @@ the benchmark calls Reducto:
 Auth: REDUCTO_API_KEY.
 
 Usage:
-    python -m longextract_bench.providers.reducto \
+    python -m omni_extract_bench.harness.providers.reducto \
         --pdf path/to/document.pdf --schema path/to/schema.json --out /tmp/reducto_out.json
+
+Adapted from longextract_bench (MIT, (c) 2026 Micro1) -- see providers/LICENSE-micro1.
 """
 
 from __future__ import annotations
 
-import argparse
+import dataclasses
 import json
 import os
-import sys
 import time
 from pathlib import Path
 
 import httpx
 
-from .envelope import write_output
+from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
+                          VendorError, as_object)
+from ._cli import run_cli
 
 BASE_URL = "https://platform.reducto.ai"
 DEFAULT_DEEP_EXTRACT_MODEL = "v2"
-# Agentic table enrichment mode. `default` enriches only tables a heuristic expects to benefit;
-# `max` enriches every table and is the higher setting. Overridable, defaulting to max so the
-# benchmark runs Reducto at its strongest -- Reducto is ahead on this benchmark, and running a
-# competitor below their maximum would flatter our own result.
-_AGENTIC_TABLE_MODE = os.environ.get("REDUCTO_AGENTIC_TABLE_MODE", "max")
+AGENTIC_TABLE_MODE = "max"
 _TERMINAL = {"Completed", "Failed", "Error", "Cancelled"}
+
+
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """What reducto can be asked, and what it is asked at its maximum tier."""
+
+    deep_extract_model: str = DEFAULT_DEEP_EXTRACT_MODEL
+    system_prompt: str = dataclasses.field(
+        default="", metadata={"help": "extra system prompt; empty so the schema drives it"})
+    agentic_table_mode: str = dataclasses.field(
+        default=AGENTIC_TABLE_MODE,
+        metadata={"choices": ["default", "max"],
+                  "help": "agentic table enrichment; `max` enriches every table"})
+    poll_interval: int = 5
+
+
+_JOBS_PAGE = 200
 
 
 def _server_duration(client: httpx.Client, api_key: str, job_id: str) -> float | None:
     """The request's server-side processing seconds, as Reducto records it on the
     job (the /jobs listing exposes `duration`; the /job result does not). This is
     the API request latency ONLY — it excludes our upload, poll sleeps, and the
-    queue wait before processing starts."""
-    r = client.get(
-        f"{BASE_URL}/jobs",
-        headers={"Authorization": f"Bearer {api_key}"},
-        params={"limit": 25},
-        timeout=60,
-    )
-    r.raise_for_status()
-    for j in r.json().get("jobs", []):
-        if j.get("job_id") == job_id:
-            return j.get("duration")
+    queue wait before processing starts.
+
+    BEST EFFORT, and it never raises. The extraction is already finished and paid for by the
+    time this is called, so a cosmetic field must not be able to discard it -- `raise_for_status`
+    here used to throw `httpx.HTTPStatusError` straight past `predict`, which catches
+    `VendorError` only. A job that has scrolled past `_JOBS_PAGE` simply has no duration.
+    """
+    try:
+        r = client.get(
+            f"{BASE_URL}/jobs",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params={"limit": _JOBS_PAGE},
+            timeout=60,
+        )
+        r.raise_for_status()
+        for j in r.json().get("jobs", []):
+            if j.get("job_id") == job_id:
+                return j.get("duration")
+    except Exception:            # noqa: BLE001 -- a recorded nicety, never the extraction
+        return None
     return None
 
 
@@ -72,17 +97,16 @@ def _upload(client: httpx.Client, api_key: str, pdf: Path) -> str:
 
 
 def _build_payload(
-    input_ref: str, schema: dict, system_prompt: str, deep_extract_model: str
+    input_ref: str, schema: dict, system_prompt: str, deep_extract_model: str,
+    agentic_table_mode: str = AGENTIC_TABLE_MODE,
 ) -> dict:
     instructions: dict[str, object] = {"schema": schema}
-    # empty system prompt -> omit entirely so the agent gets no extra instruction
     if system_prompt:
         instructions["system_prompt"] = system_prompt
     return {
         "async": {"priority": False},
         "input": input_ref,
-        # parse: defaults only, except agentic table enrichment at its highest mode
-        "parsing": {"enhance": {"agentic": [{"scope": "table", "mode": _AGENTIC_TABLE_MODE}]}},
+        "parsing": {"enhance": {"agentic": [{"scope": "table", "mode": agentic_table_mode}]}},
         "instructions": instructions,
         "settings": {
             "deep_extract": True,
@@ -110,11 +134,12 @@ def _submit(client: httpx.Client, api_key: str, payload: dict) -> str:
     return job_id
 
 
-def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int) -> dict:
-    # Resilient poll: the job keeps running server-side, so transient connection /
-    # 5xx errors must NOT abandon it (that's how billed jobs got lost). Retry the GET.
-    transient = 0
+def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
+          budget) -> dict:
+    polls = 0
+    retry = PollRetry(budget)
     while True:
+        budget.check(f"job {job_id} was still running server-side after {polls} polls")
         try:
             r = client.get(
                 f"{BASE_URL}/job/{job_id}",
@@ -122,95 +147,80 @@ def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int) -> dic
                 timeout=60,
             )
             r.raise_for_status()
-        except (httpx.TransportError, httpx.HTTPStatusError):
-            transient += 1
-            if transient > 60:
-                raise
-            time.sleep(min(30, 2 * transient))
-            continue
-        transient = 0
+        except httpx.HTTPStatusError as exc:
+            if retry.again(exc.response.status_code):
+                continue
+            raise VendorError(f"poll HTTP {exc.response.status_code}: "
+                              f"{exc.response.text[:250]}",
+                              status=exc.response.status_code,
+                              body=exc.response.text) from None
+        except httpx.TransportError as exc:
+            if retry.again():
+                continue
+            raise VendorError(f"polling failed: {exc}"[:300], status=None) from None
+        retry.ok()
+        polls += 1
         body = r.json()
         status = body.get("status") or body.get("state") or ""
-        print(f"  {status}", end="\r", flush=True)
         if status in _TERMINAL or body.get("result") is not None:
-            print()
             return body
         time.sleep(interval)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="Reducto deep extract (v2, citations off)")
-    ap.add_argument("--pdf", required=True, type=Path)
-    ap.add_argument("--schema", required=True, type=Path)
-    ap.add_argument("--out", required=True, type=Path, help="output JSON file")
-    ap.add_argument("--deep-extract-model", default=DEFAULT_DEEP_EXTRACT_MODEL)
-    ap.add_argument(
-        "--system-prompt", default="", help="extra system prompt; empty by default"
-    )
-    ap.add_argument("--poll-interval", type=int, default=5)
-    args = ap.parse_args()
+def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
+            config: Config = Config()) -> Extraction:
+    """Upload, submit an async extract, poll to completion.
 
-    api_key = os.environ.get("REDUCTO_API_KEY", "")
-    if not api_key:
-        sys.exit("REDUCTO_API_KEY not set")
+    A job that outlives its budget is named in the record by `job_id`, so it can be chased by
+    hand rather than being anonymous.
+    """
+    key = os.environ.get("REDUCTO_API_KEY")
+    if not key:
+        raise MissingCredential("REDUCTO_API_KEY is not set")
 
-    schema = json.loads(args.schema.read_text())
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-
-    side = args.out.with_suffix(".runid.json")
-    resume_id = None
-    if side.exists():
-        try:
-            resume_id = json.loads(side.read_text()).get("job_id")
-        except (OSError, json.JSONDecodeError):
-            resume_id = None
-
+    budget = Budget(timeout)
     with httpx.Client() as client:
-        if resume_id:
-            # A prior attempt already submitted this job — recover it instead of
-            # re-submitting (no double-billing).
-            print(f"Resuming existing job {resume_id} (sidecar)…")
-            job_id = resume_id
-        else:
-            print(f"Uploading {args.pdf.name} ({args.pdf.stat().st_size // 1024} KB)…")
-            file_id = _upload(client, api_key, args.pdf)
-            print(f"  → {file_id}")
-            payload = _build_payload(
-                file_id, schema, args.system_prompt, args.deep_extract_model
-            )
-            print(
-                f"Submitting extract (deep_extract_model={args.deep_extract_model}, "
-                f"citations=off)…"
-            )
-            job_id = _submit(client, api_key, payload)
-            # Persist the job id immediately so a killed/timed-out job stays pollable.
-            try:
-                side.write_text(
-                    json.dumps(
-                        {"provider": "reducto", "job_id": job_id, "file_id": file_id}
-                    )
-                )
-            except OSError as e:
-                print(f"  (warn: could not write runid sidecar: {e})")
-        print(f"  → job_id: {job_id}\nPolling…")
-        body = _poll(client, api_key, job_id, args.poll_interval)
-        latency_s = _server_duration(client, api_key, job_id)
+        try:
+            file_id = _upload(client, key, pdf)
+            job_id = _submit(client, key, _build_payload(
+                file_id, schema, config.system_prompt, config.deep_extract_model,
+                config.agentic_table_mode))
+        except httpx.HTTPStatusError as exc:
+            raise VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
+                              status=exc.response.status_code,
+                              body=exc.response.text) from None
+        except RuntimeError as exc:
+            raise VendorError(str(exc)[:300], status=200) from None
 
-    # /job shape: {status, result: {usage: {num_pages, ...}, result: <data>}}
-    extract_resp = body.get("result") or {}
-    extraction = extract_resp.get("result", extract_resp)
-    usage = dict(extract_resp.get("usage") or {})
-    usage["job_id"] = job_id  # recorded so latency is auditable
+        body = _poll(client, key, job_id, config.poll_interval, budget)
+        try:
+            latency_s = _server_duration(client, key, job_id)
+        except Exception:  # noqa: BLE001
+            latency_s = None
 
-    write_output(
-        args.out,
-        provider="reducto",
-        result=extraction,
-        latency_s=latency_s or 0.0,
-        usage=usage,
-    )
     status = body.get("status") or "?"
-    print(f"Status: {status}  duration={latency_s}s\nSaved → {args.out}")
+    if status != "Completed":
+        raise VendorError(f"reducto {status}: {json.dumps(body)[:300]}", status=200)
+    extract_resp = body.get("result") or {}
+    extraction = as_object(extract_resp.get("result", extract_resp))
+    if extraction is None:
+        raise VendorError(f"completed with no extraction: {json.dumps(body)[:300]}", status=200)
+
+    usage = dict(extract_resp.get("usage") or {})
+    credits = usage.get("credits")
+    return Extraction(result=extraction,
+                      raw={**{k: v for k, v in body.items() if k != "result"},
+                           "result": {k: v for k, v in extract_resp.items() if k != "result"},
+                           "latency_s": latency_s},
+                      cost=Cost(credits=credits if isinstance(credits, (int, float))
+                                        and not isinstance(credits, bool) else None,
+                                source="usage.credits" if credits is not None else None),
+                      job_id=job_id)
+
+
+def main() -> None:
+    run_cli(extract, Config, "reducto",
+            description="Reducto deep extract (v2, citations off)")
 
 
 if __name__ == "__main__":

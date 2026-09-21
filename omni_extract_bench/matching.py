@@ -1,69 +1,16 @@
 #!/usr/bin/env python3
 """Provably-optimal array row matching for the benchmark grader."""
-from __future__ import annotations
 
 import numpy as _np
 import scipy.sparse as _sp
 from scipy.optimize import linear_sum_assignment as _lsa
 from scipy.sparse.csgraph import min_weight_full_bipartite_matching as _sparse_lsa
-#: Ceilings on solving one block exactly. Both bound the COST MATRIX rather than the solve,
-#: because with a compiled solver the matrix is what costs: 250 million cells is ~2 GB as
-#: float64. A dimension cap as well as a cell cap, so a wildly rectangular problem cannot slip
-#: through on cells alone. Past either, `match_rows` falls back to greedy and says so.
-#:
-#: The cell cap was 60 million while the scorer also held a Python dict of every priced pair,
-#: which cost ~200 bytes a pair against the matrix's 8 -- so the matrix was never what ran the
-#: machine out of memory, and a ceiling set for it was really a ceiling for the dict. That
-#: dict is gone. The largest gold array in this corpus is 26,725 x 26,725 -- 714 million
-#: cells, 5.7 GB as float64 -- so it is past this cap and takes the greedy path, as do two
-#: further documents at ~19,000 rows. The cap is not what excludes them: `MAX_EXACT` is, and
-#: raising either to reach them costs ~23 minutes and ~6 GB on the largest against 4.6 minutes
-#: and 1.86 GB today, for a measured difference of at most 0.177 accuracy points.
+
 MAX_EXACT = 20000
 MAX_CELLS = 250 * 10**6
-
-#: Absolute ceiling on the exact path, in cells. `MAX_CELLS` is the size below which exact is
-#: taken without further thought; this is the size above which it is refused however sparse the
-#: alternative looks. 500 million cells is ~4 GB as float64.
 MAX_CELLS_DENSE = 500 * 10**6
-
-#: What each path costs per unit, used to compare them between the two ceilings above.
-#:
-#: Exact holds one float64 per CELL, whether or not the pair is worth anything. Greedy holds a
-#: Python 3-tuple per POSITIVE pair -- 64 bytes for the tuple and 8 for the list slot; the
-#: integers inside are shared across pairs and amortise away. So greedy is cheaper only on a
-#: sparse block, and on a dense one it costs ~9x MORE than the matrix it exists to avoid.
-#:
-#: That is the same failure the `MAX_CELLS` note above describes and `_best_pairing` removed:
-#: a per-pair Python object dwarfing the matrix. It was fixed there and missed here, which is
-#: why a fallback taken FOR memory reasons could run the machine out of it. Until `_greedy`
-#: stores pairs compactly, the honest fix is to stop sending dense blocks down it.
 EXACT_BYTES_PER_CELL = 8
 GREEDY_BYTES_PER_PAIR = 72
-
-
-def force_approximate():
-    """Test hook: shrink the exactness budget so the greedy fallback engages.
-
-    Returns:
-        A callable that restores the real budget.
-
-    The greedy path IS reachable -- three documents in this corpus take it, the largest at
-    26,725 rows -- but building an array that size in a test costs minutes for no extra
-    coverage, and the two smaller ones still need a document each. The hook exercises the
-    property that an approximate score announces itself without paying for the array.
-    """
-    global MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE
-    saved = (MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE)
-    # MAX_CELLS_DENSE has to come down too, or the density comparison would route the
-    # block back to exact and the hook would stop forcing anything.
-    MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE = 8, 64, 64
-
-    def restore():
-        global MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE
-        MAX_EXACT, MAX_CELLS, MAX_CELLS_DENSE = saved
-
-    return restore
 
 
 def _exact_ok(n, m, positives=None):
@@ -77,17 +24,12 @@ def _exact_ok(n, m, positives=None):
 
     Returns:
         Whether `optimal_pairs` may be called directly. `match_rows` falls back to greedy when
-        this is False, and records that the grade is approximate.
+        this is False, and records that the score is approximate.
 
-    Three bands. Below `MAX_CELLS` exact is taken outright. Above `MAX_CELLS_DENSE` it is
-    refused outright, so the exact path's memory is bounded whatever the data does. Between
-    them the question is which path is actually cheaper, and that depends on density: greedy
-    stores nothing for a pair worth nothing, but ~9x more than a matrix cell for a pair worth
-    something.
-
-    Without `positives` this returns the pre-existing answer, so a caller that cannot estimate
-    density loses nothing. An over-estimate biases towards exact, whose cost is known exactly
-    before it runs; that is the safe direction to err in.
+    Three bands: below `MAX_CELLS` exact outright, above `MAX_CELLS_DENSE` refused outright
+    so its memory is bounded whatever the data does, and between them whichever is cheaper --
+    which depends on density. Without `positives` the answer is the same as before it existed;
+    an over-estimate biases towards exact, whose cost is known before it runs.
     """
     lo, hi = (n, m) if n <= m else (m, n)
     if lo > MAX_EXACT:
@@ -159,11 +101,6 @@ def optimal_pairs(pred_rows, gt_rows, weight, weights=None):
         return sparse_pairs(pred_rows, gt_rows, weights)
     transposed = len(pred_rows) > len(gt_rows)
     A, B = (gt_rows, pred_rows) if transposed else (pred_rows, gt_rows)
-    # cost = -weight, because both solvers minimise
-    # The matrix is filled IN a numpy array rather than built as a Python list and converted:
-    # a list of lists costs ~4x the array in float objects and list slots before scipy sees any
-    # of it. The O(n*m) matrix is what bounds exactness once the solve is compiled, so it is
-    # worth not doubling it.
     if weights is not None:
         cost = _np.negative(weights.T if transposed else weights)
     else:
@@ -172,8 +109,6 @@ def optimal_pairs(pred_rows, gt_rows, weight, weights=None):
             row = cost[ia]
             for jb, b in enumerate(B):
                 row[jb] = -(weight(a, b) if not transposed else weight(b, a))
-    # scipy solves the rectangular problem directly, returning row/column index arrays rather
-    # than a per-row assignment vector.
     rows, cols = _lsa(cost)
     assign = [-1] * len(A)
     for ia, jb in zip(rows.tolist(), cols.tolist()):
@@ -185,7 +120,7 @@ def optimal_pairs(pred_rows, gt_rows, weight, weights=None):
         a, b = A[ia], B[jb]
         p_row, g_row = (b, a) if transposed else (a, b)
         if weight(p_row, g_row) <= 0:
-            continue                      # no shared content -> not a pair
+            continue
         pairs.append((p_row, g_row))
         used_b.add(jb)
     matched_p = {id(p) for p, _ in pairs}
@@ -210,9 +145,6 @@ def match_rows(pred_rows, gt_rows, weight, positives=None, weights=None):
     """
     if not pred_rows or not gt_rows:
         return [], list(pred_rows), list(gt_rows), True
-    # A sparse matrix is already small enough to hold, so the ceilings that exist to bound a
-    # DENSE one have nothing to say about it. This is the path on which greedy stops being
-    # needed: exact, and 50 MB where the dense form would be 5.7 GB.
     if weights is not None and _sp.issparse(weights):
         p2, u2, g2 = sparse_pairs(pred_rows, gt_rows, weights)
         return p2, u2, g2, True
@@ -241,20 +173,3 @@ def _greedy(pred_rows, gt_rows, weight):
     up = [r for i, r in enumerate(pred_rows) if i not in up_used]
     ug = [r for j, r in enumerate(gt_rows) if j not in ug_used]
     return pairs, up, ug
-
-
-if __name__ == "__main__":
-    # optimality demo: a case where greedy-by-key loses and Hungarian wins
-    P = [{"k": "a", "v": 1}, {"k": "a", "v": 2}]
-    G = [{"k": "a", "v": 2}, {"k": "a", "v": 1}]
-    w = lambda p, g: sum(1 for f in ("k", "v") if p.get(f) == g.get(f))
-    pairs, up, ug, exact = match_rows(P, G, w)
-    total = sum(w(p, g) for p, g in pairs)
-    print(f"optimal total weight = {total} (max possible 4), exact={exact}, pairs={len(pairs)}")
-    assert total == 4, "must find the crossing assignment"
-    # a row that shares nothing with any gold row is left unpaired rather than forced
-    P2 = P + [{"k": "b", "v": 9}]
-    pairs2, up2, ug2, _ = match_rows(P2, G, w)
-    print(f"extra predicted row -> {len(pairs2)} pairs, {len(up2)} unmatched")
-    assert len(up2) == 1 and sum(w(p, g) for p, g in pairs2) == 4
-    print("optimal_match self-tests pass")

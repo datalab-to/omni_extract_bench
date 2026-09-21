@@ -1,0 +1,9 @@
+{
+  "invoice_id": "INV-4417",
+  "invoice_date": "2024-03-31",
+  "total_due": 1240.0,
+  "line_items": [
+    {"sku": "AX-9910", "description": "Hex bolt, M8", "qty": 24, "unit_price": 12.5},
+    {"sku": "BX-2201", "description": "Washer, 8mm", "qty": 100, "unit_price": 9.4}
+  ]
+}
