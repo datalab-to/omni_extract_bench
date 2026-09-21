@@ -1,7 +1,7 @@
 # Omni Extract Bench
 
-This repository contains a way to run our benchmark dataset on [HuggingFace](https://huggingface.co/datasets/datalab-to/omni_extract_bench) and also
-provides primitives (`score` and `predict`) to run your own! The README is split up into the following table of contents.
+This repository contains a way to run our benchmark using our dataset on [HuggingFace](https://huggingface.co/datasets/datalab-to/omni_extract_bench) or *your own*. It also
+provides lower-level primitives (`score` and `predict`) to run in your own pipelines however you like. The README is split up into the following table of contents.
 
 1. **[Install](#install)** — the scorer on its own, or with the vendor adapters.
 2. **[Run our benchmark with one line](#run-our-benchmark-with-one-line)** — rerun vendors on the benchmark dataset.
