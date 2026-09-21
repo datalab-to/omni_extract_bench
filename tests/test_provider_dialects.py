@@ -297,6 +297,46 @@ check("a REJECTED schema is still recorded",
       _rec["error"]["status"] == 400 and _rec["schema_sent"] == _spy.seen["schema"])
 
 
+print("\n[5e] a deep $ref chain still describes its field")
+# `resolve_refs` counts NODES walked, not $refs followed, so its default budget of 12 buys
+# about four hops. Past that the $ref is left in place, `drop_schema_metadata` removes it, and
+# the field arrives as `{}` -- asked of the vendor with nothing said about it, and no error.
+# The real corpus tops out at two hops; this guards the cliff, not today's schemas.
+
+
+def _ref_chain(depth):
+    """A schema whose `$ref` chain is `depth` long, ending in a typed leaf."""
+    defs = {f"L{i}": {"type": "object", "properties": {"next": {"$ref": f"#/$defs/L{i + 1}"}}}
+            for i in range(depth)}
+    defs[f"L{depth}"] = {"type": "string"}
+    return {"$defs": defs, "type": "object",
+            "properties": {"a": {"$ref": "#/$defs/L0"}}}
+
+
+def _leaf(prepared, key="a"):
+    """Walk to the end of the prepared chain and return the deepest node."""
+    node = prepared.get("properties", {}).get(key, {})
+    while isinstance(node, dict) and "next" in (node.get("properties") or {}):
+        node = node["properties"]["next"]
+    return node
+
+
+for _depth in (2, 6, 20):
+    for _name, _mod in (("llamaextract", llamaextract), ("extend", _extend)):
+        _leafnode = _leaf(_mod.prepare_schema(_copy.deepcopy(_ref_chain(_depth))))
+        check(f"{_name}: a {_depth}-deep $ref chain keeps its leaf type",
+              _leafnode.get("type") in ("string", ["string", "null"]),
+              f"leaf came out {json.dumps(_leafnode)[:80]}")
+
+_recursive = {"$defs": {"Node": {"type": "object", "properties": {
+                  "name": {"type": "string"}, "child": {"$ref": "#/$defs/Node"}}}},
+              "type": "object", "properties": {"root": {"$ref": "#/$defs/Node"}}}
+for _name, _mod in (("llamaextract", llamaextract), ("extend", _extend)):
+    _out = json.dumps(_mod.prepare_schema(_copy.deepcopy(_recursive)))
+    check(f"{_name}: a self-referential $ref terminates, bounded",
+          len(_out) < 200_000, f"expanded to {len(_out)} bytes")
+
+
 print("\n[5c] a dialect that raises costs one document, not the run")
 
 

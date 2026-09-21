@@ -3,7 +3,7 @@ import dataclasses, json, os, time
 from pathlib import Path
 import httpx
 
-from ..dialects import resolve_refs, to_strict_dialect
+from ..dialects import MAX_REF_DEPTH, resolve_refs, to_strict_dialect
 from ..budget import Budget, PollRetry
 from ..contract import Cost, Extraction
 from ..errors import MissingCredential, VendorError
@@ -185,7 +185,8 @@ def rename_reserved(node):
 
 def prepare_schema(schema):
     """The schema Extend is sent: reserved names aliased, $refs inlined, strict dialect."""
-    return to_strict_dialect(resolve_refs(rename_reserved(schema)))
+    return to_strict_dialect(
+        resolve_refs(rename_reserved(schema), max_depth=MAX_REF_DEPTH))
 
 
 def restore_reserved(obj):

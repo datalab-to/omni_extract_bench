@@ -29,7 +29,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from ..dialects import drop_schema_metadata, resolve_refs, to_typed_enum_dialect
+from ..dialects import (MAX_REF_DEPTH, drop_schema_metadata, resolve_refs,
+                        to_typed_enum_dialect)
 from ..budget import Budget, PollRetry
 from ..contract import Cost, Extraction
 from ..errors import MissingCredential, VendorError
@@ -62,7 +63,8 @@ def prepare_schema(schema: dict) -> dict:
         `null` member no longer matches it ("Input should be a valid string at ...enum.3").
       * `additionalProperties` as a SCHEMA is rejected ("Input should be a valid boolean").
     """
-    return to_typed_enum_dialect(drop_schema_metadata(resolve_refs(schema)))
+    return to_typed_enum_dialect(
+        drop_schema_metadata(resolve_refs(schema, max_depth=MAX_REF_DEPTH)))
 
 
 def _req(

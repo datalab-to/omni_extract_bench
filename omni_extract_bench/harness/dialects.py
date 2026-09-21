@@ -21,6 +21,9 @@ from __future__ import annotations
 from ..metric import resolve_refs  # noqa: F401
 
 
+MAX_REF_DEPTH = 200
+
+
 def collapse_nullable_union(node):
     """Reduce ``anyOf: [{...}, {"type": "null"}]`` to its non-null branch, merging siblings.
 
