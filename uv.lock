@@ -645,7 +645,7 @@ wheels = [
 
 [[package]]
 name = "omni-extract-bench"
-version = "0.1.2"
+version = "0.1.3"
 source = { editable = "." }
 dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -665,6 +665,7 @@ harness = [
     { name = "httpx" },
     { name = "openai" },
     { name = "requests" },
+    { name = "rich" },
 ]
 
 [package.metadata]
@@ -675,7 +676,7 @@ requires-dist = [
     { name = "openai", marker = "extra == 'harness'", specifier = ">=1.0" },
     { name = "pyarrow", marker = "extra == 'benchmark'", specifier = ">=15.0.0" },
     { name = "requests", marker = "extra == 'harness'", specifier = ">=2.31" },
-    { name = "rich", marker = "extra == 'benchmark'", specifier = ">=13.0" },
+    { name = "rich", marker = "extra == 'harness'", specifier = ">=13.0" },
     { name = "scipy", specifier = ">=1.13.1" },
 ]
 provides-extras = ["harness", "benchmark"]
