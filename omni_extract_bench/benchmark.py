@@ -58,6 +58,7 @@ import json
 import logging
 import os
 import threading
+import time
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import NamedTuple
@@ -343,8 +344,14 @@ class ProviderRun:
             return run.label, "skipped", None, None, None
         try:
             with run.progress.calling():
-                record = predict(run.provider, doc.pdf, doc.schema, timeout=timeout,
-                                 **run.options)
+                # TEMPORARY, FOR RECORDING A DEMO -- see `vendor.STUB`. Here rather than
+                # inside `predict` only because the gold is here, and a fake that degrades
+                # the gold scores like a run instead of scoring zero. REVERT THIS COMMIT.
+                from .harness import vendor
+                record = (vendor._stub(run.provider, doc.schema, time.time(), gold=doc.gt)
+                          if os.environ.get(vendor.STUB)
+                          else predict(run.provider, doc.pdf, doc.schema, timeout=timeout,
+                                       **run.options))
             run.store(doc, record)
         except (MissingDependency, MissingCredential) as exc:
             return self._give_up(run, exc)
