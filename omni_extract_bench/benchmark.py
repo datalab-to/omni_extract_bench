@@ -181,6 +181,79 @@ class Run:
         _, wanted = grading_split(self.out, docs, verdicts=verdicts, rescore=rescore)
         return to_predict, len(wanted)
 
+    def score(self, docs: list[Doc], verdicts: bool = False, workers: int = 0,
+              rescore: bool = False) -> list[dict]:
+        """Grade this Run's predictions, and write one line per document.
+
+        The other half of `outstanding`, on the same flags: that one says how many this would
+        grade, this one grades them.
+
+        `self` NEVER REACHES THE PROCESS POOL. `score_one` is a module function handed the
+        provider and the path as plain values, because a Run carrying a live progress reporter
+        cannot be pickled and the pool would die on the first submit.
+
+        PROCESSES, not threads: this is the one CPU-bound half of a run, and the matcher's
+        recursion is interpreted Python that would serialise on the GIL.
+
+        RESUMABLE PER DOCUMENT -- a document already in `scores.jsonl` is not graded again;
+        `rescore=True` grades everything regardless. The file is in document order whatever
+        order the workers finish in, so a run stays comparable with the one before it.
+        """
+        known, wanted = grading_split(self.out, docs, verdicts=verdicts, rescore=rescore)
+        if len(wanted) < len(docs):
+            log.info("%s: %d of %d documents already scored, %d to grade",
+                     self.label, len(docs) - len(wanted), len(docs), len(wanted))
+
+        grade = functools.partial(score_one, provider=self.provider, out=self.out,
+                                  verdicts=verdicts)
+        graded: dict[str, dict] = {}
+
+        def so_far() -> list[dict]:
+            """Every row known, old and new, in corpus order.
+
+            Merged over WHAT IS ON DISK, not over `docs`: a `--limit 2` run would otherwise
+            rewrite the file with two lines and throw away a full run's grading.
+            """
+            merged = {**known, **graded}
+            return sorted(merged.values(), key=lambda r: (r.get("suite", ""), r["doc_id"]))
+
+        remaining = wanted
+        try:
+            if remaining and (workers or SCORE_WORKERS) > 1:
+                try:
+                    with cf.ProcessPoolExecutor(max_workers=workers or SCORE_WORKERS) as pool:
+                        # `as_completed`, not `map`: `map` yields in input order, so one heavy
+                        # document at the front holds back everything finished behind it.
+                        futures = {pool.submit(grade, doc): doc.doc_id for doc in remaining}
+                        for future in cf.as_completed(futures):
+                            graded[futures[future]] = future.result()
+                    remaining = []
+                except BrokenProcessPool:
+                    # WHERE IT BROKE IS THE DIAGNOSIS. Part way through is a worker out of
+                    # memory, or children cut down by a Ctrl-C. Before anything was graded it
+                    # is usually the `spawn` guard -- but a Ctrl-C lands here too, so the
+                    # message says both.
+                    if graded:
+                        raise
+                    log.warning("scoring pool stopped before any document was graded, so "
+                                "grading continues in this process. If that was a Ctrl-C, "
+                                "press it again; if it was not, put the call under "
+                                "`if __name__ == \"__main__\":` or pass score_workers=1.")
+            for doc in remaining:
+                graded[doc.doc_id] = grade(doc)
+        finally:
+            # ONE WRITE, ON EVERY PATH OUT: finished, interrupted, broken pool, disk error.
+            write_scores(self.out, so_far())
+            if len(graded) < len(wanted):
+                log.warning("scoring stopped after %d of %d documents; the rest are graded "
+                            "on the next run", len(graded), len(wanted))
+
+        # THE FILE AND THE ANSWER ARE DIFFERENT LISTS. The file is every document ever graded
+        # here; the return is this run's selection, because `summarise` counts what it is
+        # given -- handed the file, a `--limit 2` run reported five documents.
+        answered = {**known, **graded}
+        return [answered[d.doc_id] for d in docs if d.doc_id in answered]
+
     def describe(self, work: tuple[int, int] | None = None) -> str:
         """One line: what this Run asks, and what it still owes when `work` is known.
 
@@ -377,14 +450,6 @@ class ProviderRun:
             raise self.fatal[0]
 
 
-def predict_all(docs: list[Doc], provider: str, out: Path, timeout: float, workers: int,
-                options: dict | None = None, progress=NULL, label: str | None = None,
-                stop: threading.Event | None = None) -> None:
-    """One Run of one vendor: a `ProviderRun` holding exactly one."""
-    one = Run(label or provider, provider, options or {}, out, progress)
-    ProviderRun(provider, [one], workers).predict(docs, timeout, stop)
-
-
 # ── 3. scores ────────────────────────────────────────────────────────────────────────────
 
 #: Capped rather than taken from the core count: the heaviest arrays here need ~1.8 GB each
@@ -457,53 +522,6 @@ def grading_split(out: Path, docs: list[Doc], verdicts: bool = False,
         selected = {d.doc_id for d in docs}
         known = {k: v for k, v in known.items() if k not in selected}
     return known, [d for d in docs if d.doc_id not in known]
-
-
-def score_all(docs: list[Doc], provider: str, out: Path, verdicts: bool = False,
-              workers: int = 0, rescore: bool = False) -> list[dict]:
-    """Grade the predictions on disk, and write one line per document."""
-    known, wanted = grading_split(out, docs, verdicts=verdicts, rescore=rescore)
-    if len(wanted) < len(docs):
-        log.info("%s: %d of %d documents already scored, %d to grade",
-                 provider, len(docs) - len(wanted), len(docs), len(wanted))
-
-    grade = functools.partial(score_one, provider=provider, out=out, verdicts=verdicts)
-    graded: dict[str, dict] = {}
-
-    def so_far() -> list[dict]:
-        """Every row known, old and new, in corpus order.
-
-        Merged over WHAT IS ON DISK, not over `docs`: a `--limit 2` run would otherwise
-        rewrite the file with two lines and throw away a full run's grading.
-        """
-        merged = {**known, **graded}
-        return sorted(merged.values(), key=lambda r: (r.get("suite", ""), r["doc_id"]))
-
-    remaining = wanted
-    try:
-        if remaining and (workers or SCORE_WORKERS) > 1:
-            try:
-                with cf.ProcessPoolExecutor(max_workers=workers or SCORE_WORKERS) as pool:
-                    futures = {pool.submit(grade, doc): doc.doc_id for doc in remaining}
-                    for future in cf.as_completed(futures):
-                        graded[futures[future]] = future.result()
-                remaining = []
-            except BrokenProcessPool:
-                if graded:
-                    raise
-                log.warning("scoring pool stopped before any document was graded, so grading "
-                            "continues in this process. If that was a Ctrl-C, press it again; "
-                            "if it was not, put the call under `if __name__ == \"__main__\":` "
-                            "or pass score_workers=1.")
-        for doc in remaining:
-            graded[doc.doc_id] = grade(doc)
-    finally:
-        write_scores(out, so_far())
-        if len(graded) < len(wanted):
-            log.warning("scoring stopped after %d of %d documents; the rest are graded on "
-                        "the next run", len(graded), len(wanted))
-    answered = {**known, **graded}
-    return [answered[d.doc_id] for d in docs if d.doc_id in answered]
 
 
 def write_scores(out: Path, rows: list[dict]) -> None:
@@ -725,8 +743,8 @@ class BenchmarkRun:
         """
         summary = {}
         for run in self.runs:
-            mine = score_all(docs, run.provider, run.out, verdicts=self.verdicts,
-                             workers=self.score_workers, rescore=self.rescore)
+            mine = run.score(docs, verdicts=self.verdicts, workers=self.score_workers,
+                             rescore=self.rescore)
             summary[run.label] = {**run.head(), **summarise(mine)}
             # THE FILE DESCRIBES THE DIRECTORY, the return value describes this invocation.
             # They differ only on a narrowed resume, where `--limit 2` against a graded 620

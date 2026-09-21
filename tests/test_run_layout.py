@@ -235,17 +235,17 @@ report("...while the return value answers what this invocation ran",
 print("\nAND A RUN THAT IS GRADED SURVIVES THE ONE AFTER IT NOT BEING")
 out3 = pathlib.Path(tempfile.mkdtemp())
 B.fetch = lambda root: out3
-real_score_all, graded = B.score_all, {"n": 0}
+real_score, graded = B.Run.score, {"n": 0}
 
 
-def interrupted_on_the_second(*a, **k):
+def interrupted_on_the_second(self, *a, **k):
     graded["n"] += 1
     if graded["n"] == 2:
         raise KeyboardInterrupt
-    return real_score_all(*a, **k)
+    return real_score(self, *a, **k)
 
 
-B.score_all = interrupted_on_the_second
+B.Run.score = interrupted_on_the_second
 try:
     B.run(["datalab"], out=out3, score_workers=1, predict_workers={"*": 1},
           options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
@@ -253,7 +253,7 @@ try:
 except KeyboardInterrupt:
     report("the interrupt reaches the caller", True)
 finally:
-    B.score_all = real_score_all
+    B.Run.score = real_score
 
 first, second = named("datalab", mode="balanced"), named("datalab", mode="accurate")
 report("the run that finished grading published its row",

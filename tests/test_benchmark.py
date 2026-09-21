@@ -21,7 +21,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 from omni_extract_bench import score                            # noqa: E402
 from omni_extract_bench.benchmark import (                        # noqa: E402
-    Doc, needs_run, score_all, summarise)
+    Doc, Run, needs_run, summarise)
 
 FAILS = []
 
@@ -75,7 +75,7 @@ for doc_id, (suite, pred) in WRITTEN.items():
     docs.append(Doc(doc_id, suite, root / f"{doc_id}.pdf", root / f"{doc_id}.json", SCH))
 docs.append(Doc("never-ran", "internal", root / "x.pdf", root / "perfect.json", SCH))
 
-rows = score_all(docs, "vendor", out)
+rows = Run("vendor", "vendor", {}, out).score(docs)
 by_id = {r["doc_id"]: r for r in rows}
 report("one row per document, including the one never predicted", len(rows) == 6, str(len(rows)))
 report("a correct prediction scores 1.0", by_id["perfect"]["accuracy"] == 1.0)
@@ -107,8 +107,8 @@ ref_root, ref_out = TMP / "refcorpus", TMP / "refrun"
 ref_root.mkdir()
 (ref_root / "r.json").write_text(json.dumps(REF_GOLD))
 (ref_out / "predictions" / "r.json").write_text(json.dumps(REF_GOLD))
-ref_rows = score_all([Doc("r", "extractbench", ref_root / "r.pdf", ref_root / "r.json",
-                          REF_SCHEMA)], "v", ref_out)
+ref_rows = Run("v", "v", {}, ref_out).score(
+    [Doc("r", "extractbench", ref_root / "r.pdf", ref_root / "r.json", REF_SCHEMA)])
 report("a $ref schema scores instead of erroring", ref_rows[0]["status"] == "scored",
        str(ref_rows[0].get("error")))
 report("...and a perfect prediction scores 1.0", ref_rows[0].get("accuracy") == 1.0)
@@ -195,8 +195,10 @@ _saved = _vendor.adapter
 _vendor.adapter = lambda provider: (_ for _ in ()).throw(
     MissingDependency("the datalab adapter could not import what it needs"))
 try:
-    _bench.predict_all(_docs, "datalab", _out, timeout=30, workers=3)
-    report("a missing SDK stops the run", False, "predict_all returned normally")
+    _bench.ProviderRun("datalab",
+                       [_bench.Run("datalab", "datalab", {}, _out)], 3
+                       ).predict(_docs, timeout=30)
+    report("a missing SDK stops the run", False, "it returned normally")
 except MissingDependency:
     report("a missing SDK stops the run", True)
 finally:

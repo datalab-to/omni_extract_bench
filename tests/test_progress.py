@@ -181,7 +181,7 @@ report("the message still got out", "something happened" in text)
 report("...and the handlers are put back afterwards", root.handlers == saved)
 
 print("\nTHE NULL REPORTER SWALLOWS EVERYTHING")
-# So `predict_all` needs no `if progress:` anywhere.
+# So nothing that predicts needs an `if progress:` anywhere.
 NULL.start(5, workers=3)
 with NULL.calling():
     NULL.record(error=True, usd=1.0, wall_s=2.0)

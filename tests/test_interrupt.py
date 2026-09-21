@@ -2,7 +2,7 @@
 """Ctrl-C stops the run, and leaves it resumable.
 
 THE SUBTLETY THAT MAKES THIS WORTH A TEST. Python delivers a KeyboardInterrupt to the MAIN
-thread. Providers run concurrently, so `predict_all` is in a worker -- where a
+thread. Providers run concurrently, so `ProviderRun.predict` is in a worker -- where a
 `except KeyboardInterrupt` can never fire. The handler has to be in `run`, on the main thread,
 and it has to set a flag every provider shares; otherwise the interrupt escapes into
 `ThreadPoolExecutor.__exit__`, which waits for every provider to work through the whole corpus.
@@ -56,7 +56,8 @@ B.predict = lambda *a, **k: called.append(1) or {"result": {"a": 1}, "cost": {}}
 try:
     already = threading.Event()
     already.set()
-    B.predict_all(docs, "datalab", out, timeout=5, workers=2, stop=already)
+    B.ProviderRun("datalab", [B.Run("datalab", "datalab", {}, out)], 2)\
+     .predict(docs, timeout=5, stop=already)
 finally:
     B.predict = _real_predict          # later sections drive the real one through an adapter
 report("no vendor call is made", called == [], f"{len(called)} calls")
@@ -180,17 +181,17 @@ for i in range(5):
     (narrow / "predictions" / f"d{i}.json").write_text(json.dumps({"a": "x"}))
     five.append(B.Doc(f"d{i}", "s", narrow / "x.pdf", g,
                       {"type": "object", "properties": {"a": {"type": "string"}}}))
-B.score_all(five, "v", narrow, workers=1)
+B.Run("v", "v", {}, narrow).score(five, workers=1)
 lines = lambda: len((narrow / "scores.jsonl").read_text().strip().splitlines())   # noqa: E731
 report("a full run writes every row", lines() == 5, str(lines()))
-B.score_all(five[:2], "v", narrow, workers=1)
+B.Run("v", "v", {}, narrow).score(five[:2], workers=1)
 report("a narrowed run keeps the rows it did not select", lines() == 5, str(lines()))
-B.score_all(five[:2], "v", narrow, workers=1, rescore=True)
+B.Run("v", "v", {}, narrow).score(five[:2], workers=1, rescore=True)
 report("...and so does a narrowed rescore", lines() == 5, str(lines()))
 
 # THE FILE AND THE ANSWER ARE DIFFERENT LISTS. `summarise` counts what it is handed, so
 # returning the whole file would report a `--limit 2` run as five documents.
-back = B.score_all(five[:2], "v", narrow, workers=1)
+back = B.Run("v", "v", {}, narrow).score(five[:2], workers=1)
 report("the return value is this run's selection, not the file",
        [r["doc_id"] for r in back] == ["d0", "d1"], str([r["doc_id"] for r in back]))
 report("...so the summary counts what was asked for",
@@ -213,8 +214,9 @@ real_write_json = B.write_json_atomic
 B.write_json_atomic = lambda path, obj, **kw: (
     (_ for _ in ()).throw(OSError("No space left on device")))
 try:
-    B.predict_all(twenty, "datalab", disk / "x", timeout=5, workers=4)
-    report("a failed write stops the vendor", False, "predict_all returned normally")
+    B.ProviderRun("datalab", [B.Run("datalab", "datalab", {}, disk / "x")], 4)\
+     .predict(twenty, timeout=5)
+    report("a failed write stops the vendor", False, "it returned normally")
 except OSError:
     report("a failed write stops the vendor", True)
 finally:
@@ -245,7 +247,7 @@ def failing_write(self, *a, **k):
 
 pathlib.Path.write_text = failing_write
 try:
-    got = B.score_all(some, "v", vd, workers=1, verdicts=True)
+    got = B.Run("v", "v", {}, vd).score(some, workers=1, verdicts=True)
 finally:
     pathlib.Path.write_text = real_write
 report("the other four documents survive", sum(r["status"] == "scored" for r in got) == 4,
@@ -277,7 +279,7 @@ def main():
         (out / "predictions" / f"d{{i:02d}}.json").write_text(
             json.dumps({{"rows": list(reversed(gt["rows"]))}}))
         docs.append(B.Doc(f"d{{i:02d}}", "s", out / "x.pdf", g, schema))
-    B.score_all(docs, "v", out, workers=4)
+    B.Run("v", "v", {{}}, out).score(docs, workers=4)
 
 if __name__ == "__main__":
     main()
@@ -322,21 +324,21 @@ graded = []
 real_score_one = B.score_one
 B.score_one = lambda doc, **k: graded.append(doc.doc_id) or real_score_one(doc, **k)
 try:
-    B.score_all(small, "v", fresh, workers=1)
+    B.Run("v", "v", {}, fresh).score(small, workers=1)
     report("a first pass grades everything", len(graded) == 6, str(len(graded)))
 
-    graded.clear(); rows = B.score_all(small, "v", fresh, workers=1)
+    graded.clear(); rows = B.Run("v", "v", {}, fresh).score(small, workers=1)
     report("a second pass grades nothing", graded == [], str(graded))
     report("...and still returns every row", len(rows) == 6, str(len(rows)))
 
-    graded.clear(); B.score_all(small, "v", fresh, workers=1, rescore=True)
+    graded.clear(); B.Run("v", "v", {}, fresh).score(small, workers=1, rescore=True)
     report("rescore=True grades everything again", len(graded) == 6, str(len(graded)))
 
     # A row scored without verdicts cannot answer a run that wants them: the per-address file
     # beside it was never written, and reusing the row would leave a hole nothing fills.
-    graded.clear(); B.score_all(small, "v", fresh, workers=1, verdicts=True)
+    graded.clear(); B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=True)
     report("asking for verdicts re-grades rows that have none", len(graded) == 6, str(len(graded)))
-    graded.clear(); B.score_all(small, "v", fresh, workers=1, verdicts=True)
+    graded.clear(); B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=True)
     report("...and those rows are reusable once they do", graded == [], str(graded))
 
     # One bad line costs one document rather than the whole file.
@@ -344,7 +346,7 @@ try:
     lines = sj.read_text().splitlines()
     lines[2] = "{ this is not json"
     sj.write_text("\n".join(lines) + "\n")
-    graded.clear(); B.score_all(small, "v", fresh, workers=1, verdicts=True)
+    graded.clear(); B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=True)
     report("an unreadable row costs one document, not the file", len(graded) == 1, str(graded))
 finally:
     B.score_one = real_score_one
