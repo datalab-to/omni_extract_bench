@@ -29,8 +29,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from ..dialects import (MAX_REF_DEPTH, drop_schema_metadata, resolve_refs,
-                        to_typed_enum_dialect)
+from ..dialects import MAX_REF_DEPTH, collapse_nullable_union, resolve_refs
 from ..budget import Budget, PollRetry
 from ..contract import Cost, Extraction
 from ..errors import MissingCredential, VendorError
@@ -49,6 +48,67 @@ class Config:
         metadata={"choices": ["cost_effective", "agentic", "agentic_plus"],
                   "help": "extraction tier; entitlements change, so check one against the API"})
     poll_interval: int = 5
+
+
+def to_typed_enum_dialect(node):
+    """Reshape for a vendor that requires every enum to declare a matching type.
+
+    ``{"enum": ["MILD", "MODERATE", null]}`` is valid JSON Schema and rejected here twice over:
+    once for having no ``type``, and then -- after a type is inferred -- for the ``null`` member
+    not matching it. The type is inferred from the enum's own values rather than defaulted, and
+    the null is removed, since nullability belongs to the field's optionality, not to the value
+    set. Also reduces ``additionalProperties`` from a schema to a boolean, which some validators
+    require; the map stays open, only the per-value constraint is lost.
+    """
+    if isinstance(node, list):
+        return [to_typed_enum_dialect(x) for x in node]
+    if not isinstance(node, dict):
+        return node
+
+    collapsed = collapse_nullable_union(node)
+    if collapsed is not node:
+        # RECURSE on the merged node, as extend's `to_strict_dialect` does: a union whose branch is
+        # a union (`Optional[list[str] | dict]`) otherwise keeps the inner `anyOf`, and a
+        # nested union is what the vendor rejected in the first place.
+        return to_typed_enum_dialect(collapsed)
+    out = dict(node)
+
+    declared = out.get("type")
+    if isinstance(declared, list):
+        non_null = [t for t in declared if t != "null"]
+        out["type"] = non_null[0] if non_null else "string"
+
+    if "enum" in out and "type" not in out:
+        values = [v for v in out["enum"] if v is not None]
+        kinds = {type(v) for v in values}
+        out["type"] = ({str: "string", bool: "boolean", int: "integer", float: "number"}
+                       .get(kinds.pop()) if len(kinds) == 1 else "string")
+
+    if isinstance(out.get("enum"), list) and out.get("type") in (
+            "string", "boolean", "integer", "number"):
+        out["enum"] = [v for v in out["enum"] if v is not None]
+
+    if isinstance(out.get("additionalProperties"), dict):
+        out["additionalProperties"] = True
+
+    if isinstance(out.get("properties"), dict):
+        out["properties"] = {k: to_typed_enum_dialect(v) for k, v in out["properties"].items()}
+    if isinstance(out.get("items"), dict):
+        out["items"] = to_typed_enum_dialect(out["items"])
+    return out
+
+
+def drop_schema_metadata(node):
+    """Remove `$`-prefixed annotations -- `$schema`, `$id`, `$comment`.
+
+    `resolve_refs` consumes `$ref` and `$defs`; these are what is left, and they describe the
+    document rather than the data. Several validators reject them as unknown keys.
+    """
+    if isinstance(node, list):
+        return [drop_schema_metadata(x) for x in node]
+    if not isinstance(node, dict):
+        return node
+    return {k: drop_schema_metadata(v) for k, v in node.items() if not k.startswith("$")}
 
 
 def prepare_schema(schema: dict) -> dict:

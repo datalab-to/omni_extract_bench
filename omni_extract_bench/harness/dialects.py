@@ -13,8 +13,9 @@ collapsing a nullable union, or moving a null from an enum to the field's option
 encodings. Removing a field, or telling the model what to extract, is not.
 
 WHAT LIVES HERE: a transform MORE THAN ONE adapter composes. One with a single caller belongs
-in that adapter -- `to_strict_dialect` is Extend's and sits in `providers/extend.py`, next to
-the validator it was modelled on. Only adapters import this, and nothing here runs unless an
+in that adapter, beside the `prepare_schema` that composes it -- `to_strict_dialect` is
+Extend's, `to_typed_enum_dialect` and `drop_schema_metadata` are LlamaExtract's, and each sits
+in its own provider module. Only adapters import this, and nothing here runs unless an
 adapter's `prepare_schema` calls it.
 """
 from __future__ import annotations
@@ -48,64 +49,3 @@ def collapse_nullable_union(node):
                 merged.setdefault(k, v)
             return merged
     return node
-
-
-def to_typed_enum_dialect(node):
-    """Reshape for a vendor that requires every enum to declare a matching type.
-
-    ``{"enum": ["MILD", "MODERATE", null]}`` is valid JSON Schema and rejected here twice over:
-    once for having no ``type``, and then -- after a type is inferred -- for the ``null`` member
-    not matching it. The type is inferred from the enum's own values rather than defaulted, and
-    the null is removed, since nullability belongs to the field's optionality, not to the value
-    set. Also reduces ``additionalProperties`` from a schema to a boolean, which some validators
-    require; the map stays open, only the per-value constraint is lost.
-    """
-    if isinstance(node, list):
-        return [to_typed_enum_dialect(x) for x in node]
-    if not isinstance(node, dict):
-        return node
-
-    collapsed = collapse_nullable_union(node)
-    if collapsed is not node:
-        # RECURSE on the merged node, as extend's `to_strict_dialect` does: a union whose branch is
-        # a union (`Optional[list[str] | dict]`) otherwise keeps the inner `anyOf`, and a
-        # nested union is what the vendor rejected in the first place.
-        return to_typed_enum_dialect(collapsed)
-    out = dict(node)
-
-    declared = out.get("type")
-    if isinstance(declared, list):
-        non_null = [t for t in declared if t != "null"]
-        out["type"] = non_null[0] if non_null else "string"
-
-    if "enum" in out and "type" not in out:
-        values = [v for v in out["enum"] if v is not None]
-        kinds = {type(v) for v in values}
-        out["type"] = ({str: "string", bool: "boolean", int: "integer", float: "number"}
-                       .get(kinds.pop()) if len(kinds) == 1 else "string")
-
-    if isinstance(out.get("enum"), list) and out.get("type") in (
-            "string", "boolean", "integer", "number"):
-        out["enum"] = [v for v in out["enum"] if v is not None]
-
-    if isinstance(out.get("additionalProperties"), dict):
-        out["additionalProperties"] = True
-
-    if isinstance(out.get("properties"), dict):
-        out["properties"] = {k: to_typed_enum_dialect(v) for k, v in out["properties"].items()}
-    if isinstance(out.get("items"), dict):
-        out["items"] = to_typed_enum_dialect(out["items"])
-    return out
-
-
-def drop_schema_metadata(node):
-    """Remove `$`-prefixed annotations -- `$schema`, `$id`, `$comment`.
-
-    `resolve_refs` consumes `$ref` and `$defs`; these are what is left, and they describe the
-    document rather than the data. Several validators reject them as unknown keys.
-    """
-    if isinstance(node, list):
-        return [drop_schema_metadata(x) for x in node]
-    if not isinstance(node, dict):
-        return node
-    return {k: drop_schema_metadata(v) for k, v in node.items() if not k.startswith("$")}
