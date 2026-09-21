@@ -27,7 +27,7 @@ We provide orchestration to run our benchmark around our core primitives: `predi
 
 See providers:
 
-```
+```bash
 oeb providers
 ```
 ```
@@ -44,10 +44,10 @@ google/gemini-3.7-flash
 
 See what settings each provider takes and its default values. For example, datalab:
 
-```
+```bash
 oeb providers datalab
 ```
-```
+```text
 datalab
 
   mode           balanced
@@ -61,11 +61,11 @@ Then run the benchmark (limit to 1 document here). It's **resumable** so you can
 
 **!!NOTE!!**: this will cost money and you will need your API keys set.
 
-```
+```bash
 oeb benchmark --out runs/ --limit 1 \
     --providers datalab reducto extend llamaextract
 ```
-```
+```text
 benchmark: 4 runs over 4 adapters, 1800s per document, our corpus, 1 document selected -> runs
 ╭──────────────┬─────────┬───────────────────────┬────────────────────────────────────────┬─────────┬───────╮
 │ adapter      │ at once │ run                   │ settings                               │ predict │ grade │
@@ -98,7 +98,7 @@ benchmark: 4 runs over 4 adapters, 1800s per document, our corpus, 1 document se
 ```
 If you proceed you'll see:
 
-```
+```text
  run                                        done   ok   err   in flight   cost   avg    dur
  ──────────────────────────────────────────────────────────────────────────────────────────
  datalab-f46415c9                            0/1    0     0         1/1                3.0s
@@ -110,7 +110,7 @@ If you proceed you'll see:
 
 You can also specify settings per provider. For example:
 
-```
+```bash
 oeb benchmark \
   --providers datalab reducto \
   --limit 1 \
