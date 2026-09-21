@@ -121,10 +121,7 @@ oeb predict --provider datalab --doc invoice.pdf --schema schema.json \
   ...truncated for display
 ```
 
-Same flag names, except `pdf` is `--doc`. It prints the whole record, not just the answer. The
-cost and the response are how you check a number later.
-
-Three things raise instead of returning, because none of them is about the document:
+Three types of errors raise:
 
 ```python
 MissingCredential    # an unset API key
@@ -132,7 +129,7 @@ MissingDependency    # an adapter whose SDK isn't installed
 AccountFailure       # the account can't pay
 ```
 
-Everything else comes back in `record["error"]`, with the prediction beside it.
+Everything else comes back in `record["error"]` with the prediction beside it.
 
 
 ## benchmark
@@ -140,8 +137,10 @@ Everything else comes back in `record["error"]`, with the prediction beside it.
 Needs the benchmark extra.
 
 ```bash
-uv pip install 'omni-extract-bench[benchmark,harness]'
+uv pip install 'omni-extract-bench[benchmark]'
 ```
+
+**!!NOTE!!**: running this will cost money and you will need your API keys set.
 
 Use in your own code.
 
@@ -165,12 +164,9 @@ BenchmarkRun(
 )
 ```
 
-Everything but `providers` is keyword-only. `execute()` runs it and returns the summary,
-keyed by run.
-
 ```python
 summary = BenchmarkRun(["datalab", "reducto"], limit=5).execute()
-summary["datalab-f46415c9"]["accuracy"]
+summary["datalab-f46415c9"]["accuracy"] # e.g. 0.9145
 ```
 
 ### Three levels of abstractions 
@@ -188,9 +184,6 @@ Run            # a provider plus its options
 
 ### From the cli
 
-The cli is the same thing, one flag per argument. It prints that plan and waits.
-
-**!!NOTE!!**: this will cost money and you will need your API keys set.
 
 ```bash
 oeb benchmark --out runs/ --limit 1 --providers datalab reducto
@@ -200,13 +193,13 @@ benchmark: 2 runs over 2 adapters, 1800s per document, our corpus, 1 document se
 ╭─────────┬─────────┬──────────────────┬─────────────────────────────────┬─────────┬───────╮
 │ adapter │ at once │ run              │ settings                        │ predict │ grade │
 ├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
-│ datalab │       5 │ datalab-f46415c9 │ base_url=https://www.datalab.to │         │       │
+│ datalab │       5 │ datalab-f46415c9 │ base_url=https://www.datalab.to │       1 │     1 │
 │         │         │                  │ ─────────────────────────────── │         │       │
 │         │         │                  │ mode=balanced                   │         │       │
 │         │         │                  │ ─────────────────────────────── │         │       │
 │         │         │                  │ poll_interval=5.0               │         │       │
 ├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
-│ reducto │       5 │ reducto-e54d3a1d │ agentic_table_mode=max          │         │       │
+│ reducto │       5 │ reducto-e54d3a1d │ agentic_table_mode=max          │       1 │     1 │
 │         │         │                  │ ─────────────────────────────── │         │       │
 │         │         │                  │ deep_extract_model=v2           │         │       │
 │         │         │                  │ ─────────────────────────────── │         │       │
@@ -220,21 +213,19 @@ benchmark: 2 runs over 2 adapters, 1800s per document, our corpus, 1 document se
 You can pass `-y` to skip the interactive confirmation. The execution looks like:
 
 ```
- run                                    done   ok   err   in flight       cost     avg
- ────────────────────────────────────────────────────────────────────────────────────────────────────
- datalab-f46415c9   ━━━━━━━━━━━━━━━━   20/20   20     0                  $6.20   1m58s   done in 3.0s
- datalab-01a72762   ━━━━━━━━━━━━━━━━   20/20   20     0                  $6.20   2m02s   done in 3.0s
- reducto-e54d3a1d   ━━━━━━━━━━━━━━━━   20/20   19     1               5,820 cr   2m19s   done in 3.0s
- mistral-44136fa3   ━━━━━━━━━━━━━━━━   20/20   20     0                          2m13s   done in 3.0s
+ run                                    done   ok   err   in flight       cost     avg    dur
+ ────────────────────────────────────────────────────────────────────────────────────────────
+ datalab-f46415c9   ━━━━━━━━━━━━━━━━   20/20   20     0                  $6.20   1m58s   3.0s
+ datalab-01a72762   ━━━━━━━━━━━━━━━━   20/20   20     0                  $6.20   2m02s   3.0s
+ reducto-e54d3a1d   ━━━━━━━━━━━━━━━━   20/20   19     1               5,820 cr   2m19s   3.0s
+ mistral-44136fa3   ━━━━━━━━━━━━━━━━   20/20   20     0                          2m13s   3.0s
 80/80 documents  1 failed  $12.40 + 5,820 cr  3.0s elapsed
 ```
 
 
 ### Settings per provider
 
-`--options` can give one provider a **list**, and each entry is its own `Run`. its own
-directory, its own summary, its own line in the progress display. This is how you compare a
-vendor against itself. For example:
+`--options` can give one provider a **list**, and each entry is its own `Run`. For example:
 
 ```bash
 oeb benchmark \
@@ -249,23 +240,11 @@ That's 4 runs.
 
 ### A manifest of your own
 
-Instead of our corpus, which then isn't downloaded at all:
-
 ```bash
 oeb benchmark --providers datalab --manifest my/corpus/manifest.parquet
 ```
 
-Same parquet either way. Columns: `doc_id`, `suite`, `doc_path`, `gt_path`, and a `schema`
-column holding JSON.
-
-A `doc_id` is a filename -- it names `predictions/<doc_id>.json`, its record and its row in
-`scores.jsonl` -- so one with a `/` in it is refused, naming the row.
-
-An absolute `doc_path` is used as it is. A relative one resolves against `--data-root`, or the
-manifest's own directory when you don't give one, so a manifest sitting next to its PDFs needs
-no flags.
-
-**!!NOTE!!**: an absolute path won't survive a container or somebody else's machine.
+Same parquet shape as [ours](https://huggingface.co/datasets/datalab-to/omni_extract_bench). 
 
 ### Resuming
 
@@ -334,7 +313,7 @@ settings_for("datalab", {"mode": "accurate"})
 ```
 
 
-## What benchmark writes
+## What a benchmark writes
 
 One directory per run.
 

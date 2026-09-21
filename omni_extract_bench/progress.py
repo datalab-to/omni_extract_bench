@@ -1,10 +1,11 @@
 """A live table while the benchmark runs, and a log line per provider when there is no tty.
 
-    run                                 done  ok  err   in flight      cost    avg
-    datalab-f46415c9  ━━━━╸━━━━━━━━━━━  118/620  118   0  10/10 in flight  $183.49  4m19s
-    reducto-e54d3a1d  ━━╸━━━━━━━━━━━━━   64/620   63   1    3/3 in flight  17,951 cr  3m12s
-    mistral-44136fa3                                                              waiting
-    182/1240 documents  1 failed  $183.49 + 17,951 cr  1h12m elapsed
+     run                                      done    ok   err   in flight        cost     avg     dur
+    ─────────────────────────────────────────────────────────────────────────────────────────────────
+    datalab-f46415c9   ━━━                118/620   118     0       10/10     $183.49   4m19s   1h12m
+    reducto-e54d3a1d   ━╸                  64/620    63     1         3/3   17,951 cr   3m12s   1h12m
+    mistral-44136fa3   waiting
+    182/1240 documents  1 failed  13 in flight  $183.49 + 17,951 cr  1h12m elapsed
 
 A run takes hours and the vendors go at once, so "how far along is each one, and what is it
 costing" is the question the terminal should be answering the whole time. It was answered by a
@@ -122,14 +123,13 @@ def format_flight(stats: Stats) -> str:
     """Calls out at the vendor right now, against how many are allowed.
 
     The denominator is the point. `25/25` says the pool is saturated and more workers would
-    buy more throughput; `3/25` says something else is the limit -- the vendor's own queue,
-    or simply that there are only three documents left. Tuning `--predict-workers` without it
-    is guesswork.
+    buy more throughput; `3/25` says something else is the limit. Bare, because the table heads
+    the column and the log line labels it -- said in both it read `10/10 in flight` under a
+    heading of `in flight`.
     """
     if not stats.running and stats.finished is not None:
         return ""
-    return (f"{stats.running}/{stats.workers} in flight" if stats.workers
-            else f"{stats.running} in flight")
+    return f"{stats.running}/{stats.workers}" if stats.workers else str(stats.running)
 
 
 def format_bar(done: int, total: int | None, width: int = 14) -> str:
@@ -148,14 +148,14 @@ def format_provider(name: str, stats: Stats, name_width: int = 12) -> str:
              f"err {stats.errors}"]
     flight = format_flight(stats)
     if flight:
-        parts.append(flight)
+        parts.append(f"{flight} in flight")
     money = format_money(stats)
     if money:
         parts.append(money)
     if stats.mean_wall is not None:
         parts.append(f"avg {format_duration(stats.mean_wall)}")
-    if stats.finished is not None:
-        parts.append(f"done in {format_duration(stats.elapsed)}")
+    if stats.elapsed is not None:
+        parts.append(f"dur {format_duration(stats.elapsed)}")
     return "  ".join(parts)
 
 
@@ -206,11 +206,13 @@ def render(stats: dict[str, Stats]) -> Group:
     table.add_column("in flight", justify="right", no_wrap=True)
     table.add_column("cost", justify="right", no_wrap=True)
     table.add_column("avg", justify="right", no_wrap=True)
-    table.add_column("", no_wrap=True)
+    table.add_column("dur", justify="right", no_wrap=True)
     for name, s in stats.items():
         if s.total is None:
-            table.add_row(Text(name, style="dim"), "", "", "", "", "", "", "",
-                          Text("waiting", style="dim"))
+            # In the bar's column, not the last one: `waiting` under a heading of `dur` reads
+            # as a duration, and it is the absence of one.
+            table.add_row(Text(name, style="dim"), Text("waiting", style="dim"),
+                          "", "", "", "", "", "", "")
             continue
         done = s.finished is not None
         table.add_row(
@@ -224,7 +226,10 @@ def render(stats: dict[str, Stats]) -> Group:
             format_flight(s),
             format_money(s),
             format_duration(s.mean_wall) if s.mean_wall is not None else "",
-            Text(f"done in {format_duration(s.elapsed)}", style="dim") if done else "",
+            # How long this provider has been going, which stops where it finished. No
+            # `done in` prefix and no branch: the column is headed, and a run that is still
+            # going has an elapsed worth reading too.
+            Text(format_duration(s.elapsed), style="dim" if done else ""),
         )
     total = format_total(stats) if len(stats) > 1 else ""
     return Group(table, Text(total, style="bold")) if total else Group(table)

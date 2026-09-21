@@ -70,14 +70,14 @@ for want in ("datalab", "118/620", "ok 118", "err 0", "$183.49", "avg 4m19s"):
     report(f"the line carries {want!r}", want in line, line)
 done = format_provider("reducto", Stats(total=5, ok=5, started=1.0, finished=61.0))
 report("a finished provider reports its total time",
-       "done in 1m00s" in done, done)
+       "dur 1m00s" in done, done)
 
 print("\nCALLS IN FLIGHT")
-report("saturated", format_flight(Stats(running=25, workers=25)) == "25/25 in flight")
-report("not saturated", format_flight(Stats(running=3, workers=25)) == "3/25 in flight")
+report("saturated", format_flight(Stats(running=25, workers=25)) == "25/25")
+report("not saturated", format_flight(Stats(running=3, workers=25)) == "3/25")
 report("idle is still worth saying while a provider runs",
-       format_flight(Stats(running=0, workers=25)) == "0/25 in flight")
-report("no cap known -> just the count", format_flight(Stats(running=4)) == "4 in flight")
+       format_flight(Stats(running=0, workers=25)) == "0/25")
+report("no cap known -> just the count", format_flight(Stats(running=4)) == "4")
 report("a finished provider drops the column",
        format_flight(Stats(running=0, workers=25, finished=1.0)) == "",
        "0/25 on a done row is noise")
@@ -93,7 +93,7 @@ small.reporter("v").start(2, workers=10)
 report("a pool larger than the work is clamped to the work",
        small.stats["v"].workers == 2, str(small.stats["v"].workers))
 report("...so a smoke test reads as saturated, not idle",
-       "2/2 in flight" in format_flight(Stats(total=2, running=2, workers=2)))
+       "2/2" in format_flight(Stats(total=2, running=2, workers=2)))
 big = Progress(["v"], stream=io.StringIO())
 big.reporter("v").start(620, workers=10)
 report("a full run is untouched by the clamp", big.stats["v"].workers == 10)
