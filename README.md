@@ -122,7 +122,7 @@ oeb benchmark \
 
 This will execute 4 different runs -- one for each pair (provider, settings).
 
-See [`docs/API.md`](./docs/API.md) for more details on what `oeb benchmark` writes.
+See [`docs/API.md`](./docs/API.md) for more details on what `oeb benchmark` writes and **how you can run on your own benchmark dataset**. 
 
 ## Score
 
