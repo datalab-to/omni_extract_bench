@@ -133,7 +133,7 @@ with Progress(["datalab"], stream=plain) as bars:
 report("nothing is drawn at all", plain.getvalue() == "", repr(plain.getvalue()[:40]))
 report("...and the display knows it is not live", Progress([], stream=io.StringIO()).live is False)
 
-print("\nA TTY -> ONE LINE PER PROVIDER, REDRAWN IN PLACE")
+print("\nA TTY -> A LIVE TABLE, REDRAWN IN PLACE")
 tty = FakeTTY()
 with Progress(["datalab", "reducto"], stream=tty, tick=1000) as bars:
     datalab = bars.reporter("datalab")
@@ -141,9 +141,9 @@ with Progress(["datalab", "reducto"], stream=tty, tick=1000) as bars:
     datalab.record(usd=1.55, wall_s=259.0)
     bars.redraw()
 out = tty.getvalue()
-report("both providers have a line", "datalab" in out and "reducto" in out)
+report("both providers have a row", "datalab" in out and "reducto" in out)
 report("a total line is added for more than one provider", "documents" in out)
-report("the cursor is moved back up to redraw", "\x1b[" in out)
+report("it redraws in place rather than scrolling", "\x1b[" in out)
 report("the counters reached the display", "1/4" in out, out.replace("\x1b", "^")[-200:])
 
 print("\nONE PROVIDER: NO TOTAL LINE")

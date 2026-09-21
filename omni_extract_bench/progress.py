@@ -1,42 +1,55 @@
-"""A live line per provider, while the benchmark runs.
+"""A live table while the benchmark runs, and a log line per provider when there is no tty.
 
-    datalab       ██████░░░░░░░░   118/620  ok 118  err 0    $183.49  avg 4m19s
-    reducto       ███░░░░░░░░░░░    64/620  ok  63  err 1   17951 cr  avg 3m12s
-    mistral       ░░░░░░░░░░░░░░         waiting
+    run                                 done  ok  err   in flight      cost    avg
+    datalab-f46415c9  ━━━━╸━━━━━━━━━━━  118/620  118   0  10/10 in flight  $183.49  4m19s
+    reducto-e54d3a1d  ━━╸━━━━━━━━━━━━━   64/620   63   1    3/3 in flight  17,951 cr  3m12s
+    mistral-44136fa3                                                              waiting
+    182/1240 documents  1 failed  $183.49 + 17,951 cr  1h12m elapsed
 
-A run takes hours and the vendors now go at once, so "how far along is each one, and what is
-it costing" is the question the terminal should be answering the whole time. It was answered
-by a log line every ten documents per provider, which interleaves into noise once more than
-one vendor is writing it.
+A run takes hours and the vendors go at once, so "how far along is each one, and what is it
+costing" is the question the terminal should be answering the whole time. It was answered by a
+log line every ten documents per provider, which interleaves into noise once more than one
+vendor is writing it.
 
 THREE LAYERS, AND ONLY THE LAST ONE KNOWS ABOUT A TERMINAL:
 
     Stats        plain counters. No formatting, no output, no lock.
-    format_*     Stats -> one string. Pure functions, so the layout is testable without a tty.
-    Progress     the terminal: where the cursor goes, what a redraw costs, when to tick.
+    format_*     Stats -> one string, and `render` -> one table. Pure, so the layout is
+                 testable without a tty.
+    Progress     the terminal: a rich `Live`, and what a log line does to it.
 
-`Progress` is also the only thing that needs a lock, because the providers run concurrently
-and each has a pool of its own behind it. `Stats` is touched under that lock and nowhere else.
+`Progress` is also the only thing that needs a lock, because the providers run concurrently and
+each has a pool of its own behind it. `Stats` is touched under that lock and nowhere else.
 
-NOT A TTY -> NOT A BAR. Piped to a file or running in CI, there is no cursor to move and ANSI
-would be litter in a log, so the same counters come out as a periodic line per provider. The
-caller does not choose: `Progress` reads the stream and decides.
+NOT A TTY -> NOT A TABLE. Piped to a file or running in CI there is nothing to redraw, and a
+table every ten documents is worse in a log than a line, so the same counters come out as a
+periodic line per provider. The caller does not choose: `Progress` reads the stream and decides.
+
+Colour carries only what the numbers already say -- red where errors are not zero, green where
+a provider is finished -- so a terminal that strips it loses nothing.
 """
 from __future__ import annotations
 
 import contextlib
 import logging
-import shutil
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
+
+from rich.console import Console, Group
+from rich.live import Live
+from rich.progress_bar import ProgressBar
+from rich.table import Table
+from rich.text import Text
 
 log = logging.getLogger(__name__)
 
 TICK_S = 0.5
 
 PLAIN_EVERY = 10
+
+BAR_WIDTH = 16
 
 
 @dataclass
@@ -174,6 +187,45 @@ def format_total(everything: dict[str, Stats]) -> str:
     return "  ".join(parts)
 
 
+def render(stats: dict[str, Stats]) -> Group:
+    """Every provider as one row. Pure, like the `format_*` above it: Stats in, a table out.
+
+    Colour carries only what the numbers already say -- red where errors are not zero, green
+    where a provider is finished -- so a terminal that strips it loses nothing.
+    """
+    table = Table(box=None, pad_edge=False, header_style="dim", expand=False)
+    table.add_column("run", no_wrap=True)
+    table.add_column("", width=BAR_WIDTH, no_wrap=True)
+    table.add_column("done", justify="right", no_wrap=True)
+    table.add_column("ok", justify="right", no_wrap=True)
+    table.add_column("err", justify="right", no_wrap=True)
+    table.add_column("in flight", justify="right", no_wrap=True)
+    table.add_column("cost", justify="right", no_wrap=True)
+    table.add_column("avg", justify="right", no_wrap=True)
+    table.add_column("", no_wrap=True)
+    for name, s in stats.items():
+        if s.total is None:
+            table.add_row(Text(name, style="dim"), "", "", "", "", "", "", "",
+                          Text("waiting", style="dim"))
+            continue
+        done = s.finished is not None
+        table.add_row(
+            Text(name, style="green" if done else ""),
+            ProgressBar(total=max(s.total, 1), completed=min(s.done, s.total),
+                        width=BAR_WIDTH, complete_style="green" if done else "cyan",
+                        finished_style="green"),
+            f"{s.done}/{s.total}",
+            str(s.ok),
+            Text(str(s.errors), style="red bold" if s.errors else "dim"),
+            format_flight(s),
+            format_money(s),
+            format_duration(s.mean_wall) if s.mean_wall is not None else "",
+            Text(f"done in {format_duration(s.elapsed)}", style="dim") if done else "",
+        )
+    total = format_total(stats) if len(stats) > 1 else ""
+    return Group(table, Text(total, style="bold")) if total else Group(table)
+
+
 class Reporter:
     """One provider's handle on the display. This is all a Run ever holds.
 
@@ -256,10 +308,9 @@ class Progress:
         self.stats: dict[str, Stats] = {name: Stats() for name in names}
         self.lock = threading.RLock()
         self._width = max((len(n) for n in self.stats), default=8)
-        self._drawn = 0
         self._tick = tick
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._console: Console | None = None
+        self._live: Live | None = None
         self._saved_handlers: list | None = None
 
     def reporter(self, name: str) -> Reporter:
@@ -301,55 +352,46 @@ class Progress:
         if line:
             log.info("%s", line)
 
-    def _clear(self) -> None:
-        if self.live and self._drawn:
-            self.stream.write(f"\x1b[{self._drawn}A\x1b[J")
-            self._drawn = 0
-
-    def _draw(self) -> None:
-        if not self.live:
-            return
-        columns = shutil.get_terminal_size((120, 24)).columns
-        lines = [format_provider(n, s, self._width) for n, s in self.stats.items()]
-        if len(self.stats) > 1:
-            lines += [line for line in [format_total(self.stats)] if line]
-        self.stream.write("".join(line[:columns] + "\n" for line in lines))
-        self.stream.flush()
-        self._drawn = len(lines)
+    def _renderable(self) -> Group:
+        """What `Live` asks for on every refresh. Under the lock: the providers are writing."""
+        with self.lock:
+            return render(self.stats)
 
     def redraw(self) -> None:
-        with self.lock:
-            self._clear()
-            self._draw()
-
-    def _loop(self) -> None:
-        while not self._stop.wait(self._tick):
-            self.redraw()
+        if self._live is not None:
+            self._live.refresh()
 
     def __enter__(self) -> "Progress":
         if self.live:
+            self._console = Console(file=self.stream, highlight=False)
+            # `get_renderable` rather than a ticker of our own: rich refreshes on its own
+            # thread and asks for the table each time, so there is one clock instead of two.
+            self._live = Live(get_renderable=self._renderable, console=self._console,
+                              refresh_per_second=max(1, int(1 / self._tick)),
+                              redirect_stdout=False, redirect_stderr=False)
+            self._live.start()
+            # A log line must not land inside the live region. Handlers hold the stream they
+            # were built with, so rich's own redirect cannot catch them -- they are wrapped.
             root = logging.getLogger()
             self._saved_handlers = root.handlers[:]
             root.handlers[:] = [_Interleaved(self, h) for h in self._saved_handlers]
-            self._thread = threading.Thread(target=self._loop, daemon=True)
-            self._thread.start()
-            self.redraw()
         return self
 
     def __exit__(self, *exc) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2 * self._tick)
         if self._saved_handlers is not None:
             logging.getLogger().handlers[:] = self._saved_handlers
             self._saved_handlers = None
-        if self.live:
-            self.redraw()
-            self._drawn = 0
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
 
 
 class _Interleaved(logging.Handler):
-    """A log handler that does not walk over the bars: clear, write, redraw."""
+    """A log handler that does not walk over the bars: stop the live region, write, start it.
+
+    The wrapped handler holds its own stream, so it writes straight past rich -- stopping the
+    live region first is what puts the line above the table instead of through it.
+    """
 
     def __init__(self, progress: Progress, inner: logging.Handler):
         super().__init__(level=inner.level)
@@ -357,6 +399,12 @@ class _Interleaved(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         with self.progress.lock:
-            self.progress._clear()
-            self.inner.emit(record)
-            self.progress._draw()
+            live = self.progress._live
+            if live is None:
+                self.inner.emit(record)
+                return
+            live.stop()
+            try:
+                self.inner.emit(record)
+            finally:
+                live.start(refresh=True)

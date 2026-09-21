@@ -36,6 +36,7 @@ benchmark = [
     "omni_extract_bench[harness]",
     "huggingface_hub>=0.23",
     "pyarrow>=15.0.0",
+    "rich>=13.0",
 ]
 
 [project.urls]
