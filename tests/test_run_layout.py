@@ -340,7 +340,7 @@ def counting_adapter(prov):
 
 V.adapter = counting_adapter
 declined = B.BenchmarkRun(["datalab"], out=ask, score_workers=1,
-                          predict_workers={"*": 1}).go(
+                          predict_workers={"*": 1}).execute(
     confirm=lambda plan: (shown.append(plan), False)[1])
 report("a declined plan calls no vendor at all", called["n"] == 0, f'{called["n"]} calls')
 report("...and gives back nothing rather than a half summary", declined == {})
@@ -359,7 +359,7 @@ report("...and wrote no summary.json", not list(ask.glob("*/summary.json")))
 
 called["n"] = 0
 accepted = B.BenchmarkRun(["datalab"], out=ask, score_workers=1,
-                          predict_workers={"*": 1}).go(confirm=lambda plan: True)
+                          predict_workers={"*": 1}).execute(confirm=lambda plan: True)
 report("an approved plan runs", called["n"] == len(B.read_manifest()) and len(accepted) == 1,
        f'{called["n"]} calls, {len(accepted)} rows')
 

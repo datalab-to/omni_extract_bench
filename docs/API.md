@@ -149,100 +149,42 @@ Use in your own code.
 from omni_extract_bench.benchmark import BenchmarkRun
 
 BenchmarkRun(
-  providers,              # vendors and/or model ids
-  out="runs",             # where the runs go
-  data_root=None,         # where the corpus goes, and what a relative manifest path is from
-  manifest=None,          # a parquet manifest of your own instead of ours
+  providers,              # e.g. ["datalab"]
+  out="runs",             # where runs go
+  data_root=None,         
+  manifest=None,          # own manifest instead of ours
   suites=None,            # limit to these suites
-  limit=0,                # first N documents; for a smoke test
-  timeout=1800.0,         # seconds one document may take, the same for every vendor
-  predict_workers=None,   # documents in flight at one vendor: {"reducto": 25}, or one number
-  score_workers=0,        # processes used to grade. Default: one per core, capped at 8
-  verdicts=False,         # also write one verdict per address, per document
-  rescore=False,          # grade every document again, ignoring the scores on disk
-  score_only=False,       # score the predictions already on disk; call no vendor
+  limit=0,                # first N documents
+  timeout=1800.0,         
+  predict_workers=None,   # documents in flight per vendor
+  score_workers=0,        # processes used to score
+  verdicts=False,         # write verdicts
+  rescore=False,          # score every document again
+  score_only=False,       # score the predictions; call no vendor
   options=None,           # per-provider settings: {"datalab": {"mode": "accurate"}}
 )
 ```
 
-Everything but `providers` is keyword-only. `go()` runs it and returns the summary, keyed by
-run.
+Everything but `providers` is keyword-only. `execute()` runs it and returns the summary,
+keyed by run.
 
 ```python
-summary = BenchmarkRun(["datalab", "reducto"], limit=5).go()
+summary = BenchmarkRun(["datalab", "reducto"], limit=5).execute()
 summary["datalab-f46415c9"]["accuracy"]
 ```
 
-`run(providers, **kwargs)` is the same thing in one call, if you don't want the object.
-
-Keyword arguments and no argparse, so this stays callable from a notebook, and it raises rather
-than exits for the same reason. Nothing here reads stdin either.
-
-### Three levels, three classes
+### Three levels of abstractions 
 
 ```python
-BenchmarkRun   # the invocation      every Run, grouped by adapter, predicted then graded
-ProviderRun    # one adapter         every Run on it, through one pool sized to that service
-Run            # one configuration   a provider plus its options
+BenchmarkRun   # every Run, grouped by adapter, predicted then graded
+ProviderRun    # every Run using a provider, through one pool sized to that service
+Run            # a provider plus its options
 ```
 
-A **Run** is a provider plus its options -- `datalab` at `mode=accurate` -- and it is what
-everything is keyed by: it names a directory, a summary row and a progress line.
+- A `Run` is a provider plus its options. For example, `datalab` at `mode=accurate`. It has its own self-contained directoy of results.
+- A `ProviderRun` is every Run for one provider sharing one pool of threads. The cap belongs to the provider.
 
-A **ProviderRun** is every Run on one adapter, sharing one pool. The cap belongs to the vendor,
-so two datalab tiers split its ten rather than taking ten each. And every `org/model` id is one
-`llm_single_shot`, one OpenRouter endpoint and one key, so three models named separately still
-share one budget.
 
-### See the plan before you spend
-
-Construct one and ask. No download, no vendor call:
-
-```python
-print(BenchmarkRun(["datalab"], options={"datalab": [{"mode": "balanced"},
-                                                     {"mode": "accurate"}]}).describe())
-```
-```
-benchmark: 2 runs over 1 adapter, 1800s per document, our corpus -> runs
-╭─────────┬─────────┬──────────────────┬─────────────────────────────────┬─────────┬───────╮
-│ adapter │ at once │ run              │ settings                        │ predict │ grade │
-├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
-│ datalab │      10 │ datalab-f46415c9 │ base_url=https://www.datalab.to │         │       │
-│         │         │                  │ ─────────────────────────────── │         │       │
-│         │         │                  │ mode=balanced                   │         │       │
-│         │         │                  │ ─────────────────────────────── │         │       │
-│         │         │                  │ poll_interval=5.0               │         │       │
-│         │         │ datalab-01a72762 │ ...truncated for display         │         │       │
-╰─────────┴─────────┴──────────────────┴─────────────────────────────────┴─────────┴───────╯
-```
-
-`predict` and `grade` are empty because there is no corpus yet. Give it one and it says what a
-resume would cost, per run:
-
-```python
-b = BenchmarkRun(["datalab", "reducto"], limit=1)
-b.describe(b.corpus())
-```
-```
-benchmark: 3 runs over 2 adapters, 1800s per document, our corpus, 1 document selected -> runs
-╭─────────┬─────────┬──────────────────┬─────────────────────────────────┬─────────┬───────╮
-│ adapter │ at once │ run              │ settings                        │ predict │ grade │
-├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
-│ datalab │      10 │ datalab-f46415c9 │ base_url=https://www.datalab.to │       1 │     1 │
-│         │         │                  │ ─────────────────────────────── │         │       │
-│         │         │                  │ mode=balanced                   │         │       │
-│         │         │                  │ ─────────────────────────────── │         │       │
-│         │         │                  │ poll_interval=5.0               │         │       │
-│         │         │ datalab-01a72762 │ base_url=https://www.datalab.to │       1 │     1 │
-│         │         │                  │ ...                             │         │       │
-├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
-│ reducto │       3 │ reducto-e54d3a1d │ agentic_table_mode=max          │       1 │     1 │
-│         │         │                  │ ...truncated for display        │         │       │
-╰─────────┴─────────┴──────────────────┴─────────────────────────────────┴─────────┴───────╯
-```
-
-They're counted separately because they're independent: every prediction can be on disk with
-every grade still owed, which is what `--rescore` means.
 
 ### From the cli
 
@@ -254,15 +196,28 @@ The cli is the same thing, one flag per argument. It prints that plan and waits.
 oeb benchmark --out runs/ --limit 1 --providers datalab reducto
 ```
 ```
-benchmark: 2 runs over 2 adapters, 1800s per document, our corpus, 1 document selected -> runs/
-...the table above
+benchmark: 2 runs over 2 adapters, 1800s per document, our corpus, 1 document selected -> runs
+╭─────────┬─────────┬──────────────────┬─────────────────────────────────┬─────────┬───────╮
+│ adapter │ at once │ run              │ settings                        │ predict │ grade │
+├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
+│ datalab │       5 │ datalab-f46415c9 │ base_url=https://www.datalab.to │         │       │
+│         │         │                  │ ─────────────────────────────── │         │       │
+│         │         │                  │ mode=balanced                   │         │       │
+│         │         │                  │ ─────────────────────────────── │         │       │
+│         │         │                  │ poll_interval=5.0               │         │       │
+├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
+│ reducto │       5 │ reducto-e54d3a1d │ agentic_table_mode=max          │         │       │
+│         │         │                  │ ─────────────────────────────── │         │       │
+│         │         │                  │ deep_extract_model=v2           │         │       │
+│         │         │                  │ ─────────────────────────────── │         │       │
+│         │         │                  │ poll_interval=5                 │         │       │
+│         │         │                  │ ─────────────────────────────── │         │       │
+│         │         │                  │ system_prompt=''                │         │       │
+╰─────────┴─────────┴──────────────────┴─────────────────────────────────┴─────────┴───────╯
   proceed? [y/N]
 ```
 
-`-y` skips the question. A run with no terminal to ask -- a pipe, a cron job -- never waits
-anyway, so a script is not the thing that hangs.
-
-Then it runs:
+You can pass `-y` to skip the interactive confirmation. The execution looks like:
 
 ```
  run                                    done   ok   err   in flight       cost     avg
@@ -274,12 +229,10 @@ Then it runs:
 80/80 documents  1 failed  $12.40 + 5,820 cr  3.0s elapsed
 ```
 
-Piped to a file or running in CI there is nothing to redraw, so the same counters come out as a
-log line per provider instead. You don't choose: it reads the stream and decides.
 
 ### Settings per provider
 
-`--options` can give one provider a **list**, and each entry is its own run -- its own
+`--options` can give one provider a **list**, and each entry is its own `Run`. its own
 directory, its own summary, its own line in the progress display. This is how you compare a
 vendor against itself. For example:
 

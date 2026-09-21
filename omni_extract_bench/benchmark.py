@@ -29,7 +29,7 @@ Three levels of abstraction == three classes.
     │         │         │                  │ poll_interval=5.0               │         │       │
     ╰─────────┴─────────┴──────────────────┴─────────────────────────────────┴─────────┴───────╯
 
-That costs nothing -- no download, no vendor call -- and `go()` logs it on the way in, so a run
+That costs nothing -- no download, no vendor call -- and `execute()` logs it on the way in, so
 that did spend says what it bought.
 
 Resumable and idempotent: a document is predicted again only when it has no record, graded
@@ -671,7 +671,7 @@ class BenchmarkRun:
             raise ValueError("no documents selected: check --suites and --limit")
         return docs
 
-    def go(self, confirm=None) -> dict:
+    def execute(self, confirm=None) -> dict:
         """Fetch, predict, score, write it down. `confirm` is handed the plan; returning
         False runs nothing and gives back `{}`."""
         docs = self.corpus()
@@ -690,4 +690,4 @@ class BenchmarkRun:
 def run(providers: list[str], *, confirm=None, **kwargs) -> dict:
     """Fetch, predict, score, write it down. Keyword arguments and no argparse so it stays
     callable from a notebook, and it never reads stdin -- `confirm` is the CLI's."""
-    return BenchmarkRun(providers, **kwargs).go(confirm=confirm)
+    return BenchmarkRun(providers, **kwargs).execute(confirm=confirm)

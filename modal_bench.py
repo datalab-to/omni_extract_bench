@@ -137,9 +137,9 @@ def bench(providers: str, options: str = "", limit: int = 0, suites: str = "",
         limit=limit,
         options=json.loads(options) if options else None,
     )
-    # No `confirm`: a detached run has no terminal to ask, so `go` logs the plan instead and
+    # No `confirm`: a detached run has no terminal to ask, so `execute` logs the plan and
     # `modal app logs` shows what it is about to spend before it spends it.
-    summary = run.go()
+    summary = run.execute()
     state.commit()          # before the upload reads it back, rather than waiting for a tick
     upload(out, prefix, full=full)
     return summary
