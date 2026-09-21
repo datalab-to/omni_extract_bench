@@ -23,10 +23,16 @@ THE RUN DIRECTORY IS A VOLUME, NOT AN R2 MOUNT. Every durable write here is a te
 as renaming files, are not supported". Pointed at R2 the first prediction fails with
 `PermissionError`. R2 is where the results are copied afterwards, over the S3 API.
 
-ONE CONTAINER, NOT ONE PER PROVIDER. The concurrency cap is per adapter and shared across the
-runs of it -- two datalab tiers split one pool of ten -- and that only holds inside one process.
-Fanning out per provider would put ten in flight per container, which is the thing the shared
-pool exists to stop.
+ONE CONTAINER, NOT ONE PER PROVIDER, for two separate reasons.
+
+The concurrency cap is per adapter and shared across the runs of it -- two datalab tiers split
+one pool of ten -- and that only holds inside one process. Fanning out per provider would put
+ten in flight per container, which is the thing the shared pool exists to stop.
+
+And `--detach` keeps only the LAST function a local entrypoint triggered alive once the parent
+process is gone. One `.remote()` is the only call here, so the last one is the only one; a loop
+that spawned a call per provider would lose every call but the final one the moment the
+terminal closed. If this is ever fanned out, `--detach` stops being enough on its own.
 """
 import json
 import logging
