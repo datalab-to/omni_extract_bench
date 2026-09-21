@@ -21,6 +21,9 @@ uv pip install 'omni-extract-bench[harness]'      # + vendor adapters, to produc
 uv pip install 'omni-extract-bench[benchmark]'    # + packages to orchestrate and run benchmark
 ```
 
+![oeb-usage](./assets/oeb_usage.gif)
+
+
 ## Run our benchmark with one line
 
 We provide orchestration to run our benchmark around our core primitives: `predict` and `score`.
@@ -292,7 +295,7 @@ On the example above, printing one line each:
 
 ### What the metric does
 
-![scoring.gif](./assets/animation/scoring.gif)
+![scoring.gif](./assets/scoring.gif)
 
 - Normalize document;
 - Flatten prediction and gold JSON dictionary to addresses mapped to their scalar values;
