@@ -29,22 +29,17 @@ Three levels of abstraction == three classes.
     │         │         │                  │ poll_interval=5.0               │         │       │
     ╰─────────┴─────────┴──────────────────┴─────────────────────────────────┴─────────┴───────╯
 
-That costs nothing -- no download, no vendor call -- so the plan can be read before the money
-is spent, and `go()` logs the same lines on its way in so a run that did spend says what it
-bought.
+That costs nothing -- no download, no vendor call -- and `go()` logs it on the way in, so a run
+that did spend says what it bought.
 
-Resumable and idempotent. A document is predicted again only when it has no record,
-and graded again only when it has no row in `scores.jsonl` -- so an interrupted run carries on
-instead of paying twice. Nothing checks the metric has not changed under a resume; `--rescore`
-is how to say it has.
+Resumable and idempotent: a document is predicted again only when it has no record, graded
+again only when it has no row. Nothing notices a changed metric under a resume, which is what
+`--rescore` is for.
 
-This is the orchestration around primitives `score` and `grade`. `score` grades one document and
-`harness.predict` produces one prediction.
+Credentials come from the environment and everything else from `--options`, so
+`run_manifest.settings` is a complete account of what each vendor was asked.
 
     pip install 'omni-extract-bench[benchmark,harness]'
-
-Credentials come from the environment. Everything else a vendor is told comes from `--options`,
-so `run_manifest.settings` is a complete account of what each vendor was asked.
 """
 from __future__ import annotations
 
@@ -87,11 +82,8 @@ MANIFEST = "manifest.parquet"
 
 
 class Doc(NamedTuple):
-    """One benchmark document, resolved once from the manifest.
-
-    The schema is parsed here and passed as a dict, because the vendor and the scorer must
-    get the same object.
-    """
+    """One benchmark document, resolved once from the manifest. The schema is parsed here so
+    the vendor and the scorer are handed the same object."""
 
     doc_id: str
     suite: str
@@ -162,21 +154,8 @@ def needs_run(record_path: Path) -> bool:
 
 
 class Run:
-    """One configuration this benchmark measures: a provider plus its options.
-
-    THE UNIT EVERYTHING IS KEYED BY. `label` is `out_name(provider, options)`, and that one
-    string names the directory, the summary row, the progress line and the log lines -- so two
-    tiers of one vendor cannot be mistaken for each other anywhere.
-
-    `provider` is separate from the grouping: Runs are grouped by ADAPTER, and
-    `openai/gpt-5.6-sol` and `anthropic/claude-opus-5` share `llm_single_shot` while being
-    different models. The group decides the pool; the Run decides what gets asked.
-
-    MUTABLE, BUT ONLY ON THE MAIN THREAD. Workers READ a Run -- its provider, its options, its
-    paths -- and never touch the counters, which `ProviderRun` folds in from its own
-    `as_completed` loop. So none of this needs a lock, and nothing here may start being written
-    from a worker without one.
-    """
+    """One configuration measured: a provider plus its options, and the counters it fills as it
+    goes. Workers only ever read one, so none of it needs a lock."""
 
     def __init__(self, label: str, provider: str, options: dict, out: Path, progress=NULL):
         self.label, self.provider, self.options = label, provider, options
@@ -202,34 +181,16 @@ class Run:
 
     def outstanding(self, docs: list[Doc], verdicts: bool = False,
                     rescore: bool = False) -> tuple[int, int]:
-        """How many of `docs` this Run would predict, and how many it would then grade.
-
-        What a resume COSTS, which is the question worth answering before one starts: the two
-        halves are independent, and a Run with every prediction on disk can still owe 620
-        grades after a `--rescore`.
-        """
+        """How many of `docs` this Run would predict, and then grade. The two are independent:
+        every prediction can be on disk with every grade still owed."""
         to_predict = sum(1 for doc in docs if self.needs(doc))
         _, wanted = grading_split(self.out, docs, verdicts=verdicts, rescore=rescore)
         return to_predict, len(wanted)
 
     def score(self, docs: list[Doc], verdicts: bool = False, workers: int = 0,
               rescore: bool = False) -> list[dict]:
-        """Grade this Run's predictions, and write one line per document.
-
-        The other half of `outstanding`, on the same flags: that one says how many this would
-        grade, this one grades them.
-
-        `self` NEVER REACHES THE PROCESS POOL. `score_one` is a module function handed the
-        provider and the path as plain values, because a Run carrying a live progress reporter
-        cannot be pickled and the pool would die on the first submit.
-
-        PROCESSES, not threads: this is the one CPU-bound half of a run, and the matcher's
-        recursion is interpreted Python that would serialise on the GIL.
-
-        RESUMABLE PER DOCUMENT -- a document already in `scores.jsonl` is not graded again;
-        `rescore=True` grades everything regardless. The file is in document order whatever
-        order the workers finish in, so a run stays comparable with the one before it.
-        """
+        """Grade this Run's predictions, resumable per document, and write one line each. `self`
+        never reaches the process pool: a Run holding a live reporter cannot be pickled."""
         known, wanted = grading_split(self.out, docs, verdicts=verdicts, rescore=rescore)
         if len(wanted) < len(docs):
             log.info("%s: %d of %d documents already scored, %d to grade",
@@ -240,11 +201,8 @@ class Run:
         graded: dict[str, dict] = {}
 
         def so_far() -> list[dict]:
-            """Every row known, old and new, in corpus order.
-
-            Merged over WHAT IS ON DISK, not over `docs`: a `--limit 2` run would otherwise
-            rewrite the file with two lines and throw away a full run's grading.
-            """
+            """Every row known, old and new, in corpus order. Merged over what is on disk, so a
+            `--limit 2` run cannot rewrite the file with two lines."""
             merged = {**known, **graded}
             return sorted(merged.values(), key=lambda r: (r.get("suite", ""), r["doc_id"]))
 
@@ -276,32 +234,13 @@ class Run:
         return [answered[d.doc_id] for d in docs if d.doc_id in answered]
 
     def asked(self) -> list[str]:
-        """Every setting this Run sends the vendor, one string each.
-
-        THE RESOLVED SETTINGS, not what the caller happened to pass. A Run that named no
-        options is not asking for nothing -- it is asking for the adapter's maximum tier, and
-        the column used to say `stock`, which named neither the tier nor that there was one.
-
-        `''` for an empty value, as `oeb providers` spells it: `system_prompt=` on its own
-        reads as missing, and an empty prompt is a setting rather than the absence of one.
-        """
+        """Every resolved setting this Run sends the vendor, one string each."""
         return [f"{k}={v if v != '' else chr(39) * 2}"
                 for k, v in sorted(self.settings().items())]
 
     def cells(self, work: tuple[int, int] | None = None) -> list[str]:
-        """This Run as table cells: its name, and what it still owes when `work` is known.
-
-        Cells rather than a line, because a column is only as wide as its widest value and
-        this does not know what that is. Padded by hand, `agentic_table_mode=default` ran past
-        its allowance and pushed every count after it out of line.
-
-        The counts are bare numbers, headed rather than labelled per row: `620 to predict` on
-        every line is 22 characters of the same two words, and they were what ran off the end
-        of an 80-column terminal.
-
-        The provider is not a column of its own because `label` already carries it: it is
-        `out_name(provider, options)`, so `openai__gpt-5.6-sol-28890c89` names its model.
-        """
+        """This Run as table cells: its name, and what it still owes when `work` is known. Cells
+        rather than a padded line, so the column is sized by the data."""
         return [self.label, *(("", "") if work is None else (str(work[0]), str(work[1])))]
 
     @property
@@ -319,13 +258,8 @@ class Run:
         return needs_run(self.records / f"{doc.doc_id}.json")
 
     def store(self, doc: Doc, record: dict) -> None:
-        """Write one answer down. THE ORDER IS THE COMMIT.
-
-        The prediction lands first and the record is the marker `needs` reads, so a process
-        killed between them leaves a document that looks unattempted and is run again -- the
-        cheap mistake. The other order buys the expensive one: a record with no answer beside
-        it, which no resume ever revisits.
-        """
+        """Write one answer down. The prediction lands first and the record is the marker
+        `needs` reads, so a kill between them re-runs the document rather than skipping it."""
         write_json_atomic(self.predictions / f"{doc.doc_id}.json", record["result"])
         write_json_atomic(self.records / f"{doc.doc_id}.json", record)
 
@@ -371,19 +305,8 @@ class Run:
 
 
 class ProviderRun:
-    """Every Run on one adapter, through one pool sized to that service.
-
-    ONE POOL PER ADAPTER, NOT PER RUN. The cap is a fact about the vendor -- how many documents
-    it will hold at once -- so the pool that enforces it has to be the vendor's too. A pool per
-    Run put `WORKERS["datalab"] = 10` in flight twice over when one invocation measured two
-    datalab tiers, and dividing the cap between them fixes the count while leaving it static:
-    the tier that finishes first hands its half back to nobody. One queue drains across every
-    Run of the adapter, so the whole cap is always in use and no Run can exceed it.
-
-    THE ADAPTER, NOT THE PROVIDER NAME, and for six of seven vendors those are the same thing.
-    They part company for model ids: `openai/gpt-5.6-sol` and `anthropic/claude-opus-5` are two
-    names for one `llm_single_shot`, one OpenRouter endpoint and one key.
-    """
+    """Every Run on one adapter, through one pool sized to that service. The cap belongs to the
+    vendor rather than to a Run, and every model id shares one adapter."""
 
     def __init__(self, adapter: str, runs: list[Run], workers: int):
         self.adapter, self.runs, self.workers = adapter, runs, workers
@@ -431,7 +354,10 @@ class ProviderRun:
         """Every document of every Run here, and raise whatever stopped the vendor."""
         by_label = {run.label: run for run in self.runs}
         work = [(run, doc) for run in self.runs for doc in run.begin(docs, self.workers)]
-        stopping = lambda: self.mine.is_set() or (stop is not None and stop.is_set())  # noqa: E731
+
+        def stopping() -> bool:
+            return self.mine.is_set() or (stop is not None and stop.is_set())
+
 
         with cf.ThreadPoolExecutor(max_workers=self.workers) as pool:
             futures = [pool.submit(self._predict_one, run, doc, timeout, stopping)
@@ -460,11 +386,8 @@ SCORE_WORKERS = min(8, os.cpu_count() or 1)
 
 
 def score_one(doc: Doc, *, provider: str, out: Path, verdicts: bool = False) -> dict:
-    """Grade one prediction on disk and return its row.
-
-    Module-level and picklable, so `score_all` can hand it to a process pool. It never
-    raises: one bad document is an error row, not the end of the grading pass.
-    """
+    """Grade one prediction on disk and return its row. Module-level and picklable for the
+    process pool, and it never raises: one bad document is an error row."""
     row = {"doc_id": doc.doc_id, "suite": doc.suite, "provider": provider}
     path = out / "predictions" / f"{doc.doc_id}.json"
     try:
@@ -510,12 +433,8 @@ def read_scores(out: Path, verdicts: bool = False) -> dict[str, dict]:
 
 def grading_split(out: Path, docs: list[Doc], verdicts: bool = False,
                   rescore: bool = False) -> tuple[dict[str, dict], list[Doc]]:
-    """The grades this selection may reuse, and the documents still to grade.
-
-    ONE DEFINITION, because `describe` promises what a resume will cost and `score_all` is
-    what it then costs. Two copies of this rule would drift, and the promise is the half that
-    would be wrong -- a plan that says 8 documents and then grades 620.
-    """
+    """The grades this selection may reuse, and the documents still to grade. One definition, so
+    what `describe` promises and what `Run.score` then does cannot drift."""
     known = read_scores(out, verdicts=verdicts)
     if rescore:
         selected = {d.doc_id for d in docs}
@@ -524,11 +443,8 @@ def grading_split(out: Path, docs: list[Doc], verdicts: bool = False,
 
 
 def write_scores(out: Path, rows: list[dict]) -> None:
-    """One line per document, written wherever scoring stops rather than only where it ends.
-
-    ATOMIC because it is READ BACK: an interrupt landing mid-write would truncate the very
-    file it was saving, and `read_scores` would silently drop everything past the cut.
-    """
+    """One line per document, written wherever scoring stops. Atomic because it is read back: a
+    truncated file would silently lose everything past the cut."""
     path = out / "scores.jsonl"
     tmp = path.with_name(f".{path.name}.partial")
     tmp.write_text("".join(json.dumps(row, default=str) + "\n" for row in rows))
@@ -583,20 +499,8 @@ def workers_for(providers, requested: dict[str, int] | int | None) -> int:
 
 def plan(providers: list[str], options: dict | None = None,
          out: Path = Path("runs")) -> list[Run]:
-    """A `Run` for every configuration this invocation measures.
-
-    A RUN IS A PROVIDER PLUS ITS OPTIONS, not a provider. `--options` may give one provider a
-    LIST of option sets, and each is its own run -- which is how one invocation compares a
-    vendor's tiers:
-
-        --providers datalab --options '{"datalab": [{"mode": "balanced"},
-                                                    {"mode": "accurate"}]}'
-
-    The label is `out_name`, so the same string is the directory, the summary key and the
-    progress line. Deduplicating on it means two spellings of one configuration cannot be
-    bought twice -- `--providers datalab datalab` is one run, and so is naming the stock
-    settings explicitly.
-    """
+    """A `Run` per configuration measured, deduplicated by label. `--options` may give one
+    provider a LIST, and each entry is a Run of its own."""
     from .harness.vendor import out_name
 
     unknown = sorted(set(options or {}) - set(providers))
@@ -618,12 +522,8 @@ def plan(providers: list[str], options: dict | None = None,
 
 
 def settings_cell(asked: list[str]) -> Group:
-    """One setting per line, ruled off from the next.
-
-    A `Rule` rather than a nested table or a row of dashes: it is sized to the cell rich gives
-    it, which nothing here knows in advance, and it draws BETWEEN settings rather than boxing
-    them -- every other construct pads the top and bottom as well.
-    """
+    """One setting per line, ruled off from the next. A `Rule` sizes itself to the cell, whose
+    width nothing here knows in advance."""
     if not asked:
         return Group(Text("-", style="dim"))       # mistral: nothing to ask at all
     rows: list = []
@@ -636,23 +536,7 @@ def settings_cell(asked: list[str]) -> Group:
 
 class BenchmarkRun:
     """One invocation: every Run, grouped by adapter, predicted then graded then written down.
-
-        <out>/<provider>-<digest>/
-            settings.json     what this Run asked, before it asked it
-            summary.json      what it came to, as soon as it is graded
-            predictions/<doc_id>.json    the bare extraction -- what scoring reads
-            records/<doc_id>.json        the schema sent, the cost, the manifest
-            scores.jsonl                 one graded row per document
-
-    A Run directory is self-contained, and there is no table across them:
-    `runs/*/summary.json` is one, aggregated however its reader likes, and a file here would
-    only be one opinion about that written down -- stale the moment another Run lands beside it.
-
-    THE PLAN IS AVAILABLE BEFORE ANYTHING IS SPENT. Construct one and call `describe()`: it
-    validates the providers and the options, works out the Runs and their caps, and says so --
-    all without a download or a vendor call. `go()` logs the same thing on its way in, so a run
-    that did cost money says what it bought.
-    """
+    `describe()` says what it would do, with no download and no vendor call."""
 
     def __init__(self, providers: list[str], *, out: Path = Path("runs"),
                  data_root: Path | None = None, manifest: Path | None = None,
@@ -682,15 +566,8 @@ class BenchmarkRun:
                 f"{len(self.providers)} adapters -> {self.out})")
 
     def plan_view(self, docs: list[Doc] | None = None) -> Group:
-        """The whole plan as one renderable. With `docs`, what each Run still owes.
-
-        Both are useful and at different moments: before the corpus is on disk there is no
-        such thing as "612 to predict", and once it is, that is the only number worth reading.
-
-        ONE STRUCTURE, TWO RENDERINGS. `describe` turns this into text for a log; the command
-        line prints it in colour. Neither lays out its own columns, so neither can be the one
-        that goes crooked.
-        """
+        """The whole plan as one renderable; with `docs`, what each Run still owes. `describe`
+        renders it as text for a log, the command line prints it in colour."""
         work = None if docs is None else {
             r.label: r.outstanding(docs, verdicts=self.verdicts, rescore=self.rescore)
             for r in self.runs}
@@ -737,12 +614,8 @@ class BenchmarkRun:
         return "\n".join(line.rstrip() for line in console.file.getvalue().splitlines())
 
     def prepare(self) -> None:
-        """Each Run's directory, and what it asked, written BEFORE it asks.
-
-        `summary.json` is written after grading, so a Run interrupted or stopped by a credit
-        ceiling never reaches one -- and its directory is a digest, which says nothing a person
-        can read. This is where they read it.
-        """
+        """Each Run's directory, and what it asked, written before it asks -- `summary.json` comes
+        after grading, which an interrupted run never reaches."""
         for run in self.runs:
             run.out.mkdir(parents=True, exist_ok=True)
             write_json_atomic(run.out / "settings.json",
@@ -768,11 +641,8 @@ class BenchmarkRun:
                     raise
 
     def score(self, docs: list[Doc]) -> dict:
-        """Grade every Run, serially, and publish each as soon as it is graded.
-
-        SERIAL because grading saturates every core: two Runs at once would only contend, and
-        letting it overlap a vendor call would put local CPU load inside a published latency.
-        """
+        """Grade every Run, serially, and publish each as soon as it is graded. Serial because
+        grading saturates every core."""
         summary = {}
         for run in self.runs:
             mine = run.score(docs, verdicts=self.verdicts, workers=self.score_workers,
@@ -788,20 +658,8 @@ class BenchmarkRun:
         return summary
 
     def corpus(self) -> list[Doc]:
-        """The documents this invocation selects, fetching ours if no manifest was brought.
-
-        A MANIFEST OF YOUR OWN SKIPS THE DOWNLOAD ENTIRELY, so bringing one needs no
-        HuggingFace access -- the branch is here, before `fetch`, for exactly that.
-
-        It is the same parquet either way: `doc_id`, `suite`, `doc_path`, `gt_path` and a
-        `schema` column holding JSON.
-
-        WHAT A RELATIVE PATH IS RELATIVE TO. `--data-root` when given, and otherwise the
-        manifest's own directory, which is what a manifest file usually means by a relative
-        path and makes "manifest sitting next to the PDFs" need no flags at all. An ABSOLUTE
-        `doc_path` ignores both and is used as it is -- convenient locally, and not portable to
-        a container or to somebody else's machine, which is the caller's trade to make.
-        """
+        """The documents this invocation selects, fetching ours when no manifest was brought. A
+        relative path resolves against `--data-root`, else the manifest's own directory."""
         if self.manifest is not None:
             root = self.data_root if self.data_root is not None else self.manifest.parent
             path = self.manifest
@@ -814,16 +672,8 @@ class BenchmarkRun:
         return docs
 
     def go(self, confirm=None) -> dict:
-        """Fetch, predict, score, write it down. Returns the summary it also writes.
-
-        `confirm` is handed the plan and decides whether to go on, which is how a command line
-        asks before spending money. Returning False runs nothing and gives back `{}` -- and
-        that is the only way `{}` comes back, since `plan` refuses to produce no runs at all.
-
-        THE CALLBACK OWNS SHOWING IT. Given one, this does not log the plan: the caller is
-        about to put it in front of somebody and two copies help nobody. Without one, it logs,
-        because a run that spends money should say what it bought.
-        """
+        """Fetch, predict, score, write it down. `confirm` is handed the plan; returning
+        False runs nothing and gives back `{}`."""
         docs = self.corpus()
         if confirm is None:
             for line in self.describe(docs).splitlines():
@@ -838,13 +688,6 @@ class BenchmarkRun:
 
 
 def run(providers: list[str], *, confirm=None, **kwargs) -> dict:
-    """Fetch, predict, score, write it down. Returns the summary it also writes to `out`.
-
-    Keyword arguments and no argparse, so this stays callable from a notebook; it raises rather
-    than exits, for the same reason. `BenchmarkRun(providers, **kwargs)` is the same thing with
-    the plan available first -- `describe()` says what it would do, and costs nothing.
-
-    Nothing here reads stdin. `confirm` is a callable the CLI supplies, so a library call is
-    never the thing that blocks waiting for somebody to type y.
-    """
+    """Fetch, predict, score, write it down. Keyword arguments and no argparse so it stays
+    callable from a notebook, and it never reads stdin -- `confirm` is the CLI's."""
     return BenchmarkRun(providers, **kwargs).go(confirm=confirm)
