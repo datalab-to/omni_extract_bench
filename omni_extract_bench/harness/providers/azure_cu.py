@@ -106,9 +106,6 @@ def fields_to_dict(fields: dict) -> dict:
     return {k: _value(v) for k, v in (fields or {}).items()}
 
 
-#: Analyzer ids are a pure function of the schema, and creating one is idempotent (409 means
-#: it already exists). Cached across documents so a 620-document run makes one PUT per distinct
-#: schema rather than 620.
 _ANALYZERS: dict[str, str] = {}
 _ANALYZER_LOCK = threading.Lock()
 
@@ -135,7 +132,7 @@ def _ensure_analyzer(client, endpoint: str, api_version: str, digest: str, analy
             json={"baseAnalyzerId": "prebuilt-documentAnalyzer",
                   "config": {"returnDetails": False, "completion": completion_model},
                   "fieldSchema": field_schema(schema)})
-        if r.status_code != 409:                              # 409: already exists, reuse it
+        if r.status_code != 409:
             if r.status_code >= 400:
                 raise VendorError(f"creating analyzer: HTTP {r.status_code}: {r.text[:300]}",
                                   status=r.status_code, body=r.text)
@@ -160,7 +157,6 @@ def _await(client, op_url: str, *, budget, poll_interval: float, want_result: bo
                 continue
             raise VendorError(f"polling failed: {exc}"[:300], status=None) from None
         if r.status_code >= 400:
-            # A failed poll is not a failed analysis: it is still running, and already billed.
             if retry.again(r.status_code):
                 continue
             raise VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
@@ -189,7 +185,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     if not endpoint or not key:
         raise MissingCredential("AZURE_CU_ENDPOINT and AZURE_CU_KEY must be set")
     endpoint = endpoint.rstrip("/")
-    budget = Budget(timeout)      # one per document, shared by both phases below
+    budget = Budget(timeout)
 
     with httpx.Client(headers={"Ocp-Apim-Subscription-Key": key}, timeout=120) as client:
         digest = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[:16]
@@ -217,7 +213,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                           body=json.dumps(body)[:300])
     return Extraction(result=fields_to_dict(contents[0].get("fields") or {}),
                       raw=body,
-                      cost=Cost(),                 # Azure reports none: billed out of band
+                      cost=Cost(),
                       job_id=analyzer_id)
 
 

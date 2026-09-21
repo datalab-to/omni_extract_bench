@@ -1,15 +1,9 @@
 """Every number in METRIC_SPEC section 5, checked against the scorer."""
 import os as _os
 import sys
-# run from anywhere: `python tests/x.py` puts tests/ on the path, not the repo root
 sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench.metric import score
 
-# ── the scorer now requires a schema ──────────────────────────────────────────────────
-# These tests are about scoring, not schema plumbing, so derive one from the ground truth.
-# That is the realistic case anyway: gold conforms to the schema that was sent. Deriving it
-# from gold alone is deliberate -- a key the PREDICTION invented genuinely is not a slot the
-# model was offered, which is what tells `invented field` from `fabricated`.
 from omni_extract_bench.metric import score as _score_impl          # noqa: E402
 
 
@@ -32,7 +26,6 @@ def score(pred, gt, schema=None, *a, **kw):
 def explain(pred, gt, schema=None, *a, **kw):
     """The per-address view. `score` is the only entry point; verdicts come off it."""
     return _score_impl(pred, gt, schema or _schema_from(gt), *a, verdicts=True, **kw)["verdicts"]
-# ──────────────────────────────────────────────────────────────────────────────────────
 
 
 def acc(pred, gold, **kw): 
@@ -80,11 +73,6 @@ print(f"  gold all-null row omitted      {round(score({'r':[{'k':'x'}]}, drop_g)
 print(f"  pred all-null row invented     "
       f"{round(score({'r':[{'k':'x'},{'k':None,'v':None}]}, {'r':[{'k':'x'}]})['accuracy'],3)}  want 1.0")
 
-# ── section 5: abstention IS measurable ───────────────────────────────────────────────
-# The spec used to claim otherwise. It does not, because abstaining is producing no value at
-# an address -- null and an absent key are two spellings of one behaviour, and `precision`
-# separates a model that declines from one that guesses. The numbers printed in section 5 are
-# these.
 print("\nABSTENTION IS MEASURABLE (section 5)")
 NN = 20
 AB_S = {"properties": {"lines": {"type": "array", "items": {"properties": {
@@ -122,16 +110,6 @@ if not all(c[1] for c in checks):
     sys.exit(1)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════════════
-# THE EMPTY STRING IS A THIRD SPELLING OF ABSENCE (section 5)
-# ---------------------------------------------------------------------------------------
-# A document can print "N/A"; it cannot print emptiness. `""` is what a blank cell becomes
-# on the way into JSON, so it means what `null` means and must score the same -- otherwise
-# the number moves with a vendor's serialization habit rather than with what it read. It
-# did: one provider's `""` convention cost it 7.92 points on `longarray` before this rule.
-#
-# The rule stops at the empty string. "N/A", "None" and "-" are ink on the page and the
-# corpus uses them as real gold values 24,980 times, so folding those would delete answers.
 print("\nTHE EMPTY STRING SCORES AS AN ABSENCE (section 5)")
 ES_S = {"properties": {"a": {"type": "string"}, "b": {"type": "string"}}}
 es_gold = {"a": "keep", "b": None}

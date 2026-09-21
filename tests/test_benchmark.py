@@ -35,9 +35,6 @@ def report(name, cond, detail=""):
 TMP = Path(tempfile.mkdtemp())
 
 print("WHAT A RESUME SKIPS")
-# A record means the vendor was called and answered. Whether a failure deserved another try is
-# decided inside `predict`, with the status in hand; by the time a record exists the attempts
-# are spent, and re-running would pay twice for an answer already bought.
 for label, exists in (("no record at all", False), ("a record from a previous run", True)):
     path = TMP / f"{abs(hash(label))}.json"
     if exists:
@@ -50,8 +47,6 @@ report("a recorded failure is not re-attempted either, transient or not",
        needs_run(_failed) is False)
 
 print("\nEVERY DOCUMENT COMES BACK, FAILURES INCLUDED")
-# Coverage is only visible if a failure occupies a row. A failed row carries NULL metrics, not
-# zero: a zero claims the model tried and missed every field, which is a different fact.
 root, out = TMP / "corpus", TMP / "run"
 (out / "predictions").mkdir(parents=True)
 root.mkdir()
@@ -89,11 +84,6 @@ report("scores.jsonl has a line per document",
        sum(1 for _ in (out / "scores.jsonl").open()) == 6)
 
 print("\nA SCHEMA THE SCORER CAN READ")
-# 257 of the 620 benchmark documents declare their row type in `$defs` and reference it with
-# `$ref`. `score` REFUSES such a schema -- an additionalProperties object behind a ref would be
-# graded while the same object written inline is skipped, so the two spellings would disagree.
-# Without resolving first, 41% of the corpus scored `status=error` while predicting perfectly:
-# the run log said `ok`, and coverage said 0.
 REF_SCHEMA = {
     "$defs": {"Row": {"type": "object", "properties": {"sku": {"type": "string"},
                                                        "qty": {"type": "integer"}}}},
@@ -118,9 +108,6 @@ report("the caller's schema is not mutated by preparing it",
        "$defs" in REF_SCHEMA and "$ref" in json.dumps(REF_SCHEMA))
 
 print("\nEVERY DOCUMENT COUNTS ONCE, WHATEVER IT WEIGHS")
-# A MEAN OVER DOCUMENTS, not a ratio of sums. The corpus runs from 26 addresses to 35,239, so
-# summing the counts and dividing lets one document decide the number for all of them --
-# measured on a real six-document run, 0.8076 against 0.9733.
 def scored(suite, matched, total, **rest):
     misread = rest.pop("misread", total - matched)
     r = {"suite": suite, "status": "scored", "total": total, "matched": matched,
@@ -139,9 +126,6 @@ report("a small document is worth as much as a huge one",
        abs(o["accuracy"] - 0.7) < 1e-9, f'{o["accuracy"]} -- a ratio of sums gives 0.504')
 
 print("\nAND NO CORPUS NUMBER IS PICKED FOR YOU")
-# Weighting the suites equally rather than by size is a real choice (METRIC_SPEC section 7),
-# and `summarise` does not make it. `per_suite` carries the SAME block, so the suite-weighted
-# figure is a mean the caller takes -- of any of these, not just accuracy.
 skew = ([scored("big", 9, 10) for _ in range(90)]
         + [scored("small", 1, 10) for _ in range(10)])
 s = summarise(skew)
@@ -154,9 +138,6 @@ report("every suite carries the whole block, so that works for any of them",
        set(s["per_suite"]["big"]) == set(s) - {"per_suite"}, str(sorted(s["per_suite"]["big"])))
 
 print("\nWHERE IT WENT WRONG, NOT ONLY HOW MUCH")
-# Two vendors at the same accuracy are not the same vendor when one is missing fields and the
-# other is inventing them. Rates, and named `_rate`: scores.jsonl spells these same five words
-# as counts.
 kinds = summarise([scored("s", 5, 10, misread=0, unfound=5),
                    scored("s", 5, 10, misread=0, fabricated=5)])
 report("the error rates are means of per-document rates",
@@ -165,9 +146,6 @@ report("...and the ones that did not happen read zero",
        kinds["misread_rate"] == 0.0 and kinds["invented_field_rate"] == 0.0)
 
 print("\nA FAILURE COSTS COVERAGE, NOT A FALSE PRECISION")
-# A document with no usable prediction asserted nothing, so scoring its `matched / asserted`
-# zero would say everything it claimed was wrong. The block is over what scored; `coverage` is
-# what the failures cost, and `accuracy * coverage` is the mean over every document.
 half = ([scored("s", 10, 10) for _ in range(5)]
         + [{"suite": "s", "status": "error", "error": "timeout"} for _ in range(5)])
 h = summarise(half)
@@ -180,9 +158,6 @@ report("an empty run does not divide by zero",
        and summarise([])["unfound_rate"] == 0.0)
 
 print("\nA MISSING SDK STOPS THE PROVIDER AND STORES NOTHING")
-# The failure mode this prevents: every document gets `{"__error__": "ModuleNotFoundError..."}`
-# written, no resume re-attempts any of them because that is not transient, and the provider
-# reports 0% coverage forever over one missing install.
 from omni_extract_bench import benchmark as _bench                         # noqa: E402
 from omni_extract_bench.harness import vendor as _vendor                   # noqa: E402
 from omni_extract_bench.harness.extraction import MissingDependency        # noqa: E402
@@ -211,10 +186,6 @@ report("...so every document stays resumable",
        all(needs_run(_out / "records" / f"{d.doc_id}.json") for d in _docs))
 
 print("\nA MISSING EXTRA SAYS WHAT TO INSTALL")
-# `[benchmark]` is an extra, so the common first run is one where it is absent. That must read
-# as something to install and not as a traceback -- `cli.py` lets ImportError through its error
-# boundary for exactly this. Setting a module to None in sys.modules makes importing it raise,
-# so this holds whether or not the extra is actually installed here.
 import unittest.mock                                                       # noqa: E402
 
 from omni_extract_bench import benchmark                                   # noqa: E402

@@ -101,11 +101,6 @@ def optimal_pairs(pred_rows, gt_rows, weight, weights=None):
         return sparse_pairs(pred_rows, gt_rows, weights)
     transposed = len(pred_rows) > len(gt_rows)
     A, B = (gt_rows, pred_rows) if transposed else (pred_rows, gt_rows)
-    # cost = -weight, because both solvers minimise
-    # The matrix is filled IN a numpy array rather than built as a Python list and converted:
-    # a list of lists costs ~4x the array in float objects and list slots before scipy sees any
-    # of it. The O(n*m) matrix is what bounds exactness once the solve is compiled, so it is
-    # worth not doubling it.
     if weights is not None:
         cost = _np.negative(weights.T if transposed else weights)
     else:
@@ -114,8 +109,6 @@ def optimal_pairs(pred_rows, gt_rows, weight, weights=None):
             row = cost[ia]
             for jb, b in enumerate(B):
                 row[jb] = -(weight(a, b) if not transposed else weight(b, a))
-    # scipy solves the rectangular problem directly, returning row/column index arrays rather
-    # than a per-row assignment vector.
     rows, cols = _lsa(cost)
     assign = [-1] * len(A)
     for ia, jb in zip(rows.tolist(), cols.tolist()):
@@ -127,7 +120,7 @@ def optimal_pairs(pred_rows, gt_rows, weight, weights=None):
         a, b = A[ia], B[jb]
         p_row, g_row = (b, a) if transposed else (a, b)
         if weight(p_row, g_row) <= 0:
-            continue                      # no shared content -> not a pair
+            continue
         pairs.append((p_row, g_row))
         used_b.add(jb)
     matched_p = {id(p) for p, _ in pairs}
@@ -152,9 +145,6 @@ def match_rows(pred_rows, gt_rows, weight, positives=None, weights=None):
     """
     if not pred_rows or not gt_rows:
         return [], list(pred_rows), list(gt_rows), True
-    # A sparse matrix is already small enough to hold, so the ceilings that exist to bound a
-    # DENSE one have nothing to say about it. This is the path on which greedy stops being
-    # needed: exact, and 50 MB where the dense form would be 5.7 GB.
     if weights is not None and _sp.issparse(weights):
         p2, u2, g2 = sparse_pairs(pred_rows, gt_rows, weights)
         return p2, u2, g2, True

@@ -26,11 +26,6 @@ from omni_extract_bench.metric import (                          # noqa: E402
     node_key, format_node, _find_arrays, KEY, INDEX,
     score, flatten, align)
 
-# ── the scorer now requires a schema ──────────────────────────────────────────────────
-# These tests are about scoring, not schema plumbing, so derive one from the ground truth.
-# That is the realistic case anyway: gold conforms to the schema that was sent. Deriving it
-# from gold alone is deliberate -- a key the PREDICTION invented genuinely is not a slot the
-# model was offered, which is what tells `invented field` from `fabricated`.
 from omni_extract_bench.metric import score as _score_impl          # noqa: E402
 
 
@@ -53,7 +48,6 @@ def score(pred, gt, schema=None, *a, **kw):
 def explain(pred, gt, schema=None, *a, **kw):
     """The per-address view. `score` is the only entry point; verdicts come off it."""
     return _score_impl(pred, gt, schema or _schema_from(gt), *a, verdicts=True, **kw)["verdicts"]
-# ──────────────────────────────────────────────────────────────────────────────────────
 
 
 FAILS = []
@@ -102,12 +96,7 @@ def rand_doc(rnd, depth=0):
 
 ACC = lambda p, g: score(copy.deepcopy(p), copy.deepcopy(g), {})   # noqa: E731
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nNO PAIRING OF ROWS SCORES HIGHER THAN THE ONE CHOSEN")
-# The pairing weight was replaced with a masked multiset when this module was written, which
-# is a different objective from the dict intersection it replaced. If masking merges two
-# things it should not, the solver optimises the wrong quantity and is still "optimal" -- for
-# the wrong problem. Brute force is the only way to know.
 def brute_force_matched(pred_rows, gold_rows):
     """Most matched leaves achievable by ANY pairing of these flat rows."""
     P = [flatten(r) for r in pred_rows]
@@ -136,16 +125,12 @@ for s in range(150):
         break
 report("the chosen pairing maximises matched leaves (checked against brute force)", ok, worst)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nDEPTH DOES NOT CHANGE THE SCORE")
-# If wrapping a document in extra levels can change its score, some scoring path depends on
-# depth, and the whole class of depth-dependent bugs is live. Masking makes deeper array
-# indices wildcards, so depth is exactly what this module touches.
 ok, detail = True, None
 for s in range(200):
     rnd = random.Random(9200 + s)
     gold = rand_doc(rnd)
-    pred = rand_doc(random.Random(9200 + s))          # same shape, then corrupt
+    pred = rand_doc(random.Random(9200 + s))
     pred = copy.deepcopy(gold)
     if rnd.random() < 0.7:
         k = sorted(pred)[0]
@@ -167,7 +152,6 @@ for s in range(200):
         break
 report("wrapping a document in extra levels changes neither score nor denominator", ok, detail)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nARRAY ORDER IS IRRELEVANT, AT EVERY DEPTH")
 ok, detail = True, None
 for s in range(200):
@@ -190,7 +174,6 @@ for s in range(200):
         break
 report("reordering every array in a correct answer still scores 1.0", ok, detail)
 
-# rows whose only distinguishing content is NESTED -- the case the paired walker fails
 bad_path = 0
 for s in range(200):
     rnd = random.Random(9600 + s)
@@ -203,10 +186,7 @@ report("rows distinguished only by nested content are still order-free", bad_pat
 note("these rows share every top-level value, so only the nested object separates them -- a "
      "scorer that paired on the shallow fields alone would mis-pair all 200")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nFIXING A WRONG VALUE NEVER LOWERS THE SCORE")
-# Correcting a leaf can change which rows pair, and therefore which addresses exist. If the
-# re-pairing ever costs more than the correction gains, the metric punishes improvement.
 ok, detail = True, None
 for s in range(300):
     rnd = random.Random(9800 + s)
@@ -234,7 +214,6 @@ for s in range(300):
         break
 report("correcting one wrong leaf never lowers the score", ok, detail)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nEVERY GOLD LEAF COSTS EXACTLY ONE DENOMINATOR SLOT")
 ok, detail = True, None
 for s in range(300):
@@ -267,7 +246,6 @@ for s in range(200):
         break
 report("returning only some of the gold rows never scores 1.0", ok)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nNULL ASSERTS NOTHING")
 g_null = {"a": 1, "b": None, "rows": [{"x": 5, "y": None}, {"x": None, "y": None}]}
 r_null = ACC(copy.deepcopy(g_null), g_null)
@@ -276,14 +254,12 @@ report("null on both sides adds nothing to numerator or denominator",
        r_null["total"] == r_bare["total"] and abs(r_null["accuracy"] - 1) < 1e-9,
        f"with nulls {r_null['total']} slots, without {r_bare['total']}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nTHE SAME INPUT ALWAYS PRODUCES THE SAME OUTPUT")
 ok, detail = True, None
 for s in range(200):
     rnd = random.Random(10400 + s)
     gold, pred = rand_doc(rnd), rand_doc(random.Random(10400 + s + 1))
     runs = [ACC(pred, gold) for _ in range(3)]
-    # and again with the prediction's keys inserted in a different order
     shuffled = dict(sorted(pred.items(), reverse=True))
     runs.append(ACC(shuffled, gold))
     if len({(r["total"], r["matched"]) for r in runs}) != 1:
@@ -291,10 +267,7 @@ for s in range(200):
         break
 report("repeated grading, and re-ordered object keys, give identical results", ok, detail)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nAN OBJECT KEY IS NEVER CONFUSED WITH AN ARRAY INDEX")
-# A document may legally contain the key "0". Untagged paths would let ("m", 0) mean both
-# `m["0"]` and `m[0]`, silently joining an object leaf to an array leaf.
 g_key = {"m": {"0": "A", "1": "B"}}
 p_arr = {"m": ["A", "B"]}
 r = ACC(p_arr, g_key)
@@ -304,7 +277,6 @@ report("an object keyed \"0\" does not join an array's element 0",
 report("a key literally named \"*\" does not collide with a masked index",
        abs(ACC({"m": {"*": [1, 2]}}, {"m": {"*": [1, 2]}})["accuracy"] - 1) < 1e-9)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nA FABRICATED ROW GETS ITS OWN ADDRESS, NEVER A REAL ONE")
 gold_rows = [{"a": "x", "b": 1.0}, {"a": "y", "b": 2.0}]
 none_pair = [{"a": "q", "b": 9.0}, {"a": "r", "b": 8.0}, {"a": "s", "b": 7.0}]
@@ -316,7 +288,6 @@ addrs = {v.address[1][1] for v in explain({"rows": none_pair}, {"rows": gold_row
 report("fabricated rows occupy addresses disjoint from gold's indices",
        addrs == {0, 1, "p0", "p1", "p2"}, f"addresses {sorted(addrs, key=str)}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nALIGNING AN ALREADY-ALIGNED PREDICTION CHANGES NOTHING")
 ok, detail = True, None
 for s in range(200):
@@ -331,7 +302,6 @@ for s in range(200):
         break
 report("alignment is idempotent: addresses are stable once assigned", ok, detail)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nDEGENERATE SHAPES TERMINATE AND SCORE SENSIBLY")
 DEGENERATE = [
     ({}, {}), ({"a": []}, {"a": []}), ({"a": {}}, {"a": {}}),
@@ -355,12 +325,10 @@ for pred, gold in DEGENERATE:
         break
 report(f"empty and degenerate containers do not crash or hang ({time.time()-t0:.2f}s)", ok, detail)
 
-# identity must still hold for every degenerate shape that has leaves at all
 ok = all(abs(ACC(copy.deepcopy(g), copy.deepcopy(g))["accuracy"] - 1) < 1e-9
          for _, g in DEGENERATE if flatten(g))
 report("identity holds for degenerate shapes that contain any leaf", ok)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nNESTED ARRAYS ARE ORDER-FREE, AND THEIR WEIGHT IS NEVER OVER-COUNTED")
 deep_gold = {"cube": [[[1.5, 2.5], [3.5, 4.5]], [[5.5, 6.5], [7.5, 8.5]]]}
 
@@ -383,9 +351,6 @@ report("one wrong cell in a three-deep array costs one cell, not a whole sub-arr
        r["total"] == 9 and r["matched"] == 7,
        f"denominator {r['total']} (want 8 gold + 1 spurious = 9), matched {r['matched']} (want 7)")
 
-# The pairing weight must never claim more matches than a pairing could actually deliver.
-# An over-estimate can make the solver prefer a worse pairing; a lower bound can only fail to
-# break a tie. Checked by brute force over rows that contain nested arrays.
 from omni_extract_bench.metric import _extract_rows_at, _worth_if_paired  # noqa: E402
 
 
@@ -429,12 +394,6 @@ for s_ in range(120):
 report("the pairing weight never claims more matches than a pairing can deliver", ok, detail)
 
 print("\nA NESTED ARRAY'S ORDER CANNOT CHANGE THE OUTER PAIRING")
-# The weight that ranks candidate OUTER pairings includes the contribution of arrays nested
-# inside the elements. If that contribution depends on the order of the nested array, the
-# outer pairing does too -- and array order must never reach a score. Greedy inner matching
-# had exactly that flaw: gold [{a:1},{b:2}] against [{a:1,b:2},{a:1}] weighed (1,1) in one
-# inner order and (2,2) in the other. It is solved exactly now, and a maximum has no such
-# freedom.
 from omni_extract_bench.metric import _extract_rows_at, _worth_if_paired   # noqa: E402
 
 
@@ -452,8 +411,6 @@ report("the outer weight is the same whichever order a nested array arrives in",
 report("and it is the true optimum, not a greedy lower bound",
        weights == {(2, 2)}, f"got {sorted(weights)}, want {{(2, 2)}}")
 
-# the same thing over generated documents, with SEVERAL gold rows so the weight actually
-# decides the outer pairing rather than being the only option
 moved = 0
 for s_ in range(400):
     rnd = random.Random(11500 + s_)
@@ -471,9 +428,6 @@ report("permuting a nested array never moves the score, across generated documen
        moved == 0, f"{moved}/400 documents scored differently under some inner permutation")
 
 print("\nTHE WORKED NESTED EXAMPLE, ASSERTED END TO END")
-# The example from the walkthrough, pinned: rows reordered, a nested array reversed inside a
-# row, one nested cell misread, one row fabricated. Every interesting behaviour of the nested
-# path in one document, so a regression in any of them shows up here.
 NEST_SCHEMA = {"type": "object", "properties": {
     "segments": {"type": "array", "items": {"type": "object", "properties": {
         "name": {"type": "string"},
@@ -499,18 +453,15 @@ verdicts = {"".join(f"[{st[1]!r}]" for st in k): v
             for k, v in ((x.address, x.verdict) for x in
                          explain(copy.deepcopy(NEST_PRED), copy.deepcopy(NEST_GOLD)))}
 expected = {
-    # the reordered-but-correct row: every quarter lands on gold's address
     "['segments'][1]['name']": "matched",
     "['segments'][1]['quarters'][0]": "matched",
     "['segments'][1]['quarters'][1]": "matched",
     "['segments'][1]['quarters'][2]": "matched",
-    # the misread quarter costs exactly two slots, not the row
     "['segments'][0]['name']": "matched",
     "['segments'][0]['quarters'][0]": "matched",
     "['segments'][0]['quarters'][1]": "matched",
     "['segments'][0]['quarters'][2]": "unfound",
     "['segments'][0]['quarters']['p2']": "invented_item",
-    # the invented row gets a fresh address at the OUTER level
     "['segments']['p2']['name']": "invented_item",
     "['segments']['p2']['quarters'][0]": "invented_item",
 }
@@ -522,10 +473,6 @@ report("an extra CELL inside a real row is addressed separately from an extra RO
        "['segments'][0]['quarters']['p2']" in verdicts and "['segments']['p2']['name']" in verdicts)
 
 print("\nORDER IS FREE BY DEFAULT, AND CHARGED WHERE DECLARED")
-# Row order in a document is a rendering artefact, so every array is order-free unless named.
-# A recipe's steps are not: step 2 before step 1 is a different answer. An array is named the
-# way `explain` prints it, and a key containing a dot or a bracket is quoted there, so it
-# cannot be mistaken for structure.
 RECIPE = {"steps": ["mix", "bake", "cool"]}
 BACKWARDS = {"steps": ["cool", "bake", "mix"]}
 STEPS = ["steps"]
@@ -538,7 +485,6 @@ report("an ordered array still scores 1.0 when the order is right",
        abs(score(copy.deepcopy(RECIPE), copy.deepcopy(RECIPE), None,
                        STEPS)["accuracy"] - 1) < 1e-9)
 
-# Declaring one array ordered must leave every other array alone.
 MIXED_G = {"steps": ["mix", "bake"], "tags": ["x", "y"]}
 MIXED_P = {"steps": ["mix", "bake"], "tags": ["y", "x"]}
 report("declaring one array ordered does not touch the others",
@@ -546,23 +492,16 @@ report("declaring one array ordered does not touch the others",
        and abs(score(MIXED_P, MIXED_G, None,
                            ["steps", "tags"])["accuracy"] - 0.5) < 1e-9)
 
-# The pairing weight must honour the same order rule the score does. It did not at first:
-# rows distinguished only by an ordered inner array all tied at weight (2,2), the matcher
-# picked arbitrarily, and a PERFECT extraction scored 0.00. `_prepare` now folds an ordered
-# nested array into the direct leaves, so the weight compares it positionally as well and
-# `_price_nested` never sees it.
 NEST_G = {"books": [{"chapters": ["a", "b"]}, {"chapters": ["b", "a"]}]}
-NEST_P = {"books": [{"chapters": ["b", "a"]}, {"chapters": ["a", "b"]}]}   # rows swapped
+NEST_P = {"books": [{"chapters": ["b", "a"]}, {"chapters": ["a", "b"]}]}
 nested_score = score(NEST_P, NEST_G, None, ["books[*].chapters"])["accuracy"]
 report("rows distinguished only by an ordered inner array still pair correctly",
        abs(nested_score - 1) < 1e-9, f"got {nested_score:.4f}")
 
-# Rows order-free while their inner arrays are ordered: the row swap stays free, the inner
-# reordering is charged. One name covers every instance, which is why `[*]` blanks the index.
 DEEP_G = {"books": [{"title": "A", "chapters": ["c1", "c2"]},
                     {"title": "B", "chapters": ["d1", "d2"]}]}
-DEEP_P = {"books": [{"title": "B", "chapters": ["d1", "d2"]},      # row swap: free
-                    {"title": "A", "chapters": ["c2", "c1"]}]}     # inner reorder: charged
+DEEP_P = {"books": [{"title": "B", "chapters": ["d1", "d2"]},
+                    {"title": "A", "chapters": ["c2", "c1"]}]}
 deep = score(DEEP_P, DEEP_G, None, ["books[*].chapters"])
 report("outer rows stay order-free while their inner arrays are ordered",
        abs(deep["accuracy"] - 2 / 3) < 1e-6,
@@ -579,19 +518,6 @@ report("declaring an array ordered leaves identity at 1.0 over generated documen
            if flatten(d)))
 
 print("\nTHE PRICE PROMISED IS THE SCORE DELIVERED")
-# The scorer runs in three phases: PRICE a candidate pair (pure, depth-first, address-free),
-# DECIDE the best pairing of a whole array, COMMIT the chosen addresses (breadth-first). The
-# split is only sound if the weight pricing promised equals the leaves committing delivers at
-# that pair's addresses. If they can diverge, the matcher optimises one quantity while the
-# score reports another -- which is exactly what happened before ordered arrays were folded
-# into an element's direct leaves, where a perfect extraction scored 0.00.
-#
-# It holds by construction for two reasons, and is checked here anyway: both phases call the
-# same `_best_pairing`, and pricing is EXACT rather than a bound -- for two elements the
-# matched count is the direct matches plus the maximum over each nested array, and nested
-# arrays under one element are independent, so summing their maxima IS the maximum. That last
-# step is the tree property; with `$ref`-style sharing the sub-problems would couple and the
-# promise would break.
 from omni_extract_bench.metric import _best_pairing, _extract_rows_at, align, INDEX   # noqa: E402
 
 
@@ -638,9 +564,6 @@ report("every price the matcher paid is a price the score honours",
 note(f"checked {checked} chosen pairs across 400 documents nested up to three levels")
 
 print("\nROWS ARE COUNTED AT EVERY DEPTH")
-# A table one level down is still a table. Counting only top-level arrays counts the WRAPPER
-# row and reports recall on that, which would call a document missing 7 of its 10 rows
-# complete.
 deep_g = {"outer": [{"rows": [{"a": i} for i in range(10)]}]}
 deep_p = {"outer": [{"rows": [{"a": i} for i in range(3)]}]}
 deep = score(deep_p, deep_g)
@@ -654,10 +577,6 @@ report("recall counts leaves, so it is the same flat or wrapped",
 report("a wrong value is charged by precision and recall, as a wrong class would be",
        score({"a": 1, "b": 99}, {"a": 1, "b": 2})["precision"] == 0.5
        and score({"a": 1, "b": 99}, {"a": 1, "b": 2})["recall"] == 0.5)
-# F1 exists because accuracy cannot charge a hopeless guess. A wrong value at a gold address
-# costs exactly what leaving the field blank costs, so under accuracy alone, filling in fields
-# the model cannot read is free. That is the one exploit worth naming: it rewards a model that
-# sprays priors over unreadable fields, which is not the model anyone wants to deploy.
 GUESS_G = {"lines": [{"sku": f"S{i}", "code": "ABCDE"[i % 5]} for i in range(50)]}
 abstains = score({"lines": [{"sku": f"S{i}"} for i in range(50)]}, GUESS_G)
 hopeless = score({"lines": [{"sku": f"S{i}", "code": "Z"} for i in range(50)]}, GUESS_G)
@@ -677,8 +596,6 @@ report("f1 is the harmonic mean of the reported precision and recall",
            for r in (abstains, hopeless, score({}, GUESS_G))))
 note("adding a guess helps f1 only above roughly half the current f1 -- a real abstention bar")
 
-# The bar for keeping a row pair is ONE matching value. Where that bar sits decides the
-# denominator, so it is worth pinning from both sides.
 ONE_G = {"lines": [{"sku": "x", "qty": 2, "price": 1.5}]}
 one_hit = score({"lines": [{"sku": "x", "qty": 99, "price": 99.0}]}, ONE_G)
 no_hit = score({"lines": [{"sku": "q", "qty": 99, "price": 99.0}]}, ONE_G)
@@ -691,8 +608,6 @@ report("no matching value means no pair, and the row is charged twice",
        f"total={no_hit['total']} found={no_hit['addresses_found']:.2f}")
 note("3 leaves against 6: once as a gold row nobody found, once as a row the model made up")
 
-# A value repeated on every row makes every pair worth at least one, so none is discarded.
-# Documented on _best_pairing: wholesale invention then takes partial credit.
 CONST_G = {"lines": [{"cur": "USD", "sku": "x"}, {"cur": "USD", "sku": "y"}]}
 with_const = score({"lines": [{"cur": "USD", "sku": "q"}, {"cur": "USD", "sku": "r"}]}, CONST_G)
 without = score({"lines": [{"sku": "q"}, {"sku": "r"}]},
@@ -710,10 +625,6 @@ note("matched_rows says 2 while read_right says the values are wrong -- that pai
 report("invented fields are charged even with no array in the document",
        abs(score({"a": 1, "b": 2, "z": 9}, {"a": 1, "b": 2})["precision"] - 2/3) < 1e-9)
 
-# The paired walker counts rows ONLY for arrays the schema declares; the path scorer counts
-# any array it finds. A vendor that returns rows under a key the schema never mentioned has
-# still returned rows, and they are still charged in the leaf score by both scorers -- so
-# leaving them out of `pred_rows` makes precision disagree with the number beside it.
 und_g = {"rows": [{"x": 1}]}
 und_p = {"rows": [{"x": 1}], "extra": [{"y": 2}, {"y": 3}]}
 u_sch = {"properties": {"rows": {"type": "array"}}}
@@ -724,26 +635,16 @@ report("rows returned under an undeclared key are counted as predicted rows",
 note(f"their leaves are charged in the score too ({u_path['accuracy']:.2f}); a key the schema "
      f"never declared is still something the model asserted")
 
-# The paired walker's row counts COLLAPSE TO ZERO without a schema; this scorer's do not,
-# and it now refuses to run without one at all (P19). The footgun this used to describe --
-# `cli._score_one` passing `{}` whenever the schema file was absent, so a run without
-# `--schema-dir` reported recall 0.00 for every document while still printing a score -- is
-# fixed: a missing schema is a reported failure, covered by tests/test_cli.py.
 g_rc, p_rc = {"rows": [{"x": 1}, {"x": 2}]}, {"rows": [{"x": 1}]}
 report("this scorer's row counts do not depend on what the schema declares",
        ACC(p_rc, g_rc)["recall"] == 0.5,
        f"recall {ACC(p_rc, g_rc)['recall']}")
 
-# a row with no leaves at all is not a row here: it has no address to be right or wrong at
 er = ACC({"rows": [{}, {"x": 1}]}, {"rows": [{}, {"x": 1}]})
 report("an empty row {} is not counted as a row", er["gt_rows"] == 1,
        f"gt_rows={er['gt_rows']}, want 1")
 
 print("\nAN APPROXIMATE SCORE SAYS SO")
-# The rows must be INSEPARABLE: component decomposition now splits an array before the solver
-# sees it, so rows that share nothing never reach the fallback at all. These all share a
-# column, which is what a real un-splittable table looks like (one segment label on every row,
-# or a column of repeated zeros).
 big_gold = [{"seg": "same", "b": float(i)} for i in range(40)]
 big_pred = list(reversed(big_gold))
 with approximate():
@@ -755,12 +656,6 @@ report("a score that used the greedy fallback reports matching_exact=False",
 report("the same score with the exact solver reports matching_exact=True",
        r_exact["matching_exact"] is True and not r_exact["approximated"])
 
-# An approximate INNER solve must be reported too. `_price_nested` used to carry its own greedy
-# branch and take no inexact list, so an approximate nested pairing left matching_exact=True --
-# a silent approximation, which is the one thing this metric does not do. The branch is gone
-# (it was order-dependent AND slower than the exact solve) and the report threads through the
-# recursion. The elements here share values so the candidate graph cannot shatter into
-# trivially-exact components.
 INNER_G = {"rows": [{"seg": "same",
                      "xs": [{"v": i % 3, "w": "same"} for i in range(30)]}]}
 INNER_P = {"rows": [{"seg": "same",
@@ -773,11 +668,7 @@ report("an approximate INNER solve is reported, not hidden under an exact outer 
        r_inner["matching_exact"] is False and r_inner["approximated"],
        f"matching_exact={r_inner['matching_exact']} greedy_blocks={r_inner['approximated']}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nHARNESS METADATA IS STRIPPED THE SAME WAY")
-# `normalize.prep_*` strips the {value, citations} envelope a cited field arrives in. The
-# outer {"result": ...} wrapper is the CLI's job (`cli._unwrap`), not the scorer's -- asserted
-# here so the division of labour is recorded rather than assumed.
 plain = {"a": 1, "rows": [{"x": 5}]}
 cited = {"a": {"value": 1, "citations": ["p1"], "confidence": 0.9},
          "rows": [{"x": {"value": 5, "citations": ["p2"]}}]}
@@ -792,13 +683,6 @@ side = {"a": 1, "a_citations": ["p1"], "a_meta": {"conf": 0.9}, "rows": [{"x": 5
 report("per-field _citations/_meta sidecars are not charged as spurious leaves",
        abs(ACC(side, plain)["accuracy"] - 1) < 1e-9,
        f"got {ACC(side, plain)['accuracy']:.2f}")
-# ROWS ARE NEVER DELETED -- ONLY LEAVES. `drop_empty_gt_rows` used to remove whole array rows
-# whose non-dimension fields were all null, deciding which fields counted as dimensions from a
-# hardcoded list of substrings in the field NAME. It is gone. It contradicted METRIC_SPEC 5,
-# which says `null`, `""` and an absent key are one thing: the payload set was read off the row
-# in hand, so `{"id": "1"}` had no payload and survived while `{"id": "1", "action": null}` was
-# deleted -- and deleting it threw away a CORRECT id. The same prediction scored 62.50 or 25.00
-# depending only on which of the two ways it spelled "nothing here".
 ph = {"metrics": [{"data_period": "FY25", "segment_type": "co", "value": None},
                   {"data_period": "FY25", "segment_type": "co", "value": 5.0}]}
 report("a gold row stating only dimensions still asserts those dimensions",
@@ -807,8 +691,6 @@ report("a gold row stating only dimensions still asserts those dimensions",
        f"identity {ACC(copy.deepcopy(ph), copy.deepcopy(ph))['accuracy']:.2f}, "
        f"dropping the row {ACC({'metrics': [ph['metrics'][1]]}, copy.deepcopy(ph))['accuracy']:.2f}")
 
-# The property that matters, and the one the old rule broke: the THREE spellings of absence are
-# one thing at row level too, not just at leaf level.
 NUL_G = {"rows": [{"id": "1", "act": "None"}, {"id": "2", "act": "N/A"},
                   {"id": "3", "act": "Dose reduced"}, {"id": "4", "act": "--"}]}
 spellings = {
@@ -825,8 +707,6 @@ report("omitted / null / empty-string score identically at ROW level",
 report("...and that score credits the ids the model DID get right (5 of 8)",
        abs(got["explicit null"] - 0.625) < 1e-9, f"got {got['explicit null']:.4f}, want 0.6250")
 
-# A row that asserts nothing at all is inert on either side, with no rule needed: it
-# contributes no addresses, so it cannot be matched, missed, or charged.
 BLANK_G = {"rows": [{"id": "1", "act": "X"}, {"id": None, "act": None}, {"id": "2", "act": "Y"}]}
 BLANK_P = {"rows": [{"id": "1", "act": "X"}, {"id": "2", "act": "Y"}]}
 report("a wholly blank row is inert in gold",
@@ -836,13 +716,9 @@ report("a wholly blank row is inert in a prediction",
        abs(ACC(copy.deepcopy(BLANK_G), copy.deepcopy(BLANK_P))["accuracy"] - 1) < 1e-9,
        f"got {ACC(copy.deepcopy(BLANK_G), copy.deepcopy(BLANK_P))['accuracy']:.2f}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nTHE SCHEMA ARGUMENT DOES NOT AFFECT THE SCORE")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nBEHAVIOUR WE HAVE DECIDED NOT TO CHANGE YET (pinned so it cannot drift)")
-# Object keys are addresses, matched literally: a predicted key that is not exactly a gold
-# key names a field the extractor invented, and is charged as one.
 KEY_G, KEY_P = {"m": {"total": 1.0, "net": 2.0}}, {"m": {"total": 1.0, "Net": 2.0}}
 r_key = ACC(KEY_P, KEY_G)
 report("a predicted key that is not exactly gold's is charged as invented",
@@ -850,11 +726,6 @@ report("a predicted key that is not exactly gold's is charged as invented",
        f"got {r_key['matched']}/{r_key['total']}, want 1/3 "
        f"(total matches; net missing; Net spurious)")
 
-# OPEN MAPS ARE NOT EVALUATED. `additionalProperties` asks the extractor to invent the keys by
-# reading them off the page; the strict dialect drops the keyword before the schema reaches a
-# vendor, so grading it would score a request the harness never delivered. The subtree is
-# skipped on both sides -- neither numerator nor denominator -- and the skip is REPORTED, so an
-# ungraded chunk of a document can never pass unnoticed.
 OM_SCH = {"type": "object", "properties": {
     "invoice_no": {"type": "string"},
     "groups": {"type": "object", "additionalProperties": {"type": "array",
@@ -872,10 +743,6 @@ for label, om_p in (("identical", copy.deepcopy(OM_G)),
 report("the skip is reported, not silent",
        score(copy.deepcopy(OM_G), copy.deepcopy(OM_G), OM_SCH)["skipped_open_maps"] == ["groups"],
        f"got {score(copy.deepcopy(OM_G), copy.deepcopy(OM_G), OM_SCH)['skipped_open_maps']}")
-# The walk follows the DATA, so a node is only recorded when that side reaches it. Collecting
-# from gold alone meant a prediction that returned an open map gold omitted had the subtree
-# skipped and never reported -- an ungraded region going unmentioned, which is exactly what the
-# report exists to prevent.
 report("a skip is reported whichever side reaches the open map",
        score({"invoice_no": "INV-1"}, copy.deepcopy(OM_G), OM_SCH)["skipped_open_maps"]
        == ["groups"]

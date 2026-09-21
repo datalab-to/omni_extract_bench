@@ -41,8 +41,6 @@ def report(name, cond, detail=""):
 
 
 print("\nA STOP ALREADY SET MEANS NOTHING IS CALLED")
-# The flag is what a queued document checks before it reaches the vendor, so a run that is
-# stopping pays for nothing more.
 out = pathlib.Path(tempfile.mkdtemp())
 docs = []
 for i in range(5):
@@ -59,13 +57,12 @@ try:
     B.ProviderRun("datalab", [B.Run("datalab", "datalab", {}, out)], 2)\
      .predict(docs, timeout=5, stop=already)
 finally:
-    B.predict = _real_predict          # later sections drive the real one through an adapter
+    B.predict = _real_predict
 report("no vendor call is made", called == [], f"{len(called)} calls")
 report("...and nothing is written, so every document stays resumable",
        not list((out / "records").glob("*.json")))
 
 print("\nAND A REAL SIGINT STOPS A RUN, ON A DOCUMENT BOUNDARY")
-# End to end, through `run`, with providers concurrent -- which is the arrangement that broke.
 script = out / "run_it.py"
 script.write_text(f'''
 import sys, json, pathlib, time
@@ -91,7 +88,7 @@ work = pathlib.Path(tempfile.mkdtemp())
 proc = subprocess.Popen([sys.executable, str(script), str(work)],
                         stderr=subprocess.DEVNULL)
 time.sleep(2.5)
-proc.send_signal(signal.SIGINT)          # what a terminal sends on Ctrl-C
+proc.send_signal(signal.SIGINT)
 sent = time.time()
 try:
     proc.communicate(timeout=45)
@@ -106,7 +103,6 @@ report("...and exits as interrupted", proc.returncode in (-signal.SIGINT, 130, 1
 
 print("\nWHAT IT LEAVES BEHIND IS RESUMABLE")
 for provider in ("datalab", "reducto"):
-    # A run directory is named for the vendor AND a digest of what it was sent.
     run = work / out_name(provider)
     recs = run / "records"
     preds = run / "predictions"
@@ -114,9 +110,6 @@ for provider in ("datalab", "reducto"):
     have = {p.stem for p in preds.glob("*.json")} if preds.exists() else set()
     report(f"{provider}: it stopped part way, not at the end", 0 < len(done) < 40,
            f"{len(done)} of 40")
-    # THE DANGEROUS DIRECTION. A record is the marker `needs_run` reads, so a record with no
-    # prediction beside it is a document that looks finished and has no answer on disk. The
-    # prediction is written first for exactly this reason.
     report(f"{provider}: every record has its prediction beside it",
            not (set(done) - have), f"orphans: {sorted(set(done) - have)}")
     report(f"{provider}: every record parses, so none is re-run for being corrupt",
@@ -126,8 +119,6 @@ report("no half-written file survives anywhere",
        not list(work.rglob("*.partial*")), str(list(work.rglob("*.partial*"))))
 
 print("\nONE VENDOR'S BILLING PROBLEM IS NOT EVERY VENDOR'S")
-# The two flags are different sizes: a Ctrl-C stops every provider, a credit ceiling stops one.
-# Sharing a single event made a healthy vendor stop after one document and publish 17%.
 import collections                                                             # noqa: E402
 import omni_extract_bench.harness.vendor as V                                  # noqa: E402
 from omni_extract_bench.harness.extraction import (                            # noqa: E402
@@ -172,7 +163,6 @@ report("...while its predictions are on disk for --score-only",
        len(list((acct / out_name("reducto") / "predictions").glob("*.json"))) == 6)
 
 print("\nA NARROWED RUN DOES NOT TRUNCATE THE SCORES FILE")
-# `--limit 2` used to rewrite scores.jsonl with two lines, dropping a full run's grading.
 narrow = pathlib.Path(tempfile.mkdtemp())
 (narrow / "predictions").mkdir()
 five = []
@@ -189,8 +179,6 @@ report("a narrowed run keeps the rows it did not select", lines() == 5, str(line
 B.Run("v", "v", {}, narrow).score(five[:2], workers=1, rescore=True)
 report("...and so does a narrowed rescore", lines() == 5, str(lines()))
 
-# THE FILE AND THE ANSWER ARE DIFFERENT LISTS. `summarise` counts what it is handed, so
-# returning the whole file would report a `--limit 2` run as five documents.
 back = B.Run("v", "v", {}, narrow).score(five[:2], workers=1)
 report("the return value is this run's selection, not the file",
        [r["doc_id"] for r in back] == ["d0", "d1"], str([r["doc_id"] for r in back]))
@@ -198,8 +186,6 @@ report("...so the summary counts what was asked for",
        B.summarise(back)["documents"] == 2, str(B.summarise(back)["documents"]))
 
 print("\nA FULL DISK STOPS THE VENDOR INSTEAD OF BUYING THE REST")
-# The writes are the other half of a document. Sitting past the last `except` they let the
-# vendor be paid for every remaining document while not one answer could be stored.
 disk = pathlib.Path(tempfile.mkdtemp())
 twenty = []
 for i in range(20):
@@ -226,8 +212,6 @@ report("...after a couple of documents, not all twenty", paid["datalab"] <= 8,
        f"{paid['datalab']} of 20 paid for with nothing stored")
 
 print("\nA FAILURE INSIDE ONE DOCUMENT IS ONE ROW, NOT THE PASS")
-# The verdicts write is on disk and can fail for reasons that are nothing to do with the
-# document. Outside the guard it took the whole grading pass with it.
 vd = pathlib.Path(tempfile.mkdtemp())
 (vd / "predictions").mkdir()
 some = []
@@ -258,8 +242,6 @@ report("...and the file holds all five",
        len((vd / "scores.jsonl").read_text().strip().splitlines()) == 5)
 
 print("\nAND AN INTERRUPT WHILE SCORING KEEPS WHAT IT GRADED")
-# Scoring costs no money, but it costs real minutes on this corpus. Throwing away fifty
-# graded documents because the fifty-first was in flight is what makes people avoid Ctrl-C.
 score_script = out / "score_it.py"
 score_script.write_text(f"""
 import sys, json, pathlib
@@ -302,15 +284,11 @@ report("what was graded is written, not discarded", 0 < len(kept) < 60,
        f"{len(kept)} of 60 rows -- 0 means the work was thrown away")
 report("every kept row is a finished score, never a partial one",
        all(r.get("status") == "scored" and "accuracy" in r for r in kept))
-# `as_completed` returns out of order; the file is sorted back so a run stays comparable
-# with the one before it.
 report("the file is still in document order",
        [r["doc_id"] for r in kept] == sorted(r["doc_id"] for r in kept),
        str([r["doc_id"] for r in kept][:6]))
 
 print("\nAND THE NEXT RUN GRADES ONLY WHAT IS MISSING")
-# The point of keeping the rows: a resume picks up where grading stopped rather than starting
-# the corpus over. Checked without a subprocess -- what matters is which documents are graded.
 fresh = pathlib.Path(tempfile.mkdtemp())
 (fresh / "predictions").mkdir()
 schema = {"type": "object", "properties": {"a": {"type": "string"}}}
@@ -334,14 +312,11 @@ try:
     graded.clear(); B.Run("v", "v", {}, fresh).score(small, workers=1, rescore=True)
     report("rescore=True grades everything again", len(graded) == 6, str(len(graded)))
 
-    # A row scored without verdicts cannot answer a run that wants them: the per-address file
-    # beside it was never written, and reusing the row would leave a hole nothing fills.
     graded.clear(); B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=True)
     report("asking for verdicts re-grades rows that have none", len(graded) == 6, str(len(graded)))
     graded.clear(); B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=True)
     report("...and those rows are reusable once they do", graded == [], str(graded))
 
-    # One bad line costs one document rather than the whole file.
     sj = fresh / "scores.jsonl"
     lines = sj.read_text().splitlines()
     lines[2] = "{ this is not json"
@@ -352,7 +327,6 @@ finally:
     B.score_one = real_score_one
 
 print("\nAND THE SCORES FILE IS WRITTEN ATOMICALLY")
-# It is read back now, so a truncated file would silently drop the scores it was saving.
 report("no .partial survives a write", not list(fresh.glob("*.partial*")))
 report("every line parses", all(json.loads(l) for l in
                                 (fresh / "scores.jsonl").read_text().splitlines() if l.strip()))

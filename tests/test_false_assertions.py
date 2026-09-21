@@ -49,15 +49,14 @@ SCH = {"type": "object", "properties": {
     "bag": {"type": "object", "additionalProperties": {"type": "string"}}}}
 GT = {"invoice_no": "INV-1", "total": 100.0, "discount": None,
       "lines": [{"sku": "a", "note": None}, {"sku": "b", "note": None}]}
-PRED = {"invoice_no": "INV-1",          # match
-        "total": 999.0,                 # misread
-        "discount": 5.0,                # fabricated: schema slot, gold silent
-        "vendor": "Acme",               # invented field: not in the schema
-        "lines": [{"sku": "a", "note": "n/a"},   # fabricated cell in a real row
+PRED = {"invoice_no": "INV-1",
+        "total": 999.0,
+        "discount": 5.0,
+        "vendor": "Acme",
+        "lines": [{"sku": "a", "note": "n/a"},
                   {"sku": "b"},
-                  {"sku": "zz"}]}       # invented item: row pairs with nothing
+                  {"sku": "zz"}]}
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nWHAT THE SCHEMA OFFERS IS WHAT CAN BE FABRICATED")
 slots = _schema_leaves(SCH)
 report("the schema's leaf slots are found, at every depth",
@@ -69,8 +68,6 @@ report("an open map offers no slot, so nothing inside it can be fabricated",
 note("that subtree is not graded at all, so a value there was never asked for")
 
 print("\nGOLD'S NULLS ARE NOT THE AUTHORITY -- THE SCHEMA IS")
-# These two ground truths are semantically identical (section 5). Keying off gold's nulls
-# would call the first `fabricated` and the second `invented`, which is the bug this avoids.
 NULL_GT = {"lines": [{"sku": "a", "note": None}]}
 GONE_GT = {"lines": [{"sku": "a"}]}
 SAME_P = {"lines": [{"sku": "a", "note": "x"}]}
@@ -96,10 +93,6 @@ for name, want in cases.items():
     report(f"{name} is {want}", got == want, f"got {got!r}")
 
 print("\nTHE `pN` LABEL IS LOAD-BEARING, SO PIN IT")
-# `_align_one` labels an unpaired predicted row `p<index>`. That internal convention is now
-# what tells an extra array element from a filled field, so it gets its own test: if the
-# labelling ever changes to a plain integer, a whole invented row would be reported as a
-# handful of separately fabricated fields.
 labels = [v.address for v in verdicts_of(PRED, GT, SCH) if v.verdict == "invented_item"]
 report("an unpaired predicted row is labelled with a string index, not an integer",
        labels and all(any(k == INDEX and isinstance(x, str) for k, x in a) for a in labels),
@@ -160,10 +153,6 @@ report("accuracy, precision, recall and f1 still come from matched and the addre
                           / (r["precision"] + r["recall"]))) < 1e-12)
 
 print("\nA SCALAR ARRAY HAS NO CELLS TO MISREAD")
-# Elements of a scalar array compare as a multiset, so they have no identity. A value read
-# wrongly there is not one misreading: it is one gold element nobody produced plus one
-# element the model produced that is not there. Charged on both sides, which is harsher than
-# the same error in a named field -- worth knowing, and pinned so it cannot drift silently.
 ARR_S = {"properties": {"q": {"type": "array", "items": {"type": "number"}},
                         "name": {"type": "string"}}}
 ARR_G = {"name": "Cloud", "q": [10.5, 12.0]}
@@ -181,8 +170,6 @@ report("so the array error costs more, because it is charged on both sides",
 note(f"array {in_array['accuracy']:.1f} (denominator {in_array['total']}), "
      f"field {in_field['accuracy']:.1f} (denominator {in_field['total']})")
 
-# What order-freedom buys, and what it costs. Both directions are pinned, because the cost
-# looks like a defect on its own and only reads correctly next to the compensation.
 ARR_S2 = {"properties": {"tags": {"type": "array", "items": {"type": "string"}}}}
 FLD_S2 = {"properties": {k: {"type": "string"} for k in ("t1", "t2", "t3")}}
 A_G, F_G = {"tags": ["a", "x", "c"]}, {"t1": "a", "t2": "x", "t3": "c"}

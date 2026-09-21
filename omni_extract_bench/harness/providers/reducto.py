@@ -34,11 +34,6 @@ from ._cli import run_cli
 
 BASE_URL = "https://platform.reducto.ai"
 DEFAULT_DEEP_EXTRACT_MODEL = "v2"
-# Agentic table enrichment mode. `default` enriches only tables a heuristic expects to benefit;
-# `max` enriches every table and is the higher setting. The default here is max so the
-# benchmark runs Reducto at its strongest -- Reducto is ahead on this benchmark, and running a
-# competitor below their maximum would flatter our own result. A `Config` field, so
-# `--options` can turn it down and the record reports that it did.
 AGENTIC_TABLE_MODE = "max"
 _TERMINAL = {"Completed", "Failed", "Error", "Cancelled"}
 
@@ -57,9 +52,6 @@ class Config:
     poll_interval: int = 5
 
 
-#: How far back down the /jobs listing to look for our own job. It has to cover everything
-#: finishing around us, so it scales with how many documents are in flight -- at `--predict-workers 25`
-#: a limit of 25 is exactly the window in which our job can be pushed off the end.
 _JOBS_PAGE = 200
 
 
@@ -109,13 +101,11 @@ def _build_payload(
     agentic_table_mode: str = AGENTIC_TABLE_MODE,
 ) -> dict:
     instructions: dict[str, object] = {"schema": schema}
-    # empty system prompt -> omit entirely so the agent gets no extra instruction
     if system_prompt:
         instructions["system_prompt"] = system_prompt
     return {
         "async": {"priority": False},
         "input": input_ref,
-        # parse: defaults only, except agentic table enrichment at its highest mode
         "parsing": {"enhance": {"agentic": [{"scope": "table", "mode": agentic_table_mode}]}},
         "instructions": instructions,
         "settings": {
@@ -146,12 +136,6 @@ def _submit(client: httpx.Client, api_key: str, payload: dict) -> str:
 
 def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
           budget) -> dict:
-    # Resilient poll: the job keeps running server-side, so transient connection /
-    # 5xx errors must NOT abandon it (that's how billed jobs got lost). Retry the GET.
-    #
-    # Bounded by the harness's uniform budget, rather than running forever and being killed
-    # from outside: giving up here records the job id, so a job that outlived its budget can
-    # still be chased by hand.
     polls = 0
     retry = PollRetry(budget)
     while True:
@@ -164,8 +148,6 @@ def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
             )
             r.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            # Was: retry ANY status up to 60 times, which asked a permanent 404 sixty times
-            # over. `PollRetry` gives up at once on a status that cannot change.
             if retry.again(exc.response.status_code):
                 continue
             raise VendorError(f"poll HTTP {exc.response.status_code}: "
@@ -180,10 +162,6 @@ def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
         polls += 1
         body = r.json()
         status = body.get("status") or body.get("state") or ""
-        # No per-poll printing. An adapter writing to the terminal on its own account was
-        # workable when one document ran at a time; it is not now that every vendor runs at
-        # once behind a multi-line display, which a stray `\r` walks straight through.
-        # Progress belongs to `progress.py`, which is the only thing holding the cursor.
         if status in _TERMINAL or body.get("result") is not None:
             return body
         time.sleep(interval)
@@ -200,7 +178,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     if not key:
         raise MissingCredential("REDUCTO_API_KEY is not set")
 
-    budget = Budget(timeout)          # before the upload: it is part of the document
+    budget = Budget(timeout)
     with httpx.Client() as client:
         try:
             file_id = _upload(client, key, pdf)
@@ -211,19 +189,15 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
             raise VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
                               status=exc.response.status_code,
                               body=exc.response.text) from None
-        except RuntimeError as exc:                      # no file_id / no job_id in the reply
+        except RuntimeError as exc:
             raise VendorError(str(exc)[:300], status=200) from None
 
         body = _poll(client, key, job_id, config.poll_interval, budget)
         try:
             latency_s = _server_duration(client, key, job_id)
         except Exception:  # noqa: BLE001
-            # Server-side duration is decoration. It is fetched AFTER the document has been
-            # polled to completion and billed, so letting a 5xx on the job listing raise here
-            # would throw away an extraction that was already paid for.
             latency_s = None
 
-    # /job shape: {status, result: {usage: {num_pages, ...}, result: <data>}}
     status = body.get("status") or "?"
     if status != "Completed":
         raise VendorError(f"reducto {status}: {json.dumps(body)[:300]}", status=200)
@@ -233,15 +207,8 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
         raise VendorError(f"completed with no extraction: {json.dumps(body)[:300]}", status=200)
 
     usage = dict(extract_resp.get("usage") or {})
-    # Verified against a live response: reducto reports `usage.credits` and no dollar figure
-    # anywhere. Credits are recorded as themselves -- the rate is contract-specific, so a
-    # dollar column derived from them would be invented.
     credits = usage.get("credits")
     return Extraction(result=extraction,
-                      # The whole response, minus the extraction itself (which is `result`
-                      # and would double the record). Hand-picking fields here is how a vendor
-                      # comes to look like it reports no cost when the field was simply
-                      # discarded -- `raw` is what makes that checkable.
                       raw={**{k: v for k, v in body.items() if k != "result"},
                            "result": {k: v for k, v in extract_resp.items() if k != "result"},
                            "latency_s": latency_s},

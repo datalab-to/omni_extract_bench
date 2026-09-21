@@ -39,11 +39,7 @@ PRED = {"n": "INV", "t": 999.0, "d": 5.0, "z": "x",
         "lines": [{"sku": "a", "qty": 1}, {"sku": "zz", "qty": 9}]}
 R = score(PRED, GT, SCH)
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nTHE DOCUMENT REFERS TO SECTIONS THAT EXIST")
-# Renumbering during a rewrite left two references pointing at the wrong section: the header
-# sent readers to the wrong place for the properties, and section 3 sent them to Aggregation
-# for the order-freedom trade. Cheap to check, so it is checked.
 import re                                                                   # noqa: E402
 from pathlib import Path as _P                                              # noqa: E402
 
@@ -111,10 +107,6 @@ report("addresses_found * addresses_read_right = accuracy",
        abs(R["addresses_found"] * R["addresses_read_right"] - R["accuracy"]) < 1e-12)
 
 print("\nSECTION 4 -- WHEN accuracy AND f1 AGREE")
-# The section used to say misread appearing twice was "the entire reason accuracy and f1
-# differ". It is not: they AGREE on a misread and diverge with misread = 0. What is counted
-# twice in `gold + asserted` and once in `total` is matched + misread -- every address both
-# documents use -- so they agree exactly when the documents use the same set of addresses.
 AF_S = {"properties": {k: {"type": "number"} for k in "abc"}}
 rows = {
     "perfect":            ({"a": 1, "b": 2},         {"a": 1, "b": 2}, 1.0000, 1.0000),

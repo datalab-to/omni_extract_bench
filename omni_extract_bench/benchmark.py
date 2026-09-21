@@ -74,7 +74,6 @@ class Doc(NamedTuple):
     schema: dict
 
 
-# ── 1. the corpus ────────────────────────────────────────────────────────────────────────
 def fetch(root: Path) -> Path:
     try:
         from huggingface_hub import snapshot_download
@@ -107,11 +106,10 @@ def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[D
                         pdf=root / row["doc_path"],
                         gt=root / row["gt_path"],
                         schema=json.loads(row["schema"])))
-    docs.sort(key=lambda d: (d.suite, d.doc_id))       # a stable order, so runs are comparable
+    docs.sort(key=lambda d: (d.suite, d.doc_id))
     return docs[:limit] if limit else docs
 
 
-# ── 2. predictions ───────────────────────────────────────────────────────────────────────
 def write_json_atomic(path: Path, obj, *, indent: int | None = None) -> None:
     tmp = path.with_name(f".{path.name}.partial")
     tmp.write_text(json.dumps(obj, default=str, indent=indent))
@@ -149,16 +147,15 @@ class Run:
     def __init__(self, label: str, provider: str, options: dict, out: Path, progress=NULL):
         self.label, self.provider, self.options = label, provider, options
         self.out, self.progress = out, progress
-        self.todo = self.left = 0                     # documents to run, and still outstanding
+        self.todo = self.left = 0
         self.counts: collections.Counter[str] = collections.Counter()
-        self.spend: list[float] = []                  # dollars, where the vendor reports them
-        self.billed: list[float] = []                 # credits, where it reports its own unit
-        self.took: list[float] = []                   # wall-clock per document
+        self.spend: list[float] = []
+        self.billed: list[float] = []
+        self.took: list[float] = []
 
     def __repr__(self) -> str:
         return f"Run({self.label})"
 
-    # ── what it is ───────────────────────────────────────────────────────────────────────
     def settings(self) -> dict:
         """The whole resolved configuration, not just what the caller passed."""
         from .harness.vendor import settings_for
@@ -222,17 +219,11 @@ class Run:
             if remaining and (workers or SCORE_WORKERS) > 1:
                 try:
                     with cf.ProcessPoolExecutor(max_workers=workers or SCORE_WORKERS) as pool:
-                        # `as_completed`, not `map`: `map` yields in input order, so one heavy
-                        # document at the front holds back everything finished behind it.
                         futures = {pool.submit(grade, doc): doc.doc_id for doc in remaining}
                         for future in cf.as_completed(futures):
                             graded[futures[future]] = future.result()
                     remaining = []
                 except BrokenProcessPool:
-                    # WHERE IT BROKE IS THE DIAGNOSIS. Part way through is a worker out of
-                    # memory, or children cut down by a Ctrl-C. Before anything was graded it
-                    # is usually the `spawn` guard -- but a Ctrl-C lands here too, so the
-                    # message says both.
                     if graded:
                         raise
                     log.warning("scoring pool stopped before any document was graded, so "
@@ -242,15 +233,11 @@ class Run:
             for doc in remaining:
                 graded[doc.doc_id] = grade(doc)
         finally:
-            # ONE WRITE, ON EVERY PATH OUT: finished, interrupted, broken pool, disk error.
             write_scores(self.out, so_far())
             if len(graded) < len(wanted):
                 log.warning("scoring stopped after %d of %d documents; the rest are graded "
                             "on the next run", len(graded), len(wanted))
 
-        # THE FILE AND THE ANSWER ARE DIFFERENT LISTS. The file is every document ever graded
-        # here; the return is this run's selection, because `summarise` counts what it is
-        # given -- handed the file, a `--limit 2` run reported five documents.
         answered = {**known, **graded}
         return [answered[d.doc_id] for d in docs if d.doc_id in answered]
 
@@ -266,7 +253,6 @@ class Run:
             return line.rstrip()
         return f"{line} {work[0]:>5} to predict, {work[1]:>5} to grade"
 
-    # ── where its files are ──────────────────────────────────────────────────────────────
     @property
     def predictions(self) -> Path:
         """The bare extractions. What scoring reads, and all it reads."""
@@ -292,7 +278,6 @@ class Run:
         write_json_atomic(self.predictions / f"{doc.doc_id}.json", record["result"])
         write_json_atomic(self.records / f"{doc.doc_id}.json", record)
 
-    # ── what it came to ──────────────────────────────────────────────────────────────────
     def begin(self, docs: list[Doc], workers: int) -> list[Doc]:
         """Make room, work out what is left to do, and open the progress line for it."""
         self.predictions.mkdir(parents=True, exist_ok=True)
@@ -302,7 +287,7 @@ class Run:
         log.info("%s: %d documents, %d to run", self.label, len(docs), len(todo))
         self.progress.start(len(todo), workers)
         if not todo:
-            self.progress.finish()        # nothing will land, so nothing else will finish it
+            self.progress.finish()
         return todo
 
     def landed(self, status: str, usd, credits, wall_s) -> None:
@@ -311,14 +296,9 @@ class Run:
         for bucket, value in ((self.spend, usd), (self.billed, credits), (self.took, wall_s)):
             if value is not None:
                 bucket.append(value)
-        # A skipped document was never reached, so it is not progress: it would fill the bar on
-        # the way out of a Run that failed on its first document.
         if status != "skipped":
             self.progress.record(error=status == "error", usd=usd, credits=credits,
                                  wall_s=wall_s)
-        # WHEN THIS RUN'S LAST DOCUMENT LANDS, not when the vendor's queue empties. One queue
-        # serves every Run of a vendor, so finishing them together reported the whole vendor's
-        # wall time on each line.
         self.left -= 1
         if not self.left:
             self.progress.finish()
@@ -326,18 +306,13 @@ class Run:
     def report(self) -> None:
         """This Run's last word, for a log with no bar to look at."""
         if self.took:
-            # The mean AND the range: 4s-and-1800s is a different proposition from a steady
-            # 900s.
             log.info("%s: %.1fs per document on average (min %.1f, max %.1f over %d)",
                      self.label, sum(self.took) / len(self.took), min(self.took),
                      max(self.took), len(self.took))
-        # `len(spend)` is reported because several vendors price only some documents: a bare
-        # total over a corpus where half reported nothing reads as the bill and is a fraction.
         if self.spend:
             log.info("%s: $%.2f reported over %d of %d documents", self.label,
                      sum(self.spend), len(self.spend), self.todo)
         if self.billed:
-            # Credits stay in the vendor's own unit; the rate is contract-specific.
             log.info("%s: %g credits reported over %d of %d documents", self.label,
                      sum(self.billed), len(self.billed), self.todo)
         if self.todo and not self.spend and not self.billed:
@@ -361,13 +336,8 @@ class ProviderRun:
 
     def __init__(self, adapter: str, runs: list[Run], workers: int):
         self.adapter, self.runs, self.workers = adapter, runs, workers
-        # TWO SCOPES: the caller's `stop` is a Ctrl-C and halts every vendor, `mine` is an
-        # unset key or a credit ceiling and halts this one. Sharing a single event made a
-        # healthy vendor publish 17% coverage because another ran out of credits.
         self.mine = threading.Event()
         self.fatal: list[Exception] = []
-        # One place a vendor gives up, so the three ways cannot drift. Locked because
-        # check-then-set is not atomic: two workers failing together both passed the test.
         self.halt = threading.Lock()
 
     def __repr__(self) -> str:
@@ -394,25 +364,15 @@ class ProviderRun:
         if stopping():
             return run.label, "skipped", None, None, None
         try:
-            # The block is exactly the call, so the in-flight count is what the vendor holds,
-            # not what our pool has queued.
             with run.progress.calling():
                 record = predict(run.provider, doc.pdf, doc.schema, timeout=timeout,
                                  **run.options)
-            # INSIDE the guard, because a full disk fails here: these writes once sat past the
-            # last `except`, and the vendor was paid for every remaining document while not one
-            # answer could be stored.
             run.store(doc, record)
         except (MissingDependency, MissingCredential) as exc:
-            # Ours, identical for every document, not transient.
             return self._give_up(run, exc)
         except AccountFailure as exc:
-            # RAISED, not merely logged: its skipped documents have no prediction, so the
-            # summary would report a vendor that was never asked as one that could not answer.
             return self._give_up(run, exc, "STOPPED, account-level failure")
         except Exception as exc:          # noqa: BLE001 -- unknown, so assume it is ours
-            # Anything `predict` did not turn into a record, or anything the writes raise. It
-            # will repeat, so stop rather than buy the same failure 600 more times.
             return self._give_up(run, exc)
         cost = record.get("cost") or {}
         return (run.label, "error" if record.get("error") else "ok",
@@ -444,16 +404,10 @@ class ProviderRun:
         for run in self.runs:
             run.report()
 
-        # After the pool drains, so no worker is still writing. The documents it stopped keep
-        # no file, so they stay resumable.
         if self.fatal:
             raise self.fatal[0]
 
 
-# ── 3. scores ────────────────────────────────────────────────────────────────────────────
-
-#: Capped rather than taken from the core count: the heaviest arrays here need ~1.8 GB each
-#: (`matching.MAX_CELLS`), so a machine should not be run out of memory by its own core count.
 SCORE_WORKERS = min(8, os.cpu_count() or 1)
 
 
@@ -500,8 +454,6 @@ def read_scores(out: Path, verdicts: bool = False) -> dict[str, dict]:
             doc_id = row["doc_id"]
         except (json.JSONDecodeError, KeyError, TypeError):
             continue
-        # A row scored without verdicts cannot answer a run that wants them: the per-address
-        # file was never written, and reusing the row leaves a hole no later run fills.
         if verdicts and not (out / "verdicts" / f"{doc_id}.jsonl").exists():
             continue
         rows[doc_id] = row
@@ -518,7 +470,6 @@ def grading_split(out: Path, docs: list[Doc], verdicts: bool = False,
     """
     known = read_scores(out, verdicts=verdicts)
     if rescore:
-        # This selection only: rows the run did not select are still theirs to keep.
         selected = {d.doc_id for d in docs}
         known = {k: v for k, v in known.items() if k not in selected}
     return known, [d for d in docs if d.doc_id not in known]
@@ -536,11 +487,6 @@ def write_scores(out: Path, rows: list[dict]) -> None:
     os.replace(tmp, path)
 
 
-# ── 4. the number ────────────────────────────────────────────────────────────────────────
-#: The five ways an address can go wrong. `matched` is the sixth bucket and the only good one;
-#: together they partition every address (`METRIC_SPEC.md` section 4). Reported as RATES here,
-#: and named `_rate` for it: `scores.jsonl` spells these same five words as counts, and a
-#: reader moving between the two files should not have to work out which one they are holding.
 ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
 
 
@@ -571,8 +517,6 @@ def summarise(rows: list[dict]) -> dict:
     return {**over(rows), "per_suite": {s: over(v) for s, v in sorted(by_suite.items())}}
 
 
-# ── the run ──────────────────────────────────────────────────────────────────────────────
-#: For an adapter `harness.WORKERS` says nothing about -- a new one, before anyone has looked.
 DEFAULT_WORKERS = 5
 
 
@@ -654,14 +598,11 @@ class BenchmarkRun:
         from .harness.vendor import resolve
 
         for provider in providers:
-            resolve(provider)      # raises ValueError naming the vendors, before any download
+            resolve(provider)
         self.out, self.data_root, self.suites, self.limit = out, data_root, suites, limit
         self.timeout, self.score_workers = timeout, score_workers
         self.verdicts, self.rescore, self.score_only = verdicts, rescore, score_only
         self.runs = plan(providers, options, out)
-        # GROUPED BY ADAPTER, not by the name typed: every `org/model` id is one
-        # `llm_single_shot` against one OpenRouter key, so three of them named separately are
-        # still one budget.
         grouped: dict[str, list[Run]] = collections.defaultdict(list)
         for run in self.runs:
             grouped[resolve(run.provider)].append(run)
@@ -711,24 +652,17 @@ class BenchmarkRun:
 
     def predict(self, docs: list[Doc]) -> None:
         """Every adapter at once. Predicting is network wait, so they do not slow each other."""
-        stop = threading.Event()       # one Ctrl-C stops every vendor, not just one
+        stop = threading.Event()
         with Progress([r.label for r in self.runs]) as bars:
             for run in self.runs:
                 run.progress = bars.reporter(run.label)
             with cf.ThreadPoolExecutor(max_workers=len(self.providers)) as pool:
                 futures = {pool.submit(p.predict, docs, self.timeout, stop): p.adapter
                            for p in self.providers}
-                # `result()` re-raises what a vendor raised. Leaving the loop still drains the
-                # pool, so the others finish and their predictions are on disk.
                 try:
                     for future in cf.as_completed(futures):
                         future.result()
                 except KeyboardInterrupt:
-                    # THE INTERRUPT LANDS HERE, not in `ProviderRun`: Python delivers it to the
-                    # main thread, and the vendors are in workers where a handler can never see
-                    # it. Both halves are needed -- `cancel_futures` drops vendors that have
-                    # not started, and only the flag reaches the ones that have, because a
-                    # running thread cannot be cancelled in Python.
                     stop.set()
                     pool.shutdown(wait=False, cancel_futures=True)
                     log.warning("interrupted -- finishing the calls already in flight; "
@@ -746,9 +680,6 @@ class BenchmarkRun:
             mine = run.score(docs, verdicts=self.verdicts, workers=self.score_workers,
                              rescore=self.rescore)
             summary[run.label] = {**run.head(), **summarise(mine)}
-            # THE FILE DESCRIBES THE DIRECTORY, the return value describes this invocation.
-            # They differ only on a narrowed resume, where `--limit 2` against a graded 620
-            # would otherwise leave a two-document summary sitting on a full run.
             write_json_atomic(run.out / "summary.json",
                               {**run.head(),
                                **summarise(list(read_scores(run.out).values()))}, indent=2)
@@ -764,9 +695,6 @@ class BenchmarkRun:
         docs = read_manifest(root / MANIFEST, root, suites=self.suites, limit=self.limit)
         if not docs:
             raise ValueError("no documents selected: check --suites and --limit")
-        # AFTER the corpus, so the plan states what this will actually cost rather than what
-        # it would cost from nothing. A resume that is mostly done should say so before it
-        # starts, not after.
         for line in self.describe(docs).splitlines():
             log.info("%s", line)
         self.prepare()

@@ -34,15 +34,11 @@ from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
-#: How often the bar redraws. Documents here take minutes, so nothing moves faster than this;
-#: it is a refresh rate for the clock and the spinner, not for the counts.
 TICK_S = 0.5
 
-#: Counts printed per provider between redraws when there is no tty to redraw on.
 PLAIN_EVERY = 10
 
 
-# ── 1. the counters ──────────────────────────────────────────────────────────────────────
 @dataclass
 class Stats:
     """What one provider has done so far.
@@ -52,13 +48,13 @@ class Stats:
     """
 
     total: int | None = None
-    workers: int | None = None        # how many this provider may have in flight at once
-    running: int = 0                  # how many it has in flight right now
+    workers: int | None = None
+    running: int = 0
     ok: int = 0
     errors: int = 0
     usd: float = 0.0
     credits: float = 0.0
-    waits: list[float] = field(default_factory=list)   # wall seconds, one per document
+    waits: list[float] = field(default_factory=list)
     started: float | None = None
     finished: float | None = None
 
@@ -78,13 +74,12 @@ class Stats:
         return (self.finished or time.monotonic()) - self.started
 
 
-# ── 2. the layout ────────────────────────────────────────────────────────────────────────
 def format_duration(seconds: float | None) -> str:
     """A span a person can read at a glance: `42s`, `4m19s`, `2h24m`."""
     if seconds is None:
         return "--"
     if seconds < 10:
-        return f"{seconds:.1f}s"          # a sub-second document would otherwise read as 0s
+        return f"{seconds:.1f}s"
     seconds = int(seconds)
     if seconds < 60:
         return f"{seconds}s"
@@ -158,7 +153,7 @@ def format_total(everything: dict[str, Stats]) -> str:
     """
     totals = list(everything.values())
     if not any(s.total for s in totals):
-        return ""                         # "0/0 documents" before the first provider starts
+        return ""
     done = sum(s.done for s in totals)
     total = sum(s.total or 0 for s in totals)
     errors = sum(s.errors for s in totals)
@@ -179,7 +174,6 @@ def format_total(everything: dict[str, Stats]) -> str:
     return "  ".join(parts)
 
 
-# ── 3. the terminal ──────────────────────────────────────────────────────────────────────
 class Reporter:
     """One provider's handle on the display. This is all a Run ever holds.
 
@@ -268,7 +262,6 @@ class Progress:
         self._thread: threading.Thread | None = None
         self._saved_handlers: list | None = None
 
-    # -- the caller's side -----------------------------------------------------------
     def reporter(self, name: str) -> Reporter:
         with self.lock:
             self.stats.setdefault(name, Stats())
@@ -281,9 +274,6 @@ class Progress:
             for key, value in fields.items():
                 if value is not None:
                     setattr(s, key, value)
-            # A provider's last word, for a log that has no bar to look at. Without it a
-            # provider finishing at 617 of 620 never prints its final tally, because the
-            # periodic line only lands on a multiple of `PLAIN_EVERY`.
             line = (format_provider(name, s, self._width)
                     if fields.get("finished") and not self.live else None)
         if line:
@@ -306,17 +296,11 @@ class Progress:
                 s.credits += credits
             if wall_s is not None:
                 s.waits.append(wall_s)
-            # Rendered under the lock, LOGGED OUTSIDE IT. `_Interleaved.emit` takes this
-            # lock from inside the logging module's own lock, so logging while holding it is
-            # the opposite order and two threads can meet in the middle. The two cannot
-            # overlap today -- this line needs `not self.live`, the wrapper only exists when
-            # `self.live` -- but that is a coincidence of configuration, not a guarantee.
             line = (format_provider(name, s, self._width)
                     if not self.live and s.done % PLAIN_EVERY == 0 else None)
         if line:
             log.info("%s", line)
 
-    # -- the terminal side -----------------------------------------------------------
     def _clear(self) -> None:
         if self.live and self._drawn:
             self.stream.write(f"\x1b[{self._drawn}A\x1b[J")
@@ -342,13 +326,8 @@ class Progress:
         while not self._stop.wait(self._tick):
             self.redraw()
 
-    # -- lifecycle -------------------------------------------------------------------
     def __enter__(self) -> "Progress":
         if self.live:
-            # A log line written straight to the stream would scribble over the bars, so the
-            # root handlers are wrapped for the duration: clear, let the real handler write,
-            # draw again. Wrapped rather than replaced, so formatting and level are whatever
-            # the CLI configured.
             root = logging.getLogger()
             self._saved_handlers = root.handlers[:]
             root.handlers[:] = [_Interleaved(self, h) for h in self._saved_handlers]
@@ -365,8 +344,6 @@ class Progress:
             logging.getLogger().handlers[:] = self._saved_handlers
             self._saved_handlers = None
         if self.live:
-            # Leave the finished state on screen rather than erasing it: it is the summary of
-            # what just happened, and the JSON on stdout is a different audience.
             self.redraw()
             self._drawn = 0
 

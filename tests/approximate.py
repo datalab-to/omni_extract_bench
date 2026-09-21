@@ -27,7 +27,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from omni_extract_bench import matching as _matching                         # noqa: E402
 
-#: Small enough that any array a test would bother writing exceeds it.
 TINY = (8, 64, 64)
 
 

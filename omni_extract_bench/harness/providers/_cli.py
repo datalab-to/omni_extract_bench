@@ -42,7 +42,6 @@ def run_cli(extract, config_type, provider: str, *, description: str | None = No
     ap.add_argument("--pdf", required=True, type=Path)
     ap.add_argument("--schema", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
-    # The harness always passes this; the default is for running the adapter by hand.
     ap.add_argument("--timeout", type=float, default=1800.0,
                     help="seconds this document may take, end to end")
     for f in dataclasses.fields(config_type):
@@ -61,8 +60,6 @@ def run_cli(extract, config_type, provider: str, *, description: str | None = No
         got = extract(args.pdf, json.loads(args.schema.read_text()),
                       timeout=args.timeout, config=config)
     except (VendorError, MissingCredential) as exc:
-        # The adapter raised where the failure happened, so the message already says what went
-        # wrong. Print it, not a traceback.
         print(exc, file=sys.stderr)
         raise SystemExit(1) from None
 

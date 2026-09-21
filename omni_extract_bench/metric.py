@@ -38,23 +38,17 @@ from typing import Any, Literal, NamedTuple
 from . import matching as OM
 from .values import canon_key, cmp_leaf, states_nothing
 
-Json = Any  # parsed-JSON value: dict / list / scalar
+Json = Any
 
-#: Suffixes a vendor hangs beside a field to carry provenance about it.
 _SIDECAR_SUFFIXES = ("_citations", "_meta")
 
 
-#: Keys that can legitimately keep `value` company inside a METADATA ENVELOPE. An envelope is
-#: a wrapper a vendor puts around an answer to attach provenance to it; the answer is
-#: `["value"]` and everything else describes it.
 _ENVELOPE_METADATA = frozenset({
     "citations", "citation", "confidence", "score", "reasoning", "evidence", "provenance",
     "source", "sources", "page", "pages", "bbox", "span", "spans", "offset", "offsets",
     "extraction_status", "status", "meta",
 })
 
-# An address is a tuple of steps. Each step is tagged, because a document may contain the key
-# "0" and ("k", "0") must not join ("i", 0).
 Kind = Literal["k", "i"]
 KEY: Kind = "k"
 INDEX: Kind = "i"
@@ -183,7 +177,6 @@ def resolve_refs(schema, root=None, depth=0, max_depth=12):
             return resolve_refs(merged, root, depth + 1, max_depth)
     return {k: (resolve_refs(v, root, depth + 1, max_depth) if k != "$defs" else v)
             for k, v in schema.items() if k != "$defs"}
-
 
 
 def node_key(prefix: Address) -> Address:
@@ -418,9 +411,9 @@ class Row(NamedTuple):
     position, and the two would disagree.
     """
 
-    named: Leaves                                # address -> canonical value
+    named: Leaves
     arrays: dict[Address, dict[Hashable, "Row"]]
-    key: tuple = ()                              # canonical content key; see `_content_key`
+    key: tuple = ()
 
     def is_object(self) -> bool:
         """True if this element is an object, meaning it has children with names.
@@ -469,10 +462,6 @@ def _content_key(named: Leaves, arrays: dict) -> tuple:
     pass rather than one pass per comparison.
     """
     def addr(a: Address) -> tuple:
-        # Structure, not `show()`. `show` renders both `{"a.b": 1}` and `{"a": {"b": 1}}` as
-        # "a.b", so rendering would let two different rows key alike and hand the tie back to
-        # arrival order -- the bug this key exists to remove. The step kind separates a field
-        # named "0" from index 0; `str` only makes the names orderable.
         return tuple((kind, str(name)) for kind, name in a)
 
     return (tuple(sorted((addr(a), str(v)) for a, v in named.items())),
@@ -546,7 +535,7 @@ def _positive_pair_bound(pred: dict, gold: dict) -> int | None:
     if not n or not m:
         return None
     if min(n, m) > OM.MAX_EXACT or n * m <= OM.MAX_CELLS or n * m > OM.MAX_CELLS_DENSE:
-        return None                      # decided by the ceilings; density cannot move it
+        return None
     counts: dict = {}
     for row in pred.values():
         for item in row.named.items():
@@ -557,14 +546,8 @@ def _positive_pair_bound(pred: dict, gold: dict) -> int | None:
     return min(sum(p * g for p, g in counts.values()), n * m)
 
 
-#: Cells below which the vectorised weights are not worth building. Two sparse products and
-#: their index arrays cost more than the Python loop they replace on a small block, and almost
-#: every block in a corpus is small -- a median document's longest array is 6 rows.
 MIN_VECTOR_CELLS = 16 * 16
 
-#: Cells above which they are not built at all. Peak here is ~16 bytes a cell -- two int32
-#: products and the float64 result -- against the 8 the matrix `optimal_pairs` needs anyway,
-#: so this sits well inside the 250 million cells `matching.MAX_CELLS` already budgets for.
 MAX_VECTOR_CELLS = 64 * 10**6
 
 
@@ -624,7 +607,7 @@ def _pair_weights(pred: dict[Hashable, Row], gold: dict[Hashable, Row],
         pv, pa = columns(pi, pred)
         gv, ga = columns(gi, gold)
     except TypeError:
-        return None                      # an unhashable value; the scalar path handles it
+        return None
 
     def csr(built, rows, width):
         ptr, idx = built
@@ -635,17 +618,11 @@ def _pair_weights(pred: dict[Hashable, Row], gold: dict[Hashable, Row],
     shared_sp = (csr(pa, n, len(addresses)) @ csr(ga, m, len(addresses)).T).tocsr()
     matched_sp.eliminate_zeros()
 
-    # Rows carrying their own arrays are worth what their sub-pairings are worth. Price those
-    # pairs with the function that knows how, and leave the rest read off the product.
     deep_p = {i: {a for a, sub in pred[k].arrays.items() if sub} for i, k in enumerate(pi)}
     deep_g = {j: {a for a, sub in gold[k].arrays.items() if sub} for j, k in enumerate(gi)}
     shared_paths = set().union(*deep_p.values()) & set().union(*deep_g.values()) \
         if deep_p and deep_g else set()
 
-    # Past the dense ceiling the matrix cannot be held at all, and only the sparse form is
-    # possible. Corrections write individual cells, which a sparse matrix cannot absorb
-    # cheaply and which may need cells the product does not have -- so the sparse form is
-    # offered only when no pair needs one. Declining sends the block where it went before.
     if n * m > MAX_VECTOR_CELLS:
         if shared_paths:
             return None
@@ -659,7 +636,7 @@ def _pair_weights(pred: dict[Hashable, Row], gold: dict[Hashable, Row],
     weights = weights.astype(np.float64)
     weights *= scale
     weights += shared
-    weights[~nonzero] = 0.0              # the same bar `cost` applies: no match, no pair
+    weights[~nonzero] = 0.0
     del shared, nonzero
 
     if shared_paths:
@@ -690,7 +667,6 @@ def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: i
         matched, shared = _worth_if_paired(pred[i], gold[j], scale, inexact)
         return matched * scale + shared if matched else 0
 
-    # Canonical order, so the solver sees the SAME problem however the rows arrived. 
     pi = sorted(pred, key=lambda i: pred[i].key)
     gi = sorted(gold, key=lambda j: gold[j].key)
     weights = _pair_weights(pred, gold, pi, gi, scale, inexact)
@@ -701,7 +677,7 @@ def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: i
     out = []
     for i, j in pairs:
         matched, shared = _worth_if_paired(pred[i], gold[j], scale, inexact)
-        if matched:                      # the same test `cost` makes: no match, no pair
+        if matched:
             out.append((i, j, matched, shared))
     return out
 
@@ -724,7 +700,6 @@ def align(gold: Leaves, pred: Leaves, ordered: frozenset = frozenset()) -> tuple
     True
     """
     inexact: list = []
-    # One bound on shared for the whole document: any pairing shares at most this many.
     scale = 1 + len(pred)
     done: set[Address] = set()
     while True:
@@ -761,7 +736,7 @@ def _align_one(gold: Leaves, pred: Leaves, prefix: Address, scale: int,
     for a, v in pred.items():
         if len(a) > d and a[:d] == prefix and a[d][0] == INDEX:
             i = a[d][1]
-            fresh = i if isinstance(i, str) else f"p{i}"   # already relabelled? leave it
+            fresh = i if isinstance(i, str) else f"p{i}"
             out[a[:d] + ((INDEX, remap.get(i, fresh)),) + a[d + 1:]] = v
         else:
             out[a] = v
@@ -836,7 +811,6 @@ def _resolve_order(order_matters: Iterable[str], schema: Any,
     return frozenset(out)
 
 
-
 def score(pred: Any, gt: Any, schema: Any,
           order_matters: Iterable[str] = (), verdicts: bool = False) -> dict:
     """Score one prediction against one ground truth."""
@@ -854,17 +828,6 @@ def score(pred: Any, gt: Any, schema: Any,
             "model was offered are unknown, so a fabricated value cannot be told from an "
             "invented one. Pass the schema the prediction was generated against."
         )
-    # INLINE ANY `$ref`, THEN CHECK THE INLINING WORKED. This module reads a schema for one
-    # thing -- finding `additionalProperties` objects, which it does not score -- and a `$ref`
-    # hides that keyword behind a pointer nothing here follows. Left alone, an open map written
-    # as a ref would be graded while the same map written inline is skipped: the same document
-    # scored two ways depending on how its schema was spelled.
-    #
-    # Both halves are needed, and each was tried alone. Refusing outright (the earlier design)
-    # put the work on callers, and two of them forgot it -- `oeb score` could not read 41% of
-    # this benchmark's own schemas. Resolving alone is worse: `resolve_refs` stops at
-    # `max_depth`, so a recursive schema keeps a live `$ref` and the hazard returns with no
-    # error at all. Resolve, then refuse what could not be resolved.
     schema = resolve_refs(schema)
     if _has_ref(schema):
         raise ValueError(
@@ -873,7 +836,6 @@ def score(pred: Any, gt: Any, schema: Any,
             "ref would be graded, while the same object written inline is skipped -- so this "
             "schema cannot be scored consistently. Flatten the recursion first."
         )
-    # ── 1. ADDRESS BOTH DOCUMENTS, then line the prediction up with the gold ─────────────
     raw_gt, pred_raw = gt or {}, pred or {}
     gt = prep_ground_truth(raw_gt)
     pred = prep_prediction(pred_raw)
@@ -882,13 +844,13 @@ def score(pred: Any, gt: Any, schema: Any,
     gold_leaves = flatten(gt, schema, skipped=found_open)
     pred_leaves, inexact = align(gold_leaves, flatten(pred, schema, skipped=found_open), ordered)
     skipped = sorted(set(found_open), key=_reading_order)
-    shared = set(gold_leaves) & set(pred_leaves)     # both documents used this address
-    only_gold = set(gold_leaves) - shared            # the model never produced it
-    only_pred = set(pred_leaves) - shared            # the model produced it unasked
+    shared = set(gold_leaves) & set(pred_leaves)
+    only_gold = set(gold_leaves) - shared
+    only_pred = set(pred_leaves) - shared
     union = shared | only_gold | only_pred
     matched = sum(1 for a in shared if cmp_leaf(pred_leaves[a], gold_leaves[a]) >= 1.0)
-    misread = len(shared) - matched                  # addressed by both, values disagree
-    unfound = len(only_gold)                         # gold has it, the prediction does not
+    misread = len(shared) - matched
+    unfound = len(only_gold)
     slots = _schema_leaves(schema)
     extra_kind = {a: _classify_extra(a, slots) for a in only_pred}
     extra = collections.Counter(extra_kind.values())
@@ -903,16 +865,15 @@ def score(pred: Any, gt: Any, schema: Any,
         paired += len(grow & prow)
 
     total = len(union)               
-    asserted = len(pred_leaves)        # addresses the prediction claimed
+    asserted = len(pred_leaves)
     accuracy = (matched / total) if total else 0.0
-    found = len(shared) / total if total else 0.0          # did it pick out the right cells?
-    read_right = matched / len(shared) if shared else 0.0   # ...and read them correctly?
-    recall = matched / len(gold_leaves) if gold_leaves else 0.0      # of what gold asked for
-    precision = matched / asserted if asserted else 0.0             # of what it asserted
+    found = len(shared) / total if total else 0.0
+    read_right = matched / len(shared) if shared else 0.0
+    recall = matched / len(gold_leaves) if gold_leaves else 0.0
+    precision = matched / asserted if asserted else 0.0
     f1 = (2 * precision * recall / (precision + recall)) if precision + recall else 0.0
     per_address: list[Verdict] = []
     if verdicts:
-        # A skipped open map has no values on either side; only its address means anything.
         per_address = [Verdict(a, None, None, None, None, verdict="skipped_open_map")
                        for a in skipped]
         for a in sorted(union, key=_reading_order):
@@ -924,19 +885,15 @@ def score(pred: Any, gt: Any, schema: Any,
                 verdict = "unfound"
             else:
                 verdict = extra_kind[a]
-            # Keyword-assigned: these were positional once, and moving `verdict` to the end
-            # of the NamedTuple silently shifted the canon values into the wrong fields.
             per_address.append(Verdict(a, gold_leaves.get(a), pred_leaves.get(a),
                                        gold_canon=gold_canon, pred_canon=pred_canon,
                                        verdict=verdict))
 
     return {
-        # what the model scored
         "accuracy": accuracy,
         "precision": precision,
         "recall": recall,
         "f1": f1,
-        # where it went wrong -- these four plus `matched` partition every address
         "total": total,
         "matched": matched,
         "misread": misread,
@@ -944,15 +901,12 @@ def score(pred: Any, gt: Any, schema: Any,
         "fabricated": extra["fabricated"],
         "invented_item": extra["invented_item"],
         "invented_field": extra["invented_field"],
-        # the addresses those counts are over
         "asserted": asserted,
         "addresses_found": found,
         "addresses_read_right": read_right,
-        # rows, counted separately from addresses
         "gt_rows": gt_rows,
         "pred_rows": pred_rows,
         "matched_rows": paired,
-        # caveats about how the numbers above were arrived at
         "matching_exact": not inexact,
         "approximated": sorted(set(inexact), reverse=True),
         "skipped_open_maps": [show(a) for a in skipped],

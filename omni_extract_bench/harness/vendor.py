@@ -48,18 +48,8 @@ from .extraction import (AccountFailure, Budget, Cost, Extraction, MissingDepend
                          VendorError, VendorTimeout)
 
 DEFAULT_TIMEOUT = 1800.0
-#: An OpenRouter model id is recognised by its slash: no vendor name has one, every model id
-#: does. So `openai/gpt-5.6-sol` routes to the single-shot LLM adapter and `datalab` does not,
-#: with no alias table to keep current.
-#:
-#: There were aliases once -- `gpt`, `claude`, `gemini`, `gpt-pro` -- and they were ambiguous in
-#: the one place it matters: a published row labelled "gpt" does not say which model produced
-#: it, and the answer changed whenever the alias was repointed.
 MODEL_SEPARATOR = "/"
 
-#: provider -> adapter module. A NAME, imported on use: importing an adapter pulls its SDK,
-#: and a machine that only scores has none of them. The maximum-tier settings are not here but
-#: in each adapter's `Config` defaults, beside the code that sends them.
 ADAPTERS: dict[str, str] = {
     "datalab": "datalab",
     "mistral": "mistral",
@@ -68,7 +58,6 @@ ADAPTERS: dict[str, str] = {
     "llamaextract": "llamaextract",
     "azure-cu": "azure_cu",
 }
-#: The named vendors. Any `org/model` is also accepted; see `resolve`.
 PROVIDERS = sorted(ADAPTERS)
 
 
@@ -101,49 +90,26 @@ def out_name(provider: str, options: dict | None = None) -> str:
     filesystem, so the provider half is spelled out and sanitised too. Two ids that sanitise
     alike still differ: the model is one of the settings the digest covers.
     """
-    # `sort_keys` so the spelling does not depend on the order the options were written in, and
-    # `sha256` rather than `hash()`, which is salted per process and would name the same run
-    # differently tomorrow.
     spelled = json.dumps(settings_for(provider, options), sort_keys=True, default=str)
     digest = hashlib.sha256(spelled.encode()).hexdigest()[:8]
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", provider.replace(MODEL_SEPARATOR, "__"))
     return f"{name}-{digest}"
 
 
-#: How many documents to have in flight at one vendor. Advisory: the caller owns the pool.
-#:
-#: KEYED BY ADAPTER, NOT BY PROVIDER NAME, because the limit belongs to the service and not to
-#: the name you typed. Every `org/model` id is one `llm_single_shot`, one OpenRouter endpoint
-#: and one key, so keyed by name three model ids in one invocation put three pools of five
-#: against that single key -- measured, 15 in flight where the budget is one.
-#:
-#: It also closes a hole a name-keyed table cannot: model ids are open-ended, so no dict can
-#: enumerate them, and every one of them used to fall through to the default.
 WORKERS = {
     "datalab": 10,
     "reducto": 3,
     "llamaextract": 3,
     "azure_cu": 3,
-    # Nothing has been measured for these three, so they are the default written down rather
-    # than a limit anyone established. Listed anyway: an absent key reads the same whether a
-    # vendor has no limit or nobody has looked, and those are different facts.
     "llm_single_shot": 5,
     "mistral": 5,
     "extend": 5,
 }
 
-#: The adapters read the environment for CREDENTIALS only. Everything that steers a vendor is
-#: a `Config` field, reaching the adapter through `--options` and landing in
-#: `run_manifest.settings` -- an environment variable steers a run without appearing in its
-#: record, so `LLAMAEXTRACT_TIER=cost_effective` once produced a run indistinguishable from a
-#: maxed-out one. `test_no_steering_env` holds the line.
 
 TRANSIENT_ATTEMPTS = 4
 TRANSIENT_BACKOFF = (20, 60, 120)
 
-#: A 402, or a vendor saying in words that the account is out. Checked on the MESSAGE because
-#: vendors disagree about the status for this, which is the one place a substring is the only
-#: signal there is.
 ACCOUNT_MARKERS = ("exceeded the maximum number of credits", "subscription has expired",
                    "insufficient_quota")
 
@@ -189,11 +155,6 @@ def config_for(provider: str, options: dict | None = None):
 
     config_type = _module(provider).Config
     options = options or {}
-    # A MODEL ID IS THE MODEL. It comes from the provider name, so the directory, the summary
-    # key and the record all name the model that ran -- and `model` is therefore not an option,
-    # because an option could set it to something else and leave all three naming a model that
-    # did not run. Refused rather than quietly overruled: a caller who wrote it meant
-    # something, and running a different model than they typed is not it.
     if MODEL_SEPARATOR in provider:
         if "model" in options:
             raise ValueError(
@@ -235,10 +196,6 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
 
     stripped = strip_benchmark_keys(schema)
     sent = strip_benchmark_keys(SO.apply_overlay(schema)) if overlay else stripped
-    # Resolved ONCE, here: the adapter is handed this object and the record states its fields,
-    # so what was sent and what was written down cannot be two different resolutions. The whole
-    # of it is recorded, not just what the caller changed -- the benchmark's claim is that each
-    # vendor ran at its maximum, and a document has to say what that was on the day.
     config = config_for(provider, options)
     budget = Budget(timeout)
     started = time.time()
@@ -255,8 +212,6 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
             error = exc
             if not exc.transient or attempt == TRANSIENT_ATTEMPTS - 1:
                 break
-            # The wait comes out of the same budget: backing off past the deadline would spend
-            # the document's time doing nothing and then call the vendor with none left.
             time.sleep(min(TRANSIENT_BACKOFF[min(attempt, len(TRANSIENT_BACKOFF) - 1)],
                            budget.remaining()))
             if budget.expired():
@@ -267,11 +222,6 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
 
     elapsed = round(time.time() - started, 1)
     if got is not None and got.cost.usd is None:
-        # The adapter did not name a cost, so look for one in the response it returned, using
-        # the field names vendors actually use. The runner this replaced scraped EVERY vendor's
-        # body this way, so an adapter with no cost code still produced a figure -- and reading
-        # "the adapter has no cost code" as "the vendor reports none" is how four providers
-        # came to be recorded as billed out of band on no evidence at all.
         usd, field = cost_from_response(got.raw if isinstance(got.raw, dict) else {})
         if usd is not None:
             got = got._replace(cost=Cost(usd=usd, source=field))

@@ -59,8 +59,6 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                           status=r.status_code, body=r.text)
 
     payload = r.json()
-    # Everything except the extraction itself: the vendor's own usage block, which is where
-    # the cost is, kept as `raw` so a parsing mistake here is re-read rather than re-paid for.
     annotation = payload.get("document_annotation")
     if annotation is None:
         raise VendorError("200 with no document_annotation", status=200, body=r.text[:300])

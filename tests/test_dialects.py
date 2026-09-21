@@ -11,7 +11,6 @@ import json
 import sys
 
 
-# run from anywhere: `python tests/x.py` puts tests/ on the path, not the repo root
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench.harness.dialects import (  # noqa: E402
@@ -61,8 +60,6 @@ check("items now declare a type", items.get("type") == "object")
 check("inlined content intact", "a" in (items.get("properties") or {}))
 
 print("\n[3] strict dialect — the rules differ BY POSITION")
-# Applying nullability everywhere fixes properties and breaks array items simultaneously;
-# that mistake cost a full extra round-trip against the vendor.
 strict = to_strict_dialect(resolve_refs(strip_benchmark_keys({
     "type": "object",
     "properties": {
@@ -77,8 +74,6 @@ check("property primitive is nullable", props["name"]["type"] == ["string", "nul
       str(props["name"]))
 check("ARRAY ITEM stays a bare type", props["tags"]["items"]["type"] == "string",
       str(props["tags"]["items"]))
-# Regression: a `description` surviving on a scalar array item rejects the ENTIRE request, so
-# one annotated leaf anywhere in a schema costs the provider the whole document.
 described = to_strict_dialect(resolve_refs(strip_benchmark_keys({
     "type": "object",
     "properties": {

@@ -11,42 +11,18 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
-Json = Any  # parsed-JSON value: dict / list / scalar
+Json = Any
 
 
-# ORDER RESOLVES AMBIGUITY, so it is deliberate: 01/02/2024 and 01.02.2024 are each two
-# possible dates and the first format that parses wins.
-#
-#   / and -   month first (US convention)
-#   .         DAY first (European convention)
-#
-# That looks inconsistent and is not. Dot-separated dates are European: of the 425 in this
-# corpus, 155 prove day-first by having a first component above 12 and NOT ONE proves
-# month-first, and they come from a German bank statement and a German medical guideline.
-# Reading them month-first would be uniform and would misread all 270 ambiguous ones.
-#
-# An impossible month falls through to the next format, so unambiguous dates parse correctly
-# either way -- 31.07.2024 is 31 July regardless. Only the genuinely ambiguous ones turn on
-# this order. Pinned in tests/test_asdate_prefilter.py.
 _DATEFMTS = ["%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%B %d, %Y", "%b %d, %Y",
              "%d %B %Y", "%d-%b-%Y", "%d%b%Y", "%m/%d/%y", "%Y/%m/%d", "%d.%m.%Y",
              "%m.%d.%Y", "%b %d %Y", "%B %d %Y"]
-# Midnight means "a date wearing a timestamp's clothes" and folds to the date; any other time
-# is kept, so two different times still differ. The UTC offset is dropped rather than
-# converted -- the wall clock as printed is the fact.
 _DATETIMEFMTS = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S",
                  "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S%z",
                  "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S.%f",
                  "%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%d %H:%M:%S.%f%z",
                  "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M"]
 
-# Most values are not dates, and trying all 25 formats in turn cost 40% of grading time on a
-# table-heavy document. strptime compiles each format to a regex, so we match that regex first
-# and only call strptime for formats that can succeed.
-#
-# The prefilter is built FROM strptime's own compiled pattern. A previous
-#
-# _strptime is private: if it moves, fall back to the plain loop. Slower, never wrong.
 try:
     import _strptime as _sp
 
@@ -54,8 +30,6 @@ try:
         """The regex strptime itself uses for fmt. Cache is locale-aware, as strptime's is."""
         return _sp._TimeRE_cache.compile(fmt)
 
-    # One alternation per format list, so a non-match costs a single regex call. Group names
-    # are stripped because duplicates are illegal in an alternation and we never capture.
     _STRIP_GROUP_NAMES = re.compile(r"\(\?P<\w+>")
     _union_cache: dict = {}
 
@@ -71,11 +45,9 @@ try:
 
     def _candidate_formats(s, fmts):
         if not _union_regex(tuple(fmts)).match(s):
-            return                      # nothing in this list can match; skip all of them
+            return
         for f in fmts:
             m = _fmt_regex(f).match(s)
-            # Exactly the two failures `strptime` reports as a format mismatch: no match,
-            # and a match that leaves unconverted data behind.
             if m is not None and m.end() == len(s):
                 yield f
 
@@ -94,7 +66,7 @@ def _asdate(v):
         try:
             return datetime.strptime(s, f).date().isoformat()
         except ValueError:
-            pass                        # a real date error, e.g. February 30
+            pass
     dt = _parse_datetime(s)
     if dt is not None and (dt.hour, dt.minute, dt.second, dt.microsecond) == (0, 0, 0, 0):
         return dt.date().isoformat()
@@ -106,7 +78,7 @@ def _parse_datetime(s: str):
         try:
             return datetime.strptime(s, f)
         except ValueError:
-            pass                        # e.g. a 25th hour
+            pass
     return None
 
 
@@ -121,8 +93,6 @@ def _astime(v):
         return None
     return dt.replace(tzinfo=None).isoformat(timespec="microseconds")
 
-# Sign notation folds; sign value does not. (98.2), -98.2 and 98.2- are one number; -98.2 and
-# +98.2 are two.
 _NEG_WRAP = re.compile(r"^\((.*)\)$")
 
 
@@ -130,11 +100,11 @@ def _sign_normalize(s: str):
     """Return (unsigned_text, sign) with sign in {1,-1}, folding notation variants."""
     s = s.strip()
     sign = 1
-    m = _NEG_WRAP.match(s)          # (98.2) -> accounting negative
+    m = _NEG_WRAP.match(s)
     if m:
         sign, s = -1, m.group(1).strip()
-    s = s.replace("\u2212", "-").replace("\u2013", "-")   # unicode minus / en-dash
-    if s.endswith("-"):             # trailing minus (some ERP exports)
+    s = s.replace("\u2212", "-").replace("\u2013", "-")
+    if s.endswith("-"):
         sign, s = -sign, s[:-1].strip()
     while s.startswith(("-", "+")):
         if s[0] == "-":
@@ -166,19 +136,13 @@ def _asdecimal(v):
         d = Decimal(t)
     except InvalidOperation:
         return None
-    # Load-bearing, not cosmetic: Decimal's exponent is unbounded, so 1.0e1000000000 parses
-    # and then int() tries to materialise a billion digits and hangs. These fall through to
-    # text comparison.
     if not d.is_finite() or not -_MAX_EXPONENT <= d.adjusted() <= _MAX_EXPONENT:
         return None
     return d
 
 
-# Significant digits of the FRACTION, not of the number. Rounding the whole number spends its
-# budget on the integer part, which made 123456.78 == 123456.79.
 _FRACTION_DIGITS = 7
 
-# Past this magnitude a value is not a number a document printed; compare it as text.
 _MAX_EXPONENT = 100
 
 
@@ -190,8 +154,8 @@ def _fraction_places(d: Decimal) -> int:
     """
     _sign, digits, exp = d.as_tuple()
     if not isinstance(exp, int) or exp >= 0:
-        return 0                                   # no fractional digits at all
-    width = -exp                                   # digits printed after the point
+        return 0
+    width = -exp
     fraction = ((0,) * (width - len(digits)) + digits)[-width:]
     leading_zeros = 0
     for digit in fraction:
@@ -199,7 +163,7 @@ def _fraction_places(d: Decimal) -> int:
             break
         leading_zeros += 1
     if leading_zeros == width:
-        return 0                                   # "5.00" — an integral value
+        return 0
     return _FRACTION_DIGITS + leading_zeros
 
 

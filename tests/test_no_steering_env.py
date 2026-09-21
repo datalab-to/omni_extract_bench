@@ -14,8 +14,6 @@ import pathlib
 
 PROVIDERS = pathlib.Path(__file__).resolve().parents[1] / "omni_extract_bench/harness/providers"
 
-#: Reading one of these is reading a secret (or, for the two Azure/Extend account fields, the
-#: coordinates the secret is valid at). Anything else is a setting and belongs in a parameter.
 CREDENTIAL = {
     "DATALAB_API_KEY", "REDUCTO_API_KEY", "EXTEND_API_KEY", "MISTRAL_API_KEY",
     "LLAMA_CLOUD_API_KEY", "LLAMAPARSE_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY",
@@ -61,8 +59,6 @@ assert not offenders, (
 )
 print(f"{len(modules)} adapters: no steering read from the environment")
 
-# The settings that USED to be environment variables are all reachable as arguments -- removing
-# the variable without promoting it to a parameter would just make the setting unreachable.
 import dataclasses  # noqa: E402
 import importlib  # noqa: E402
 
@@ -85,8 +81,6 @@ for module, params in PROMOTED.items():
     assert not missing, f"{module}.Config cannot be steered through options: {missing}"
 print(f"{sum(len(v) for v in PROMOTED.values())} former env settings are Config fields")
 
-# And none of them is optional-with-a-None-default pretending to have one: a `None` default is
-# a second place the real default can hide.
 for module in ("datalab", "reducto", "llamaextract", "azure_cu"):
     fields = config_fields(module)
     for name in PROMOTED[module]:

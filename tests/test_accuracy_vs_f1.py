@@ -97,7 +97,6 @@ def buckets(r):
     return m, w, u, x
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nTHE ALGEBRA, OVER GENERATED DOCUMENTS")
 bad_t = bad_f1 = bad_acc = bad_dice = seen = 0
 for _ in range(1000):
@@ -125,13 +124,10 @@ report("with no misread, accuracy is Jaccard and f1 == 2J/(1+J)",
 note("so f1 is the textbook measure; accuracy is Jaccard minus one misread charge (P4)")
 
 print("\naccuracy READS THE ALIGNMENT; f1 AND JACCARD CANNOT")
-# The claim METRIC_SPEC section 4 rests on. These two predictions are indistinguishable to
-# any function of (matched, |gold|, |asserted|) -- so f1 and jaccard MUST score them alike.
-# accuracy does not, because it knows the first pair shares an address.
 AB_S = {"properties": {k: {"type": "string"} for k in "abc"}}
 AB_G = {"a": "1", "b": "2"}
-A = score({"a": "1", "b": "99"}, AB_G, AB_S)      # found b, misread it
-B = score({"a": "1", "c": "99"}, AB_G, AB_S)      # missed b, invented c
+A = score({"a": "1", "b": "99"}, AB_G, AB_S)
+B = score({"a": "1", "c": "99"}, AB_G, AB_S)
 def _j(r):
     m, w, u = r["matched"], r["misread"], r["unfound"]
     x = r["fabricated"] + r["invented_item"] + r["invented_field"]
@@ -210,9 +206,6 @@ note(f"{inv2} of {pairs2} pairs ({100 * inv2 / max(pairs2, 1):.1f}%) -- accuracy
 note("a model that misreads, f1 to one that omits and invents. accuracy is the score.")
 
 print("\nP21 -- accuracy CANNOT BE RAISED EXCEPT BY BEING RIGHT MORE OFTEN")
-# Exhaustive over every strategy on a small document: omit each field, fill it correctly, or
-# fill it wrongly. If any strategy ever scored above one that produced MORE correct values,
-# accuracy would be gameable. None does.
 import itertools                                                            # noqa: E402
 
 G_S = {"properties": {f"k{i}": {"type": "string"} for i in range(6)}}
@@ -273,7 +266,6 @@ report("guessing the modal value gains on every corpus, most where the prior is 
 note("so variance is not a defence -- it prices the guess at the average hit rate, correctly")
 
 print("\nAN OMISSION ALWAYS COSTS AT LEAST AS MUCH AS AN INVENTION")
-# (m-1)/T against m/(T+1): the first is smaller for every m <= T, by 1/(T(T+1)).
 worse = []
 for N in (2, 3, 5, 10, 50):
     keys = [f"k{i}" for i in range(N)]

@@ -49,8 +49,6 @@ def _refused(call):
 
 
 print("\nA NAME IS A FUNCTION OF THE SETTINGS")
-# Every name carries a digest of the WHOLE resolved settings, so a directory holds one
-# configuration. The readable half is the difference from the defaults and is decoration.
 report("a run is named for the vendor and a digest of what it was sent",
        re.fullmatch(r"datalab-[0-9a-f]{8}", named("datalab")) is not None, named("datalab"))
 report("an option set to the stock value names the same run",
@@ -63,22 +61,15 @@ report("a steered run is a different directory, not a suffix on the stock one",
        named("datalab", mode="accurate"))
 
 print("\nDISTINCT STEERINGS GET DISTINCT DIRECTORIES")
-# The whole point. Two of them sharing a directory is the mixing this exists to stop, so the
-# digest -- not the readable prefix -- is what carries the guarantee.
 apart = [named("datalab", mode="accurate"), named("datalab", mode="fast"),
          named("datalab", mode="fast", poll_interval=2.5),
-         named("reducto", system_prompt="a b"),      # the name shows none of these, so
-         named("reducto", system_prompt="a_b"),      # only the digest keeps them in four
-         named("reducto", system_prompt="L" * 300),  # directories -- which is why it
-         named("reducto", system_prompt="M" * 300)]  # covers every field and not a few
+         named("reducto", system_prompt="a b"),
+         named("reducto", system_prompt="a_b"),
+         named("reducto", system_prompt="L" * 300),
+         named("reducto", system_prompt="M" * 300)]
 report("every one of them is unique", len(set(apart)) == len(apart), str(apart))
 
 print("\nAND NOT ON WHAT THE DEFAULT HAPPENED TO BE THAT DAY")
-# THE FAILURE THIS REPLACED. The digest used to cover only what DIFFERED from the adapter's
-# defaults, so the name held within a version of the code and broke across one: move the
-# `Config` default the day a vendor's maximum tier moves, and the new stock run is stored
-# under the same plain `datalab` as the old one. `needs_run` finds records, skips every
-# document, and two tiers are averaged into one published number.
 def _datalab_defaulting_to(tier):
     module = types.ModuleType("fake_datalab")
 
@@ -102,9 +93,6 @@ finally:
     V._module = _real_module
 report("the same name never means two different settings", was_stock != now_stock,
        f"{was_stock} vs {now_stock}")
-# And the other direction, which is what naming the RESOLVED settings buys over naming the
-# difference from them: a run pinned to the old value is the same run, so it resumes into its
-# own directory instead of being bought a second time under a new name.
 report("...and the same settings always mean the same name", was_stock == now_pinned,
        f"{was_stock} vs {now_pinned}")
 report("...however the defaults moved around them", was_pinned == now_stock,
@@ -114,7 +102,6 @@ print("\nAND THE NAME DOES NOT DEPEND ON HOW IT WAS WRITTEN")
 report("option order does not change it",
        named("datalab", mode="fast", poll_interval=2.5)
        == named("datalab", poll_interval=2.5, mode="fast"))
-# `hash()` is salted per process, so it would name the same run differently tomorrow.
 seeds = {subprocess.run(
     [sys.executable, "-c",
      "from omni_extract_bench.harness.vendor import out_name;"
@@ -131,10 +118,6 @@ report("a huge value cannot become a huge path",
 report("nothing unsafe reaches the filesystem",
        not (set(named("reducto", system_prompt="a/b c:d")) & set("/\\:*?\"<>|")),
        named("reducto", system_prompt="a/b c:d"))
-# The PROVIDER half too, which went unsanitised while only the readable half was checked: an
-# OpenRouter suffix is part of the id, and `mistral-medium-3-5:batch` is not a filename on
-# every filesystem. Two ids that sanitise alike still differ -- the model is one of the
-# settings the digest covers.
 report("...including the model id, suffix and all",
        not (set(named("mistralai/mistral-medium-3-5:batch")) & set("/\\:*?\"<>|")),
        named("mistralai/mistral-medium-3-5:batch"))
@@ -150,7 +133,6 @@ for i in range(3):
 B.fetch = lambda root: out
 B.read_manifest = lambda *a, **k: docs
 called = []
-# The adapter is handed its `Config`, so a stub reads the setting off a field.
 V.adapter = lambda prov: (lambda pdf, schema, *, timeout, config: (
     called.append(config.mode),
     Extraction(result={"a": config.mode}, cost=Cost(usd=0.1)))[1])
@@ -168,9 +150,6 @@ steered_dir = named("datalab", mode="fast")
 report("...into a directory of its own",
        (out / steered_dir).is_dir() and (out / named("datalab")).is_dir(), steered_dir)
 
-# A DIRECTORY SAYS WHAT IT IS WITHOUT BEING FINISHED. The name is a digest, `summary.json`
-# is written at the end and an interrupted run never reaches it, and a record states the
-# settings only once a document has landed.
 asked = json.loads((out / steered_dir / "settings.json").read_text())
 report("the run says what it was asked, in the directory, from the start",
        (asked["provider"], asked["settings"]["mode"]) == ("datalab", "fast"), str(asked))
@@ -184,15 +163,10 @@ report("...and the record states what it was sent",
        rec["run_manifest"]["settings"]["mode"] == "fast")
 
 print("\nA VENDOR'S OWN TIERS, COMPARED IN ONE INVOCATION")
-# `--options` may give one provider a LIST, and each entry is its own run, directory and
-# summary row -- rather than a second provider name minted per tier.
 out2 = pathlib.Path(tempfile.mkdtemp())
 B.fetch = lambda root: out2
 summary = B.run(["datalab"], out=out2, score_workers=1, predict_workers={"*": 1},
                 options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
-# The summary is keyed by the RUN, not the vendor: a measured configuration is (provider,
-# how it was steered), and keyed by the vendor alone a steered row silently replaces a stock
-# one. The key is the same string that named the directory.
 report("each configuration is its own row in the summary",
        sorted(summary) == sorted([named("datalab", mode="balanced"),
                                   named("datalab", mode="accurate")]),
@@ -200,7 +174,6 @@ report("each configuration is its own row in the summary",
 report("...matching its directory exactly",
        sorted(summary) == sorted(d.name for d in out2.iterdir() if d.is_dir()),
        str(sorted(d.name for d in out2.iterdir() if d.is_dir())))
-# Carried in the row so a published table can be labelled without parsing the key apart.
 steered_row = summary[named("datalab", mode="accurate")]
 report("the row names the vendor it came from", steered_row["provider"] == "datalab")
 report("...and what it was sent", steered_row["settings"]["mode"] == "accurate")
@@ -209,19 +182,13 @@ report("the stock row carries its own settings",
 report("both ran the same vendor",
        {r["provider"] for r in summary.values()} == {"datalab"})
 
-# EACH RUN CARRIES ITS OWN ROW. Grading is serial, so waiting for the last vendor to publish
-# the first one leaves an interrupted invocation with directories of answers and nothing that
-# reads them.
 for one in summary.values():
     on_disk = json.loads((out2 / one["run"] / "summary.json").read_text())
     report(f"{one['run']}: its directory carries its own row", on_disk == one)
 report("and there is no table across them to go stale",
        not (out2 / "summary.json").exists())
 
-# THE FILE DESCRIBES THE DIRECTORY, NOT THE INVOCATION. A narrower resume regrades nothing and
-# must not leave a two-document summary sitting on a full run -- `runs/*/summary.json` is what
-# gets aggregated, and a table built from those would be wrong by the ratio of the two.
-B.read_manifest = lambda *a, **k: docs[:1]          # what `--limit 1` would select
+B.read_manifest = lambda *a, **k: docs[:1]
 narrow = B.run(["datalab"], out=out2, score_workers=1, predict_workers={"*": 1},
                options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
 B.read_manifest = lambda *a, **k: docs
@@ -263,10 +230,8 @@ report("...so aggregating the directories finds one finished run, not a half-cou
        sorted(p.parent.name for p in out3.glob("*/summary.json")) == [first])
 
 print("\nA RUN IS A PROVIDER PLUS ITS OPTIONS, AND THE CAP IS STILL THE VENDOR'S")
-# `--options` keyed to a name that is not being run drops the steering silently, and the run
-# then reports as stock -- a steered measurement wearing a stock label.
-for bad in ({"datalb": {"mode": "accurate"}},        # typo
-            {"reducto": {"agentic_table_mode": "default"}}):   # not in --providers
+for bad in ({"datalb": {"mode": "accurate"}},
+            {"reducto": {"agentic_table_mode": "default"}}):
     try:
         B.plan(["datalab"], bad)
         report(f"--options {list(bad)[0]!r} is refused", False, "it was accepted")
@@ -278,8 +243,6 @@ try:
 except ValueError as exc:
     report("an empty option list is refused", "would not run at all" in str(exc))
 
-# THE CAP IS THE VENDOR'S AND IT IS SHARED. Two runs of one provider go at once, so a cap
-# applied to each puts twice as many documents in flight as the vendor tolerates.
 import threading as _threading                                                 # noqa: E402
 import time as _time                                                           # noqa: E402
 from omni_extract_bench.harness import WORKERS                                 # noqa: E402
@@ -315,17 +278,12 @@ B.run(["datalab"], out=wide, score_workers=1,
 report("two runs of one vendor share its concurrency cap, not double it",
        live["peak"] <= WORKERS["datalab"],
        f'peak {live["peak"]} in flight against a cap of {WORKERS["datalab"]}')
-# AND SHARE IT DYNAMICALLY. Dividing the cap between the runs also keeps the count legal --
-# and leaves half of it idle whichever run has work. One queue per vendor uses the lot.
 report("...and the whole cap is in use, not half of it each",
        live["peak"] > WORKERS["datalab"] // 2,
        f'peak {live["peak"]}, which a cap split two ways could not exceed '
        f'{WORKERS["datalab"] // 2}')
 
 print("\nAND SAYS WHAT A RESUME WOULD COST, BEFORE IT COSTS IT")
-# The plan a `BenchmarkRun` can state without a download or a vendor call, and -- once the
-# corpus is known -- what each run still owes. `--rescore` is why the two halves are counted
-# separately: every prediction can be on disk and every grade still outstanding.
 from omni_extract_bench.benchmark import BenchmarkRun                          # noqa: E402
 
 seen_dir = pathlib.Path(tempfile.mkdtemp())
@@ -351,7 +309,6 @@ report("a run counts what it would still predict, and still grade",
        bal.outstanding(docs) == (len(docs) - 2, 0), str(bal.outstanding(docs)))
 report("...a run with nothing on disk owes everything",
        acc.outstanding(docs) == (len(docs), len(docs)), str(acc.outstanding(docs)))
-# `grading_split` is the one definition, so this cannot promise 0 and then grade 3.
 report("--rescore owes every grade again, however many are on disk",
        bal.outstanding(docs, rescore=True) == (len(docs) - 2, len(docs)),
        str(bal.outstanding(docs, rescore=True)))
@@ -360,9 +317,6 @@ report("the plan states it per run, once the corpus is known",
        plan.describe(docs))
 
 print("\nEACH RUN IS TIMED FOR ITSELF, NOT FOR THE QUEUE IT SHARES")
-# One queue serves every run of a vendor, so finishing them together reported the whole
-# vendor's wall time on every line -- two reducto tiers both "done in 4m44s" while one of them
-# had been finished for minutes.
 from omni_extract_bench.progress import Progress                               # noqa: E402
 
 timed = pathlib.Path(tempfile.mkdtemp())
@@ -397,9 +351,6 @@ report("...and it matches when its last document actually landed",
        f'reported {elapsed[quick]:.2f}s, landed at {landed["balanced"]:.2f}s')
 
 print("\nAND THE CAP BELONGS TO THE SERVICE, NOT TO THE NAME YOU TYPED")
-# Every `org/model` id is one `llm_single_shot`, one OpenRouter endpoint and one key. Keyed by
-# provider name each of them got a pool of its own -- measured, three models put 15 against a
-# budget of 5 -- and no name-keyed table could ever cover them, since model ids are open-ended.
 models = pathlib.Path(tempfile.mkdtemp())
 B.fetch = lambda root: models
 live["n"] = live["peak"] = 0
@@ -421,8 +372,6 @@ report("...falling back to the adapter's own limit when nobody says",
        B.workers_for(ids, None) == WORKERS["llm_single_shot"])
 
 print("\nAN ACCOUNT FAILURE IS ABOUT THE ACCOUNT, SO IT STOPS EVERY RUN OF THAT VENDOR")
-# The key is the same for both tiers, so the second cannot pay either. Given a pool per run it
-# found that out for itself, a wave of documents later; given one per vendor it is told.
 acct = pathlib.Path(tempfile.mkdtemp())
 B.fetch = lambda root: acct
 tried = []

@@ -36,11 +36,6 @@ from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry
 from ._cli import run_cli
 
 BASE = "https://api.cloud.llamaindex.ai"
-#: The v2 API enum is 'cost_effective' | 'agentic' | 'agentic_plus'.
-#: The benchmark runs every vendor at its maximum, and `vendor.ADAPTERS` selects this one.
-#: The default here MATCHES it, so reproducing a document by hand reproduces the
-#: benchmark -- it used to default to `agentic`, one tier below, which meant a hand-run
-#: silently answered a different question from the run it was meant to explain.
 TIER = "agentic_plus"
 _TERMINAL = {"SUCCESS", "COMPLETED", "FAILED", "ERROR", "CANCELLED"}
 
@@ -72,10 +67,6 @@ def _adapt_schema(schema: dict, defs: dict | None = None) -> dict:
         )
     node = {k: v for k, v in schema.items() if not k.startswith("$")}
 
-    # Collapse a union to its non-null branch. Recursing into the branches while LEAVING the
-    # anyOf in place produced `properties.skills.anyOf.anyOf.1...` -- a nested union the API
-    # rejects. Same resolution the grader applies when scoring, so what is sent matches how the
-    # answer is judged.
     for comb in ("anyOf", "oneOf", "allOf"):
         branches = [b for b in (node.get(comb) or []) if isinstance(b, dict)]
         if branches:
@@ -92,25 +83,16 @@ def _adapt_schema(schema: dict, defs: dict | None = None) -> dict:
         non_null = [x for x in t if x != "null"]
         node["type"] = non_null[0] if non_null else "string"
 
-    # An enum with no `type` is valid JSON Schema, but the API reports "Invalid type for
-    # field". Infer the type from the enum's own non-null values rather than defaulting.
     if "enum" in node and "type" not in node:
         vals = [v for v in node["enum"] if v is not None]
         kinds = {type(v) for v in vals}
         node["type"] = ({str: "string", bool: "boolean", int: "integer", float: "number"}
                         .get(kinds.pop()) if len(kinds) == 1 else "string")
 
-    # Once a type is declared, every enum member must match it: leaving the `null` in
-    # `["MILD","MODERATE","SEVERE",null]` alongside `type: string` fails with "Input should be
-    # a valid string at ...enum.3". Nullability is carried by the field being optional, not by
-    # a null enum member, so the null is removed rather than the type loosened.
     if isinstance(node.get("enum"), list) and node.get("type") in (
             "string", "boolean", "integer", "number"):
         node["enum"] = [v for v in node["enum"] if v is not None]
 
-    # `additionalProperties` as a SCHEMA (an open map, e.g. skill-category -> list) is rejected:
-    # "Input should be a valid boolean". Reduce it to the boolean the dialect allows; the map
-    # stays open, only the per-value constraint is dropped.
     ap = node.get("additionalProperties")
     if isinstance(ap, dict):
         node["additionalProperties"] = True
@@ -137,18 +119,10 @@ def _req(
         with urllib.request.urlopen(req, timeout=120) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        # urllib's HTTPError stringifies to just "HTTP Error 400: Bad Request" -- the response
-        # body, which is where the API says WHAT was wrong, is on the exception object and is
-        # lost unless read here. Two benchmark failures were unattributable for exactly this
-        # reason: a status code with no cause. Read the body and put it in the message.
         try:
             body = e.read().decode("utf-8", "replace")[:600]
         except Exception:  # noqa: BLE001
             body = "<body unavailable>"
-        # VendorError, not RuntimeError: `predict` catches VendorError and records the
-        # document as failed. A bare RuntimeError escapes it, reaches `future.result()`
-        # in the pool, and kills the whole run -- so one 400 on one schema would end a
-        # 620-document job. Schema validation is this vendor's documented failure mode.
         raise VendorError(f"HTTP {e.code} {method} {url.split('?')[0]}: {body}",
                           status=e.code, body=body) from None
 
@@ -198,17 +172,12 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     The job id comes back with the result, so a job that outlived its budget is named in the
     record rather than being anonymous.
     """
-    budget = Budget(timeout)          # before the upload: it is part of the document
-    # LlamaCloud issues ONE key for the whole platform, and people export it under the
-    # name of whichever product they reached first.
+    budget = Budget(timeout)
     key = (os.environ.get("LLAMA_CLOUD_API_KEY")
            or os.environ.get("LLAMAPARSE_API_KEY"))
     if not key:
         raise MissingCredential("LLAMA_CLOUD_API_KEY (or LLAMAPARSE_API_KEY) is not set")
 
-    # No try/except here: `_req` already raises `VendorError` with the vendor's own message
-    # and status, which is what `predict` records and what decides whether a retry is worth
-    # anything. Catching and re-wrapping would only lose the status.
     project_id = _project_id(key)
     file_id = _upload(pdf, key)
     job = _req("POST", f"{BASE}/api/v2/extract?project_id={project_id}", key,
@@ -228,7 +197,6 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
             body = _req("GET", f"{BASE}/api/v2/extract/{job_id}"
                                f"?project_id={project_id}&expand=metadata", key)
         except VendorError as exc:
-            # A failed poll is not a failed job: it is still running, and already billed.
             if retry.again(exc.status):
                 continue
             raise
@@ -251,16 +219,14 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     if not isinstance(result, dict) or not result:
         raise VendorError(f"{status} with no extraction: {json.dumps(body)[:300]}", status=200)
 
-    # server-side processing span = updated_at - created_at (excludes our poll/upload)
     start, end = _dt(body.get("created_at")), _dt(body.get("updated_at"))
     return Extraction(
         result=result,
-        # The whole job body, minus the extraction itself.
         raw={**{k: v for k, v in body.items()
                 if k not in ("extract_result", "data", "result")},
              "tier": config.tier,
              "server_latency_s": round((end - start).total_seconds(), 2) if start and end else None},
-        cost=Cost(),                         # LlamaCloud bills in credits, not per call
+        cost=Cost(),
         job_id=job_id)
 
 

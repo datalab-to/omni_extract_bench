@@ -49,7 +49,6 @@ for seconds, want in [(None, "--"), (0, "0.0s"), (0.36, "0.4s"), (9.9, "9.9s"), 
     report(f"{seconds} -> {want}", format_duration(seconds) == want, format_duration(seconds))
 
 print("\nMONEY STAYS IN THE VENDOR'S OWN UNIT")
-# The credits-to-dollars rate is contract-specific, so a converted figure would be invented.
 report("dollars where the vendor reports dollars", format_money(Stats(usd=183.49)) == "$183.49")
 report("credits where it reports credits", format_money(Stats(credits=17951)) == "17,951 cr")
 report("a vendor reporting neither gets nothing, not $0.00", format_money(Stats()) == "",
@@ -74,8 +73,6 @@ report("a finished provider reports its total time",
        "done in 1m00s" in done, done)
 
 print("\nCALLS IN FLIGHT")
-# The denominator is the useful half: 25/25 means the pool is the limit and more workers
-# would buy throughput; 3/25 means the vendor's own queue is, or the work has run out.
 report("saturated", format_flight(Stats(running=25, workers=25)) == "25/25 in flight")
 report("not saturated", format_flight(Stats(running=3, workers=25)) == "3/25 in flight")
 report("idle is still worth saying while a provider runs",
@@ -91,9 +88,6 @@ rep = prog.reporter("v")
 rep.start(10, workers=4)
 report("the cap is recorded from the pool", prog.stats["v"].workers == 4)
 
-# A pool bigger than the corpus is capped by the corpus, which is what `--limit 2` makes.
-# Reporting `2/10` there would call a saturated vendor idle, and the denominator exists to
-# answer exactly the opposite question.
 small = Progress(["v"], stream=io.StringIO())
 small.reporter("v").start(2, workers=10)
 report("a pool larger than the work is clamped to the work",
@@ -110,8 +104,6 @@ with rep.calling():
     report("...and unwind", prog.stats["v"].running == 1)
 report("back to nothing outstanding", prog.stats["v"].running == 0)
 
-# A missed decrement would show a vendor permanently busier than it is, and the calls that
-# fail are exactly the ones an adapter raises out of.
 try:
     with rep.calling():
         raise RuntimeError("the vendor said no")
@@ -134,7 +126,6 @@ report("nothing to add up yet -> no line at all, not '0/0 documents'",
        format_total({"a": Stats(), "b": Stats()}) == "")
 
 print("\nNOT A TTY -> NO ESCAPE CODES")
-# Piped to a file or running in CI there is no cursor to move, and ANSI would be litter.
 plain = io.StringIO()
 with Progress(["datalab"], stream=plain) as bars:
     bars.reporter("datalab").start(2)
@@ -144,7 +135,7 @@ report("...and the display knows it is not live", Progress([], stream=io.StringI
 
 print("\nA TTY -> ONE LINE PER PROVIDER, REDRAWN IN PLACE")
 tty = FakeTTY()
-with Progress(["datalab", "reducto"], stream=tty, tick=1000) as bars:   # no ticker in the way
+with Progress(["datalab", "reducto"], stream=tty, tick=1000) as bars:
     datalab = bars.reporter("datalab")
     datalab.start(4)
     datalab.record(usd=1.55, wall_s=259.0)
@@ -156,14 +147,12 @@ report("the cursor is moved back up to redraw", "\x1b[" in out)
 report("the counters reached the display", "1/4" in out, out.replace("\x1b", "^")[-200:])
 
 print("\nONE PROVIDER: NO TOTAL LINE")
-# It would just repeat the only line above it.
 solo = FakeTTY()
 with Progress(["datalab"], stream=solo, tick=1000):
     pass
 report("no total for a single provider", "documents" not in solo.getvalue(), solo.getvalue())
 
 print("\nLOG LINES DO NOT SCRIBBLE OVER THE BARS")
-# A warning mid-run has to land ABOVE the display, not through it.
 tty = FakeTTY()
 root = logging.getLogger()
 saved = root.handlers[:]
@@ -181,7 +170,6 @@ report("the message still got out", "something happened" in text)
 report("...and the handlers are put back afterwards", root.handlers == saved)
 
 print("\nTHE NULL REPORTER SWALLOWS EVERYTHING")
-# So nothing that predicts needs an `if progress:` anywhere.
 NULL.start(5, workers=3)
 with NULL.calling():
     NULL.record(error=True, usd=1.0, wall_s=2.0)

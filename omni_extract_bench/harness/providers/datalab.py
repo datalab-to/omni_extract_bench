@@ -83,8 +83,6 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     if not key:
         raise MissingCredential("DATALAB_API_KEY is not set")
 
-    # The clock starts HERE, before the upload -- not when polling begins. Upload and
-    # submit are part of what the document costs.
     budget = Budget(timeout)
     base_url = config.base_url.rstrip("/")
     cost: Cost = Cost()
@@ -101,7 +99,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
         for field, value in (("cost_breakdown.final_cost_cents",
                               (body.get("cost_breakdown") or {}).get("final_cost_cents")),
                              ("total_cost", body.get("total_cost"))):
-            found = Cost.reported(value, field, cents=True)      # datalab bills in CENTS
+            found = Cost.reported(value, field, cents=True)
             if found.usd is not None:
                 return found
         return None
@@ -132,8 +130,6 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                     continue
                 raise VendorError(f"polling failed: {exc}"[:300], status=None) from None
             if r.status_code != 200:
-                # A failed poll is not a failed job: `request_id` is still running and
-                # already billed. Give up only on a status that will not change.
                 if retry.again(r.status_code):
                     continue
                 raise VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
@@ -141,8 +137,6 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
             retry.ok()
             polls += 1
             body = r.json()
-            # `is not None`, not `or`: a vendor reporting a genuine zero is saying
-            # something, and `0.0 or previous` would throw it away.
             found = read_cost(body)
             if found is not None:
                 cost = found
@@ -152,9 +146,6 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                                   status=200, body=r.text)
             if status == "complete":
                 if cost.usd is None:
-                    # Billing is populated on a re-fetch AFTER completion: the poll that first
-                    # reports `complete` carries `total_cost: null`. Without this second GET
-                    # the cost column reads null and datalab looks like it bills out of band.
                     try:
                         found = read_cost(client.get(url).json())
                         if found is not None:

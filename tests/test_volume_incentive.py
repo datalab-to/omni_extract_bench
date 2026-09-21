@@ -65,12 +65,12 @@ for _ in range(4000):
     for i, f in corrupt:
         P["rows"][i][f] = f"X{rng.randint(0, 9)}" if f == "k" else 99
     order = list(range(n))
-    rng.shuffle(order)                                   # the model returns rows in its order
+    rng.shuffle(order)
     P = {"rows": [P["rows"][j] for j in order]}
     where = {j: idx for idx, j in enumerate(order)}
 
     before = score(copy.deepcopy(P), copy.deepcopy(G), SCHEMA)
-    i, f = rng.choice(corrupt)                           # restore exactly one wrong value
+    i, f = rng.choice(corrupt)
     after_doc = copy.deepcopy(P)
     after_doc["rows"][where[i]][f] = G["rows"][i][f]
     after = score(after_doc, copy.deepcopy(G), SCHEMA)

@@ -33,12 +33,7 @@ def note(text):
     print(f"          {text}")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nA PAIRED ROW HAS THE SAME DENOMINATOR AS AN OMITTED ONE")
-# This is the load-bearing fact. A row's gold leaves are in the denominator whether the
-# prediction reaches them or not; pairing only moves them from `unfound` into
-# `misread`/`matched`. So attempting a row can only add to the numerator -- there is no
-# denominator penalty to weigh against trying.
 N, K = 10, 4
 F = ["sku", "qty", "price", "code"]
 SCH = {"properties": {"lines": {"type": "array", "items": {"properties":
@@ -68,8 +63,6 @@ report("...so under accuracy, attempting beats omitting from one field right",
        f"{[round(p['accuracy'], 1) for p in partial[1:]]}")
 note("if this ever reverses, providers are being paid to truncate")
 
-# METRIC_SPEC section 8 prints these exact figures. Assert them, so the spec cannot drift
-# away from the scorer without a test failing.
 SPEC_TABLE = {None: (0.5, 0.667), 0: (0.333, 0.5), 1: (0.625, 0.625),
               2: (0.75, 0.75), 4: (1.0, 1.0)}
 drift = []
@@ -103,9 +96,6 @@ note("accuracy asks how much you recovered; f1 asks how much of what you said wa
 note("a model padding rows to 25% would climb on accuracy and sink on f1 -- report both")
 
 print("\nABSTAINING PER FIELD DOMINATES BOTH OMITTING AND GUESSING")
-# The regime where omitting genuinely wins: a row whose content is mostly scalar-array
-# elements the model cannot read, since each wrong element costs two denominator slots.
-# Even there, emitting the row with only the readable fields wins on both numbers.
 T = 5
 ARR_S = {"properties": {"lines": {"type": "array", "items": {"properties": {
     "sku": {"type": "string"},
@@ -144,10 +134,6 @@ report("abstaining per field costs the omitted row's denominator, and no more",
        f"honest {a_honest['total']} vs omit {a_omit['total']}")
 
 print("\nP17 AS STATED IN THE SPEC: ONLY VALUES READ CORRECTLY")
-# The general claim. Emitting a row that carries only the values the model read correctly
-# puts them at gold's own addresses, so the row costs what omitting it would have cost and
-# earns what it got right. True for named fields and array elements alike, which is why the
-# property is phrased this way and not in terms of the row pairing.
 for lbl, gold_doc, omit_pred, honest_pred, sch in (
     ("named fields", {"lines": [row(i) for i in range(N)]},
      {"lines": BASE}, {"lines": BASE + [{"sku": f"sku{i}"} for i in range(5, N)]}, SCH),
@@ -161,16 +147,13 @@ for lbl, gold_doc, omit_pred, honest_pred, sch in (
            f"omit {o['matched']}/{o['total']}, honest {h['matched']}/{h['total']}")
 
 print("\nRULE 2: WHAT ABSTAINING COSTS, IN BOTH DIRECTIONS")
-# The rule used to read "leave a field empty rather than guess it", which tells a model not
-# to make a guess it would get right. Both directions are pinned so the advice cannot drift
-# back to being one-sided.
 R2_S = {"properties": {"a": {"type": "string"}, "note": {"type": "string"},
                        "tags": {"type": "array", "items": {"type": "string"}}}}
 R2_G = {"a": "keep", "note": "N", "tags": ["t1", "t2"]}
 spellings = [score(p, R2_G, R2_S) for p in (
-    {"a": "keep", "tags": ["t1", "t2"]},                       # omitted
-    {"a": "keep", "note": None, "tags": ["t1", "t2"]},         # null
-    {"a": "keep", "note": [], "tags": ["t1", "t2"]})]          # []
+    {"a": "keep", "tags": ["t1", "t2"]},
+    {"a": "keep", "note": None, "tags": ["t1", "t2"]},
+    {"a": "keep", "note": [], "tags": ["t1", "t2"]})]
 report("null, [] and omitting the key cost exactly the same",
        len({(round(r["accuracy"], 6), round(r["f1"], 6), r["total"]) for r in spellings}) == 1,
        f"{[round(r['accuracy'], 2) for r in spellings]}")
@@ -196,8 +179,6 @@ report("but a value you get RIGHT always beats silence",
 note("so rule 2 is about the hit-rate, not about caution -- see the f1 threshold below")
 
 print("\nAND A STRICT SCHEMA CANNOT TAKE ABSTENTION AWAY")
-# Strict structured outputs require every declared property to be present, so a model may
-# not omit `tags`. It can still decline: null and [] carry no addresses.
 same = [score({"lines": ABASE + [{"sku": f"s{i}", "tags": t} for i in range(5, N)]},
               AG, ARR_S) for t in (None, [])]
 report("`tags: null` and `tags: []` score exactly as omitting the key does",
@@ -206,10 +187,7 @@ report("`tags: null` and `tags: []` score exactly as omitting the key does",
        f"{[round(s['accuracy'], 1) for s in same]} vs {a_honest['accuracy']:.1f}")
 note("so a vendor forced to emit every property is not forced to fabricate")
 
-# ═══════════════════════════════════════════════════════════════════════════════
 print("\nORDER-FREEDOM IS A TRADE, AND SECTION 8 PRINTS ITS PRICE")
-# Section 8 claims four figures for a five-element scalar array. They are the argument for
-# leaving `order_matters` alone by default, so they are asserted rather than believed.
 TAGS_S = {"properties": {"t": {"type": "array", "items": {"type": "string"}}}}
 five = {"t": [f"v{i}" for i in range(5)]}
 wrong_in_place = {"t": [f"v{i}" for i in range(4)] + ["WRONG"]}
@@ -233,8 +211,6 @@ report("`order_matters` helps a substitution and ruins an omission",
 note("omission is the commoner extraction failure, so the trade usually runs the wrong way")
 
 print("\nWRAPPING A SCALAR IN A ONE-FIELD OBJECT CHANGES NOTHING")
-# Section 8 says so, and it is the non-obvious half: the pairing bar is one matching value,
-# so a one-field row whose only value is wrong prices at zero exactly as a bare scalar does.
 BARE_S = {"properties": {"t": {"type": "array", "items": {"type": "string"}}}}
 WRAP_S = {"properties": {"t": {"type": "array", "items": {"properties":
           {"tag": {"type": "string"}}}}}}
@@ -250,7 +226,6 @@ report("a bare scalar list and a list of one-field objects score identically",
 note("so the fix for a double-charged list is a second field to pair on, not a wrapper")
 
 print("\nINVENTED ROWS ARE CHARGED AT SCALE, NOT JUST IN THE 27-ROW EXAMPLE")
-# Section 4 prints 1.0 and 0.0099 for these two.
 ROWS_S = {"properties": {"l": {"type": "array", "items": {"properties":
           {f"f{k}": {"type": "string"} for k in range(4)}}}}}
 ten = {"l": [{f"f{k}": f"r{i}v{k}" for k in range(4)} for i in range(10)]}

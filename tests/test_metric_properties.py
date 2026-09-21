@@ -19,7 +19,6 @@ Run: python3 tests/test_metric_properties.py
 """
 import copy, json, os, random, sys
 
-# run from anywhere: `python tests/x.py` puts tests/ on the path, not the repo root
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench import matching as OM         # noqa: E402
@@ -65,7 +64,6 @@ def report(name, ok, detail=""):
     print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"   {detail}" if not ok else ""))
 
 
-# ── generators ───────────────────────────────────────────────────────────────────
 WORDS = ["alpha", "beta", "gamma", "Acme Ltd", "J. Smith", "2024-03-01", "Q2", "USD"]
 
 
@@ -95,14 +93,14 @@ def rand_doc(rnd, depth=0):
     d = {}
     for i in range(rnd.randint(2, 5)):
         r = rnd.random()
-        if r < 0.28 and depth < 2:                       # array of rows
+        if r < 0.28 and depth < 2:
             d[f"arr{i}"] = [rand_row(rnd, 4) for _ in range(rnd.randint(1, 6))]
-        elif r < 0.38:                                   # array of scalars
+        elif r < 0.38:
             d[f"sarr{i}"] = [rand_scalar(rnd) for _ in range(rnd.randint(1, 5))]
-        elif r < 0.46 and depth < 2:                     # MIXED array: rows + scalars
+        elif r < 0.46 and depth < 2:
             d[f"marr{i}"] = ([rand_row(rnd, 3) for _ in range(rnd.randint(1, 3))]
                              + [rand_scalar(rnd) for _ in range(rnd.randint(1, 3))])
-        elif r < 0.54:                                   # array of arrays
+        elif r < 0.54:
             d[f"aarr{i}"] = [[rand_scalar(rnd) for _ in range(rnd.randint(1, 3))]
                              for _ in range(rnd.randint(1, 4))]
         elif r < 0.66 and depth < 2:
@@ -182,7 +180,6 @@ def get_at(doc, path):
     return cur
 
 
-# ── P1 identity ──────────────────────────────────────────────────────────────────
 ok = True
 for s in range(N_CASES):
     rnd = random.Random(s)
@@ -193,13 +190,12 @@ for s in range(N_CASES):
         break
 report("P1  identity: score(G,G) == 100", ok)
 
-# ── P2 permutation invariance ────────────────────────────────────────────────────
 ok = True
 for s in range(N_CASES):
     rnd = random.Random(1000 + s)
     g, p = rand_doc(rnd), None
     p = copy.deepcopy(g)
-    for k, v in p.items():                      # perturb a few leaves so it isn't trivially 100
+    for k, v in p.items():
         if isinstance(v, list) and v:
             rnd.shuffle(v)
     base = fair_grade(copy.deepcopy(g), copy.deepcopy(g), {})["accuracy"]
@@ -209,7 +205,6 @@ for s in range(N_CASES):
         break
 report("P2  permutation invariance: array order is irrelevant", ok)
 
-# ── P3 monotonicity (NEW) ────────────────────────────────────────────────────────
 ok, tested = True, 0
 for s in range(N_CASES * 2):
     rnd = random.Random(2000 + s)
@@ -218,12 +213,11 @@ for s in range(N_CASES * 2):
     paths = [x for x in leaves_of(g) if get_at(g, x) is not None]
     if len(paths) < 3:
         continue
-    # break several leaves, then repair ONE and require the score not to fall
     broken = rnd.sample(paths, min(3, len(paths)))
     for b in broken:
         set_at(p, b, "___WRONG___")
     before = fair_grade(copy.deepcopy(p), copy.deepcopy(g), {})["accuracy"]
-    set_at(p, broken[0], get_at(g, broken[0]))          # repair one
+    set_at(p, broken[0], get_at(g, broken[0]))
     after = fair_grade(copy.deepcopy(p), copy.deepcopy(g), {})["accuracy"]
     tested += 1
     if after < before - 1e-9:
@@ -231,7 +225,6 @@ for s in range(N_CASES * 2):
         break
 report(f"P3  monotonicity: fixing a leaf never lowers the score  ({tested} cases)", ok)
 
-# ── P4 no double counting (NEW) ──────────────────────────────────────────────────
 ok = True
 for s in range(N_CASES):
     rnd = random.Random(3000 + s)
@@ -244,7 +237,6 @@ for s in range(N_CASES):
         break
 report("P4  no double counting: denominator == count of gold leaves", ok)
 
-# ── P5 determinism ───────────────────────────────────────────────────────────────
 ok = True
 for s in range(60):
     rnd = random.Random(4000 + s)
@@ -257,7 +249,6 @@ for s in range(60):
         break
 report("P5  determinism: repeated grading is identical", ok)
 
-# ── P7 symmetry of canonicalisation ──────────────────────────────────────────────
 ok = True
 for s in range(400):
     rnd = random.Random(5000 + s)
@@ -269,14 +260,13 @@ for s in range(400):
         break
 report("P7  symmetry: cmp(p,g) == cmp(g,p)", ok)
 
-# ── P8 optimality of row assignment (NEW) ────────────────────────────────────────
 def brute_force_best(P, G, w):
     """Exhaustive maximum-weight matching, for small n only."""
     best = [0]
     def rec(i, used, tot):
         if i == len(P):
             best[0] = max(best[0], tot); return
-        rec(i + 1, used, tot)                      # leave Pi unpaired
+        rec(i + 1, used, tot)
         for j in range(len(G)):
             if j in used:
                 continue
@@ -302,12 +292,10 @@ for s in range(N_CASES):
         break
 report(f"P8  optimality: assignment matches brute-force optimum  ({tested} cases)", ok)
 
-# ── P9 null neutrality ───────────────────────────────────────────────────────────
 r = fair_grade({"a": None, "b": None}, {"a": None, "b": None}, {})
 report("P9  null neutrality: null==null contributes nothing", check(
     "P9", r["total"] == 0, str(r)))
 
-# ── P10 sign fidelity ────────────────────────────────────────────────────────────
 free = all(cmp_leaf(a, b) >= 1.0 for a, b in
            [("(98.2)", "-98.2"), ("−98.2", "-98.2"), ("98.2-", "-98.2"), ("+98.2", "98.2")])
 strict = all(cmp_leaf(a, b) < 1.0 for a, b in
@@ -316,11 +304,6 @@ report("P10 sign fidelity: notation free, wrong sign never free",
        check("P10", free and strict, f"notation_ok={free} strict_ok={strict}"))
 
 
-# ── P11 nesting invariance (REGRESSION: the 349-row corruption) ──────────────────
-# A document that scored 100.0 while returning 44 of 349 rows. Omission was free for
-# TOP-LEVEL arrays (only matched pairs entered the denominator) but charged when the same
-# data sat one level down. Any A/B run through this metric was affected, always in the
-# direction of flattering an extractor that omits data.
 ok = True
 for s in range(60):
     rnd = random.Random(9000 + s)
@@ -337,7 +320,6 @@ for s in range(60):
         break
 report("P11 nesting invariance: depth must not change the score", ok)
 
-# ── P12 omission is charged ─────────────────────────────────────────────────────
 ok = True
 for s in range(60):
     rnd = random.Random(9500 + s)
@@ -345,12 +327,11 @@ for s in range(60):
     gold = [{"id": i, "v": i} for i in range(n)]
     half = fair_grade({"rows": gold[: n // 2]}, {"rows": gold},
                          {"properties": {"rows": {"type": "array"}}})["accuracy"]
-    if half > 99.0:     # returning half the rows must NOT look perfect
+    if half > 99.0:
         ok = check("P12 omission charged", False, f"seed {s}: half of {n} rows scored {half:.1f}")
         break
 report("P12 omission is charged, not free", ok)
 
-# ── P13 scalar arrays are scored at every depth ─────────────────────────────────
 g = {"tags": ["a", "b", "c", "d"]}
 p_ = {"tags": ["a", "WRONG"]}
 flat = fair_grade(p_, g, {"properties": {"tags": {"type": "array"}}})
@@ -359,13 +340,6 @@ report("P13 top-level scalar arrays are scored",
        check("P13", flat["total"] > 0 and flat["total"] == nested["total"],
              f"top denom={flat['total']} nested denom={nested['total']}"))
 
-# ── P14 pairing agrees with scoring (REGRESSION: format-penalty via mis-pairing) ──
-# The assignment weight used bare canonical equality while scoring is format-tolerant. When
-# the DISCRIMINATING field between rows was a date, a vendor emitting `02/20/2024` against
-# gold `2024-02-20` scored 0 on it during matching, the rows tied on everything else, and the
-# matcher paired them arbitrarily -- a fully correct extraction scored 50.0. Any equivalence
-# cmp_leaf honours must also be honoured when CHOOSING the pairing, or the benchmark
-# reintroduces exactly the format penalty it exists to remove.
 SCH_ROWS = {"properties": {"rows": {"type": "array"}}}
 ok = True
 variants = [
@@ -383,14 +357,6 @@ for nm, gold, got in variants:
         break
 report("P14 pairing honours the same equivalences as scoring", ok)
 
-# P14b: the general invariant behind P14, fuzzed rather than enumerated.
-#   cmp_leaf(a, b) == 1  =>  _match_canon(a) == _match_canon(b)
-# If two values score as equal but hash to different pairing keys, rows distinguished by that
-# field cannot pair and a correct extraction is scored as a miss. The first version of
-# _match_canon violated exactly this for integers vs decimals (`5` vs `5.0`): _asfloat only
-# parses values containing ".", so the two took different branches, and predictions whose
-# numeric fields were the discriminator matched NO gold row at all -- one provider's recall
-# went to 0.000 on every document in two subsets.
 NUMERIC_FORMS = [5, 5.0, "5", "5.0", "5.00", 0.5, ".5", "0.50", 1000, "1,000", "1000.0",
                  -3, -3.0, "-3", "(3)", 33.3333333, 33.33333330001, 8303911426,
                  "2024-01-15", "01/15/2024", "2024-1-15", True, False, "x", "", None]
@@ -420,28 +386,15 @@ if ok:
             break
 report(f"P14b equal values always share a pairing key  ({pairs_checked} pairs)", ok)
 
-# ── P15 greedy fallback is never silent ─────────────────────────────────────────
-# Arrays too large to solve exactly fall back to greedy, which is suboptimal and under-scores
-# providers that return big tables. The fallback is unavoidable (largest gold array is 6881
-# rows, solver is O(n^3)); reporting a greedy score AS IF exact is not.
 small = {"rows": [{"i": n} for n in range(20)]}
 r_small = fair_grade(small, small, SCH_ROWS)
-# The budget is shrunk rather than exceeded by building an array big enough to pass the real
-# ceiling: that ceiling depends on which solver is installed, and a 20,000-row identity
-# document costs minutes to score for no extra coverage.
 huge = {"rows": [{"i": n, "v": n % 7} for n in range(40)]}
 with approximate():
     r_huge = fair_grade(huge, huge, SCH_ROWS)
-# ── P16 one equality everywhere (REGRESSION: blocking used a third definition) ───
-# Blocking asserts "these rows can never pair". If it uses a STRICTER notion of equality than
-# the scorer, it silently forbids pairings the scorer would accept. It used bare str(), so rows
-# differing only in the CASING of the blocking field could never match: leaf 0.0, recall 0.00,
-# on content the comparator calls identical. Blocking is active on ~46% of benchmark arrays.
 SCH_R = {"properties": {"rows": {"type": "array"}}}
 gold_b = [{"segment_type": "Company", "v": 10}, {"segment_type": "Segment", "v": 20}]
 pred_b = [{"segment_type": "company", "v": 10}, {"segment_type": "segment", "v": 20}]
 r_case = fair_grade({"rows": pred_b}, {"rows": gold_b}, SCH_R)
-# ...but blocking must still SEPARATE genuinely different segments, or it would over-merge.
 gold_d = [{"segment_type": "company", "v": 10}, {"segment_type": "segment", "v": 99}]
 pred_d = [{"segment_type": "company", "v": 10}, {"segment_type": "segment", "v": 20}]
 r_diff = fair_grade({"rows": pred_d}, {"rows": gold_d}, SCH_R)
@@ -456,22 +409,14 @@ report("P15 greedy fallback is reported, not silent",
              f"small={r_small['matching_exact']} huge={r_huge['matching_exact']}"))
 
 
-# ── P17 identity holds for documents containing rows that assert nothing ────────
-# (REGRESSION) Rows whose payload is entirely null are ignored for fairness -- a provider
-# should not be scored on a row that states nothing. That filter was applied to GROUND TRUTH
-# ONLY, so a prediction mirroring ground truth exactly still carried the rows ground truth had
-# just discarded; they counted as spurious and score(gt, gt) came out at 95.09 on a real 10-Q.
-# The most faithful possible extraction was penalised. P1 could not catch it because the
-# generator never produces an all-null row -- so this builds one explicitly.
 SCH_P17 = {"properties": {"rows": {"type": "array"}}}
 doc_with_empty = {"rows": [
     {"id": 1, "value": 10},
-    {"id": None, "value": None},          # asserts nothing
+    {"id": None, "value": None},
     {"id": 2, "value": 20},
-    {"id": None, "value": None},          # asserts nothing
+    {"id": None, "value": None},
 ]}
 r_id = fair_grade(copy.deepcopy(doc_with_empty), copy.deepcopy(doc_with_empty), SCH_P17)
-# and a partial answer must still be charged, i.e. the filter must not make omission free
 partial = {"rows": [{"id": 1, "value": 10}]}
 r_part = fair_grade(partial, copy.deepcopy(doc_with_empty), SCH_P17)
 report("P17 identity holds when a document contains all-null rows",
@@ -479,11 +424,6 @@ report("P17 identity holds when a document contains all-null rows",
              f"identity={r_id['accuracy']:.4f} (want 1.0) partial={r_part['accuracy']:.4f} (want <1.0)"))
 
 
-# ── P18 object keys are addresses, matched literally ────────────────────────────
-# Keys were briefly folded through canon_key so that a key differing only in case still
-# joined. That served open `additionalProperties` maps, whose keys an extractor reads off the
-# page; this benchmark does not use that shape, so a predicted key is either exactly a gold
-# key or a field the extractor invented.
 SCH_P18 = {"type": "object", "properties": {"total": {"type": "number"}}}
 same = fair_grade({"total": 5.0}, {"total": 5.0}, SCH_P18)
 cased = fair_grade({"Total": 5.0}, {"total": 5.0}, SCH_P18)
@@ -493,15 +433,7 @@ report("P18b a key that is not exactly gold's is charged, both ways",
        check("P18b", cased["matched"] == 0 and cased["total"] == 2,
              f"got {cased['matched']}/{cased['total']}, want 0/2 "
              f"(1 gold key missing, 1 predicted key spurious)"))
-# P18c asserted `pair_object_keys`, an internal of the paired walker that was deleted with
-# it. The path scorer has no key-pairing step to be order-stable: an object key IS the
-# address, so two documents agree on a key or they do not. Structurally guaranteed rather
-# than tested -- and P16, below, checks the partition that replaces it.
 
-# ── P23 open maps are not evaluated, and the skip is reported ───────────────────
-# `additionalProperties` leaves the property names to the document. The strict dialect drops
-# the keyword before a schema reaches a vendor, so grading such a node scores a request the
-# harness never delivered. It is skipped on both sides and counted, never silently dropped.
 SCH_OM = {"type": "object", "properties": {
     "invoice_no": {"type": "string"},
     "groups": {"type": "object", "additionalProperties": {"type": "array",

@@ -23,9 +23,6 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 import omni_extract_bench  # noqa: E402
 
-#: The vendor adapters import SDKs that only the `harness` extra installs, and a machine that
-#: only scores has none of them. Their docstrings carry usage lines, not worked examples, so
-#: there is nothing here to lose by leaving them out.
 SKIP = ("omni_extract_bench.harness",)
 
 FAILS = []
@@ -38,7 +35,7 @@ for module in pkgutil.walk_packages(omni_extract_bench.__path__,
         continue
     try:
         mod = importlib.import_module(name)
-    except ImportError as exc:                       # an optional extra is not installed
+    except ImportError as exc:
         print(f"  SKIP  {name} -- {exc}")
         continue
     result = doctest.testmod(mod, verbose=False, report=True)

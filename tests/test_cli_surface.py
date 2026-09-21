@@ -29,14 +29,12 @@ import shlex
 import sys
 from pathlib import Path
 
-# run from anywhere: `python tests/x.py` puts tests/ on the path, not the repo root
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 from omni_extract_bench import cli  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-#: Read off the module rather than listed, so a new verb is in scope here the moment it exists.
 HANDLERS = tuple(sorted(n for n in dir(cli) if n.startswith("cmd_")))
 VERBS = ("score", "benchmark", "providers", "predict")
 FAILS = []
@@ -81,8 +79,6 @@ def parse(argv):
     return captured.get("args")
 
 
-# A representative invocation of each verb: every required flag and nothing optional, so
-# what the namespace carries is what the parser defaults rather than what the line supplied.
 INVOCATIONS = {
     "score": (["score", "--gt", "g.json", "--pred", "p.json",
                "--schema", "s.json"], "cmd_score"),
@@ -107,21 +103,14 @@ for verb, (argv, handler_name) in INVOCATIONS.items():
           f"reads args.{', args.'.join(missing)}; the parser defines none of it")
 
 
-# ── every `oeb ...` line in the README parses ───────────────────────────────────
-# A command in prose wraps two ways, and both have to be followed or an example reads as a
-# truncated command and fails for the wrong reason: a trailing `\`, and an argument whose
-# quote is still open -- which is how the `--options` examples span lines, their JSON being
-# easier to read laid out than on one line.
 def _incomplete(buf: str) -> bool:
     try:
         shlex.split(buf)
         return False
-    except ValueError:                 # "No closing quotation"
+    except ValueError:
         return True
 
 
-# EVERY markdown file that documents the CLI, not only the README: `docs/API.md` spells the
-# flags out one by one, which is exactly the kind of list that goes quietly out of date.
 _joined, _buf = [], ""
 for _doc in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
     for _ln in _doc.read_text().splitlines():
@@ -129,43 +118,27 @@ for _doc in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
         if _buf or re.match(rf"^oeb\s+({'|'.join(VERBS)})\b", _ln):
             _buf = (_buf + " " if _buf else "") + _ln.rstrip("\\")
             if not _ln.endswith("\\") and not _incomplete(_buf):
-                # Cut shell plumbing: a doc may pipe or redirect a command, and `> pred.json`
-                # is the shell's business, not argparse's.
                 _cmd = re.split(r"\s(?:\||>>?|&&|;)\s", _buf)[0]
                 _joined.append((_doc.name, " ".join(_cmd.split())))
                 _buf = ""
-    _buf = ""                       # a command cannot run on past the end of its own file
-# A `...` is a SHAPE, not an invocation -- `oeb providers datalab` prints one to show where
-# the options go, and `{"mode": ...}` is not JSON anyone should be able to run.
+    _buf = ""
 lines = [(doc, ln) for doc, ln in _joined if "..." not in ln]
 check("the docs show commands to check", len(lines) >= 1, f"found {len(lines)}")
 for doc, line in lines:
     try:
-        # `shlex`, not `split()`: `--options '{"datalab": {"mode": "accurate"}}'` is ONE
-        # argument, and split on whitespace it arrives as five that argparse cannot place.
         parse(shlex.split(line)[1:])
         check(f"{doc}: {line}", True)
     except AssertionError as exc:
         check(f"{doc}: {line}", False, str(exc))
 
 
-# ── no verb goes unchecked ──────────────────────────────────────────────────────
-# The point of this file is that nothing else drives the CLI. A handler added without an
-# invocation above would be exactly as unchecked as `cmd_predict` was when it shipped
-# reading a flag that did not exist.
 unchecked = sorted(set(HANDLERS) - {h for _, h in INVOCATIONS.values()})
 check("every cmd_* handler has an invocation in this file", not unchecked,
       f"no line checks {', '.join(unchecked)}")
 
-# ── the libraries under us do not narrate ───────────────────────────────────────
-# The root logger stays at WARNING and only our own namespace is turned up. `basicConfig` on
-# root would switch on INFO for every library in the process, and then each has to be muted by
-# name -- httpx logs a line per request, and `openai` logs its own copy of that line through
-# `openai._base_client`, so silencing httpx was not enough. This asserts the property that
-# replaces the list: a library nobody has heard of is quiet WITHOUT being named.
 import logging                                                          # noqa: E402
 
-parse(["score", "--gt", "g.json", "--pred", "p.json", "--schema", "s.json"])   # configures logging
+parse(["score", "--gt", "g.json", "--pred", "p.json", "--schema", "s.json"])
 for lib in ("httpx", "openai._base_client", "urllib3", "a_library_added_next_year"):
     check(f"{lib} does not narrate at INFO",
           logging.getLogger(lib).getEffectiveLevel() > logging.INFO)

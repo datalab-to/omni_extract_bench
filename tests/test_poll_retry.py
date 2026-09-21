@@ -31,8 +31,6 @@ def retry(limit=60, seconds=30.0):
 
 
 print("\nWHAT IS WORTH ASKING AGAIN, AND WHAT IS NOT")
-# The same rule `predict` applies one level up, and for the same reason: read off the status,
-# never matched in a message.
 for status in sorted(TRANSIENT_STATUSES):
     report(f"{status} is polled again", retry().again(status) is True)
 for status in (400, 401, 403, 404, 422):
@@ -47,26 +45,21 @@ report("...past it, stop", r.again(429) is False)
 
 r = retry(limit=3)
 r.again(429); r.again(429)
-r.ok()                                   # a poll came back: the run of failures is over
+r.ok()
 report("a successful poll resets the count", [r.again(429) for _ in range(3)] == [True] * 3,
        "otherwise a long job accumulates unrelated blips and gives up on a healthy vendor")
 
 print("\nIT NEVER WAITS PAST THE DOCUMENT'S DEADLINE")
-# Backing off beyond the budget would spend the document's time doing nothing and then call a
-# vendor with none left. Whether the budget then ran out is the loop's business: it re-checks
-# and raises VendorTimeout, which is the honest answer while the vendor is still working.
 import time                                                                    # noqa: E402
 spent = Budget(0.05)
 r = PollRetry(spent)
 t0 = time.monotonic()
-for _ in range(6):                       # backoff would reach 2s, 4s, 8s... unbounded
+for _ in range(6):
     r.again(503)
 report("the whole backoff fits inside what is left of the budget",
        time.monotonic() - t0 < 1.0, f"{time.monotonic() - t0:.2f}s")
 
 print("\nAND EVERY POLLING ADAPTER USES IT")
-# The point of one implementation is that none of them can drift back. reducto had this from
-# the start; the other four raised on any non-200 and paid twice.
 import inspect                                                                 # noqa: E402
 import importlib                                                               # noqa: E402
 

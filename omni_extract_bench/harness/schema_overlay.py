@@ -30,7 +30,6 @@ Usage:  from schema_overlay import apply_overlay;  schema = apply_overlay(schema
 from __future__ import annotations
 import copy
 
-# field-name markers -> convention sentence appended to that field's description
 CONVENTIONS = [
     {
         "id": "monetary_sign_magnitude",
@@ -59,30 +58,6 @@ CONVENTIONS = [
 ]
 
 
-# Structural conventions match on the SHAPE of a field rather than its name. The mechanism is
-# kept because it is the right shape for a convention that cannot key off a field name; nothing
-# currently uses it.
-#
-# WITHDRAWN -- `enumerate_scoped_rows`. Segment-scoped fact tables (10-Qs) are scored against an
-# expectation the schema never states: gold enumerates per-segment rows while the field
-# descriptions say only "Total revenue". Stating it looked like a fairness fix in the same
-# family as the sign convention.
-#
-# It was withdrawn because no wording of it behaved:
-#   v1 "emit one entry for every COMBINATION of period and segment"
-#        -> read as fill-the-grid; 43% under-emission became 145-220% over-emission
-#   v2 "extract every figure the document states ... do not infer pairs it does not state"
-#        -> worse, not better: 117-282%, over-emitting in 5 of 6 provider/document cases
-#
-# It also contaminated the headline. Those 3 documents of 40 produced 94-98% of the measured
-# "over-extraction" for every top provider; removing them takes datalab from 2.9% to 0.2% and
-# reducto from 3.7% to 0.1%. A convention meant to remove an unfair penalty had become the
-# dominant source of one, and it was briefly reported as a product finding.
-#
-# The underlying ambiguity is real and stays DOCUMENTED-NOT-PATCHED: whether a 10-Q metric field
-# wants consolidated totals only or every per-segment figure is a question for the corpus author,
-# not something to keep re-wording against live scores. Fixing a benchmark by iterating prompt
-# text against the numbers it produces is how a benchmark stops being neutral.
 STRUCTURAL_CONVENTIONS = []
 
 
@@ -133,7 +108,7 @@ def apply_overlay(schema: dict, _name: str = "") -> dict:
             walk(v, k)
         it = node.get("items")
         if isinstance(it, dict):
-            walk(it, name)          # array items inherit the field's name for matching
+            walk(it, name)
         for br in ("anyOf", "oneOf", "allOf"):
             for sub in node.get(br, []) or []:
                 walk(sub, name)

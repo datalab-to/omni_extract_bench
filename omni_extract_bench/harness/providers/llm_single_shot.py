@@ -62,12 +62,8 @@ field. Use an empty array [] only when the category applies but has zero items.
 Return a single JSON object conforming to the schema."""
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MAX_OUTPUT_TOKENS = 64000        # floor for models with no published ceiling
+DEFAULT_MAX_OUTPUT_TOKENS = 64000
 
-#: Published output ceiling per model. A shared floor would silently truncate the models with
-#: bigger ones, so parity here is "as much as each model will give" rather than one number for
-#: everyone. Lives beside the adapter that sends it, so a hand-run and the benchmark cannot
-#: disagree about how much a model was allowed to say.
 MODEL_MAX_OUTPUT = {
     "anthropic/claude-opus-5": 128000,
     "openai/gpt-5.6-sol": 128000,
@@ -118,7 +114,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
 
     budget = Budget(timeout)
     model = config.model
-    max_output_tokens = config.max_output_tokens      # resolved by Config.__post_init__
+    max_output_tokens = config.max_output_tokens
     client = openai.OpenAI(base_url=config.base_url, api_key=key)
     b64 = base64.b64encode(pdf.read_bytes()).decode("ascii")
     messages = [
@@ -136,10 +132,6 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     for attempt in range(config.attempts):
         if attempt:
             time.sleep(min((2 ** attempt) + random.uniform(0, 1), budget.remaining()))
-        # Each attempt gets what is LEFT of the document's budget, not a fresh copy of it.
-        # With the full timeout each, three attempts could spend three times what every other
-        # vendor was given -- and nothing noticed while a subprocess kill capped it from
-        # outside.
         budget.check(f"after {attempt} attempt(s) that produced no usable answer")
         try:
             resp = client.chat.completions.create(
@@ -149,7 +141,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                                                  "strict": False}},
                 max_tokens=max_output_tokens, temperature=temperature,
                 timeout=budget.remaining(),
-                extra_body={"usage": {"include": True}},   # real billing, not a token count
+                extra_body={"usage": {"include": True}},
             )
         except openai.APIStatusError as exc:
             raise VendorError(f"{type(exc).__name__}: {exc}"[:300],
@@ -170,27 +162,19 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
         choice = choices[0]
         text = getattr(getattr(choice, "message", None), "content", None)
         if choice.finish_reason == "length":
-            # Not retried, and not a transport problem: the answer does not FIT. A second
-            # attempt cannot produce a shorter one, and would cost the same again.
             raise VendorError(f"truncated at max_tokens={max_output_tokens} "
                               f"({model}'s published ceiling)", status=200)
         if not text:
             raise VendorError("empty completion", status=200)
-        # `parse_model_json`, not `json.loads`: some models wrap their answer in a ```json
-        # fence, and a parser that accepts only bare JSON scores those at zero. One run
-        # discarded 12 of 24 documents from the most accurate provider in the field over a
-        # backtick. The helper existed for this and no adapter was calling it.
         parsed = parse_model_json(text)
         if parsed is None:
             last = f"not JSON, even allowing a code fence: {text[:120]!r}"
-            calls[-1]["text"] = text          # keep it: a parser fix re-reads instead of re-paying
+            calls[-1]["text"] = text
             temperature = min(temperature + 0.1, 1.0)
             continue
         if isinstance(parsed, dict) and parsed:
             return Extraction(
                 result=parsed,
-                # The ceiling is recorded because a truncated answer cannot be read without
-                # it: "finish_reason: length" means nothing unless you know what the limit was.
                 raw={"calls": calls, "finish_reason": choice.finish_reason,
                      "max_output_tokens": max_output_tokens, "model": model},
                 cost=Cost.reported(usage.get("cost"), "usage.cost",
@@ -198,9 +182,6 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                                    tokens_out=usage.get("completion_tokens")))
         last = f"model returned {type(parsed).__name__}, not an object"
 
-    # The body carries every completion, text included, so an answer that no parser could read
-    # is still on disk in `record["raw"]` -- which is what this module's docstring promises and
-    # what makes a parser bug a re-read rather than a re-payment.
     raise VendorError(f"all {config.attempts} attempts returned an unusable answer: {last}",
                       status=200, body=json.dumps({"calls": calls, "model": model})[:4000])
 

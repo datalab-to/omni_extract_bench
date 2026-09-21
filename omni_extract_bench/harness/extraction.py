@@ -23,9 +23,6 @@ from __future__ import annotations
 import time
 from typing import Any, NamedTuple
 
-#: Statuses that say nothing about whether the vendor can extract this document. A 400 is an
-#: answer -- usually our schema, sometimes a real vendor limit -- and retrying it only hides
-#: the evidence, so it is deliberately absent.
 TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
@@ -120,10 +117,6 @@ class Cost(NamedTuple):
     source: str | None = None
     tokens_in: int | None = None
     tokens_out: int | None = None
-    #: What the vendor billed in ITS OWN unit, where that is not dollars. Reducto and Extend
-    #: both report credits and no dollar figure at all. Recorded as itself and never converted:
-    #: the rate is contract-specific, so a dollar column derived from it would be fiction --
-    #: but reporting nothing loses a number the vendor actually stated.
     credits: float | None = None
 
     @classmethod
@@ -155,9 +148,9 @@ class Extraction(NamedTuple):
     """
 
     result: dict
-    raw: Any = None                # the vendor's response, as received
+    raw: Any = None
     cost: Cost = Cost()
-    job_id: str | None = None      # the vendor's handle, where it has one
+    job_id: str | None = None
 
 
 def as_object(value) -> dict | None:

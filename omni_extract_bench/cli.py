@@ -47,21 +47,15 @@ def cmd_score(args) -> int:
     result = score(read_json(args.pred), read_json(args.gt), read_json(args.schema),
                    order_matters=args.order_matters or (), verdicts=args.verdicts)
     if args.verdicts:
-        # A Verdict is a NamedTuple, which json would write as an array; as an object each
-        # field is named at the point someone reads it.
         result["verdicts"] = [v._asdict() for v in result["verdicts"]]
     json.dump(result, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
     return 0
 
 
-#: Model ids are open-ended -- any OpenRouter `org/model` works -- so a few stand in for the
-#: shape rather than the set.
 EXAMPLE_MODELS = ("openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash")
 
 
-#: Where a default stops being a column and starts being a paragraph. A prompt or a long URL
-#: is a value to look up in the adapter, not to read out of a table.
 MAX_DEFAULT = 48
 
 
@@ -92,8 +86,6 @@ def cmd_providers(args) -> int:
             print(provider)
         return 0
 
-    # An unknown name raises out of `resolve`, naming the vendors; a missing SDK raises
-    # `MissingDependency`. `main`'s boundary prints both without a traceback.
     options = settings_for(args.provider)
     print(args.provider)
     if not options:
@@ -133,8 +125,6 @@ def read_options(value: str | None, *, per_provider: bool = True) -> dict:
         raise ValueError(f"--options: not JSON -- {exc}") from None
     if not isinstance(parsed, dict):
         raise ValueError("--options must be a JSON object")
-    # A LIST means run that provider once per entry -- how one invocation compares a vendor's
-    # own tiers against each other.
     def ok(value):
         return (isinstance(value, dict)
                 or (isinstance(value, list) and value
@@ -188,28 +178,14 @@ def cmd_predict(args) -> int:
         record = predict(args.provider, args.doc, read_json(args.schema), timeout=args.timeout,
                          **read_options(args.options, per_provider=False))
     except (MissingCredential, MissingDependency, AccountFailure, VendorError) as exc:
-        # Handled here rather than in `main`'s boundary, because these types live behind the
-        # harness extra and naming them in an `except` clause up there would import it for
-        # every verb -- including `oeb score`, which needs no vendor SDK at all.
         print(f"  {exc}", file=sys.stderr)
         return 1
-    # The whole record by default -- what was asked, what came back, what it cost -- because
-    # that is what the library produces and what makes an answer checkable. `--result-only`
-    # gives the bare extraction, so `oeb predict ... --result-only > p.json` feeds `oeb score`.
-    # The whole record, always. It carries the answer AND what it cost, what was sent and what
-    # came back -- and a flag to print just the answer would be a way to throw that away by
-    # accident, which is the habit this harness exists to prevent. `| jq .result` is one pipe,
-    # and explicit where someone reads it.
     json.dump(record, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
     return 1 if record.get("error") else 0
 
 
-
-
 def cmd_benchmark(args) -> int:
-    # Imported here rather than at module scope: `oeb score` is the base install, and nothing
-    # on that path should need the benchmark extra present until this verb is actually used.
     from .benchmark import run
 
     from .harness import AccountFailure, MissingCredential, MissingDependency
@@ -253,8 +229,6 @@ def main(argv=None) -> int:
 
     b = sub.add_parser("benchmark",
                        help="fetch the corpus, run it through each vendor, score it")
-    # Not `choices`: any OpenRouter `org/model` id is a provider too, so the set cannot be
-    # enumerated. `benchmark.run` validates them and names the vendors when it can't.
     b.add_argument("--providers", nargs="+", required=True, metavar="NAME",
                    help="vendors and/or model ids, e.g. datalab reducto "
                         "openai/gpt-5.6-sol. `oeb providers` lists them")
@@ -310,15 +284,7 @@ def main(argv=None) -> int:
     pl.set_defaults(fn=cmd_providers)
 
     args = ap.parse_args(argv)
-    # Progress on stderr, results on stdout, so `oeb score ... | jq` stays a pipe.
-    #
-    # The ROOT logger stays at WARNING and only OUR namespace is turned up. The obvious thing
-    # -- `basicConfig(level=INFO)` -- sets the level for every library in the process, and then
-    # each one has to be muted by name: httpx logs a line per request, and `openai` logs its
-    # own copy of the same line through `openai._base_client`, so silencing httpx was not
-    # enough. That list would need extending for every dependency anyone ever adds. Turning up
-    # one namespace instead means a new library is quiet by default and still free to warn.
-    handler = logging.StreamHandler()          # stderr
+    handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
     root = logging.getLogger()
     root.handlers[:] = [handler]
@@ -328,12 +294,6 @@ def main(argv=None) -> int:
     try:
         return args.fn(args)
     except (ValueError, TypeError, OSError, ImportError) as exc:
-        # One boundary for everything the three documents can get wrong -- a file that is not
-        # there, one that will not parse, a ground truth that is not an object, a schema that
-        # is missing or still holds `$ref`. `score` raises these with the reason and the fix
-        # already written out, so print the message and not a traceback. ImportError joins
-        # them because a missing extra is the same kind of thing -- something to install, not
-        # a defect -- and the messages raised for it name what to install.
         print(f"  {exc}", file=sys.stderr)
         return 1
 

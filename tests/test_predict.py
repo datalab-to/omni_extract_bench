@@ -26,7 +26,7 @@ from omni_extract_bench.harness.extraction import (                            #
     VendorError, VendorTimeout)
 
 FAILS = []
-vendor.TRANSIENT_BACKOFF = (0, 0, 0)          # no sleeping in a test
+vendor.TRANSIENT_BACKOFF = (0, 0, 0)
 _REAL_ADAPTER = vendor.adapter
 
 
@@ -36,8 +36,6 @@ def report(name, cond, detail=""):
         FAILS.append(name)
 
 
-# A schema carrying both things the harness must change before a vendor sees it: a
-# benchmark-only annotation, and a field name a convention matches on.
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -64,8 +62,6 @@ def stub(fn):
         seen.clear()
         seen.update(pdf=pdf, schema=schema, opts=opts, timeout=timeout)
         counted.calls += 1
-        # `timeout` goes through to `fn` as well, so a test can watch the budget shrink across
-        # retries -- `seen["opts"]` keeps it out, because it is the contract and not a setting.
         return fn(pdf, schema, timeout=timeout, **opts)
     counted.calls = 0
     vendor.adapter = lambda provider: counted
@@ -106,9 +102,6 @@ report("the uniform budget is passed to the adapter",
        vendor.predict("mistral", PDF, SCHEMA, timeout=900) is not None
        and 899 < seen["timeout"] <= 900, str(seen["timeout"]))
 
-# One budget for the document, not one per attempt. Four attempts at the full timeout plus
-# backoff could spend 7,400s on a document documented as taking 1,800s end to end -- the same
-# mistake `Budget` fixed inside the adapters, one level up.
 _given, _backoff = [], vendor.TRANSIENT_BACKOFF
 vendor.TRANSIENT_BACKOFF = (0, 0, 0)
 stub(lambda pdf, schema, **o: (_given.append(o["timeout"]),
@@ -119,7 +112,7 @@ report("a retried document does not get a fresh budget each time",
        all(a > b for a, b in zip(_given, _given[1:])), str([round(t, 3) for t in _given]))
 report("...and the whole run stays inside one budget",
        _given and _given[0] <= 5 and _given[-1] > 0, str([round(t, 3) for t in _given]))
-stub(lambda pdf, schema, **o: OK)          # the sections below expect a successful adapter
+stub(lambda pdf, schema, **o: OK)
 
 print("\nTHE ANSWER TRAVELS WITH ITS EVIDENCE")
 rec = vendor.predict("mistral", PDF, SCHEMA)
@@ -130,17 +123,12 @@ report("...with the field it was read from", rec["cost"]["source"] == "usage.cos
 report("a vendor that reports no cost is billed out of band, not guessed",
        (stub(lambda p, s, **o: Extraction(result={"a": 1})) is not None
         and vendor.predict("extend", PDF, SCHEMA)["cost"]["billed_out_of_band"] is True))
-# A fresh call, because `seen` holds whatever the LAST adapter was handed and `rec` above
-# came from an earlier one.
 _sent = vendor.predict("datalab", PDF, SCHEMA)["run_manifest"]["settings"]
 report("what the provider was actually sent is recorded, not a name for it",
        _sent == seen["opts"], f'{_sent} vs {seen["opts"]}')
 report("...and the contract's own arguments are not settings", "timeout" not in _sent)
 
 print("\nA RUN SAYS WHAT IT ASKED FOR")
-# The benchmark's claim is that every vendor ran at its maximum. An option passed by the caller
-# can turn that down, so the whole resolved settings are recorded on every document -- a figure
-# produced with a vendor dialled back must not be able to look stock afterwards.
 stub(lambda pdf, schema, **o: OK)
 import re as _re
 report("a run is named for the vendor and a digest of what it was sent",
@@ -163,8 +151,6 @@ def _refused_with(provider, options, wanted):
 
 
 print("\nA MODEL IS NAMED IN FULL, NOT ALIASED")
-# `gpt` said nothing about which model produced a row, and changed meaning whenever the alias
-# was repointed. A slash is the discriminator: no vendor name has one, every model id does.
 report("a model id routes to the single-shot adapter",
        vendor.resolve("openai/gpt-5.6-sol") == "llm_single_shot"
        and vendor.settings_for("openai/gpt-5.6-sol")["model"] == "openai/gpt-5.6-sol")
@@ -173,10 +159,6 @@ report("a vendor name still routes to its own adapter",
 report("an OpenRouter suffix is part of the id, not a separator",
        vendor.settings_for("mistralai/mistral-medium-3-5:batch")["model"]
        == "mistralai/mistral-medium-3-5:batch")
-# `model` was a DEFAULT that `options` then overrode, so asking `openai/gpt-5.6-sol` for
-# `model=anthropic/claude-opus-5` ran Claude and stored it under a directory, a summary key and
-# a record spelled `openai__gpt-5.6-sol` -- the aliasing this whole rule exists to stop, by
-# another route.
 report("...and cannot be overridden into naming a different one than it ran",
        _refused_with("openai/gpt-5.6-sol", {"model": "anthropic/claude-opus-5"},
                      "is the provider name"))
@@ -206,8 +188,6 @@ report("...and the reason survives, counted by the adapter that polled",
        "412 polls" in rec["error"]["message"], rec["error"]["message"])
 
 print("\nNOT FACTS ABOUT THE DOCUMENT -- RAISED, NOT RECORDED")
-# Each is identical for all 620 documents and fixable in one step. Recorded, it becomes a
-# settled failure that no resume re-attempts, and the provider reads as 0% coverage.
 for exc, kind in ((VendorError("HTTP 402: no credits", status=402), AccountFailure),
                   (VendorError("insufficient_quota", status=403), AccountFailure),
                   (MissingCredential("MISTRAL_API_KEY is not set"), MissingCredential)):
@@ -220,11 +200,9 @@ for exc, kind in ((VendorError("HTTP 402: no credits", status=402), AccountFailu
     except Exception as other:                                       # noqa: BLE001
         report(f"{type(exc).__name__} raises {kind.__name__}", False, f"got {other!r}")
 
-vendor.adapter = _REAL_ADAPTER                 # stop stubbing: the next two test dispatch itself
+vendor.adapter = _REAL_ADAPTER
 
 print("\nA MISSING SDK IS FOUND AT THE IMPORT, NOT IN A MESSAGE")
-# The dispatch imports the adapter module on demand, so this is structural: no grepping
-# "ModuleNotFoundError" out of a stderr tail, which is what the subprocess design forced.
 import omni_extract_bench.harness.vendor as _v                                 # noqa: E402
 _real = _v.importlib.import_module
 _v.importlib.import_module = lambda *a, **k: (_ for _ in ()).throw(ImportError("No module named 'httpx'"))

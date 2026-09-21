@@ -14,7 +14,6 @@ Run: python3 tests/test_provider_dialects.py
 import json
 import sys
 
-# run from anywhere: `python tests/x.py` puts tests/ on the path, not the repo root
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
@@ -80,12 +79,6 @@ check("a nested non-reserved name is untouched",
 check("restoring a vendor RESPONSE renames the payload key back",
       extend.restore_reserved({"id__": "A-1", "rows": [{"id__": "r1"}]})
       == {"id": "A-1", "rows": [{"id": "r1"}]})
-# The pair is deliberately not symmetric: `rename_reserved` walks a SCHEMA (so it knows to
-# follow `properties` keys and the `required` list), while `restore_reserved` walks a
-# RESPONSE, where every dict key is a field name and there is no `required`. Round-tripping a
-# schema therefore leaves `required` holding the alias. That is harmless as used -- the schema
-# goes out, the response comes back -- but it is a real edge, so it is pinned here rather than
-# left for someone to discover by calling restore on a schema.
 back = extend.restore_reserved(json.loads(json.dumps(renamed)))
 check("restore fixes property keys", "id" in back["properties"])
 check("restore does NOT fix `required` (it walks responses, not schemas)",
@@ -117,17 +110,11 @@ check("$defs dropped once inlined", "$defs" not in d)
 check("a schema with no $ref is unchanged", deref(SAMPLE) == SAMPLE)
 
 print("\n[4] retry classification -- a 400 is an answer, a 429 is not")
-# Transience is now read off the STATUS, not matched in a message. The bug this replaces: the
-# empty-200 condition was written as two separate string literals, they drifted, and 91
-# predictions took one path and were never retried while 18 identical cases took the other and
-# were. A status cannot be spelled two ways.
 for status in (429, 500, 502, 503, 504):
     check(f"{status} is transient", VendorError("x", status=status).transient)
 for status in (200, 400, 401, 404, 422):
     check(f"{status} is NOT transient -- it is an answer",
           not VendorError("x", status=status).transient)
-# An account failure is the one place a substring is still the only signal: vendors disagree
-# about the status for "you are out of credit", so the words are all there is.
 check("402 is an account failure", _is_account_failure(VendorError("no credit", status=402)))
 check("credit ceiling wording is an account failure",
       _is_account_failure(VendorError("you have exceeded the maximum number of credits")))
@@ -135,15 +122,6 @@ check("a 400 is not an account failure",
       not _is_account_failure(VendorError("schema invalid", status=400)))
 
 print("\n[5] EVERY VENDOR IS ASKED THE SAME QUESTION")
-# The rule this file exists for: a schema may be RE-ENCODED for a vendor, never CHANGED. The
-# expensive way to break it is silent -- `schema_overlay` writes the benchmark's conventions
-# into field DESCRIPTIONS, so a transform that drops one asks that vendor a different question
-# and then scores it against a convention it was never told. The extraction still comes back;
-# it is just wrong in one direction, for one vendor, and nothing looks broken.
-#
-# Built here rather than read from the corpus so this runs without a download, and carrying
-# every construct that has caused trouble: `$defs`/`$ref`, nullable `anyOf` unions, an array of
-# objects, a benchmark-only annotation, and `id` -- which Extend reserves.
 FAIR = {
     "$defs": {"Row": {"type": "object", "properties": {
         "sku": {"type": "string", "description": "the stock code, verbatim"},
@@ -203,18 +181,13 @@ check("the baseline asks for every field with a description",
       len(_WANT_DESC) == 5 and {"id", "total", "rows", "sku", "qty"} <= _WANT_NAMES,
       f"{len(_WANT_DESC)} descriptions, names {sorted(_WANT_NAMES)}")
 
-#: provider -> the transform its adapter applies before sending, and any documented rename.
 _DIALECTS = {
     "reducto/mistral/llm": (lambda s: s, {}),
     "datalab": (datalab.normalize_schema, {}),
     "llamaextract": (llamaextract._adapt_schema, {}),
-    # Extend reserves `id`, so it is sent under another name and mapped back on the answer.
     "extend": (lambda s: to_strict_dialect(deref(_extend.rename_reserved(s))), {"id": "id__"}),
     "azure-cu": (lambda s: azure_cu.field_schema(s), {}),
 }
-#: A failure that is RECORDED rather than fixed. It reports loudly every run but does not turn
-#: the suite red, because a permanently-red suite hides the next real regression. Remove the
-#: entry when the fix lands -- the check then passes on its own, and nothing here needs editing.
 KNOWN_BROKEN = {
     "azure-cu": "asked for 45% of the corpus's fields; `_field` dispatches on `type` and the "
                 "schemas use `anyOf` unions, so arrays collapse to string. Fix and numbers in "
@@ -234,7 +207,7 @@ for _name, (_fn, _renames) in _DIALECTS.items():
     check_dialect(_name, f"{_name}: no description is dropped",
                   sorted(descriptions(_got)) == _WANT_DESC,
                   f"missing {sorted(set(_WANT_DESC) - set(descriptions(_got)))}")
-    _names = {v: k for k, v in _renames.items()}          # map any rename back
+    _names = {v: k for k, v in _renames.items()}
     _after = {_names.get(n, n) for n in field_names(_got)}
     check_dialect(_name, f"{_name}: no field is dropped", _WANT_NAMES <= _after,
                   f"lost {sorted(_WANT_NAMES - _after)}")
@@ -257,8 +230,6 @@ with tempfile.TemporaryDirectory() as td:
     write_output(good, provider="x", result={"a": 1}, latency_s=1.5, usage={"cost_usd": 0.01})
     body = json.loads(good.read_text())
     check("result preserved", body["result"] == {"a": 1})
-    # `result` stays at the top: everything else a run records is under `_meta`, so a scorer
-    # reading a prediction never has to know which keys were bookkeeping.
     check("latency recorded under _meta", body["_meta"]["latency_s"] == 1.5)
     check("usage carried through", body["_meta"]["usage"] == {"cost_usd": 0.01})
     check("provider recorded", body["_meta"]["provider"] == "x")

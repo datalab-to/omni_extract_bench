@@ -27,12 +27,6 @@ _ROOT = Path(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 _sys.path.insert(0, str(_ROOT))
 
 PKG = _ROOT / "omni_extract_bench"
-#: Every module a score is allowed to depend on. Four, each with one subject:
-#:   matching    optimal row assignment
-#:   values      the comparison rule -- folds, canon_key, states_nothing
-#:   recognise   is this text a date, a time, a number
-#: The set is the point, not its size: nothing here reaches a transport, a vendor dialect or
-#: an envelope convention, so a score cannot move when one of those changes.
 SCORING_PATH = {"matching", "values", "recognise"}
 FAILS = []
 
@@ -59,7 +53,7 @@ def imports_of(path):
     out = set()
     for node in ast.walk(ast.parse(Path(path).read_text())):
         candidates = []
-        if isinstance(node, ast.ImportFrom) and node.level:              # relative
+        if isinstance(node, ast.ImportFrom) and node.level:
             base = node.module or ""
             for a in node.names:
                 candidates.append(f"{base}.{a.name}" if base else a.name)
@@ -99,25 +93,17 @@ note(f"metric.py reaches {sorted(direct)} directly; `recognise` arrives through 
 report("values.py, the shared layer, stays below the scorer",
        "score" not in imports_of(PKG / "values.py"),
        f"values imports {sorted(imports_of(PKG / 'values.py'))}")
-# The split is only worth having if the pieces stay separable. `recognise` answers a question
-# that has nothing to do with the other two, so it may not reach back up.
 report("recognise.py depends on nothing in the package (is this text a date / a number)",
        not imports_of(PKG / "recognise.py"),
        f"recognise imports {sorted(imports_of(PKG / 'recognise.py'))}")
 report("values.py reaches recognise and nothing else",
        imports_of(PKG / "values.py") == {"recognise"},
        f"values imports {sorted(imports_of(PKG / 'values.py'))}")
-# Implied by the closure above, but named so the directory's purpose survives a reader who
-# does not derive it from a set equality: a score must not come to depend on a transport, a
-# vendor dialect, or an envelope convention.
 report("nothing the scorer reaches lives under harness/",
        not any(m.startswith("harness") for m in reach),
        f"closure {sorted(reach)}")
 
 print("\nTHE TWO SCHEMA QUESTIONS THE SCORER ASKS")
-# `unwrap_schema` resolves a union to its non-null branch. `allOf` was handled and asserted
-# nowhere; `evaluation_config` used to be carried through it, propagating a concept the
-# harness strips before a vendor ever sees a schema and that nothing here reads.
 from omni_extract_bench.metric import is_open_map, unwrap_schema       # noqa: E402
 for _br in ("anyOf", "oneOf", "allOf"):
     report(f"{_br} resolves to the non-null branch",
@@ -135,12 +121,6 @@ report("...and through a union branch",
        is_open_map({"anyOf": [{"type": "null"}, {"additionalProperties": True}]}))
 
 print("\nTHERE IS EXACTLY ONE GRADER")
-# The check that matters is that no second module DEFINES a score. The filename check stands in
-# front of it because a module named for scoring is how the second one arrives: the runners
-# that used to sit here (`run_score.py`, `run_score_modal.py`) resolved a manifest row before
-# calling the metric, and a resolver is one edit away from deciding something the metric should
-# decide. The metric itself is `metric.py`, named for what it computes rather than for the verb,
-# so NOTHING in the package should be named for scoring -- including the metric.
 graders = sorted(p.relative_to(PKG).as_posix() for p in PKG.rglob("*.py")
                  if "grad" in p.stem.lower() or "scor" in p.stem.lower())
 report("no module is named for scoring; the metric is metric.py", graders == [],
@@ -153,8 +133,6 @@ report("no vendored grader tree", not (PKG / "vendor").exists(),
 
 print("\nAND canon_key COMES FROM EXACTLY ONE PLACE")
 import omni_extract_bench as pkg                                        # noqa: E402
-# `metric`, not `score`: the package exports a FUNCTION called `score`, so that name no longer
-# reaches the module. Which is the point of naming the module for what it holds instead.
 from omni_extract_bench import metric, values                           # noqa: E402
 
 report("the package exports the function, not the module",

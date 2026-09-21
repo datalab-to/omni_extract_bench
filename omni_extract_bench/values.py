@@ -17,10 +17,8 @@ from typing import Any, Callable, NamedTuple
 
 from .recognise import _asdate, _asdecimal, _astime, _round_fraction
 
-Json = Any  # parsed-JSON value: dict / list / scalar
+Json = Any
 
-# A dash run is one mark: `-` and `--` share a key, but it is not absence and not `N/A` or
-# `None`. Tagged, because the punctuation strip below would otherwise erase it to "".
 _DASH = re.compile(r"-+")
 
 
@@ -51,38 +49,28 @@ def _f_case(s: str) -> str:
 
 
 def _f_accents(s: str) -> str:
-    # Cf is the whole invisible-formatting category: soft hyphen, zero-width space, ZWNJ/ZWJ,
-    # word joiner, BOM. They render as nothing, so two identical-looking values must not differ
-    # because one carries a stray one.
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s
                 if not unicodedata.combining(c) and unicodedata.category(c) != "Cf")
-    return s.replace("\u03bc", "u")   # NFKD has already mapped U+00B5 to this
+    return s.replace("\u03bc", "u")
 
 
 _FOOTNOTE = re.compile(r"\s*\[\s*(?:\d{1,2}|[a-z])\s*\]")
 
 
 def _f_footnote(s: str) -> str:
-    # 1-2 digits or a single letter only, so `[2024]` and real codes survive. Returns the
-    # original when stripping would leave nothing: the marker can BE the value, as in the
-    # `[1]`..`[14]` reference numbers that otherwise all key alike.
     out = _FOOTNOTE.sub("", s)
     return out if out.strip() else s
 
 
-# Unicode spellings of ASCII characters. NFKD leaves these alone, so they are listed by hand;
-# 994 corpus values carry one.
-_TYPOGRAPHY = (("\u2019", "'"), ("\u2018", "'"),           # curly single quotes
-               ("\u201c", '"'), ("\u201d", '"'),           # curly double quotes
-               ("\u201a", ","), ("\u201e", '"'),           # low-9 quotes (German)
-               ("\u2032", "'"), ("\u2033", '"'),           # prime, double prime (feet/inches)
-               ("\u2013", "-"), ("\u2014", "-"),           # en dash, em dash
-               ("\u2010", "-"), ("\u2011", "-"),           # HYPHEN, non-breaking hyphen
-               ("\u2212", "-"), ("\u2015", "-"),           # MINUS SIGN, horizontal bar
-               ("\u2044", "/"),                            # FRACTION SLASH -- what NFKD
-                                                            # decomposes \u00bd \u00be \u2157 ... into, so
-                                                            # this one line covers all twenty
+_TYPOGRAPHY = (("\u2019", "'"), ("\u2018", "'"),
+               ("\u201c", '"'), ("\u201d", '"'),
+               ("\u201a", ","), ("\u201e", '"'),
+               ("\u2032", "'"), ("\u2033", '"'),
+               ("\u2013", "-"), ("\u2014", "-"),
+               ("\u2010", "-"), ("\u2011", "-"),
+               ("\u2212", "-"), ("\u2015", "-"),
+               ("\u2044", "/"),
                )
 
 
@@ -92,12 +80,6 @@ def _f_typography(s: str) -> str:
     return s
 
 
-# A bullet is furniture only in first position; elsewhere it may separate two things, so
-# `MITTAL COURT \u2219 NARIMAN POINT` keeps its dot. Requiring whitespace or end after it keeps
-# `\u25a0\u25a0\u25a0-\u25a0\u25a0-\u25a0\u25a0\u25a0\u25a0` (a redacted SSN) intact.
-#
-# Excluded on corpus evidence: \u00b7 separates units (N\u00b7m is a newton-metre, nm a nanometre) and
-# \u00bb is a quotation mark (\u00ab\u2026\u00bb around auditor names in the Greek filings).
 _LIST_MARKER = re.compile(r"^[\u2022\u2023\u25e6\u25aa\u25b6\u2219\u25cf\u25a0](?=\s|$)")
 
 
@@ -106,11 +88,6 @@ def _f_list_marker(s: str) -> str:
 
 
 _ZERO_PADDED = re.compile(r"-?0\d")
-#: A plain numeral. `float()` is far more permissive -- it reads scientific notation, so it
-#: turned the CUSIP `46138E62` into 4.6138e66 and keyed a security identifier as a 67-digit
-#: number. 1,014 CUSIPs in the corpus were being read as floats. Exponents are the only thing
-#: excluded: a decimal point must still be accepted here, because `canon_key` hands the folds
-#: the normalised text of a Decimal and this step is what stops `punctuation` eating its sign.
 _PLAIN_NUM = re.compile(r"[+-]?\d+(?:\.\d+)?")
 
 
@@ -118,8 +95,6 @@ def _f_number(s: str) -> str:
     num = s.replace(",", "").replace("$", "").replace("%", "").strip()
     if not _PLAIN_NUM.fullmatch(num):
         return s
-    # A zero-padded integer is an identifier, not a number: 02000 and 2000 are different
-    # postal codes. Guard needs a leading zero followed by a digit, so 0 and 0.5 still parse.
     if _ZERO_PADDED.match(num):
         return s
     f = float(num)
@@ -130,30 +105,10 @@ def _f_dash(s: str) -> str:
     return _Final("#ph_dash") if _DASH.fullmatch(re.sub(r"\s+", "", s)) else s
 
 
-#: A lone period between two digits is a decimal point. Several are separators -- a phone
-#: number, a section id, or a European thousands grouping, since a number cannot have two
-#: decimal points. That is why `1.000.000` already equals `1,000,000` and only the SINGLE
-#: dotted group `1.000` is ambiguous (one-with-three-decimals, or one thousand).
 _DECIMAL_POINT = re.compile(r"(?<=\d)\.(?=\d)")
 
 
 def _f_punctuation(s: str) -> str:
-    # Deliberately lenient, and it does merge things it should not: 5.2.1.5 == 5215. Kept
-    # because the corpus says the trade is one-sided -- it recovers 1,607 matches, of which
-    # 1,532 differ by punctuation alone, and credits no wrong value as right. Keeping hyphens
-    # instead cost 526 matches in one Schedule I return. Price listed in
-    # tests/test_canon_properties.py ACCEPTED_LENIENCY; policy in METRIC_SPEC 5.3.
-    #
-    # A DECIMAL POINT IS THE EXCEPTION, because deleting it does not fold a spelling, it
-    # changes the number: `1.5 mg` became `15mg`, so a 1.5 mg and a 15 mg dose arm were one
-    # key. `_f_number` only protects a value that is ENTIRELY a numeral, so anything carrying
-    # a unit -- mg, kg, mL, mg/day -- was exposed. A lone dot between digits is kept; two or
-    # more are separators (`512.784.7407`, `5.2.1.5`) and still fold.
-    #
-    # It picks a side rather than resolving the ambiguity: `1.250` is read as a decimal, not
-    # as European thousands. That is the safe side -- a false merge credits a wrong answer, a
-    # false split only withholds a right one. Cost is measured in TO_LOOK_AT item 31; the knob
-    # for reading dotted groups as thousands instead is the `== 1` test below.
     if len(_DECIMAL_POINT.findall(s)) == 1:
         s = _DECIMAL_POINT.sub("\x00", s)
     s = re.sub(r"[\s,\-.]", "", s)
@@ -164,8 +119,6 @@ def _f_brackets(s: str) -> str:
     return s.strip("\"'").replace("(", "").replace(")", "").replace("/", "")
 
 
-#: THE normalisation pipeline, in order. Adding a step here is the only way to change how
-#: values compare, and `canon_trace` will report it by name without further work.
 FOLDS: tuple[Fold, ...] = (
     Fold("case",
          "Capitalisation and surrounding whitespace are not part of a value: ACME CORP, "
@@ -230,7 +183,6 @@ def run_folds(v: Json, record: list | None = None) -> str:
             break
     return str(s)
 
-# ── leaf comparators -> 1.0 (match) or 0.0 ───────────────────────────────────────
 def _canon(v, record=None):
     """`run_folds`, made total. A model can emit `Infinity`, `NaN`, or a number too large
     for `int(float(...))`, and a fold can raise on input nobody anticipated. Either way this
@@ -239,9 +191,6 @@ def _canon(v, record=None):
     try:
         return run_folds(v, record)
     except Exception:
-        # Still fold what is safe to fold. Returning the raw text here made `Infinity` and
-        # `infinity` different keys -- a value that trips this path should not also lose case
-        # folding. Truncated so a pathological value is bounded, not merged.
         return " ".join(str(v).split()).lower()[:64]
 
 def _canon_key_unguarded(v, trace=None):
@@ -261,21 +210,10 @@ def _canon_key_unguarded(v, trace=None):
     d = _asdecimal(v)
     if d is not None:
         q = _round_fraction(d)
-        # An integral value is an integer and must key as one, whether it arrived as `5.0`
-        # or rounded up to it. Only text containing a "." is parsed at all, which keeps an ID
-        # exact -- but a vendor can emit that same ID as a JSON float, and without this branch
-        # `8303911426.0` keys as `8303911000`: a correct account number scores wrong, and two
-        # IDs differing in their last three digits score as equal.
         if trace is not None:
             trace["route"] = "number"
         if q == q.to_integral_value():
             return _canon(int(q), trace and trace["changes"])
-        # Fixed-point text rather than scientific, so the value handed to the folds reads
-        # the way the document printed it. `_f_number` will
-        # re-parse this as a float, which is where the last of the precision goes: two keys
-        # agreeing past the seventeenth significant digit collapse together. That needs an
-        # integer part of ten digits AND a seven-digit fraction to reach, and it is shared
-        # with every other numeric key in the benchmark, not introduced here.
         return _canon(f"{q.normalize():f}", trace and trace["changes"])
     d = _asdate(v)
     if d:
@@ -305,11 +243,6 @@ def canon_key(v):
     chose to write asserts, or `()` in every unreadable field would be free. Values the folds
     would empty fall back to themselves with whitespace removed.
     """
-    # Structural emptiness is handled HERE, before anything stringifies it. `str(None)` is
-    # the four characters "None", so without this a raw null keyed as `none` -- the same key
-    # as the printed word `None`, which is a real answer on an adverse-event form. `flatten`
-    # gates on `states_nothing` and so never hands a null to this function, which is the only
-    # reason that was invisible rather than wrong.
     return _canon_key_guarded(v)
 
 
@@ -323,9 +256,6 @@ def _canon_key_guarded(v, trace=None):
     k = _canon_key_unguarded(v, trace)
     if k == "":
         restored = re.sub(r"\s+", "", str(v).strip().lower())
-        # Record the rescue, or the trace would end at "" while the key is the value -- an
-        # explanation contradicting its own result. Live for `()`, `,`, `"` and every other
-        # value built only from characters some fold strips.
         if trace is not None:
             trace["changes"].append(Change(
                 "value restored",
@@ -339,10 +269,10 @@ def _canon_key_guarded(v, trace=None):
 class Trace(NamedTuple):
     """Why one value compares the way it does. For a UI, not for scoring."""
 
-    raw: Any                # exactly what was in the document / the prediction
-    canon: str              # what it was compared AS -- `canon_key(raw)`
-    route: str              # absent | boolean | number | date | time | text
-    changes: list           # list[Change], in order, only the steps that altered it
+    raw: Any
+    canon: str
+    route: str
+    changes: list
 
     def __str__(self) -> str:
         if not self.changes:
@@ -381,8 +311,6 @@ def canon_trace(v) -> Trace:
 def cmp_leaf(pred, gold) -> float:
     """1.0 if the two values are equal under `canon_key`, else 0.0."""
     return 1.0 if canon_key(pred) == canon_key(gold) else 0.0
-
-# ── values that assert nothing ───────────────────────────────────────────────────
 
 
 def states_nothing(value) -> bool:
