@@ -257,6 +257,7 @@ check("extend's payload carries the aliased name",
 
 import omni_extract_bench.harness.document as _document                        # noqa: E402
 import omni_extract_bench.harness.registry as _registry                        # noqa: E402
+from omni_extract_bench.harness.budget import Budget as _Budget  # noqa: E402
 from omni_extract_bench.harness.errors import VendorError as _VendorError  # noqa: E402
 
 
@@ -334,6 +335,49 @@ for _name, _mod in (("llamaextract", llamaextract), ("extend", _extend)):
     _out = json.dumps(_mod.prepare_schema(_copy.deepcopy(_recursive)))
     check(f"{_name}: a self-referential $ref terminates, bounded",
           len(_out) < 200_000, f"expanded to {len(_out)} bytes")
+
+
+print("\n[5f] azure-cu's analyzer is named after everything it is built from")
+# An analyzer is a SERVER-SIDE object reused by name, and a 409 on the PUT is read as success.
+# So anything that changes what the analyzer is must change its name, or the 409 hands back
+# somebody else's -- silently, with the record naming the deployment that did not run.
+_V = "2025-05-01-preview"
+_s1 = azure_cu.prepare_schema({"type": "object", "properties": {"a": {"type": "string"}}})
+_s2 = azure_cu.prepare_schema({"type": "object", "properties": {"b": {"type": "string"}}})
+_base = azure_cu.analyzer_id(_s1, "gpt-4.1-mini", _V)
+
+check("the same task reuses one analyzer -- that is the point of the name",
+      azure_cu.analyzer_id(_s1, "gpt-4.1-mini", _V) == _base)
+check("a different completion_model is a DIFFERENT analyzer",
+      azure_cu.analyzer_id(_s1, "gpt-4.1", _V) != _base,
+      "two deployments would share one analyzer and one would be scored as the other")
+check("a different api_version is a different analyzer",
+      azure_cu.analyzer_id(_s1, "gpt-4.1-mini", "2026-01-01-preview") != _base)
+check("a different schema is a different analyzer",
+      azure_cu.analyzer_id(_s2, "gpt-4.1-mini", _V) != _base)
+
+# The process cache spans resources; an analyzer lives inside one.
+_puts = []
+
+
+class _FakePut:
+    status_code, headers, text = 201, {}, ""
+
+
+class _FakeClient:
+    def put(self, url, json=None):
+        _puts.append(url.split("/contentunderstanding/")[0])
+        return _FakePut()
+
+
+azure_cu._ANALYZERS.clear()
+for _ep in ("https://a.example", "https://b.example", "https://a.example"):
+    azure_cu._ensure_analyzer(_FakeClient(), _ep, _V, _base, _s1, "gpt-4.1-mini",
+                              _Budget(60), 0.1)
+check("each endpoint gets its own analyzer created",
+      sorted(_puts) == ["https://a.example", "https://b.example"],
+      f"PUTs went to {_puts} -- a second resource skipping creation 404s every document")
+azure_cu._ANALYZERS.clear()
 
 
 print("\n[5c] a dialect that raises costs one document, not the run")

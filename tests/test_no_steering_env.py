@@ -20,15 +20,6 @@ CREDENTIAL = {
     "AZURE_CU_KEY", "EXTEND_WORKSPACE_ID",
 }
 
-#: An environment variable may still supply the DEFAULT of a `Config` field -- what the rule
-#: forbids is steering a run without saying so, and a resolved field is said in
-#: `run_manifest.settings`. Allowed only where the read happens in `Config.__post_init__`, and
-#: only with the check below that the value really does reach the recorded settings.
-#: `AZURE_CU_ENDPOINT` sat in CREDENTIAL until it was promoted: it is not a credential, it
-#: selects an Azure resource and region, and two runs against different ones were
-#: indistinguishable in the record.
-RESOLVED_INTO_CONFIG = {"AZURE_CU_ENDPOINT": ("azure_cu", "endpoint")}
-
 
 def env_reads(path: pathlib.Path) -> list[tuple[str, int]]:
     """Every `os.environ[...]`/`.get(...)`/`os.getenv(...)` name in a module, with its line."""
@@ -56,9 +47,8 @@ assert modules, "no adapters found"
 offenders = {}
 for path in modules:
     for name, line in env_reads(path):
-        if name in CREDENTIAL or name in RESOLVED_INTO_CONFIG:
-            continue
-        offenders.setdefault(path.name, []).append(f"{name} (line {line})")
+        if name not in CREDENTIAL:
+            offenders.setdefault(path.name, []).append(f"{name} (line {line})")
 
 assert not offenders, (
     "adapters must take settings as arguments, not out of the environment:\n"
@@ -77,7 +67,7 @@ PROMOTED = {
     "reducto": ("agentic_table_mode",),
     "extend": ("array_strategy", "api_version", "base_url"),
     "llamaextract": ("tier",),
-    "azure_cu": ("completion_model",),
+    "azure_cu": ("completion_model", "endpoint"),
     "llm_single_shot": ("base_url",),
 }
 def config_fields(module):
@@ -99,23 +89,27 @@ for module in ("datalab", "reducto", "llamaextract", "azure_cu"):
             f"{module}.Config.{name} should carry its literal default, got {got!r}"
 print("every promoted setting carries its literal default on the Config")
 
+# A RUN DIRECTORY MUST NOT DEPEND ON THE SHELL. `out_name` digests every setting, so a field
+# whose default is read from the environment makes the directory a function of the environment:
+# predict with the variable set, resume without it, and `needs_run` looks somewhere with no
+# records and re-buys the corpus. `endpoint` did exactly that for one commit.
 import os  # noqa: E402
 
-from omni_extract_bench.harness.registry import settings_for  # noqa: E402
+from omni_extract_bench.harness.registry import out_name  # noqa: E402
 
-PROVIDER_OF = {"azure_cu": "azure-cu"}
-for var, (module, field) in RESOLVED_INTO_CONFIG.items():
-    assert field in config_fields(module), f"{module}.Config has no {field!r} to resolve into"
-    src = (PROVIDERS / f"{module}.py").read_text()
-    assert "__post_init__" in src and var in src.split("__post_init__", 1)[1][:600], \
-        f"{module} reads {var} outside Config.__post_init__, so a run need not record it"
-    marker = "https://recorded-by-the-test.example"
-    saved = os.environ.get(var)
-    os.environ[var] = marker
-    try:
-        got = settings_for(PROVIDER_OF[module]).get(field)
-    finally:
-        os.environ.pop(var) if saved is None else os.environ.__setitem__(var, saved)
-    assert got == marker, \
-        f"{var} steered the run but `run_manifest.settings.{field}` says {got!r}"
-print(f"{len(RESOLVED_INTO_CONFIG)} env-sourced default(s) reach the record")
+saved = os.environ.get("AZURE_CU_ENDPOINT")
+os.environ["AZURE_CU_ENDPOINT"] = "https://set-in-the-shell.example"
+try:
+    with_var = out_name("azure-cu")
+finally:
+    os.environ.pop("AZURE_CU_ENDPOINT") if saved is None else os.environ.__setitem__(
+        "AZURE_CU_ENDPOINT", saved)
+without_var = out_name("azure-cu")
+assert with_var == without_var, (
+    f"azure-cu's run directory changed with the environment: {with_var} vs {without_var}")
+
+explicit = out_name("azure-cu", {"endpoint": "https://a.example"})
+assert explicit != without_var, "an endpoint passed as an option must still name its own run"
+assert explicit != out_name("azure-cu", {"endpoint": "https://b.example"}), \
+    "two endpoints must not share a run directory"
+print("a run directory is a function of the options, not of the shell")
