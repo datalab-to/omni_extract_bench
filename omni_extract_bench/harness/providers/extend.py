@@ -3,7 +3,7 @@ import dataclasses, json, os, time
 from pathlib import Path
 import httpx
 
-from ..dialects import MAX_REF_DEPTH, resolve_refs, to_strict_dialect
+from ..dialects import MAX_REF_DEPTH, collapse_nullable_union, resolve_refs
 from ..budget import Budget, PollRetry
 from ..contract import Cost, Extraction
 from ..errors import MissingCredential, VendorError
@@ -180,6 +180,64 @@ def rename_reserved(node):
             out[k] = [RESERVED.get(x, x) for x in v]
         else:
             out[k] = rename_reserved(v)
+    return out
+
+
+STRICT_ALLOWED_KEYS = ("type", "enum", "properties", "items", "required", "description")
+
+
+def to_strict_dialect(node, in_items=False, allowed=STRICT_ALLOWED_KEYS):
+    """Reshape for a vendor that validates strictly and requires nullable properties.
+
+    Three rules, and they differ BY POSITION -- the detail that makes this worth writing down,
+    because applying nullability everywhere fixes properties and breaks array items at once:
+
+      * keys       an allowlist (see ``STRICT_ALLOWED_KEYS``)
+      * properties must be nullable: ``["string", "null"]``, and enums must include ``null``
+      * items      must be a BARE type: a ``["string","null"]`` union is rejected here
+
+    Modelled on Extend's validator; useful for any vendor with the same shape of constraints.
+    """
+    if isinstance(node, list):
+        return [to_strict_dialect(x, in_items, allowed) for x in node]
+    if not isinstance(node, dict):
+        return node
+
+    if "type" not in node and "enum" not in node:
+        collapsed = collapse_nullable_union(node)
+        if collapsed is not node:
+            return to_strict_dialect(collapsed, in_items, allowed)
+
+    out = {}
+    for key in allowed:
+        if key not in node:
+            continue
+        value = node[key]
+        if key == "properties" and isinstance(value, dict):
+            out[key] = {k: to_strict_dialect(v, False, allowed) for k, v in value.items()}
+        elif key == "items":
+            out[key] = to_strict_dialect(value, True, allowed)
+        else:
+            out[key] = value
+
+    declared = out.get("type")
+    if isinstance(declared, list):
+        out["type"] = next((t for t in declared if t != "null"), None)
+    if "type" not in out and "enum" not in out and out.get("properties"):
+        out["type"] = "object"
+
+    if in_items:
+        if isinstance(out.get("type"), str) and out["type"] in (
+                "string", "number", "integer", "boolean"):
+            return {"type": out["type"]}
+        return {k: v for k, v in out.items()
+                if k in ("type", "properties", "items", "required")}
+
+    if isinstance(out.get("type"), str) and out["type"] in (
+            "string", "number", "integer", "boolean"):
+        out["type"] = [out["type"], "null"]
+    if isinstance(out.get("enum"), list) and None not in out["enum"]:
+        out["enum"] = list(out["enum"]) + [None]
     return out
 
 

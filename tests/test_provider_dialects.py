@@ -20,7 +20,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 from omni_extract_bench.harness import schema as SCHEMA  # noqa: E402
 from omni_extract_bench.harness.providers import datalab  # noqa: E402
 from omni_extract_bench.harness.dialects import (  # noqa: E402
-    resolve_refs as deref, to_strict_dialect,
+    resolve_refs as deref,
 )
 from omni_extract_bench.harness.schema import (  # noqa: E402
     strip_benchmark_keys as strip_bench_keys,
@@ -257,8 +257,7 @@ check("extend's payload carries the aliased name",
 
 import omni_extract_bench.harness.document as _document                        # noqa: E402
 import omni_extract_bench.harness.registry as _registry                        # noqa: E402
-from omni_extract_bench.harness.errors import (DialectError,             # noqa: E402
-                                               VendorError as _VendorError)
+from omni_extract_bench.harness.errors import VendorError as _VendorError  # noqa: E402
 
 
 class _Spy:
