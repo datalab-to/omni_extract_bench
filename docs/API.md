@@ -159,7 +159,7 @@ BenchmarkRun(
   timeout=1800.0,
   predict_workers=None,   # documents in flight per vendor
   score_workers=0,        # processes used to score
-  verdicts=False,         # write verdicts
+  verdicts=True,          # write verdicts; False to skip them
   rescore=False,          # score every document again
   score_only=False,       # score the predictions; call no vendor
   options=None,           # per-provider settings: {"datalab": {"mode": "accurate"}}
@@ -347,7 +347,7 @@ runs/
 │   ├── predictions/<doc_id>.json
 │   ├── records/<doc_id>.json
 │   ├── scores.jsonl
-│   └── verdicts/<doc_id>.jsonl      # only with --verdicts
+│   └── verdicts/<doc_id>.jsonl      # unless --no-verdicts
 ├── datalab-01a72762/
 └── reducto-e54d3a1d/
 ```
@@ -487,9 +487,14 @@ One line per document, in document order whatever order the workers finished in.
 
 ### verdicts/&lt;doc_id&gt;.jsonl
 
-Only written when `--verdicts` passed. One line per address: what happened there, and what
-each side was compared as. This is the same shape `score(..., verdicts=True)` returns, and
-it's a low-level address breakdown of how scoring happened.
+One line per address: what happened there, and what each side was compared as. This is the
+same shape `score(..., verdicts=True)` returns, and it's a low-level address breakdown of how
+scoring happened.
+
+Written by default, because it's what lets a number be argued with rather than only quoted.
+It's also the bulk of what a run writes -- around five times the gold it grades, so a
+four-provider run over our corpus is a couple of gigabytes. Pass `--no-verdicts` and you get
+`scores.jsonl` and `summary.json` and nothing else.
 
 One line looks like this:
 

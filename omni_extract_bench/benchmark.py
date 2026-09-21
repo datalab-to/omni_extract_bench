@@ -186,7 +186,7 @@ class Run:
         """What every file this Run writes says about itself, before any numbers."""
         return {"run": self.label, "provider": self.provider, "settings": self.settings()}
 
-    def outstanding(self, docs: list[Doc], verdicts: bool = False,
+    def outstanding(self, docs: list[Doc], verdicts: bool = True,
                     rescore: bool = False) -> tuple[int, int]:
         """How many of `docs` this Run would predict, and then grade. The two are independent:
         every prediction can be on disk with every grade still owed."""
@@ -194,7 +194,7 @@ class Run:
         _, wanted = grading_split(self.out, docs, verdicts=verdicts, rescore=rescore)
         return to_predict, len(wanted)
 
-    def score(self, docs: list[Doc], verdicts: bool = False, workers: int = 0,
+    def score(self, docs: list[Doc], verdicts: bool = True, workers: int = 0,
               rescore: bool = False, progress=NULL) -> list[dict]:
         """Grade this Run's predictions, resumable per document, and write one line each. `self`
         never reaches the process pool: a Run holding a live reporter cannot be pickled."""
@@ -555,7 +555,7 @@ class BenchmarkRun:
                  suites: list[str] | None = None,
                  limit: int = 0, timeout: float = 1800.0,
                  predict_workers: dict[str, int] | int | None = None, score_workers: int = 0,
-                 verdicts: bool = False, rescore: bool = False, score_only: bool = False,
+                 verdicts: bool = True, rescore: bool = False, score_only: bool = False,
                  options: dict | None = None):
         from .harness.vendor import resolve
 

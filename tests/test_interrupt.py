@@ -302,14 +302,17 @@ graded = []
 real_score_one = B.score_one
 B.score_one = lambda doc, **k: graded.append(doc.doc_id) or real_score_one(doc, **k)
 try:
-    B.Run("v", "v", {}, fresh).score(small, workers=1)
+    # `verdicts=False` said out loud, because the point of the last two is what happens when
+    # rows that HAVE none are asked for them, and the default now writes them.
+    B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=False)
     report("a first pass grades everything", len(graded) == 6, str(len(graded)))
 
-    graded.clear(); rows = B.Run("v", "v", {}, fresh).score(small, workers=1)
+    graded.clear(); rows = B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=False)
     report("a second pass grades nothing", graded == [], str(graded))
     report("...and still returns every row", len(rows) == 6, str(len(rows)))
 
-    graded.clear(); B.Run("v", "v", {}, fresh).score(small, workers=1, rescore=True)
+    graded.clear()
+    B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=False, rescore=True)
     report("rescore=True grades everything again", len(graded) == 6, str(len(graded)))
 
     graded.clear(); B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=True)

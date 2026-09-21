@@ -299,8 +299,11 @@ def main(argv=None) -> int:
                    help="processes used to grade. Scoring is the CPU-bound half and is "
                         "independent per document. Default: one per core, capped at 8; "
                         "1 grades in this process")
-    b.add_argument("--verdicts", action="store_true",
-                   help="also write one verdict per address, per document")
+    b.add_argument("--no-verdicts", dest="verdicts", action="store_false",
+                   help="skip the per-address verdicts. They are why a number can be argued "
+                        "with rather than only quoted, so they are written by default -- but "
+                        "they are the bulk of what a run writes, around five times the gold "
+                        "they grade")
     b.add_argument("--options", metavar="JSON",
                    help='per-provider options, as JSON or a path to a JSON file: '
                         '\'{"datalab": {"mode": "accurate"}}\'. A LIST runs that provider '

@@ -307,6 +307,10 @@ for d in docs[:2]:
 (bal.out / "scores.jsonl").write_text(
     "".join(json.dumps({"doc_id": d.doc_id, "suite": "s", "status": "scored"}) + "\n"
             for d in docs))
+# A graded document is a row AND its verdicts, because that is what grading writes by default.
+(bal.out / "verdicts").mkdir(parents=True, exist_ok=True)
+for d in docs:
+    (bal.out / "verdicts" / f"{d.doc_id}.jsonl").write_text("")
 report("a run counts what it would still predict, and still grade",
        bal.outstanding(docs) == (len(docs) - 2, 0), str(bal.outstanding(docs)))
 report("...a run with nothing on disk owes everything",
