@@ -213,7 +213,7 @@ def cmd_benchmark(args) -> int:
 
     try:
         summary = run(args.providers, out=args.out, data_root=args.data_root,
-                      suites=args.suites,
+                      manifest=args.manifest, suites=args.suites,
                       limit=args.limit, timeout=args.timeout,
                       predict_workers=read_workers(args.predict_workers),
                       score_workers=args.score_workers,
@@ -258,8 +258,15 @@ def main(argv=None) -> int:
                         "openai/gpt-5.6-sol. `oeb providers` lists them")
     b.add_argument("--out", type=pathlib.Path, default=pathlib.Path("runs"),
                    help="where predictions, scores and the summary go. Default: runs/")
-    b.add_argument("--data-root", type=pathlib.Path, default=pathlib.Path("benchmark"),
-                   help="where the corpus is downloaded to. Default: benchmark/")
+    b.add_argument("--data-root", type=pathlib.Path,
+                   help="where the corpus is downloaded to, and what a relative path in the "
+                        "manifest is relative to. Default: benchmark/, or the manifest's own "
+                        "directory when --manifest is given")
+    b.add_argument("--manifest", type=pathlib.Path,
+                   help="a parquet manifest of your own instead of our corpus, which is then "
+                        "not downloaded at all. Columns: doc_id, suite, doc_path, gt_path, "
+                        "and a schema column holding JSON. An absolute doc_path is used as it "
+                        "is; a relative one resolves against --data-root")
     b.add_argument("--suites", nargs="+", help="limit to these suites")
     b.add_argument("--limit", type=int, default=0, help="first N documents; for a smoke test")
     b.add_argument("--timeout", type=float, default=1800,

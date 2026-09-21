@@ -13,7 +13,7 @@ Three levels of abstraction == three classes.
     >>> print(BenchmarkRun(["datalab"],
     ...                    options={"datalab": [{"mode": "balanced"},
     ...                                         {"mode": "accurate"}]}).describe())
-    benchmark: 2 runs over 1 adapter, 1800s per document -> runs
+    benchmark: 2 runs over 1 adapter, 1800s per document, our corpus -> runs
     ╭─────────┬─────────┬──────────────────┬───────────────┬─────────┬───────╮
     │ adapter │ at once │ run              │ asks          │ predict │ grade │
     ├─────────┼─────────┼──────────────────┼───────────────┼─────────┼───────┤
@@ -115,10 +115,18 @@ def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[D
         ) from None
 
     docs = []
-    for row in pq.read_table(path).to_pylist():
+    for n, row in enumerate(pq.read_table(path).to_pylist()):
         if suites and row["suite"] not in suites:
             continue
-        docs.append(Doc(doc_id=row["doc_id"],
+        # A doc_id IS a filename -- `predictions/<doc_id>.json` -- and the key a resume reads.
+        # Caught here, where the row can be named; caught downstream it is a FileNotFoundError
+        # inside a worker thread, hours in.
+        doc_id = row["doc_id"]
+        if not doc_id or doc_id in (".", "..") or Path(doc_id).name != doc_id:
+            raise ValueError(f"{path}: row {n} has doc_id {doc_id!r}, which is not a filename. "
+                             f"It names this document's prediction, its record and its row in "
+                             f"scores.jsonl, so it has to be one path component.")
+        docs.append(Doc(doc_id=doc_id,
                         suite=row["suite"],
                         pdf=root / row["doc_path"],
                         gt=root / row["gt_path"],
@@ -609,7 +617,8 @@ class BenchmarkRun:
     """
 
     def __init__(self, providers: list[str], *, out: Path = Path("runs"),
-                 data_root: Path = Path("benchmark"), suites: list[str] | None = None,
+                 data_root: Path | None = None, manifest: Path | None = None,
+                 suites: list[str] | None = None,
                  limit: int = 0, timeout: float = 1800.0,
                  predict_workers: dict[str, int] | int | None = None, score_workers: int = 0,
                  verdicts: bool = False, rescore: bool = False, score_only: bool = False,
@@ -618,7 +627,8 @@ class BenchmarkRun:
 
         for provider in providers:
             resolve(provider)
-        self.out, self.data_root, self.suites, self.limit = out, data_root, suites, limit
+        self.out, self.data_root, self.manifest = out, data_root, manifest
+        self.suites, self.limit = suites, limit
         self.timeout, self.score_workers = timeout, score_workers
         self.verdicts, self.rescore, self.score_only = verdicts, rescore, score_only
         self.runs = plan(providers, options, out)
@@ -649,6 +659,7 @@ class BenchmarkRun:
         scope = [f"{plural(len(self.runs), 'run')} over "
                  f"{plural(len(self.providers), 'adapter')}",
                  f"{self.timeout:.0f}s per document"]
+        scope.append(f"manifest {self.manifest}" if self.manifest else "our corpus")
         if self.suites:
             scope.append(f"suites {', '.join(self.suites)}")
         if docs is not None:
@@ -739,9 +750,27 @@ class BenchmarkRun:
         return summary
 
     def corpus(self) -> list[Doc]:
-        """The documents this invocation selects, fetching them if they are not here yet."""
-        root = fetch(self.data_root)
-        docs = read_manifest(root / MANIFEST, root, suites=self.suites, limit=self.limit)
+        """The documents this invocation selects, fetching ours if no manifest was brought.
+
+        A MANIFEST OF YOUR OWN SKIPS THE DOWNLOAD ENTIRELY, so bringing one needs no
+        HuggingFace access -- the branch is here, before `fetch`, for exactly that.
+
+        It is the same parquet either way: `doc_id`, `suite`, `doc_path`, `gt_path` and a
+        `schema` column holding JSON.
+
+        WHAT A RELATIVE PATH IS RELATIVE TO. `--data-root` when given, and otherwise the
+        manifest's own directory, which is what a manifest file usually means by a relative
+        path and makes "manifest sitting next to the PDFs" need no flags at all. An ABSOLUTE
+        `doc_path` ignores both and is used as it is -- convenient locally, and not portable to
+        a container or to somebody else's machine, which is the caller's trade to make.
+        """
+        if self.manifest is not None:
+            root = self.data_root if self.data_root is not None else self.manifest.parent
+            path = self.manifest
+        else:
+            root = fetch(self.data_root or Path("benchmark"))
+            path = root / MANIFEST
+        docs = read_manifest(path, root, suites=self.suites, limit=self.limit)
         if not docs:
             raise ValueError("no documents selected: check --suites and --limit")
         return docs

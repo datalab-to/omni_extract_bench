@@ -107,6 +107,76 @@ report("benchmark-only annotations are not gradable slots either way",
 report("the caller's schema is not mutated by preparing it",
        "$defs" in REF_SCHEMA and "$ref" in json.dumps(REF_SCHEMA))
 
+print("\nA MANIFEST OF YOUR OWN, INSTEAD OF OURS")
+import omni_extract_bench.benchmark as _bench                                  # noqa: E402
+import pyarrow as _pa                                                          # noqa: E402
+import pyarrow.parquet as _pq                                                  # noqa: E402
+
+BYO_SCHEMA = {"type": "object", "properties": {"a": {"type": "string"}}}
+
+
+def byo(tmp, how):
+    """Two documents and a manifest, with doc_path/gt_path written however `how` says."""
+    corpus = tmp / "corpus"
+    (corpus / "pdfs").mkdir(parents=True)
+    rows = []
+    for i in range(2):
+        pdf = corpus / "pdfs" / f"d{i}.pdf"
+        pdf.write_bytes(b"%PDF")
+        gt = corpus / f"d{i}.gt.json"
+        gt.write_text(json.dumps({"a": "x"}))
+        rows.append({"doc_id": f"d{i}", "suite": "mine", "doc_path": how(pdf, corpus),
+                     "gt_path": how(gt, corpus), "schema": json.dumps(BYO_SCHEMA)})
+    path = corpus / "manifest.parquet"
+    _pq.write_table(_pa.Table.from_pylist(rows), path)
+    return path
+
+
+_relative = lambda p, root: str(p.relative_to(root))                           # noqa: E731
+_absolute = lambda p, root: str(p)                                             # noqa: E731
+
+# A manifest of your own must need no HuggingFace access at all, so `fetch` may not run.
+_real_fetch = _bench.fetch
+_bench.fetch = lambda root: (_ for _ in ()).throw(AssertionError("fetch ran"))
+try:
+    tmp = Path(tempfile.mkdtemp())
+    docs = _bench.BenchmarkRun(["datalab"], manifest=byo(tmp, _relative)).corpus()
+    report("a relative path resolves against the manifest's own directory",
+           len(docs) == 2 and all(d.pdf.exists() and d.gt.exists() for d in docs),
+           str([str(d.pdf) for d in docs]))
+    report("...and the schema comes through parsed, per document",
+           docs[0].schema == BYO_SCHEMA and docs[0].suite == "mine")
+
+    tmp = Path(tempfile.mkdtemp())
+    docs = _bench.BenchmarkRun(["datalab"], manifest=byo(tmp, _absolute)).corpus()
+    report("an absolute path is used as it is, whatever the root",
+           all(d.pdf.exists() for d in docs), str([str(d.pdf) for d in docs]))
+
+    # The corpus moves after the manifest is written: relative paths need to be told where.
+    tmp = Path(tempfile.mkdtemp())
+    byo(tmp, _relative)
+    moved = tmp / "moved"
+    (tmp / "corpus").rename(moved)
+    docs = _bench.BenchmarkRun(["datalab"], manifest=moved / "manifest.parquet",
+                               data_root=moved).corpus()
+    report("...and --data-root overrides what it is relative to",
+           all(d.pdf.exists() for d in docs))
+finally:
+    _bench.fetch = _real_fetch
+
+# A doc_id IS a filename: `predictions/<doc_id>.json`, and the key a resume reads. Caught at
+# the manifest, where the row can be named, not as a FileNotFoundError in a worker hours in.
+bad = Path(tempfile.mkdtemp()) / "m.parquet"
+_pq.write_table(_pa.Table.from_pylist(
+    [{"doc_id": "a/b", "suite": "s", "doc_path": "x.pdf", "gt_path": "x.json",
+      "schema": "{}"}]), bad)
+try:
+    _bench.read_manifest(bad, bad.parent)
+    report("a doc_id that is not a filename is refused", False, "it was accepted")
+except ValueError as exc:
+    report("a doc_id that is not a filename is refused",
+           "row 0" in str(exc) and "'a/b'" in str(exc), str(exc))
+
 print("\nEVERY DOCUMENT COUNTS ONCE, WHATEVER IT WEIGHS")
 def scored(suite, matched, total, **rest):
     misread = rest.pop("misread", total - matched)

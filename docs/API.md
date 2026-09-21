@@ -202,13 +202,7 @@ oeb benchmark \
   --out runs/
 ```
 
-That's 4 runs. An option name the provider doesn't have is refused before anything downloads,
-and so is an `--options` key that isn't in `--providers`:
-
-```
---options names 'datalb', which is not in --providers (datalab).
-Its options would be silently ignored.
-```
+That's 4 runs. 
 
 ### Resuming
 
