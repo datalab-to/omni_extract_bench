@@ -78,7 +78,7 @@ for i in range(40):
     p = out / f"p{{i}}.pdf"; p.write_bytes(b"%PDF")
     docs.append(B.Doc(f"d{{i:02d}}", "s", p, g, {{"type": "object",
                 "properties": {{"a": {{"type": "string"}}}}}}))
-B.fetch = lambda root: out
+B.fetch = lambda *_: out
 B.read_manifest = lambda *a, **k: docs
 V.adapter = lambda prov: (lambda pdf, schema, *, timeout, **o:
     time.sleep(0.4) or Extraction(result={{"a": "x"}}, cost=Cost(usd=0.5)))
@@ -145,7 +145,7 @@ def broke_adapter(prov):
 
 saved_adapter, saved_fetch, saved_manifest = V.adapter, B.fetch, B.read_manifest
 V.adapter = broke_adapter
-B.fetch = lambda root: acct
+B.fetch = lambda *_: acct
 B.read_manifest = lambda *a, **k: pair
 try:
     B.run(["datalab", "reducto"], out=acct, score_workers=1, predict_workers={"*": 1})

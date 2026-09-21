@@ -213,7 +213,7 @@ def cmd_benchmark(args) -> int:
 
     try:
         summary = run(args.providers, out=args.out, data_root=args.data_root,
-                      manifest=args.manifest, suites=args.suites,
+                      manifest=args.manifest, repo=args.repo, suites=args.suites,
                       limit=args.limit, timeout=args.timeout,
                       predict_workers=read_workers(args.predict_workers),
                       score_workers=args.score_workers,
@@ -262,6 +262,9 @@ def main(argv=None) -> int:
                    help="where the corpus is downloaded to, and what a relative path in the "
                         "manifest is relative to. Default: benchmark/, or the manifest's own "
                         "directory when --manifest is given")
+    b.add_argument("--repo",
+                   help="a different HuggingFace dataset to fetch the corpus from. "
+                        "Default: ours")
     b.add_argument("--manifest", type=pathlib.Path,
                    help="a parquet manifest of your own instead of our corpus, which is then "
                         "not downloaded at all. Columns: doc_id, suite, doc_path, gt_path, "

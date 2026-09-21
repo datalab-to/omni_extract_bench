@@ -69,7 +69,7 @@ oeb benchmark --out runs/ --limit 1 \
 benchmark
 out         runs
 runs        4 over 4 adapters
-corpus      ours, from HuggingFace
+corpus      huggingface datalab-to/omni_extract_bench
 documents   1 document selected
 timeout     1800s per document
 score only  false
@@ -130,7 +130,7 @@ oeb benchmark \
 
 This will execute 4 different runs -- one for each pair (provider, settings).
 
-See [`docs/API.md`](./docs/API.md) for more details on what `oeb benchmark` writes and **how you can run on your own benchmark dataset**. 
+See [`docs/API.md`](./docs/API.md) for more details on what `oeb benchmark` writes and **how you can run on your own benchmark dataset**.
 
 ## Score
 

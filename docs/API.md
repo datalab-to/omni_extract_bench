@@ -153,6 +153,7 @@ BenchmarkRun(
   out="runs",             # where runs go
   data_root=None,
   manifest=None,          # own manifest instead of ours
+  repo=None,              # a different HuggingFace dataset. Default: ours
   suites=None,            # limit to these suites
   limit=0,                # first N documents
   timeout=1800.0,
@@ -193,7 +194,7 @@ oeb benchmark --out runs/ --limit 1 --providers datalab reducto
 benchmark
 out         runs
 runs        2 over 2 adapters
-corpus      ours, from HuggingFace
+corpus      huggingface datalab-to/omni_extract_bench
 documents   1 document selected
 timeout     1800s per document
 score only  false
@@ -253,7 +254,15 @@ That's 4 runs.
 oeb benchmark --providers datalab --manifest my/corpus/manifest.parquet
 ```
 
-Same parquet shape as [ours](https://huggingface.co/datasets/datalab-to/omni_extract_bench).
+Same parquet shape as [ours](https://huggingface.co/datasets/datalab-to/omni_extract_bench). Or
+you can point to your own HuggingFace dataset, which is fetched the same way ours is.
+
+```bash
+oeb benchmark --providers datalab --repo someone/their-corpus
+```
+
+Whichever you use, the run records it in `settings.json` and refuses a directory that already
+holds another one.
 
 ### Resuming
 
@@ -352,13 +361,15 @@ says what it is.
 
 ```json
 {
+  "run": "datalab-f46415c9",
   "provider": "datalab",
   "settings": {
     "mode": "balanced",
     "base_url": "https://www.datalab.to",
     "poll_interval": 5.0
   },
-  "timeout_s": 1800.0
+  "timeout_s": 1800.0,
+  "corpus": "huggingface datalab-to/omni_extract_bench"
 }
 ```
 

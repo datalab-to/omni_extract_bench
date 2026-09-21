@@ -137,7 +137,7 @@ _absolute = lambda p, root: str(p)                                             #
 
 # A manifest of your own must need no HuggingFace access at all, so `fetch` may not run.
 _real_fetch = _bench.fetch
-_bench.fetch = lambda root: (_ for _ in ()).throw(AssertionError("fetch ran"))
+_bench.fetch = lambda *_: (_ for _ in ()).throw(AssertionError("fetch ran"))
 try:
     tmp = Path(tempfile.mkdtemp())
     docs = _bench.BenchmarkRun(["datalab"], manifest=byo(tmp, _relative)).corpus()
@@ -163,6 +163,29 @@ try:
            all(d.pdf.exists() for d in docs))
 finally:
     _bench.fetch = _real_fetch
+
+# A directory is named for the provider and its options and never for the corpus, so nothing
+# in the NAME keeps two corpora apart. `settings.json` records which one, and `prepare` reads
+# it back -- otherwise `scores.jsonl` merges both by doc_id and `summary.json` averages them.
+two = Path(tempfile.mkdtemp())
+first = _bench.BenchmarkRun(["datalab"], out=two, manifest=Path("/corpora/a.parquet"))
+first.prepare()
+report("settings.json records which corpus the run measured",
+       json.loads((first.runs[0].out / "settings.json").read_text())["corpus"]
+       == "manifest /corpora/a.parquet")
+try:
+    _bench.BenchmarkRun(["datalab"], out=two, manifest=Path("/corpora/b.parquet")).prepare()
+    report("a second corpus in the same directory is refused", False, "it was accepted")
+except ValueError as exc:
+    report("a second corpus in the same directory is refused",
+           "a.parquet" in str(exc) and "b.parquet" in str(exc), str(exc))
+first.prepare()
+report("...and the same corpus again is not", True)
+report("our corpus names itself too",
+       _bench.BenchmarkRun(["datalab"]).corpus_id.startswith("huggingface "))
+report("...and --repo changes it",
+       _bench.BenchmarkRun(["datalab"], repo="someone/other").corpus_id
+       == "huggingface someone/other")
 
 # A doc_id IS a filename: `predictions/<doc_id>.json`, and the key a resume reads. Caught at
 # the manifest, where the row can be named, not as a FileNotFoundError in a worker hours in.

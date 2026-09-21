@@ -131,7 +131,7 @@ for i in range(3):
     pdf = out / f"p{i}.pdf"; pdf.write_bytes(b"%PDF")
     docs.append(B.Doc(f"d{i}", "s", pdf, g,
                       {"type": "object", "properties": {"a": {"type": "string"}}}))
-B.fetch = lambda root: out
+B.fetch = lambda *_: out
 B.read_manifest = lambda *a, **k: docs
 called = []
 V.adapter = lambda prov: (lambda pdf, schema, *, timeout, config: (
@@ -165,7 +165,7 @@ report("...and the record states what it was sent",
 
 print("\nA VENDOR'S OWN TIERS, COMPARED IN ONE INVOCATION")
 out2 = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda root: out2
+B.fetch = lambda *_: out2
 summary = B.run(["datalab"], out=out2, score_workers=1, predict_workers={"*": 1},
                 options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
 report("each configuration is its own row in the summary",
@@ -202,7 +202,7 @@ report("...while the return value answers what this invocation ran",
 
 print("\nAND A RUN THAT IS GRADED SURVIVES THE ONE AFTER IT NOT BEING")
 out3 = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda root: out3
+B.fetch = lambda *_: out3
 real_score, graded = B.Run.score, {"n": 0}
 
 
@@ -255,7 +255,7 @@ for i in range(20):
     pdf = wide / f"p{i}.pdf"; pdf.write_bytes(b"%PDF")
     many.append(B.Doc(f"d{i}", "s", pdf, g,
                       {"type": "object", "properties": {"a": {"type": "string"}}}))
-B.fetch = lambda root: wide
+B.fetch = lambda *_: wide
 B.read_manifest = lambda *a, **k: many
 live = {"n": 0, "peak": 0}
 guard = _threading.Lock()
@@ -324,7 +324,7 @@ report("...and nothing is cut off, whatever the widest cell is",
 
 print("\nAND ASKS BEFORE IT SPENDS")
 ask = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda root: ask
+B.fetch = lambda *_: ask
 V.adapter = counting
 shown, called = [], {"n": 0}
 
@@ -367,7 +367,7 @@ print("\nEACH RUN IS TIMED FOR ITSELF, NOT FOR THE QUEUE IT SHARES")
 from omni_extract_bench.progress import Progress                               # noqa: E402
 
 timed = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda root: timed
+B.fetch = lambda *_: timed
 landed = {}
 _t0 = _time.monotonic()
 
@@ -399,7 +399,7 @@ report("...and it matches when its last document actually landed",
 
 print("\nAND THE CAP BELONGS TO THE SERVICE, NOT TO THE NAME YOU TYPED")
 models = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda root: models
+B.fetch = lambda *_: models
 live["n"] = live["peak"] = 0
 V.adapter = counting
 ids = ["openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash"]
@@ -420,7 +420,7 @@ report("...falling back to the adapter's own limit when nobody says",
 
 print("\nAN ACCOUNT FAILURE IS ABOUT THE ACCOUNT, SO IT STOPS EVERY RUN OF THAT VENDOR")
 acct = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda root: acct
+B.fetch = lambda *_: acct
 tried = []
 
 

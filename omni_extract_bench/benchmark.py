@@ -16,7 +16,7 @@ Three levels of abstraction == three classes.
     benchmark
     out         runs
     runs        2 over 1 adapter
-    corpus      ours, from HuggingFace
+    corpus      huggingface datalab-to/omni_extract_bench
     timeout     1800s per document
     score only  false
     rescoring   false
@@ -99,7 +99,7 @@ class Doc(NamedTuple):
     schema: dict
 
 
-def fetch(root: Path) -> Path:
+def fetch(root: Path, repo: str = REPO) -> Path:
     try:
         from huggingface_hub import snapshot_download
     except ImportError:
@@ -110,7 +110,7 @@ def fetch(root: Path) -> Path:
         ) from None
 
     log.info("fetching the corpus into %s", root)
-    return Path(snapshot_download(REPO, repo_type="dataset", local_dir=str(root)))
+    return Path(snapshot_download(repo, repo_type="dataset", local_dir=str(root)))
 
 
 def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[Doc]:
@@ -547,6 +547,7 @@ class BenchmarkRun:
 
     def __init__(self, providers: list[str], *, out: Path = Path("runs"),
                  data_root: Path | None = None, manifest: Path | None = None,
+                 repo: str | None = None,
                  suites: list[str] | None = None,
                  limit: int = 0, timeout: float = 1800.0,
                  predict_workers: dict[str, int] | int | None = None, score_workers: int = 0,
@@ -557,6 +558,11 @@ class BenchmarkRun:
         for provider in providers:
             resolve(provider)
         self.out, self.data_root, self.manifest = out, data_root, manifest
+        self.repo = repo or REPO           # `None` rather than REPO, so the cli has no copy
+        #: Names the corpus, for `settings.json` to record and `prepare` to check. Not
+        #: `corpus`, which is the method that fetches it.
+        self.corpus_id = (f"manifest {manifest}" if manifest
+                          else f"huggingface {self.repo}")
         self.suites, self.limit = suites, limit
         self.timeout, self.score_workers = timeout, score_workers
         self.verdicts, self.rescore, self.score_only = verdicts, rescore, score_only
@@ -581,8 +587,7 @@ class BenchmarkRun:
         table.add_row("out", str(self.out))
         table.add_row("runs", f"{len(self.runs)} over "
                               f"{plural(len(self.providers), 'adapter')}")
-        table.add_row("corpus", f"manifest {self.manifest}" if self.manifest
-                      else "ours, from HuggingFace")
+        table.add_row("corpus", self.corpus_id)
         if docs is not None:
             table.add_row("documents", f"{plural(len(docs), 'document')} selected")
         elif self.limit:
@@ -637,8 +642,16 @@ class BenchmarkRun:
         after grading, which an interrupted run never reaches."""
         for run in self.runs:
             run.out.mkdir(parents=True, exist_ok=True)
-            write_json_atomic(run.out / "settings.json",
-                              {**run.head(), "timeout_s": self.timeout}, indent=2)
+            settings = run.out / "settings.json"
+            if settings.exists():
+                # A directory is named for the provider and its options, never for the corpus,
+                # so two corpora would land in one and `summary.json` would average both.
+                was = json.loads(settings.read_text()).get("corpus")
+                if was and was != self.corpus_id:
+                    raise ValueError(f"{run.out} holds {run.provider} against {was}, and this "
+                                     f"run is against {self.corpus_id}. Use a different --out.")
+            write_json_atomic(settings, {**run.head(), "timeout_s": self.timeout,
+                                         "corpus": self.corpus_id}, indent=2)
 
     def predict(self, docs: list[Doc]) -> None:
         """Every adapter at once. Predicting is network wait, so they do not slow each other."""
@@ -683,7 +696,7 @@ class BenchmarkRun:
             root = self.data_root if self.data_root is not None else self.manifest.parent
             path = self.manifest
         else:
-            root = fetch(self.data_root or Path("benchmark"))
+            root = fetch(self.data_root or Path("benchmark"), self.repo)
             path = root / MANIFEST
         docs = read_manifest(path, root, suites=self.suites, limit=self.limit)
         if not docs:
