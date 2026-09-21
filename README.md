@@ -66,7 +66,15 @@ oeb benchmark --out runs/ --limit 1 \
     --providers datalab reducto extend llamaextract
 ```
 ```text
-benchmark: 4 runs over 4 adapters, 1800s per document, our corpus, 1 document selected -> runs
+benchmark
+out         runs
+runs        4 over 4 adapters
+corpus      ours, from HuggingFace
+documents   1 document selected
+timeout     1800s per document
+score only  false
+rescoring   false
+
 ╭──────────────┬─────────┬───────────────────────┬────────────────────────────────────────┬─────────┬───────╮
 │ adapter      │ at once │ run                   │ settings                               │ predict │ grade │
 ├──────────────┼─────────┼───────────────────────┼────────────────────────────────────────┼─────────┼───────┤

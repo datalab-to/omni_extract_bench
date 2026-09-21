@@ -13,7 +13,14 @@ Three levels of abstraction == three classes.
     >>> print(BenchmarkRun(["datalab"],
     ...                    options={"datalab": [{"mode": "balanced"},
     ...                                         {"mode": "accurate"}]}).describe())
-    benchmark: 2 runs over 1 adapter, 1800s per document, our corpus -> runs
+    benchmark
+    out         runs
+    runs        2 over 1 adapter
+    corpus      ours, from HuggingFace
+    timeout     1800s per document
+    score only  false
+    rescoring   false
+    <BLANKLINE>
     ╭─────────┬─────────┬──────────────────┬─────────────────────────────────┬─────────┬───────╮
     │ adapter │ at once │ run              │ settings                        │ predict │ grade │
     ├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
@@ -565,26 +572,38 @@ class BenchmarkRun:
         return (f"BenchmarkRun({len(self.runs)} runs over "
                 f"{len(self.providers)} adapters -> {self.out})")
 
+    def facts(self, docs: list[Doc] | None = None) -> Table:
+        """What this invocation is, one labelled row each. A row rather than another clause in
+        a sentence, so a new flag cannot lengthen a line that already ran to three of them."""
+        table = Table(box=None, show_header=False, pad_edge=False)
+        table.add_column("", style="dim", no_wrap=True)
+        table.add_column("", overflow="fold")
+        table.add_row("out", str(self.out))
+        table.add_row("runs", f"{len(self.runs)} over "
+                              f"{plural(len(self.providers), 'adapter')}")
+        table.add_row("corpus", f"manifest {self.manifest}" if self.manifest
+                      else "ours, from HuggingFace")
+        if docs is not None:
+            table.add_row("documents", f"{plural(len(docs), 'document')} selected")
+        elif self.limit:
+            table.add_row("documents", f"first {self.limit}")
+        table.add_row("timeout", f"{self.timeout:.0f}s per document")
+        if self.suites:
+            # Its own row, so the commas in it cannot read as more facts -- joined into one
+            # sentence, `suites a, b, c` made `b` look like a clause of its own.
+            table.add_row("suites", ", ".join(self.suites))
+        # Both, always, even when false: `score only  false` is what says this will call a
+        # vendor and spend money, and saying it only by absence is not saying it.
+        for name, on in (("score only", self.score_only), ("rescoring", self.rescore)):
+            table.add_row(name, Text(str(on).lower(), style="bold" if on else "dim"))
+        return table
+
     def plan_view(self, docs: list[Doc] | None = None) -> Group:
         """The whole plan as one renderable; with `docs`, what each Run still owes. `describe`
         renders it as text for a log, the command line prints it in colour."""
         work = None if docs is None else {
             r.label: r.outstanding(docs, verdicts=self.verdicts, rescore=self.rescore)
             for r in self.runs}
-        scope = [f"{plural(len(self.runs), 'run')} over "
-                 f"{plural(len(self.providers), 'adapter')}",
-                 f"{self.timeout:.0f}s per document"]
-        scope.append(f"manifest {self.manifest}" if self.manifest else "our corpus")
-        if self.suites:
-            scope.append(f"suites {', '.join(self.suites)}")
-        if docs is not None:
-            scope.append(f"{plural(len(docs), 'document')} selected")
-        elif self.limit:
-            scope.append(f"first {self.limit}")
-        if self.score_only:
-            scope.append("SCORE ONLY, no vendor is called")
-        if self.rescore:
-            scope.append("RESCORING, grades on disk ignored")
 
         # A REAL TABLE, so a cell too wide for the terminal WRAPS rather than being cut. The
         # adapter is its own column instead of a heading row: in column one a heading is the
@@ -605,7 +624,7 @@ class BenchmarkRun:
                               Text(to_predict, style="" if to_predict in ("", "0") else "bold"),
                               Text(to_grade, style="" if to_grade in ("", "0") else "bold"),
                               end_section=n == len(provider.runs) - 1)
-        return Group(Text(f"benchmark: {', '.join(scope)} -> {self.out}", style="bold"), table)
+        return Group(Text("benchmark", style="bold"), self.facts(docs), Text(""), table)
 
     def describe(self, docs: list[Doc] | None = None) -> str:
         """`plan_view` as plain text, for a log that has no colour and no width to ask about."""

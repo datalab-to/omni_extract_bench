@@ -190,17 +190,25 @@ Run            # a provider plus its options
 oeb benchmark --out runs/ --limit 1 --providers datalab reducto
 ```
 ```
-benchmark: 2 runs over 2 adapters, 1800s per document, our corpus, 1 document selected -> runs
+benchmark
+out         runs
+runs        2 over 2 adapters
+corpus      ours, from HuggingFace
+documents   1 document selected
+timeout     1800s per document
+score only  false
+rescoring   false
+
 ╭─────────┬─────────┬──────────────────┬─────────────────────────────────┬─────────┬───────╮
 │ adapter │ at once │ run              │ settings                        │ predict │ grade │
 ├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
-│ datalab │       5 │ datalab-f46415c9 │ base_url=https://www.datalab.to │       1 │     1 │
+│ datalab │      10 │ datalab-f46415c9 │ base_url=https://www.datalab.to │       1 │     1 │
 │         │         │                  │ ─────────────────────────────── │         │       │
 │         │         │                  │ mode=balanced                   │         │       │
 │         │         │                  │ ─────────────────────────────── │         │       │
 │         │         │                  │ poll_interval=5.0               │         │       │
 ├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
-│ reducto │       5 │ reducto-e54d3a1d │ agentic_table_mode=max          │       1 │     1 │
+│ reducto │       3 │ reducto-e54d3a1d │ agentic_table_mode=max          │       1 │     1 │
 │         │         │                  │ ─────────────────────────────── │         │       │
 │         │         │                  │ deep_extract_model=v2           │         │       │
 │         │         │                  │ ─────────────────────────────── │         │       │
