@@ -103,10 +103,6 @@ def fetch(root: Path | None = None, repo: str = REPO) -> Path:
     """The corpus on disk. With no `root` it lands in the HuggingFace cache, which is where it
     belongs: shared between every checkout and every working directory, so the second folder
     you run from resolves it for free.
-
-    `local_dir` was passed unconditionally, at `benchmark/` under whatever the working
-    directory happened to be, and `local_dir` bypasses the cache -- so a corpus already on the
-    machine was downloaded again, in full, once per folder.
     """
     try:
         from huggingface_hub import snapshot_download
