@@ -65,10 +65,19 @@ oeb benchmark --out runs/ --limit 1 \
     --providers datalab reducto extend llamaextract
 ```
 ```
-datalab-f46415c9       ██████████████  1/1  ok 1  err 0  avg 13s  done in 13s
-reducto-e54d3a1d       ░░░░░░░░░░░░░░  0/1  ok 0  err 0  1/1 in flight
-extend-7bbd41aa        ░░░░░░░░░░░░░░  0/1  ok 0  err 0  1/1 in flight
-llamaextract-76247dbb  ██████████████  1/1  ok 1  err 0  avg 10s  done in 10s
+benchmark: 4 runs over 4 adapters, 1800s per document, our corpus, 1 document selected -> runs/foo
+╭──────────────┬─────────┬───────────────────────┬───────┬─────────┬───────╮
+│ adapter      │ at once │ run                   │ asks  │ predict │ grade │
+├──────────────┼─────────┼───────────────────────┼───────┼─────────┼───────┤
+│ datalab      │      10 │ datalab-f46415c9      │ stock │       1 │     1 │
+├──────────────┼─────────┼───────────────────────┼───────┼─────────┼───────┤
+│ reducto      │       3 │ reducto-e54d3a1d      │ stock │       1 │     1 │
+├──────────────┼─────────┼───────────────────────┼───────┼─────────┼───────┤
+│ extend       │       5 │ extend-7bbd41aa       │ stock │       1 │     1 │
+├──────────────┼─────────┼───────────────────────┼───────┼─────────┼───────┤
+│ llamaextract │       3 │ llamaextract-76247dbb │ stock │       1 │     1 │
+╰──────────────┴─────────┴───────────────────────┴───────┴─────────┴───────╯
+  proceed? [y/N]
 ```
 
 You can also specify settings per provider. For example:

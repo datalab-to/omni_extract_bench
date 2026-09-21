@@ -14,12 +14,16 @@ Three levels of abstraction == three classes.
     ...                    options={"datalab": [{"mode": "balanced"},
     ...                                         {"mode": "accurate"}]}).describe())
     benchmark: 2 runs over 1 adapter, 1800s per document, our corpus -> runs
-    ╭─────────┬─────────┬──────────────────┬───────────────┬─────────┬───────╮
-    │ adapter │ at once │ run              │ asks          │ predict │ grade │
-    ├─────────┼─────────┼──────────────────┼───────────────┼─────────┼───────┤
-    │ datalab │      10 │ datalab-f46415c9 │ mode=balanced │         │       │
-    │         │         │ datalab-01a72762 │ mode=accurate │         │       │
-    ╰─────────┴─────────┴──────────────────┴───────────────┴─────────┴───────╯
+    ╭─────────┬─────────┬──────────────────┬─────────────────────────────────┬─────────┬───────╮
+    │ adapter │ at once │ run              │ asks                            │ predict │ grade │
+    ├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
+    │ datalab │      10 │ datalab-f46415c9 │ base_url=https://www.datalab.to │         │       │
+    │         │         │                  │ mode=balanced                   │         │       │
+    │         │         │                  │ poll_interval=5.0               │         │       │
+    │         │         │ datalab-01a72762 │ base_url=https://www.datalab.to │         │       │
+    │         │         │                  │ mode=accurate                   │         │       │
+    │         │         │                  │ poll_interval=5.0               │         │       │
+    ╰─────────┴─────────┴──────────────────┴─────────────────────────────────┴─────────┴───────╯
 
 That costs nothing -- no download, no vendor call -- so the plan can be read before the money
 is spent, and `go()` logs the same lines on its way in so a run that did spend says what it
@@ -280,7 +284,16 @@ class Run:
         The provider is not a column of its own because `label` already carries it: it is
         `out_name(provider, options)`, so `openai__gpt-5.6-sol-28890c89` names its model.
         """
-        asked = ", ".join(f"{k}={v}" for k, v in sorted(self.options.items())) or "stock"
+        # THE RESOLVED SETTINGS, not what the caller happened to pass. A run that named no
+        # options is not asking for nothing -- it is asking for the adapter's maximum tier,
+        # and "stock" said neither which tier that is nor that it had one.
+        #
+        # One per line, because a cell in a table can hold several and the alternative is a
+        # comma-joined string as wide as `base_url` makes it.
+        # `''` for an empty value, as `oeb providers` spells it: `system_prompt=` on its own
+        # reads as missing, and an empty prompt is a setting rather than the absence of one.
+        asked = "\n".join(f"{k}={v if v != '' else chr(39) * 2}"
+                          for k, v in sorted(self.settings().items())) or "-"
         return [self.label, asked, *(("", "") if work is None else (str(work[0]), str(work[1])))]
 
     @property
