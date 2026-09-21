@@ -1,0 +1,101 @@
+{
+  "uic_no": "000031928",
+  "filing_no": "46780",
+  "submittal_date": "02/27/2023",
+  "version": "1",
+  "evaluation": "03/21/2023",
+  "test_status": "Inconclusive",
+  "preparer": "Billie Grewing",
+  "preparer_phone": "940-759-4949",
+  "preparer_email": "mdcinc@ntin.net",
+  "operator_name": "6 HESS, LLC",
+  "operator_no": "953808",
+  "operator_address_line_1": "PO BOX 53",
+  "operator_city": "MUENSTER",
+  "operator_address_line_2": null,
+  "operator_state": "TX",
+  "operator_postal_code": "76252",
+  "api": "09731455",
+  "injection_well": "Enhanced Recovery",
+  "district": "09",
+  "lease_no": "02166",
+  "well_no": "11",
+  "lease_name": "DANGLEMEYER",
+  "field_number": "20350001",
+  "field_name": "COOKE COUNTY REGULAR",
+  "county": "COOKE",
+  "reason_for": "5-Year Test as Required by Statewide Rule",
+  "date_test_performed": "02/01/2023",
+  "retest": "No",
+  "retest_date_of_previous_test": null,
+  "remedial_actions_prior_to": null,
+  "well_completion_casing": [
+    {
+      "string_type": "Long String Casing",
+      "casing_tubing_size": "4 1/2",
+      "depth_set": "884",
+      "top_of_cement": "884"
+    },
+    {
+      "string_type": "Tubing or Hanging String",
+      "casing_tubing_size": "2",
+      "depth_set": "800",
+      "top_of_cement": null
+    }
+  ],
+  "packer_make_model": "Packer - Johnson Tension",
+  "depth_packer": "800",
+  "no_packer_injection_down_casing": false,
+  "injection_intervals": [
+    {
+      "interval_type": "Permitted Injection",
+      "top": "825",
+      "bottom": "838"
+    },
+    {
+      "interval_type": "Completed Injection",
+      "top": "820",
+      "bottom": "830"
+    },
+    {
+      "interval_type": "Authorized Liquid Injection",
+      "top": "900",
+      "bottom": null
+    },
+    {
+      "interval_type": "Authorized Gas Injection",
+      "top": null,
+      "bottom": null
+    }
+  ],
+  "no_completed_intervals": false,
+  "well_status": "Shut-In",
+  "well_did_not_pressure_up": false,
+  "digital_recorder_attached": true,
+  "test_pressures": [
+    {
+      "time_point": "INITIAL",
+      "tubing_or_hanging_string": "660",
+      "casing": "660",
+      "surface_casing": null
+    },
+    {
+      "time_point": "After 15 minutes",
+      "tubing_or_hanging_string": "660",
+      "casing": "660",
+      "surface_casing": null
+    },
+    {
+      "time_point": "After 30 minutes",
+      "tubing_or_hanging_string": "660",
+      "casing": "660",
+      "surface_casing": null
+    }
+  ],
+  "test_witnessed_by_rrc": "No",
+  "name_of_rrc": null,
+  "injection_fluid_description": null,
+  "annulus_fluid_description": "Liqui Salt Water",
+  "other_tests_surveys_performed": null,
+  "operator_comments_on_test": null
+}

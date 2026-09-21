@@ -1,0 +1,776 @@
+{
+  "$defs": {
+    "WellCompletionCasingString": {
+      "properties": {
+        "string_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Which fixed row of the Item 15 'WELL COMPLETION' grid this record describes. The grid (top-center of page 1, columns Size / Depth set / TOC) has one fixed labeled row per casing/tubing string. The captured rows are 'Surface Casing', 'Long String Casing', and 'Tubing or Hanging String' (the last is printed simply as 'Tubing' on the paper H-5); not every filing fills every row, so a given document may have two or three rows. Set this to the row label verbatim as the render uses it ('Surface Casing', 'Long String Casing', or 'Tubing or Hanging String') so the row can be identified. This is the row identity (the printed left-hand label), NOT a value the operator hand-enters. Do NOT confuse the row label with the three column cells (Casing/Tubing Size, Depth Set (ft.), Top Of Cement) of that same row, and do NOT confuse adjacent rows with one another.",
+          "title": "String Type"
+        },
+        "casing_tubing_size": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Value in the 'Size' column (Item 15 'WELL COMPLETION' grid, page 1) for this string row: the outer diameter of the casing or tubing (e.g. '5 1/2', '2 7/8'). Extract the typed/handwritten value verbatim as printed including any fraction; null if this cell is blank. Do NOT confuse with the same row's 'Depth Set (ft.)' or 'Top Of Cement' columns, nor with Item 16a 'Packer Make/Model' or Item 16b 'Depth Packer'.",
+          "title": "Casing Tubing Size"
+        },
+        "depth_set": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Value in the 'Depth set' column (printed 'Depth Set (ft.)', Item 15 'WELL COMPLETION' grid, page 1) for this string row: the depth in feet at which this casing/tubing string is set. Extract verbatim as printed; null if this cell is blank. Do NOT confuse with the same row's 'Casing/Tubing Size' or 'Top Of Cement' columns, with Item 16b 'Depth Packer', or with the injection-interval Top/Bottom depths in Item 18.",
+          "title": "Depth Set"
+        },
+        "top_of_cement": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Value in the 'TOC' column (printed 'Top Of Cement', Item 15 'WELL COMPLETION' grid, page 1) for this string row: the depth to which cement rises behind this string. Extract verbatim as printed; null if this cell is blank. Do NOT confuse with the same row's 'Depth Set (ft.)' column (where the string is set, a different depth) or with any Item 18 injection-interval depth.",
+          "title": "Top Of Cement"
+        }
+      },
+      "title": "WellCompletionCasingString",
+      "type": "object"
+    },
+    "InjectionInterval": {
+      "properties": {
+        "interval_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Which fixed injection-interval block this record describes (Item 18 region, page 2 of the render). The render exposes four labeled interval blocks, each with a Top and a Bottom depth: 'Permitted Injection' (Item 18a, the interval the permit authorizes), 'Completed Injection' (Item 18b, the interval actually completed/perforated), 'Authorized Liquid Injection', and 'Authorized Gas Injection'. Set this to the block label verbatim ('Permitted Injection', 'Completed Injection', 'Authorized Liquid Injection', or 'Authorized Gas Injection') so the row can be identified. This is the row identity (the printed block heading), NOT an operator entry. Do NOT confuse 'Permitted Injection' (what the permit allows) with 'Completed Injection' (what was actually completed), and do NOT confuse either with the 'Authorized Liquid Injection' / 'Authorized Gas Injection' blocks.",
+          "title": "Interval Type"
+        },
+        "top": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The 'Top:' depth value for this injection-interval block (Item 18 region, page 2): the shallower (upper) depth of the interval in feet. Extract verbatim as printed; null if blank. Do NOT confuse with the same block's 'Bottom:' value (the deeper depth) directly to its right, with the Top value of a different interval block (Permitted vs Completed vs Authorized Liquid vs Authorized Gas), or with the Item 15 casing 'Top Of Cement' depth.",
+          "title": "Top"
+        },
+        "bottom": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The 'Bottom:' depth value for this injection-interval block (Item 18 region, page 2): the deeper (lower) depth of the interval in feet. Extract verbatim as printed; null if blank. Do NOT confuse with the same block's 'Top:' value (the shallower depth) to its left, or with the Bottom value of a different interval block (Permitted vs Completed vs Authorized Liquid vs Authorized Gas).",
+          "title": "Bottom"
+        }
+      },
+      "title": "InjectionInterval",
+      "type": "object"
+    },
+    "TestPressureReading": {
+      "properties": {
+        "time_point": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Which time row of the Item 19 'TEST PRESSURE (PSIG)' grid this record describes (page 2 of the render). The grid has one labeled row per elapsed-time reading, printed at the left of each row, starting with 'Initial' and then 15-minute increments for as long as the operator ran the test: 'After 15 minutes' (printed '15 min.'), 'After 30 minutes' (printed '30 min.'), and \u2014 on filings with a longer test \u2014 'After 45 minutes', 'After 60 minutes', 'After 75 minutes', 'After 90 minutes', etc. The row count is NOT fixed at 3; capture every row actually printed on the grid, however many there are. Set this to the time-point label verbatim so the row can be identified. This is the row identity (the printed time label), NOT a pressure value. Do NOT confuse the time label with the three pressure columns of that same row (Tubing or Hanging String, Casing, Surface Casing), and do NOT confuse one time point with another.",
+          "title": "Time Point"
+        },
+        "tubing_or_hanging_string": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Value in the 'Tubing or Hanging String' column (printed 'TUBING', Item 19 'TEST PRESSURE (PSIG)' grid, page 2) for this time row: the tubing/hanging-string pressure in psig recorded at this time point. Extract verbatim as printed; null if this cell is blank. Do NOT confuse with the same row's 'Casing' or 'Surface Casing' pressure columns, nor with the pressure recorded at a different time point (Initial vs After 15 minutes vs After 30 minutes), nor with Item 17 'Authorized Injection Pressure (PSIG)'.",
+          "title": "Tubing Or Hanging String"
+        },
+        "casing": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Value in the 'Casing' column (printed 'CASING', Item 19 'TEST PRESSURE (PSIG)' grid, page 2) for this time row: the casing/annulus pressure in psig recorded at this time point. Extract verbatim as printed; null if this cell is blank. Do NOT confuse with the same row's 'Tubing or Hanging String' or 'Surface Casing' pressure columns, nor with the casing pressure at a different time point (Initial vs After 15 minutes vs After 30 minutes).",
+          "title": "Casing"
+        },
+        "surface_casing": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Value in the 'Surface Casing' column (printed 'SURFACE CSG', Item 19 'TEST PRESSURE (PSIG)' grid, page 2) for this time row: the surface-casing pressure in psig recorded at this time point. Extract verbatim as printed; null if this cell is blank. Do NOT confuse with the same row's 'Tubing or Hanging String' or 'Casing' pressure columns, nor with the surface-casing pressure at a different time point (Initial vs After 15 minutes vs After 30 minutes), nor with the Item 15 'Surface Casing' completion row.",
+          "title": "Surface Casing"
+        }
+      },
+      "title": "TestPressureReading",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "uic_no": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'UIC CONTROL NO.' value in the 'FOR RRC USE ONLY' box at the top-right of page 1: the Underground Injection Control number assigned to the well. Extract verbatim as a string, preserving any leading zeros and exact casing; null if blank. Do NOT confuse with 'Filing No.' (the submission/transaction number) or with Item 2 'RRC Operator No.', Item 8 'API No.', or Item 10a 'Oil Lease No.'.",
+      "title": "UIC No"
+    },
+    "filing_no": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'Filing No.' value (online-filing transaction/submission number) shown in the RRC-use header area of page 1. Extract verbatim as a string, preserving leading zeros; null if blank. Do NOT confuse with 'UIC No.' (the UIC control number for the well), 'Version' (the filing version), or 'Submittal Date'.",
+      "title": "Filing No"
+    },
+    "submittal_date": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'Submittal Date' shown in the RRC-use header area of page 1: the date this report was submitted/filed online. Extract verbatim as printed (preserve the printed date format, e.g. MM/DD/YYYY); null if blank. Do NOT confuse with Item 13 'Date of Test' (when the pressure test was performed), 'For a Retest, Date of Previous Test', or the certificate 'Date' near the signature.",
+      "title": "Submittal Date"
+    },
+    "version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'Version' value shown in the RRC-use header area of page 1: the version/revision number of this online filing. Extract verbatim as printed; null if blank. Do NOT confuse with 'Filing No.', 'UIC No.', or the printed form revision stamp ('Form H-5 11/04/2020') at the top-right of the page.",
+      "title": "Version"
+    },
+    "evaluation": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'Evaluation' value shown in the RRC-use status header of page 1: the RRC evaluation date assigned to this filing (an administrative date stamp in MM/DD/YYYY form, e.g. '06/01/2023', not operator-entered). Extract verbatim as printed; null if blank. Do NOT confuse with 'Test Status' (the test-level status), Item 25 'Well Status', or Item 22 'Test Witnessed by RRC'.",
+      "title": "Evaluation"
+    },
+    "test_status": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'Test Status' value shown in the RRC-use status header of page 1: the administrative status of the pressure test for this filing. Extract verbatim as printed; null if blank. Do NOT confuse with 'Evaluation' (the overall filing evaluation), Item 25 'Well Status' (Active / Temporarily Abandoned / Other), or the Item 12 'Reason for' test selection.",
+      "title": "Test Status"
+    },
+    "preparer": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'Preparer' name under the 'PREPARER INFORMATION' section of page 1: the name of the person who prepared this online filing. Extract verbatim as printed (preserve casing); null if blank. Do NOT confuse with Item 1 'Operator's Name' (the operating company), with the certificate 'Name of Person (type or print)', or with Item 22 'Name of RRC Representative'.",
+      "title": "Preparer"
+    },
+    "preparer_phone": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'Phone' value under the 'PREPARER INFORMATION' section of page 1: the preparer's telephone number. Extract verbatim as a string, preserving dashes, parentheses, and any leading digits; null if blank. Do NOT confuse with the preparer's 'E-mail' beside it, or with the certificate 'Telephone No.' near the signature block.",
+      "title": "Preparer Phone"
+    },
+    "preparer_email": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'E-mail' value under the 'PREPARER INFORMATION' section of page 1: the preparer's email address. Extract verbatim as printed (preserve exact casing and the full address); null if blank. Do NOT confuse with the preparer's 'Phone' beside it or with the operator address fields in the 'OPERATOR INFORMATION' section.",
+      "title": "Preparer Email"
+    },
+    "operator_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 1 'Operator's Name' (top-left of page 1, under 'OPERATOR INFORMATION'): the name of the operator (company or individual) responsible for the well. Extract verbatim as printed (preserve casing and any '&', 'LLC', 'INC' suffixes); null if blank. Do NOT confuse with Item 2 'RRC Operator No.' (the numeric operator code), the 'Preparer' name, the certificate 'Name of Person', or Item 9 'Lease Name'.",
+      "title": "Operator Name"
+    },
+    "operator_no": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 2 'RRC Operator No.' (top-right of page 1, under 'OPERATOR INFORMATION'): the operator's RRC P-5 organization number. Extract verbatim as a string, preserving leading zeros; null if blank. Do NOT confuse with Item 1 'Operator's Name' (the text name), Item 4 'RRC District No.', Item 8 'API No.', or Item 10a 'Oil Lease No.'.",
+      "title": "Operator No"
+    },
+    "operator_address_line_1": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 3 'Address' first line ('Address Line 1' under 'OPERATOR INFORMATION', page 1): the first line of the operator's mailing address (typically street/PO box). Extract verbatim as printed; null if blank. Do NOT confuse with 'Address Line 2' below it, with the City / State / Postal Code fields, or with the preparer contact fields.",
+      "title": "Operator Address Line 1"
+    },
+    "operator_city": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 3 'City' (operator mailing-address city under 'OPERATOR INFORMATION', page 1). Extract verbatim as printed; null if blank. Do NOT confuse with the operator 'State' or 'Postal Code' fields beside it, with Item 5 'County' (the well's county), or with the address line fields.",
+      "title": "Operator City"
+    },
+    "operator_address_line_2": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 3 'Address' second line ('Address Line 2' under 'OPERATOR INFORMATION', page 1): the second/overflow line of the operator's mailing address (suite, unit, etc.). Extract verbatim as printed; null if blank. Do NOT confuse with 'Address Line 1' above it or with the City / State / Postal Code fields.",
+      "title": "Operator Address Line 2"
+    },
+    "operator_state": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 3 'State' (operator mailing-address state under 'OPERATOR INFORMATION', page 1). Extract verbatim as printed (usually a two-letter abbreviation, e.g. 'TX'); null if blank. Do NOT confuse with the operator 'City' or 'Postal Code' fields, or with Item 5 'County'.",
+      "title": "Operator State"
+    },
+    "operator_postal_code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 3 'Postal Code' (operator mailing-address ZIP/postal code under 'OPERATOR INFORMATION', page 1). Extract verbatim as a string, preserving leading zeros and any ZIP+4 hyphen; null if blank. Do NOT confuse with the operator 'City' or 'State' fields, with Item 4 'RRC District No.', or with any well-identifier number.",
+      "title": "Operator Postal Code"
+    },
+    "api": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 8 'API No.' (under the 'LEASE AND WELL' section, page 1): the American Petroleum Institute well number. Extract verbatim as a string, preserving dashes and leading zeros exactly as printed (Texas API numbers are typically '42-XXX-XXXXX'); null if blank. Do NOT confuse with Item 2 'RRC Operator No.', Item 10a 'Oil Lease No.', Item 11 'Well No.', or the 'UIC No.'.",
+      "title": "API"
+    },
+    "injection_well": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'Injection Well' identifier under the 'LEASE AND WELL' section of the render (page 1): the injection/disposal well designation tied to this UIC permit. Extract verbatim as printed; null if blank. Do NOT confuse with Item 11 'Well No.' (the well number on the lease), Item 8 'API No.', or the 'UIC No.'.",
+      "title": "Injection Well"
+    },
+    "district": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 4 'RRC District No.' (under the 'LEASE AND WELL' section, page 1): the Railroad Commission district number for the well's location (e.g. '7B', '08', '6'). Extract verbatim as a string, preserving any leading zero or letter suffix; null if blank. Do NOT confuse with Item 7 'Field No.', Item 2 'RRC Operator No.', or Item 5 'County'.",
+      "title": "District"
+    },
+    "lease_no": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 10a 'Oil Lease No.' / 10b 'Gas ID No.' captured under the 'LEASE AND WELL' section as 'Lease (No.)' (page 1): the numeric RRC lease/gas identification number. Extract verbatim as a string, preserving leading zeros; null if blank. Do NOT confuse with 'Lease (Name)' (Item 9, the text lease name) which is a SEPARATE field, nor with Item 7 'Field No.', Item 8 'API No.', or Item 11 'Well No.'.",
+      "title": "Lease No"
+    },
+    "well_no": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 11 'Well No.' (under the 'LEASE AND WELL' section, page 1): the well number on the lease. Extract verbatim as a string, preserving leading zeros; null if blank. Do NOT confuse with 'Lease (No.)' (Item 10a/10b, the lease number), Item 8 'API No.', or the 'Injection Well' designation.",
+      "title": "Well No"
+    },
+    "lease_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 9 'Lease Name' captured under the 'LEASE AND WELL' section as 'Lease (Name)' (page 1): the text name of the lease. Extract verbatim as printed (preserve casing); null if blank. Do NOT confuse with 'Lease (No.)' (Item 10a/10b, the numeric lease number) which is a SEPARATE field, nor with Item 6 'Field Name' or Item 1 'Operator's Name'.",
+      "title": "Lease Name"
+    },
+    "field_number": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 7 'Field No.' (under the 'LEASE AND WELL' section, page 1): the numeric RRC field identification number. Extract verbatim as a string, preserving leading zeros; null if blank. Do NOT confuse with 'Field Name' (Item 6, the text field name) beside it, Item 4 'RRC District No.', or 'Lease (No.)'.",
+      "title": "Field Number"
+    },
+    "field_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 6 'Field Name' (under the 'LEASE AND WELL' section, page 1; printed 'exactly as shown on proration schedule'): the RRC field name. Extract verbatim as printed; null if blank. Do NOT confuse with Item 7 'Field No.' (the numeric field code), Item 9 'Lease (Name)', or Item 5 'County'.",
+      "title": "Field Name"
+    },
+    "county": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 5 'County' (under the 'LEASE AND WELL' section, page 1): the Texas county in which the well is located. Extract verbatim as printed; null if blank. Do NOT confuse with Item 4 'RRC District No.' (a district code), the operator-address 'City'/'State', or Item 6 'Field Name'.",
+      "title": "County"
+    },
+    "reason_for": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 12 'Reason for Test' under the 'TEST REPORT INFORMATION' section (page 1): the selected reason for this test. On the paper form the choices are 'Initial Test Prior to Injection', 'After Workover', 'Annual Test Required By Permit', 'Five-Year Test Required By Rule', and 'Other (Specify)'. Capture the selected reason verbatim (including any 'Other' specification text); null if blank. Do NOT confuse with Item 14 'Retest?', 'Test Status', or Item 13 'Date of Test'.",
+      "title": "Reason For"
+    },
+    "date_test_performed": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 13 'Date of Test' (printed 'Date Test Performed' under the 'TEST REPORT INFORMATION' section, page 1): the date the pressure test was performed. Extract verbatim as printed (preserve the printed date format, e.g. MM/DD/YYYY); null if blank. Do NOT confuse with 'Submittal Date' (when the filing was submitted), 'For a Retest, Date of Previous Test', or the certificate 'Date'.",
+      "title": "Date Test Performed"
+    },
+    "retest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 14 'Retest?' under the 'TEST REPORT INFORMATION' section (page 1): the Yes/No answer indicating whether this report documents a retest (the paper form prints 'YES' and 'NO' boxes; 'If YES, see Instruction No. 5'). Capture the selected answer verbatim as it appears on the render (e.g. 'YES' or 'NO'); null if blank. Do NOT confuse with 'For a Retest, Date of Previous Test' (the prior-test date) or 'Remedial Actions Prior to' (the remedial-action narrative).",
+      "title": "Retest"
+    },
+    "retest_date_of_previous_test": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'For a Retest, Date of Previous Test' field under the 'TEST REPORT INFORMATION' section (page 1): the date of the last (unsuccessful) test, filled only when Item 14 'Retest?' is YES. Extract verbatim as printed (preserve the date format); null if blank. Do NOT confuse with Item 13 'Date of Test' (the current test date), 'Submittal Date', or the 'Retest' Yes/No answer.",
+      "title": "Retest Date Of Previous Test"
+    },
+    "remedial_actions_prior_to": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'Remedial Actions Prior to' narrative under the 'TEST REPORT INFORMATION' section (page 1): free-text describing remedial actions taken to prepare the well for a retest (casing repair, tubing/packer replacement, etc., per Instruction 5). Extract the full text verbatim as printed; null if blank. Do NOT confuse with Item 24 'Operator Comments On Test' or with the 'For a Retest, Date of Previous Test' field.",
+      "title": "Remedial Actions Prior To"
+    },
+    "well_completion_casing": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/WellCompletionCasingString"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 15 'WELL COMPLETION' grid (top-center of page 1). The grid has three columns - Size, Depth set, TOC (Top Of Cement) - and one fixed labeled row per casing/tubing string. The possible rows are 'Surface Casing', 'Long String Casing', and 'Tubing or Hanging String'; a filing may fill two or three of them. Return one WellCompletionCasingString object per row, with string_type set to that row's label and the three cell values (casing_tubing_size, depth_set, top_of_cement) filled from that row. Emit a row object only for rows that have at least one filled cell; null (or an empty list) when the whole grid is blank. Preserve all cell values verbatim. Do NOT merge rows, and do NOT pull Item 16a 'Packer Make/Model' or Item 16b 'Depth Packer' into this grid.",
+      "title": "Well Completion Casing"
+    },
+    "packer_make_model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 16a 'Packer Make and Model' (printed 'Packer Make/Model' under 'WELL COMPLETION', page 1): the make and model of the injection packer. Extract verbatim as printed; null if blank. Do NOT confuse with Item 16b 'Depth Set' (printed 'Depth Packer', the packer set depth) beside it, with the Item 15 grid's 'Casing/Tubing Size' column, or with the 'No Packer / Injection Down Casing' checkbox.",
+      "title": "Packer Make Model"
+    },
+    "depth_packer": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 16b 'Depth Set' (printed 'Depth Packer' under 'WELL COMPLETION', page 1): the depth in feet at which the packer is set. Extract verbatim as printed; null if blank. Do NOT confuse with Item 16a 'Packer Make/Model' (the make/model text) beside it, with the Item 15 grid 'Depth Set (ft.)' columns, or with the 'No Packer / Injection Down Casing' checkbox.",
+      "title": "Depth Packer"
+    },
+    "no_packer_injection_down_casing": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'No Packer / Injection Down Casing' checkbox in the well-completion area of page 1: marked when the well has no packer and injects down the casing. True if this box is marked/checked on the scan, false/null if left blank. Do NOT confuse with the text fields Item 16a 'Packer Make/Model' or Item 16b 'Depth Packer', nor with the page-2 checkboxes 'No Completed Intervals', 'Well did not pressure up', or 'Digital Recorder readings are attached'.",
+      "title": "No Packer Injection Down Casing"
+    },
+    "injection_intervals": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/InjectionInterval"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 18 injection-interval region (page 2 of the render). Four fixed labeled interval blocks, each with a Top and Bottom depth (in feet): 'Permitted Injection' (Item 18a, the interval the permit authorizes), 'Completed Injection' (Item 18b, the interval actually completed), 'Authorized Liquid Injection', and 'Authorized Gas Injection'. Return one InjectionInterval object per block, with interval_type set to the block label and top/bottom filled from that block. Emit a block only when it has at least one filled cell; null (or an empty list) when no intervals are filled. Preserve depths verbatim. Do NOT merge the four blocks, do NOT confuse 'Permitted' (allowed) with 'Completed' (actual), and do NOT pull the Item 15 casing depths or Item 17 'Authorized Injection Pressure' into this grid.",
+      "title": "Injection Intervals"
+    },
+    "no_completed_intervals": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'No Completed Intervals' checkbox in the Item 18 injection-interval region (page 2): marked when there are no completed injection intervals to report. True if this box is marked/checked on the scan, false/null if left blank. Do NOT confuse with the 'Completed Injection' interval Top/Bottom values, with the 'No Packer / Injection Down Casing' checkbox (page 1), or with the page-2 'Well did not pressure up' checkbox.",
+      "title": "No Completed Intervals"
+    },
+    "well_status": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 25 'Well Status' on the render (page 2): the well's status. On the paper form the choices are 'Active', 'Temporarily Abandoned', and 'Other (Specify)'. Capture the selected status verbatim (including any 'Other' specification text); null if blank. Do NOT confuse with 'Test Status' or 'Evaluation' in the header, or with Item 22 'Test Witnessed by RRC'.",
+      "title": "Well Status"
+    },
+    "well_did_not_pressure_up": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'Well did not pressure up. No test pressures to report.' checkbox in the test-pressures area of page 2: marked when the well would not hold/pressure up so no Item 19 pressures are reported. True if this box is marked/checked on the scan, false/null if left blank. Do NOT confuse with the 'Digital Recorder readings are attached to filing' checkbox beside it, the 'No Completed Intervals' checkbox, or any Item 19 pressure cell.",
+      "title": "Well Did Not Pressure Up"
+    },
+    "digital_recorder_attached": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'Digital Recorder readings are attached to filing.' checkbox in the test-pressures area of page 2: marked when digital pressure-recorder readings are attached to this filing. True if this box is marked/checked on the scan, false/null if left blank. Do NOT confuse with the 'Well did not pressure up' checkbox beside it or with the Item 19 manually-entered pressure cells.",
+      "title": "Digital Recorder Attached"
+    },
+    "test_pressures": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/TestPressureReading"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 19 'TEST PRESSURE (PSIG)' grid (page 2 of the render; see Instructions 4(c) and 4(d)). The grid has three pressure columns - Tubing or Hanging String (printed 'TUBING'), Casing (printed 'CASING'), Surface Casing (printed 'SURFACE CSG') - and one labeled time row per elapsed-time reading, starting with 'Initial' and continuing in 15-minute increments for as long as the operator ran the test (e.g. 'After 15 minutes', 'After 30 minutes', 'After 45 minutes', 'After 60 minutes', etc.) -- the row count is NOT fixed at 3; some filings print more rows. Return one TestPressureReading object per time row actually printed, with time_point set to that row's label and the three pressure values filled from that row. Emit a row only when it has at least one filled cell; null (or an empty list) when no pressures are reported. Preserve all values verbatim. Do NOT merge the time rows, and do NOT confuse these readings with Item 17 'Authorized Injection Pressure'.",
+      "title": "Test Pressures"
+    },
+    "test_witnessed_by_rrc": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 22 'Test Witnessed by RRC?' under the 'TEST PRESSURES AND OTHER INFORMATION' section (page 2): the Yes/No answer indicating whether an RRC representative witnessed the test (the paper form prints 'YES' and 'NO' boxes; 'If NO, see Instruction 4(a)'). Capture the selected answer verbatim (e.g. 'YES' or 'NO'); null if blank. Do NOT confuse with 'Name of RRC' (the representative's name) which is a separate field, or with Item 23 'Were other tests/surveys performed'.",
+      "title": "Test Witnessed By RRC"
+    },
+    "name_of_rrc": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The 'Name of RRC' field (printed 'If YES. Name of RRC Representative') under the 'TEST PRESSURES AND OTHER INFORMATION' section (page 2): the name of the Railroad Commission representative who witnessed the test, filled when Item 22 is YES. Extract verbatim as printed; null if blank. Do NOT confuse with the Item 22 'Test Witnessed by RRC' Yes/No answer, Item 1 'Operator's Name', or the certificate 'Name of Person'.",
+      "title": "Name Of RRC"
+    },
+    "injection_fluid_description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 20 'Characteristics of Injection Fluid' (printed 'Injection Fluid Description' under 'TEST PRESSURES AND OTHER INFORMATION', page 2; see Instruction 4(e)): free-text describing the injection fluid (e.g. temperature, specific gravity). Extract the full text verbatim as printed; null if blank. Do NOT confuse with Item 21 'Annulus Fluid Description' (the fluid in the annulus) beside it, or with Item 24 'Operator Comments On Test'.",
+      "title": "Injection Fluid Description"
+    },
+    "annulus_fluid_description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 21 'Characteristics of Annulus Fluid' (printed 'Annulus Fluid Description' under 'TEST PRESSURES AND OTHER INFORMATION', page 2; see Instructions 4(e) and 4(f)): free-text describing the fluid in the annulus (or an explanation if the annulus is not loaded with fluid). Extract the full text verbatim as printed; null if blank. Do NOT confuse with Item 20 'Injection Fluid Description' (the injected fluid) beside it, or with Item 24 'Operator Comments On Test'.",
+      "title": "Annulus Fluid Description"
+    },
+    "other_tests_surveys_performed": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 23 'Were other tests/surveys performed at this time?' captured as 'Other Tests/Surveys Performed on this Well' under 'TEST PRESSURES AND OTHER INFORMATION' (page 2): the Yes/No answer and, 'If YES. List:', the list of other tests/surveys. Capture the answer and any listed tests verbatim; null if blank. Do NOT confuse with Item 22 'Test Witnessed by RRC' or with Item 24 'Operator Comments On Test'.",
+      "title": "Other Tests Surveys Performed"
+    },
+    "operator_comments_on_test": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Item 24 'Operator Comments On Test' under the 'TEST PRESSURES AND OTHER INFORMATION' section (page 2; 'attach separate sheet if necessary'): free-text operator comments on the test, including any retest remedial-action explanation per Instruction 5. Extract the full text verbatim as printed; null if blank. Do NOT confuse with 'Remedial Actions Prior to' (page 1), Item 20/21 fluid descriptions, or Item 23 'Other Tests/Surveys Performed'.",
+      "title": "Operator Comments On Test"
+    }
+  },
+  "title": "RRCH5Extraction",
+  "type": "object"
+}

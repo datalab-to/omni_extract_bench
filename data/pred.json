@@ -1,0 +1,12 @@
+{
+  "invoice_id": "INV-4417",
+  "invoice_date": "03/31/2024",
+  "total_due": "1,240.00",
+  "purchase_order": "PO-88231",
+  "currency": "USD",
+  "line_items": [
+    {"sku": "BX-2201", "description": "Washer, 8mm", "qty": 100, "unit_price": 9.4},
+    {"sku": "AX-9910", "qty": 24, "unit_price": 12.05},
+    {"sku": "ZZ-0000", "description": "Freight surcharge", "qty": 1, "unit_price": 45.0}
+  ]
+}

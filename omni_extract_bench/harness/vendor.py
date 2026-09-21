@@ -172,7 +172,7 @@ def config_for(provider: str, options: dict | None = None):
 def settings_for(provider: str, options: dict | None = None) -> dict:
     """What the adapter will be sent, as a plain dict: the `Config` it is handed.
 
-    The record states it, `out_name` digests it to name a run, and `oeb providers` prints it.
+    The record states it and `out_name` digests it to name a run.
     There are no credentials in it -- every adapter reads its key from the environment -- so
     nothing secret reaches a record or a directory name.
     """

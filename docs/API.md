@@ -284,18 +284,21 @@ See providers:
 oeb providers
 ```
 ```
+provider
+───────────────────────
 azure-cu
 datalab
 extend
 llamaextract
 mistral
 reducto
+
 openai/gpt-5.6-sol
 anthropic/claude-opus-5
 google/gemini-3.7-flash
-```
 
-Any OpenRouter `org/model` works, so the model ids are examples and not the set.
+the three model ids are examples: any OpenRouter org/model id works.
+```
 
 See what settings each takes and its default values. For example, datalab:
 
@@ -304,12 +307,13 @@ oeb providers datalab
 ```
 ```
 datalab
+option          default
+──────────────────────────────────────
+mode            balanced
+base_url        https://www.datalab.to
+poll_interval   5.0
 
-  mode           balanced
-  base_url       https://www.datalab.to
-  poll_interval  5.0
-
-  oeb benchmark --providers datalab --options '{"datalab": {"mode": ...}}'
+oeb benchmark --providers datalab --options '{"datalab": {"mode": ...}}'
 ```
 
 Those defaults are the vendor's maximum tier. Parity here is "as much as the vendor will give",

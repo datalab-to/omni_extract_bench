@@ -56,48 +56,64 @@ def cmd_score(args) -> int:
 EXAMPLE_MODELS = ("openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash")
 
 
-MAX_DEFAULT = 48
-
-
-def show_default(value) -> str:
-    """One default, fit to a column: `''` for empty, cut with `...` where it runs long."""
-    text = "''" if value == "" else str(value)
-    return text if len(text) <= MAX_DEFAULT else text[:MAX_DEFAULT - 3] + "..."
-
-
 def cmd_providers(args) -> int:
     """The names `--providers` accepts, or one provider's options in detail.
 
-        oeb providers            every name, one per line
+        oeb providers            every name
         oeb providers datalab    what `--options` takes for it, and what each is by default
 
     ONE VERB, NOT TWO. The list is the question usually being asked and the options are a
     follow-up about one entry -- printing every provider's defaults in the list drowned the
-    names. Bare, it stays one column, so `oeb providers | ...` is still a clean list.
+    names. PIPED, IT IS STILL ONE COLUMN OF NAMES: the table is for a reader, and
+    `oeb providers | ...` gets the list it has always got.
 
-    The options come from `vendor.settings_for`, which reads the adapter's own `Config`, so
-    this cannot drift from what the adapter accepts.
+    The options come from the adapter's own `Config` -- its fields are the options and their
+    defaults -- so this cannot drift from what the adapter accepts.
     """
+    import dataclasses
+
+    from rich import box
+    from rich.console import Console
+    from rich.table import Table
+
     from .harness import PROVIDERS
-    from .harness.vendor import settings_for
+    from .harness.vendor import config_for
+
+    console = Console()
 
     if not args.provider:
-        for provider in (*PROVIDERS, *EXAMPLE_MODELS):
-            print(provider)
+        if not console.is_terminal:
+            for provider in (*PROVIDERS, *EXAMPLE_MODELS):
+                print(provider)
+            return 0
+        table = Table(box=box.SIMPLE_HEAD, pad_edge=False, show_edge=False)
+        table.add_column("provider")
+        for provider in PROVIDERS:
+            table.add_row(provider)
+        table.add_section()
+        for model in EXAMPLE_MODELS:
+            table.add_row(model)
+        console.print(table)
+        print("\nthe three model ids are examples: any OpenRouter org/model id works.")
         return 0
 
-    options = settings_for(args.provider)
-    print(args.provider)
-    if not options:
-        print("\n  no options: it takes the document and the schema and nothing else")
+    config = config_for(args.provider)
+    fields = dataclasses.fields(config)
+    if not fields:
+        console.print(f"{args.provider}: no options -- it takes the document and the schema "
+                      f"and nothing else")
         return 0
 
-    width = max(len(key) for key in options)
-    print()
-    for key, value in options.items():
-        print(f"  {key:<{width}}  {show_default(value)}")
-    print(f"\n  oeb benchmark --providers {args.provider} "
-          f"--options '{{\"{args.provider}\": {{\"{next(iter(options))}\": ...}}}}'")
+    table = Table(box=box.SIMPLE_HEAD, pad_edge=False, show_edge=False,
+                  title=args.provider, title_justify="left")
+    table.add_column("option")
+    table.add_column("default", overflow="fold")
+    for field in fields:
+        value = getattr(config, field.name)
+        table.add_row(field.name, "''" if value == "" else str(value))
+    console.print(table)
+    print(f"\noeb benchmark --providers {args.provider} "
+          f"--options '{{\"{args.provider}\": {{\"{fields[0].name}\": ...}}}}'")
     return 0
 
 

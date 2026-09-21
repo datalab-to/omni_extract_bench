@@ -31,15 +31,20 @@ See providers:
 oeb providers
 ```
 ```
+provider
+───────────────────────
 azure-cu
 datalab
 extend
 llamaextract
 mistral
 reducto
+
 openai/gpt-5.6-sol
 anthropic/claude-opus-5
 google/gemini-3.7-flash
+
+the three model ids are examples: any OpenRouter org/model id works.
 ```
 
 See what settings each provider takes and its default values. For example, datalab:
@@ -49,12 +54,13 @@ oeb providers datalab
 ```
 ```text
 datalab
+option          default
+──────────────────────────────────────
+mode            balanced
+base_url        https://www.datalab.to
+poll_interval   5.0
 
-  mode           balanced
-  base_url       https://www.datalab.to
-  poll_interval  5.0
-
-  oeb benchmark --providers datalab --options '{"datalab": {"mode": ...}}'
+oeb benchmark --providers datalab --options '{"datalab": {"mode": ...}}'
 ```
 
 Then run the benchmark (limit to 1 document here). It's **resumable** so you can stop and reinvoke to resume at any point.
