@@ -181,7 +181,6 @@ def settings_for(provider: str, options: dict | None = None) -> dict:
     return dataclasses.asdict(config_for(provider, options))
 
 
-
 def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOUT,
             overlay: bool = True, **options) -> dict:
     """Run one document through one provider and return the answer with its evidence.
@@ -190,10 +189,6 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     of returning them: neither is a fact about the document, both are identical for every one
     of them, and a returned failure is written down as a settled answer no resume re-attempts.
     """
-    from .. import _stub                       # TEMPORARY, FOR RECORDING A DEMO
-    if _stub.on():
-        return _stub.prediction(provider, schema)
-
     extract = adapter(provider)
     pdf = Path(pdf)
     if not pdf.exists():

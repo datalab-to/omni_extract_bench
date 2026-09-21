@@ -26,103 +26,13 @@ uv pip install 'omni-extract-bench[benchmark]'    # + packages to orchestrate an
 
 ## Run our benchmark with one line
 
-We provide orchestration to run our benchmark around our core primitives: `predict` and `score`.
-
-See providers:
-
-```bash
-oeb providers
-```
-```
-provider
-───────────────────────
-azure-cu
-datalab
-extend
-llamaextract
-mistral
-reducto
-
-openai/gpt-5.6-sol
-anthropic/claude-opus-5
-google/gemini-3.7-flash
-
-the three model ids are examples: any OpenRouter org/model id works.
-```
-
-See what settings each provider takes and its default values. For example, datalab:
-
-```bash
-oeb providers datalab
-```
-```text
-datalab
-option          default
-──────────────────────────────────────
-mode            balanced
-base_url        https://www.datalab.to
-poll_interval   5.0
-
-oeb benchmark --providers datalab --options '{"datalab": {"mode": ...}}'
-```
-
-Then run the benchmark (limit to 1 document here). It's **resumable** so you can stop and reinvoke to resume at any point.
+We provide orchestration to run our benchmark around our core primitives: `predict` and `score`. Run the benchmark (limit to 1 document here). It's **resumable** so you can stop and reinvoke to resume at any point.
 
 **!!NOTE!!**: this will cost money and you will need your API keys set.
 
 ```bash
 oeb benchmark --out runs/ --limit 1 \
     --providers datalab reducto extend llamaextract
-```
-```text
-benchmark
-out         runs
-runs        4 over 4 adapters
-corpus      huggingface datalab-to/omni_extract_bench
-documents   1 document selected
-timeout     1800s per document
-score only  false
-rescoring   false
-
-╭──────────────┬─────────┬───────────────────────┬────────────────────────────────────────┬─────────┬───────╮
-│ adapter      │ at once │ run                   │ settings                               │ predict │ grade │
-├──────────────┼─────────┼───────────────────────┼────────────────────────────────────────┼─────────┼───────┤
-│ datalab      │      10 │ datalab-f46415c9      │ base_url=https://www.datalab.to        │       1 │     1 │
-│              │         │                       │ ────────────────────────────────────── │         │       │
-│              │         │                       │ mode=balanced                          │         │       │
-│              │         │                       │ ────────────────────────────────────── │         │       │
-│              │         │                       │ poll_interval=5.0                      │         │       │
-├──────────────┼─────────┼───────────────────────┼────────────────────────────────────────┼─────────┼───────┤
-│ reducto      │       3 │ reducto-e54d3a1d      │ agentic_table_mode=max                 │       1 │     1 │
-│              │         │                       │ ────────────────────────────────────── │         │       │
-│              │         │                       │ deep_extract_model=v2                  │         │       │
-│              │         │                       │ ────────────────────────────────────── │         │       │
-│              │         │                       │ poll_interval=5                        │         │       │
-│              │         │                       │ ────────────────────────────────────── │         │       │
-│              │         │                       │ system_prompt=''                       │         │       │
-├──────────────┼─────────┼───────────────────────┼────────────────────────────────────────┼─────────┼───────┤
-│ extend       │       5 │ extend-7bbd41aa       │ api_version=2026-02-09                 │       1 │     1 │
-│              │         │                       │ ────────────────────────────────────── │         │       │
-│              │         │                       │ array_strategy=large_array_max_context │         │       │
-│              │         │                       │ ────────────────────────────────────── │         │       │
-│              │         │                       │ base_url=https://api.extend.ai         │         │       │
-├──────────────┼─────────┼───────────────────────┼────────────────────────────────────────┼─────────┼───────┤
-│ llamaextract │       3 │ llamaextract-76247dbb │ poll_interval=5                        │       1 │     1 │
-│              │         │                       │ ────────────────────────────────────── │         │       │
-│              │         │                       │ tier=agentic_plus                      │         │       │
-╰──────────────┴─────────┴───────────────────────┴────────────────────────────────────────┴─────────┴───────╯
-  proceed? [y/N]
-```
-If you proceed you'll see:
-
-```text
- run                                        done   ok   err   in flight   cost   avg    dur
- ──────────────────────────────────────────────────────────────────────────────────────────
- datalab-f46415c9                            0/1    0     0         1/1                3.0s
- reducto-e54d3a1d                            0/1    0     0         1/1                3.0s
- extend-7bbd41aa                             0/1    0     0         1/1                3.0s
- llamaextract-76247dbb                       0/1    0     0         1/1                3.0s
-0/4 documents  0 failed  4 in flight  3.0s elapsed
 ```
 
 You can also specify settings per provider. For example:
