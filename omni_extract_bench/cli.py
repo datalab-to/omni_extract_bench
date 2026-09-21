@@ -185,6 +185,25 @@ def cmd_predict(args) -> int:
     return 1 if record.get("error") else 0
 
 
+def confirm_plan(plan: str) -> bool:
+    """Show what the benchmark is about to do, and ask. `--no-wait` skips this entirely.
+
+    A benchmark run costs real money and takes hours, so the default is to say what it will
+    cost before it starts. The plan goes to stderr with the rest of the progress, leaving
+    stdout for the summary.
+
+    NOBODY TO ASK IS NOT THE SAME AS NO. A pipe, a cron job or a CI step has no terminal, so
+    it proceeds -- it was scripted, which is consent. Only an interactive session is asked.
+    """
+    print(plan, file=sys.stderr)
+    if not sys.stdin.isatty():
+        return True
+    try:
+        return input("  proceed? [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
 def cmd_benchmark(args) -> int:
     from .benchmark import run
 
@@ -198,10 +217,13 @@ def cmd_benchmark(args) -> int:
                       score_workers=args.score_workers,
                       verdicts=args.verdicts, rescore=args.rescore,
                       score_only=args.score_only,
-                      options=read_options(args.options))
+                      options=read_options(args.options),
+                      confirm=None if args.no_wait else confirm_plan)
     except (MissingCredential, MissingDependency, AccountFailure) as exc:
         print(f"  {exc}", file=sys.stderr)
         return 1
+    if not summary:
+        return 1              # the plan was declined, so there is nothing to print
     json.dump(summary, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0
@@ -264,6 +286,9 @@ def main(argv=None) -> int:
                         "changing the metric -- nothing else notices that")
     b.add_argument("--score-only", action="store_true",
                    help="score the predictions already on disk; call no vendor")
+    b.add_argument("--no-wait", action="store_true",
+                   help="do not show the plan and wait for approval before spending. A run "
+                        "with no terminal to ask -- a pipe, a cron job -- never waits anyway")
     b.set_defaults(fn=cmd_benchmark)
 
     d = sub.add_parser("predict", help="run one document through one vendor")

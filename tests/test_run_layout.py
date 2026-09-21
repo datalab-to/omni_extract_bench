@@ -316,6 +316,38 @@ report("the plan states it per run, once the corpus is known",
        f"{len(docs) - 2:>5} to predict,     0 to grade" in plan.describe(docs),
        plan.describe(docs))
 
+print("\nAND ASKS BEFORE IT SPENDS")
+ask = pathlib.Path(tempfile.mkdtemp())
+B.fetch = lambda root: ask
+V.adapter = counting
+shown, called = [], {"n": 0}
+
+
+def counting_adapter(prov):
+    inner = counting(prov)
+
+    def extract(pdf, schema, *, timeout, config):
+        called["n"] += 1
+        return inner(pdf, schema, timeout=timeout, config=config)
+    return extract
+
+
+V.adapter = counting_adapter
+declined = B.BenchmarkRun(["datalab"], out=ask, score_workers=1,
+                          predict_workers={"*": 1}).go(
+    confirm=lambda plan: (shown.append(plan), False)[1])
+report("a declined plan calls no vendor at all", called["n"] == 0, f'{called["n"]} calls')
+report("...and gives back nothing rather than a half summary", declined == {})
+report("...having shown what it would have done",
+       named("datalab") in shown[0] and "to predict" in shown[0], shown[0] if shown else "")
+report("...and wrote no summary.json", not list(ask.glob("*/summary.json")))
+
+called["n"] = 0
+accepted = B.BenchmarkRun(["datalab"], out=ask, score_workers=1,
+                          predict_workers={"*": 1}).go(confirm=lambda plan: True)
+report("an approved plan runs", called["n"] == len(B.read_manifest()) and len(accepted) == 1,
+       f'{called["n"]} calls, {len(accepted)} rows')
+
 print("\nEACH RUN IS TIMED FOR ITSELF, NOT FOR THE QUEUE IT SHARES")
 from omni_extract_bench.progress import Progress                               # noqa: E402
 

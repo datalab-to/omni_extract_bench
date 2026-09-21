@@ -147,5 +147,40 @@ check("...but a third-party WARNING still gets through",
 check("our own logger reports progress",
       logging.getLogger("omni_extract_bench.benchmark").getEffectiveLevel() <= logging.INFO)
 
+print("\nA BENCHMARK ASKS BEFORE IT SPENDS")
+import builtins                                                          # noqa: E402
+
+
+class _Stdin:
+    def __init__(self, tty):
+        self.tty = tty
+
+    def isatty(self):
+        return self.tty
+
+
+def _asked(answer, tty=True):
+    """What `confirm_plan` decides, given a terminal that answers `answer`."""
+    saved_in, saved_input = cli.sys.stdin, builtins.input
+    shown = io.StringIO()
+    cli.sys.stdin = _Stdin(tty)
+    builtins.input = ((lambda _="": (_ for _ in ()).throw(EOFError))
+                      if answer is EOFError else (lambda _="": answer))
+    try:
+        with contextlib.redirect_stderr(shown):
+            return cli.confirm_plan("benchmark: 1 run"), shown.getvalue()
+    finally:
+        cli.sys.stdin, builtins.input = saved_in, saved_input
+
+
+for answer, want in (("y", True), ("yes", True), ("Y", True),
+                     ("n", False), ("", False), ("nonsense", False)):
+    got, _ = _asked(answer)
+    check(f"a terminal answering {answer!r} -> {want}", got is want, str(got))
+check("the plan is shown before the question", "benchmark: 1 run" in _asked("y")[1])
+check("...on stderr, so stdout stays the summary", _asked("y")[1].strip() == "benchmark: 1 run")
+check("no terminal proceeds without asking", _asked("n", tty=False)[0] is True)
+check("...and a closed terminal does not", _asked(EOFError)[0] is False)
+
 print(f"\n{'ALL CLI TESTS PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}")
 sys.exit(1 if FAILS else 0)

@@ -689,25 +689,47 @@ class BenchmarkRun:
                      s["documents"])
         return summary
 
-    def go(self) -> dict:
-        """Fetch, predict, score, write it down. Returns the summary it also writes."""
+    def corpus(self) -> list[Doc]:
+        """The documents this invocation selects, fetching them if they are not here yet."""
         root = fetch(self.data_root)
         docs = read_manifest(root / MANIFEST, root, suites=self.suites, limit=self.limit)
         if not docs:
             raise ValueError("no documents selected: check --suites and --limit")
-        for line in self.describe(docs).splitlines():
-            log.info("%s", line)
+        return docs
+
+    def go(self, confirm=None) -> dict:
+        """Fetch, predict, score, write it down. Returns the summary it also writes.
+
+        `confirm` is handed the plan and decides whether to go on, which is how a command line
+        asks before spending money. Returning False runs nothing and gives back `{}` -- and
+        that is the only way `{}` comes back, since `plan` refuses to produce no runs at all.
+
+        THE CALLBACK OWNS SHOWING IT. Given one, this does not log the plan: the caller is
+        about to put it in front of somebody and two copies help nobody. Without one, it logs,
+        because a run that spends money should say what it bought.
+        """
+        docs = self.corpus()
+        plan = self.describe(docs)
+        if confirm is None:
+            for line in plan.splitlines():
+                log.info("%s", line)
+        elif not confirm(plan):
+            log.warning("nothing run")
+            return {}
         self.prepare()
         if not self.score_only:
             self.predict(docs)
         return self.score(docs)
 
 
-def run(providers: list[str], **kwargs) -> dict:
+def run(providers: list[str], *, confirm=None, **kwargs) -> dict:
     """Fetch, predict, score, write it down. Returns the summary it also writes to `out`.
 
     Keyword arguments and no argparse, so this stays callable from a notebook; it raises rather
     than exits, for the same reason. `BenchmarkRun(providers, **kwargs)` is the same thing with
     the plan available first -- `describe()` says what it would do, and costs nothing.
+
+    Nothing here reads stdin. `confirm` is a callable the CLI supplies, so a library call is
+    never the thing that blocks waiting for somebody to type y.
     """
-    return BenchmarkRun(providers, **kwargs).go()
+    return BenchmarkRun(providers, **kwargs).go(confirm=confirm)
