@@ -58,11 +58,11 @@ import json
 import logging
 import os
 import threading
-import time
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import NamedTuple
 
+from . import _stub                          # TEMPORARY, FOR RECORDING A DEMO
 from . import score
 from rich import box
 from rich.console import Console, Group
@@ -348,12 +348,9 @@ class ProviderRun:
             return run.label, "skipped", None, None, None
         try:
             with run.progress.calling():
-                # TEMPORARY, FOR RECORDING A DEMO -- see `vendor.STUB`. Here rather than
-                # inside `predict` only because the gold is here, and a fake that degrades
-                # the gold scores like a run instead of scoring zero. REVERT THIS COMMIT.
-                from .harness import vendor
-                record = (vendor._stub(run.provider, doc.schema, time.time(), gold=doc.gt)
-                          if os.environ.get(vendor.STUB)
+                # TEMPORARY, FOR RECORDING A DEMO. Hooked here as well as in `predict`
+                # because the gold is here, and a fake built from it scores like a run.
+                record = (_stub.prediction(run.provider, doc.schema, gold=doc.gt) if _stub.on()
                           else predict(run.provider, doc.pdf, doc.schema, timeout=timeout,
                                        **run.options))
             run.store(doc, record)
@@ -406,6 +403,9 @@ SCORE_WORKERS = min(8, os.cpu_count() or 1)
 def score_one(doc: Doc, *, provider: str, out: Path, verdicts: bool = False) -> dict:
     """Grade one prediction on disk and return its row. Module-level and picklable for the
     process pool, and it never raises: one bad document is an error row."""
+    if _stub.on():                                # TEMPORARY, FOR RECORDING A DEMO
+        return _stub.score_row(doc, provider)
+
     row = {"doc_id": doc.doc_id, "suite": doc.suite, "provider": provider}
     path = out / "predictions" / f"{doc.doc_id}.json"
     try:

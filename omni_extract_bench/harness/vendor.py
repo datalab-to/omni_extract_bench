@@ -38,7 +38,6 @@ import dataclasses
 import hashlib
 import importlib
 import json
-import os
 import re
 import time
 from pathlib import Path
@@ -182,77 +181,6 @@ def settings_for(provider: str, options: dict | None = None) -> dict:
     return dataclasses.asdict(config_for(provider, options))
 
 
-# TEMPORARY, FOR RECORDING A DEMO. `OEB_STUB=1` makes every prediction a local fake: no
-# vendor, no key, no money, an answer shaped like the schema that was asked for. Set it to a
-# number instead of `1` to have each document take that many seconds, so a benchmark run is
-# slow enough to watch. REVERT THIS COMMIT when the recording is done.
-STUB = "OEB_STUB"
-
-
-def _stub_value(schema: dict):
-    """One placeholder for one resolved subschema, keyed to what it says it wants."""
-    for branch in schema.get("anyOf") or schema.get("oneOf") or []:
-        if branch.get("type") != "null":
-            return _stub_value(branch)
-    if "enum" in schema:
-        return schema["enum"][0]
-    kind = schema.get("type")
-    if kind == "object":
-        return {k: _stub_value(v) for k, v in (schema.get("properties") or {}).items()}
-    if kind == "array":
-        return [_stub_value(schema.get("items") or {})]
-    if kind in ("number", "integer"):
-        return 1
-    if kind == "boolean":
-        return True
-    if kind == "null":
-        return None
-    return "sample"
-
-
-def _degrade(value, rng, rate):
-    """The gold answer with a fraction of its leaves misread, so a fake run scores like a run."""
-    if isinstance(value, dict):
-        return {k: _degrade(v, rng, rate) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_degrade(v, rng, rate) for v in value]
-    if rng.random() >= rate:
-        return value
-    if isinstance(value, str):
-        return "sample"
-    if isinstance(value, bool):
-        return not value
-    if isinstance(value, (int, float)):
-        return value + 1
-    return None
-
-
-def _stub(provider: str, schema: dict, started: float, gold: Path | None = None) -> dict:
-    import random
-
-    from ..metric import resolve_refs
-
-    time.sleep(float(os.environ[STUB]) if os.environ[STUB] != "1" else 0)
-    seed = int(hashlib.sha256(provider.encode()).hexdigest()[:4], 16)
-    if gold is not None and Path(gold).exists():
-        result = _degrade(json.loads(Path(gold).read_text()),
-                          random.Random(f"{provider}:{gold}"), 0.04 + seed % 22 / 100)
-    else:
-        result = _stub_value(resolve_refs(schema))
-    return {
-        "result": result,
-        "raw": {"stub": True},
-        "error": None,
-        "provider": provider,
-        "cost": {"usd": round(0.004 + seed % 90 / 10000, 4), "source": STUB, "wall_s": round(time.time() - started, 1),
-                 "attempts": 1, "billed_out_of_band": False},
-        "job_id": None,
-        "schema_sent": schema,
-        "run_manifest": {"timeout_s": 0.0, "settings": {}, "model": None, "timed_out": False,
-                         "conventions_applied": False,
-                         "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S")},
-    }
-
 
 def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOUT,
             overlay: bool = True, **options) -> dict:
@@ -262,8 +190,9 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     of returning them: neither is a fact about the document, both are identical for every one
     of them, and a returned failure is written down as a settled answer no resume re-attempts.
     """
-    if os.environ.get(STUB):
-        return _stub(provider, schema, time.time())
+    from .. import _stub                       # TEMPORARY, FOR RECORDING A DEMO
+    if _stub.on():
+        return _stub.prediction(provider, schema)
 
     extract = adapter(provider)
     pdf = Path(pdf)
