@@ -186,7 +186,7 @@ def cmd_predict(args) -> int:
 
 
 def confirm_plan(plan: str) -> bool:
-    """Show what the benchmark is about to do, and ask. `--no-wait` skips this entirely.
+    """Show what the benchmark is about to do, and ask. `-y` / `--yes` skips this entirely.
 
     A benchmark run costs real money and takes hours, so the default is to say what it will
     cost before it starts. The plan goes to stderr with the rest of the progress, leaving
@@ -218,7 +218,7 @@ def cmd_benchmark(args) -> int:
                       verdicts=args.verdicts, rescore=args.rescore,
                       score_only=args.score_only,
                       options=read_options(args.options),
-                      confirm=None if args.no_wait else confirm_plan)
+                      confirm=None if args.yes else confirm_plan)
     except (MissingCredential, MissingDependency, AccountFailure) as exc:
         print(f"  {exc}", file=sys.stderr)
         return 1
@@ -286,7 +286,7 @@ def main(argv=None) -> int:
                         "changing the metric -- nothing else notices that")
     b.add_argument("--score-only", action="store_true",
                    help="score the predictions already on disk; call no vendor")
-    b.add_argument("--no-wait", action="store_true",
+    b.add_argument("-y", "--yes", action="store_true",
                    help="do not show the plan and wait for approval before spending. A run "
                         "with no terminal to ask -- a pipe, a cron job -- never waits anyway")
     b.set_defaults(fn=cmd_benchmark)
