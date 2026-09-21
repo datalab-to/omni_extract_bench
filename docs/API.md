@@ -146,12 +146,13 @@ uv pip install 'omni-extract-bench[benchmark,harness]'
 Use in your own code.
 
 ```python
-from omni_extract_bench.benchmark import run
+from omni_extract_bench.benchmark import BenchmarkRun
 
-run(
+BenchmarkRun(
   providers,              # vendors and/or model ids
   out="runs",             # where the runs go
-  data_root="benchmark",  # where the corpus is downloaded to
+  data_root=None,         # where the corpus goes, and what a relative manifest path is from
+  manifest=None,          # a parquet manifest of your own instead of ours
   suites=None,            # limit to these suites
   limit=0,                # first N documents; for a smoke test
   timeout=1800.0,         # seconds one document may take, the same for every vendor
@@ -164,18 +165,88 @@ run(
 )
 ```
 
-`out` and `data_root` are paths, and everything but `providers` is keyword-only. It returns the
-summary, keyed by run.
+Everything but `providers` is keyword-only. `go()` runs it and returns the summary, keyed by
+run.
 
 ```python
-summary = run(["datalab", "reducto"], limit=5)
+summary = BenchmarkRun(["datalab", "reducto"], limit=5).go()
 summary["datalab-f46415c9"]["accuracy"]
 ```
 
-Keyword arguments and no argparse, so this stays callable from a notebook, and it raises rather
-than exits for the same reason.
+`run(providers, **kwargs)` is the same thing in one call, if you don't want the object.
 
-The cli is the same thing, one flag per argument.
+Keyword arguments and no argparse, so this stays callable from a notebook, and it raises rather
+than exits for the same reason. Nothing here reads stdin either.
+
+### Three levels, three classes
+
+```python
+BenchmarkRun   # the invocation      every Run, grouped by adapter, predicted then graded
+ProviderRun    # one adapter         every Run on it, through one pool sized to that service
+Run            # one configuration   a provider plus its options
+```
+
+A **Run** is a provider plus its options -- `datalab` at `mode=accurate` -- and it is what
+everything is keyed by: it names a directory, a summary row and a progress line.
+
+A **ProviderRun** is every Run on one adapter, sharing one pool. The cap belongs to the vendor,
+so two datalab tiers split its ten rather than taking ten each. And every `org/model` id is one
+`llm_single_shot`, one OpenRouter endpoint and one key, so three models named separately still
+share one budget.
+
+### See the plan before you spend
+
+Construct one and ask. No download, no vendor call:
+
+```python
+print(BenchmarkRun(["datalab"], options={"datalab": [{"mode": "balanced"},
+                                                     {"mode": "accurate"}]}).describe())
+```
+```
+benchmark: 2 runs over 1 adapter, 1800s per document, our corpus -> runs
+╭─────────┬─────────┬──────────────────┬─────────────────────────────────┬─────────┬───────╮
+│ adapter │ at once │ run              │ settings                        │ predict │ grade │
+├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
+│ datalab │      10 │ datalab-f46415c9 │ base_url=https://www.datalab.to │         │       │
+│         │         │                  │ ─────────────────────────────── │         │       │
+│         │         │                  │ mode=balanced                   │         │       │
+│         │         │                  │ ─────────────────────────────── │         │       │
+│         │         │                  │ poll_interval=5.0               │         │       │
+│         │         │ datalab-01a72762 │ ...truncated for display         │         │       │
+╰─────────┴─────────┴──────────────────┴─────────────────────────────────┴─────────┴───────╯
+```
+
+`predict` and `grade` are empty because there is no corpus yet. Give it one and it says what a
+resume would cost, per run:
+
+```python
+b = BenchmarkRun(["datalab", "reducto"], limit=1)
+b.describe(b.corpus())
+```
+```
+benchmark: 3 runs over 2 adapters, 1800s per document, our corpus, 1 document selected -> runs
+╭─────────┬─────────┬──────────────────┬─────────────────────────────────┬─────────┬───────╮
+│ adapter │ at once │ run              │ settings                        │ predict │ grade │
+├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
+│ datalab │      10 │ datalab-f46415c9 │ base_url=https://www.datalab.to │       1 │     1 │
+│         │         │                  │ ─────────────────────────────── │         │       │
+│         │         │                  │ mode=balanced                   │         │       │
+│         │         │                  │ ─────────────────────────────── │         │       │
+│         │         │                  │ poll_interval=5.0               │         │       │
+│         │         │ datalab-01a72762 │ base_url=https://www.datalab.to │       1 │     1 │
+│         │         │                  │ ...                             │         │       │
+├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
+│ reducto │       3 │ reducto-e54d3a1d │ agentic_table_mode=max          │       1 │     1 │
+│         │         │                  │ ...truncated for display        │         │       │
+╰─────────┴─────────┴──────────────────┴─────────────────────────────────┴─────────┴───────╯
+```
+
+They're counted separately because they're independent: every prediction can be on disk with
+every grade still owed, which is what `--rescore` means.
+
+### From the cli
+
+The cli is the same thing, one flag per argument. It prints that plan and waits.
 
 **!!NOTE!!**: this will cost money and you will need your API keys set.
 
@@ -183,9 +254,28 @@ The cli is the same thing, one flag per argument.
 oeb benchmark --out runs/ --limit 1 --providers datalab reducto
 ```
 ```
-datalab-f46415c9  ██████████████  1/1  ok 1  err 0  avg 13s  done in 13s
-reducto-e54d3a1d  ░░░░░░░░░░░░░░  0/1  ok 0  err 0  1/1 in flight
+benchmark: 2 runs over 2 adapters, 1800s per document, our corpus, 1 document selected -> runs/
+...the table above
+  proceed? [y/N]
 ```
+
+`-y` skips the question. A run with no terminal to ask -- a pipe, a cron job -- never waits
+anyway, so a script is not the thing that hangs.
+
+Then it runs:
+
+```
+ run                                    done   ok   err   in flight       cost     avg
+ ────────────────────────────────────────────────────────────────────────────────────────────────────
+ datalab-f46415c9   ━━━━━━━━━━━━━━━━   20/20   20     0                  $6.20   1m58s   done in 3.0s
+ datalab-01a72762   ━━━━━━━━━━━━━━━━   20/20   20     0                  $6.20   2m02s   done in 3.0s
+ reducto-e54d3a1d   ━━━━━━━━━━━━━━━━   20/20   19     1               5,820 cr   2m19s   done in 3.0s
+ mistral-44136fa3   ━━━━━━━━━━━━━━━━   20/20   20     0                          2m13s   done in 3.0s
+80/80 documents  1 failed  $12.40 + 5,820 cr  3.0s elapsed
+```
+
+Piped to a file or running in CI there is nothing to redraw, so the same counters come out as a
+log line per provider instead. You don't choose: it reads the stream and decides.
 
 ### Settings per provider
 
@@ -202,7 +292,27 @@ oeb benchmark \
   --out runs/
 ```
 
-That's 4 runs. 
+That's 4 runs.
+
+### A manifest of your own
+
+Instead of our corpus, which then isn't downloaded at all:
+
+```bash
+oeb benchmark --providers datalab --manifest my/corpus/manifest.parquet
+```
+
+Same parquet either way. Columns: `doc_id`, `suite`, `doc_path`, `gt_path`, and a `schema`
+column holding JSON.
+
+A `doc_id` is a filename -- it names `predictions/<doc_id>.json`, its record and its row in
+`scores.jsonl` -- so one with a `/` in it is refused, naming the row.
+
+An absolute `doc_path` is used as it is. A relative one resolves against `--data-root`, or the
+manifest's own directory when you don't give one, so a manifest sitting next to its PDFs needs
+no flags.
+
+**!!NOTE!!**: an absolute path won't survive a container or somebody else's machine.
 
 ### Resuming
 
