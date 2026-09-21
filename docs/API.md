@@ -6,14 +6,15 @@ This is the public facing API for the toolkit. There are three main entry points
 - `predict`: predict extractions for a document with one of our providers.
 - `benchmark`: run our benchmark.
 
-The first two are the primitives the last one is built around. Each works in your code and from
-the cli, and does the same thing either way -- the cli is a thin wrapper.
+The first two are the primitives the last one is built around. Each works in your code and
+from the cli. The cli is a thin wrapper, except that `benchmark` shows you the plan and waits
+-- nothing in the library ever reads stdin.
 
 1. **[score](#score)** — grade one prediction against one ground truth.
 2. **[predict](#predict)** — one document, one vendor.
 3. **[benchmark](#benchmark)** — the whole corpus, every vendor, resumable.
 4. **[providers](#providers)** — what you can run, and what each one takes.
-5. **[What benchmark writes](#what-benchmark-writes)** — the files, and what's in them.
+5. **[What a benchmark writes](#what-a-benchmark-writes)** — the files, and what's in them.
 
 
 ## score
@@ -150,11 +151,11 @@ from omni_extract_bench.benchmark import BenchmarkRun
 BenchmarkRun(
   providers,              # e.g. ["datalab"]
   out="runs",             # where runs go
-  data_root=None,         
+  data_root=None,
   manifest=None,          # own manifest instead of ours
   suites=None,            # limit to these suites
   limit=0,                # first N documents
-  timeout=1800.0,         
+  timeout=1800.0,
   predict_workers=None,   # documents in flight per vendor
   score_workers=0,        # processes used to score
   verdicts=False,         # write verdicts
@@ -169,7 +170,7 @@ summary = BenchmarkRun(["datalab", "reducto"], limit=5).execute()
 summary["datalab-f46415c9"]["accuracy"] # e.g. 0.9145
 ```
 
-### Three levels of abstractions 
+### Three levels of abstraction
 
 ```python
 BenchmarkRun   # every Run, grouped by adapter, predicted then graded
@@ -177,7 +178,7 @@ ProviderRun    # every Run using a provider, through one pool sized to that serv
 Run            # a provider plus its options
 ```
 
-- A `Run` is a provider plus its options. For example, `datalab` at `mode=accurate`. It has its own self-contained directoy of results.
+- A `Run` is a provider plus its options. For example, `datalab` at `mode=accurate`. It has its own self-contained directory of results.
 - A `ProviderRun` is every Run for one provider sharing one pool of threads. The cap belongs to the provider.
 
 
@@ -244,7 +245,7 @@ That's 4 runs.
 oeb benchmark --providers datalab --manifest my/corpus/manifest.parquet
 ```
 
-Same parquet shape as [ours](https://huggingface.co/datasets/datalab-to/omni_extract_bench). 
+Same parquet shape as [ours](https://huggingface.co/datasets/datalab-to/omni_extract_bench).
 
 ### Resuming
 

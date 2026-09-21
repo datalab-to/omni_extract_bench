@@ -56,9 +56,9 @@ datalab
   oeb benchmark --providers datalab --options '{"datalab": {"mode": ...}}'
 ```
 
-Then run the benchmark (limit to 1 document here). It's **resumable** so you can stop and reinvoke to resume at any point. 
+Then run the benchmark (limit to 1 document here). It's **resumable** so you can stop and reinvoke to resume at any point.
 
-**!!NOTE!!**: this will cost money and you will need your API keys set. 
+**!!NOTE!!**: this will cost money and you will need your API keys set.
 
 ```
 oeb benchmark --out runs/ --limit 1 \
@@ -80,10 +80,12 @@ benchmark: 4 runs over 4 adapters, 1800s per document, our corpus, 1 document se
 │              │         │                       │ deep_extract_model=v2                  │         │       │
 │              │         │                       │ ────────────────────────────────────── │         │       │
 │              │         │                       │ poll_interval=5                        │         │       │
-│              │         │                       │ ────────────────────────────────────── │         │       │                                                                          │              |         |                       | system_prompt=''                       │         │       │
+│              │         │                       │ ────────────────────────────────────── │         │       │
+│              │         │                       │ system_prompt=''                       │         │       │
 ├──────────────┼─────────┼───────────────────────┼────────────────────────────────────────┼─────────┼───────┤
 │ extend       │       5 │ extend-7bbd41aa       │ api_version=2026-02-09                 │       1 │     1 │
-│              │         │                       │ ────────────────────────────────────── │         │       │                                                                          │              |         |                       | array_strategy=large_array_max_context │         │       │
+│              │         │                       │ ────────────────────────────────────── │         │       │
+│              │         │                       │ array_strategy=large_array_max_context │         │       │
 │              │         │                       │ ────────────────────────────────────── │         │       │
 │              │         │                       │ base_url=https://api.extend.ai         │         │       │
 ├──────────────┼─────────┼───────────────────────┼────────────────────────────────────────┼─────────┼───────┤
@@ -96,12 +98,13 @@ benchmark: 4 runs over 4 adapters, 1800s per document, our corpus, 1 document se
 If you proceed you'll see:
 
 ```
- run                                        done   ok   err       in flight   cost   avg    dur
- ──────────────────────────────────────────────────────────────────────────────────────────────
- datalab-f46415c9        ━━━━━━━━━━━━━━━━    0/1    0     0        1/1                     3.0s
- reducto-e54d3a1d        ━━━━━━━━━━━━━━━━    0/1    0     0        1/1                     3.0s
- extend-7bbd41aa         ━━━━━━━━━━━━━━━━    0/1    0     0        1/1                     3.0s
- llamaextract-76247dbb   ━━━━━━━━━━━━━━━━    0/1    0     0        1/1                     3.0s
+ run                                        done   ok   err   in flight   cost   avg    dur
+ ──────────────────────────────────────────────────────────────────────────────────────────
+ datalab-f46415c9                            0/1    0     0         1/1                3.0s
+ reducto-e54d3a1d                            0/1    0     0         1/1                3.0s
+ extend-7bbd41aa                             0/1    0     0         1/1                3.0s
+ llamaextract-76247dbb                       0/1    0     0         1/1                3.0s
+0/4 documents  0 failed  4 in flight  3.0s elapsed
 ```
 
 You can also specify settings per provider. For example:
@@ -109,7 +112,7 @@ You can also specify settings per provider. For example:
 ```
 oeb benchmark \
   --providers datalab reducto \
-  --limit 1 \                                                                                                                              
+  --limit 1 \
   --options '{"datalab":  [{"mode": "balanced"}, {"mode": "accurate"}],
               "reducto": [{"agentic_table_mode": "max"},
                           {"agentic_table_mode": "default"}]}' \
@@ -223,7 +226,7 @@ oeb score --pred pred.json --gt gold.json --schema schema.json
 }
 ```
 
-Return with verdicts to dive deeper into exact places where the model failed. 
+Return with verdicts to dive deeper into exact places where the model failed.
 
 ```python
 
@@ -295,7 +298,7 @@ uv pip install 'omni-extract-bench[harness]'
 from omni_extract_bench.harness import predict
 
 record = predict("datalab", "invoice.pdf", schema)
-record["result"]         
+record["result"]
 record["raw"]
 record["cost"]
 ```
