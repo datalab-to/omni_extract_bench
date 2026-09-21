@@ -111,17 +111,27 @@ def _incomplete(buf: str) -> bool:
         return True
 
 
-_joined, _buf = [], ""
+_joined, _dangling, _buf = [], [], ""
 for _doc in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
-    for _ln in _doc.read_text().splitlines():
-        _ln = _ln.strip()
+    for _n, _raw in enumerate(_doc.read_text().splitlines(), 1):
+        _ln = _raw.strip()
         if _buf or re.match(rf"^oeb\s+({'|'.join(VERBS)})\b", _ln):
+            # THE RAW LINE DECIDES WHETHER IT CONTINUES. A backslash with anything after it
+            # escapes that -- a space, not the newline -- so the shell ends the command there
+            # and runs the next line as its own. Stripping first hid a line with 126 spaces
+            # after its backslash: this joined what bash would not, and passed.
+            _continues = _raw.endswith("\\")
+            if _raw.rstrip().endswith("\\") and not _continues:
+                _dangling.append(f"{_doc.name}:{_n}")
+                _continues = True          # join it anyway, so the report is the one above
             _buf = (_buf + " " if _buf else "") + _ln.rstrip("\\")
-            if not _ln.endswith("\\") and not _incomplete(_buf):
+            if not _continues and not _incomplete(_buf):
                 _cmd = re.split(r"\s(?:\||>>?|&&|;)\s", _buf)[0]
                 _joined.append((_doc.name, " ".join(_cmd.split())))
                 _buf = ""
     _buf = ""
+check("no line continuation has whitespace after its backslash", not _dangling,
+      f"{', '.join(_dangling)} -- bash ends the command there and runs the rest as its own")
 lines = [(doc, ln) for doc, ln in _joined if "..." not in ln]
 check("the docs show commands to check", len(lines) >= 1, f"found {len(lines)}")
 for doc, line in lines:
