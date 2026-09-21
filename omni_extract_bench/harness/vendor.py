@@ -26,17 +26,22 @@ WHAT IS UNIFORM, AND WHY EACH RULE EXISTS
   documents "failed" in 60 seconds after a credit ceiling, converting a recoverable pause into
   174 stored zeros.
 
-AN ADAPTER IS A FUNCTION AND A CONFIG. `providers/<name>.extract(pdf, schema, *, timeout,
-config)` makes the call, parses the answer and returns an `Extraction`; it RAISES its failures,
-from where they happen. Its `Config` is a frozen dataclass whose fields are exactly what the
-vendor can be asked -- the one declaration `--options`, `oeb providers` and the adapter's own
-command line all read.
+AN ADAPTER IS A MODULE WITH THREE NAMES -- `extraction.Adapter` states them, `ADAPTERS` below
+holds one of each, and nothing else is ever looked up on one:
+
+    Config          a frozen dataclass; its fields are exactly what the vendor can be asked,
+                    and the one declaration `--options` and `oeb providers` both read
+    prepare_schema  the JSON Schema -> whatever this vendor's API takes
+    extract         makes the call, parses the answer, returns an `Extraction`; RAISES its
+                    failures, from where they happen
+
+`prepare_schema` is `predict`'s to call, not `extract`'s, so that one value is both what the
+vendor receives and what the record stores.
 """
 from __future__ import annotations
 
 import dataclasses
 import hashlib
-import importlib
 import json
 import re
 import time
@@ -44,32 +49,53 @@ from pathlib import Path
 
 from . import schema_overlay as SO
 from .dialects import cost_from_response, strip_benchmark_keys
-from .extraction import (AccountFailure, Budget, Cost, Extraction, MissingDependency,
-                         VendorError, VendorTimeout)
+from .extraction import (AccountFailure, Budget, Cost, DialectError, Extraction, VendorError,
+                         VendorTimeout)
+from .providers import (azure_cu, datalab, extend, llamaextract, llm_single_shot, mistral,
+                        reducto)
 
 DEFAULT_TIMEOUT = 1800.0
 MODEL_SEPARATOR = "/"
 
-ADAPTERS: dict[str, str] = {
-    "datalab": "datalab",
-    "mistral": "mistral",
-    "reducto": "reducto",
-    "extend": "extend",
-    "llamaextract": "llamaextract",
-    "azure-cu": "azure_cu",
+ADAPTERS = {
+    "datalab": datalab,
+    "mistral": mistral,
+    "reducto": reducto,
+    "extend": extend,
+    "llamaextract": llamaextract,
+    "azure-cu": azure_cu,
 }
 PROVIDERS = sorted(ADAPTERS)
 
 
-def resolve(provider: str) -> str:
-    """The adapter module for a provider name or a model id."""
+def _registered(provider: str):
+    """The adapter module this provider name means. One lookup, one error message."""
     if MODEL_SEPARATOR in provider:
-        return "llm_single_shot"
+        return llm_single_shot
     if provider not in ADAPTERS:
         raise ValueError(f"unknown provider {provider!r}. Known vendors: "
                          f"{', '.join(PROVIDERS)}. Any OpenRouter model id also works, "
                          f"e.g. openai/gpt-5.6-sol")
     return ADAPTERS[provider]
+
+
+def adapter(provider: str):
+    """The module that talks to this vendor: its `Config`, `prepare_schema` and `extract`.
+
+    Any OpenRouter model id is the single-shot LLM adapter, which is why model ids need no
+    entry above -- there is one adapter for all of them, and the id is one of its settings.
+    """
+    return _registered(provider)
+
+
+def resolve(provider: str) -> str:
+    """This adapter's module name -- what `WORKERS` is keyed by, and what groups the runs of
+    one adapter together however many model ids reached it.
+
+    Read off the registry rather than through `adapter`, so a run is still filed under the
+    vendor it names when a caller has substituted the adapter itself.
+    """
+    return _registered(provider).__name__.rsplit(".", 1)[-1]
 
 
 def out_name(provider: str, options: dict | None = None) -> str:
@@ -119,41 +145,19 @@ def _is_account_failure(exc: VendorError) -> bool:
     return exc.status == 402 or any(m in blob for m in ACCOUNT_MARKERS)
 
 
-def adapter(provider: str):
-    """The adapter function for a provider, imported on demand.
-
-    A missing SDK surfaces HERE, as `MissingDependency`, rather than as a per-document result.
-    It is our environment, it is identical for all 620 documents, and it is not transient -- so
-    a recorded one is a settled failure no resume re-attempts, and a whole provider reads as 0%
-    coverage over one missing install.
-    """
-    try:
-        return _module(provider).extract
-    except ImportError as exc:
-        raise MissingDependency(
-            f"the {provider} adapter could not import what it needs:\n"
-            f"    {exc}\n"
-            f"    pip install 'omni-extract-bench[harness]'"
-        ) from None
-
-
-def _module(provider: str):
-    return importlib.import_module(f".providers.{resolve(provider)}", __package__)
-
-
 def config_for(provider: str, options: dict | None = None):
     """This provider's adapter `Config`, with the caller's options applied.
 
-    THE CONFIG IS THE DECLARATION. Its fields are the options: what `--options` may set, what
-    `oeb providers` lists, and what `run_cli` builds this adapter's flags from. Nothing infers
-    them from a signature and nothing restates a default elsewhere.
+    THE CONFIG IS THE DECLARATION. Its fields are the options: what `--options` may set and
+    what `oeb providers` lists. Nothing infers them from a signature and nothing restates a
+    default elsewhere.
 
     An option the adapter does not have is REFUSED, by name, rather than ignored -- a typo
     that goes through changes nothing and the run reports as stock.
     """
     import dataclasses
 
-    config_type = _module(provider).Config
+    config_type = adapter(provider).Config
     options = options or {}
     if MODEL_SEPARATOR in provider:
         if "model" in options:
@@ -189,21 +193,32 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     of returning them: neither is a fact about the document, both are identical for every one
     of them, and a returned failure is written down as a settled answer no resume re-attempts.
     """
-    extract = adapter(provider)
+    api = adapter(provider)
     pdf = Path(pdf)
     if not pdf.exists():
         raise FileNotFoundError(f"no document at {pdf}")
 
-    stripped = strip_benchmark_keys(schema)
-    sent = strip_benchmark_keys(SO.apply_overlay(schema)) if overlay else stripped
     config = config_for(provider, options)
     budget = Budget(timeout)
     started = time.time()
     got, error, attempts = None, None, 0
-    for attempt in range(TRANSIENT_ATTEMPTS):
+
+    # WHAT THE VENDOR IS SENT, made once. `sent` is the object `extract` receives and the
+    # object the record stores as `schema_sent`, so the record cannot describe a schema the
+    # vendor never saw -- which it did, while each adapter reshaped the schema privately.
+    asked = strip_benchmark_keys(SO.apply_overlay(schema) if overlay else schema)
+    try:
+        sent = api.prepare_schema(asked)
+    except Exception as exc:  # noqa: BLE001 -- a dialect may raise anything; see DialectError
+        sent = asked
+        error = DialectError(f"{provider} could not shape this schema: "
+                             f"{type(exc).__name__}: {exc}"[:400])
+    # A schema that would not shape never reaches the vendor: no attempts, `cost.attempts` 0,
+    # and the record below carries the DialectError as this document's settled answer.
+    for attempt in range(0 if error else TRANSIENT_ATTEMPTS):
         attempts = attempt + 1
         try:
-            got = extract(pdf, sent, timeout=budget.remaining(), config=config)
+            got = api.extract(pdf, sent, timeout=budget.remaining(), config=config)
             error = None
             break
         except VendorError as exc:
@@ -247,7 +262,7 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
             "settings": dataclasses.asdict(config),
             "model": provider if MODEL_SEPARATOR in provider else None,
             "timed_out": isinstance(error, VendorTimeout),
-            "conventions_applied": overlay and sent != stripped,
+            "conventions_applied": overlay and SO.apply_overlay(schema) != schema,
             "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         },
     }

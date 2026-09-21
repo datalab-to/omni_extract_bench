@@ -438,7 +438,7 @@ wants all of it.
     "billed_out_of_band": false
   },
   "job_id": "32RBrjAbYxN0yDlOF__lDQ",
-  "schema_sent": {"...": "the schema this vendor received"},
+  "schema_sent": {"...": "the exact payload this vendor's API received, after its dialect"},
   "run_manifest": {
     "timeout_s": 1800,
     "settings": {"mode": "balanced", "base_url": "https://www.datalab.to", "poll_interval": 5.0},

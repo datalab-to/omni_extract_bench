@@ -5,7 +5,7 @@ The PDF goes inline as a base64 data URL and the extraction comes back as
 
 Auth: MISTRAL_API_KEY.
 
-    python -m omni_extract_bench.harness.providers.mistral --pdf doc.pdf --schema s.json --out out.json
+    oeb predict --provider mistral --doc doc.pdf --schema schema.json
 """
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from pathlib import Path
 import httpx
 
 from ..extraction import Cost, Extraction, MissingCredential, VendorError
-from ._cli import run_cli
 
 MODEL = "mistral-ocr-latest"
 URL = "https://api.mistral.ai/v1/ocr"
@@ -27,6 +26,11 @@ URL = "https://api.mistral.ai/v1/ocr"
 @dataclasses.dataclass(frozen=True)
 class Config:
     """Nothing to steer: the document and the schema go in one call and that is all."""
+
+
+def prepare_schema(schema: dict) -> dict:
+    """This vendor takes a JSON Schema as written; nothing to reshape."""
+    return schema
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
@@ -76,10 +80,3 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
         raw={k: v for k, v in payload.items() if k != "document_annotation"},
         cost=Cost.reported(usage.get("cost"), "usage_info.cost"))
 
-
-def main() -> None:
-    run_cli(extract, Config, "mistral")
-
-
-if __name__ == "__main__":
-    main()

@@ -3,15 +3,17 @@
 A leaf module: it imports nothing from this package, so every adapter and the runner above
 them can share these without a cycle.
 
-THE CONTRACT. An adapter is a function and a `Config`:
+THE CONTRACT. An adapter is a MODULE with three names -- see `Adapter` below:
 
-    extract(pdf, schema, *, timeout, config: Config) -> Extraction
+    Config          what the vendor can be asked
+    prepare_schema  the JSON Schema -> whatever this vendor's API takes
+    extract         (pdf, schema, *, timeout, config) -> Extraction
 
-It makes the vendor call, parses the answer, and returns both.
+`extract` makes the vendor call, parses the answer, and returns both.
 
 `Config` is a frozen dataclass whose FIELDS are what the vendor can be asked -- one
-declaration, read by `--options`, by `oeb providers`, by `run_cli` for the adapter's own
-flags, and by `run_manifest.settings` for the record. Nothing infers an option from a
+declaration, read by `--options`, by `oeb providers`, and by `run_manifest.settings` for the
+record. Nothing infers an option from a
 signature and nothing restates a default somewhere else.
 
 A field must hold what the vendor is actually SENT. A `None` that `extract` later resolves
@@ -21,7 +23,8 @@ vendor was handed 128000. Resolve it in `__post_init__`, where the Config still 
 from __future__ import annotations
 
 import time
-from typing import Any, NamedTuple
+from pathlib import Path
+from typing import Any, NamedTuple, Protocol
 
 TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
 
@@ -180,6 +183,32 @@ def as_object(value) -> dict | None:
     return None
 
 
+class Adapter(Protocol):
+    """What every module in `providers/` provides. `vendor.ADAPTERS` holds one of each.
+
+    Three names, and nothing else is looked up on an adapter:
+
+        Config          a frozen dataclass; its fields are what the vendor can be asked
+        prepare_schema  the JSON Schema -> whatever this vendor's API takes
+        extract         make the call, parse the answer, return it
+
+    `prepare_schema` is separate from `extract` so that ONE value is both what `extract`
+    receives and what the record stores: an adapter that reshaped privately inside `extract`
+    left the record naming a schema the vendor never saw. Identity is a real answer here --
+    three vendors take a JSON Schema as written and say so with a one-line function, rather
+    than by omitting one and being defaulted.
+
+    Structural, not inherited: an adapter is a module, and a module cannot subclass. Nothing
+    enforces this at runtime -- it is the contract in one place, and `tests/` checks it.
+    """
+
+    Config: type
+
+    def prepare_schema(self, schema: dict) -> dict: ...
+
+    def extract(self, pdf: Path, schema: dict, *, timeout: float, config) -> Extraction: ...
+
+
 class VendorError(RuntimeError):
     """The call was made and did not produce an extraction.
 
@@ -196,6 +225,22 @@ class VendorError(RuntimeError):
     @property
     def transient(self) -> bool:
         return self.status in TRANSIENT_STATUSES
+
+
+class DialectError(VendorError):
+    """The schema could not be shaped into what this vendor accepts, so no call was made.
+
+    A fact about the harness rather than the vendor -- but RETURNED, not raised, because it is
+    a fact about ONE document's schema. A dialect that throws on one corpus schema would
+    otherwise take the run down and lose the 619 documents either side of it, and the crash
+    would name a `KeyError` rather than the schema that caused it.
+
+    Never transient: the same schema shapes the same way every time, so a retry buys nothing.
+    """
+
+    @property
+    def transient(self) -> bool:
+        return False
 
 
 class VendorTimeout(VendorError):

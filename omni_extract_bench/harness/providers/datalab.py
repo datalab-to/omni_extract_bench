@@ -10,8 +10,8 @@ recovers from.
 
 Auth: DATALAB_API_KEY.
 
-    python -m omni_extract_bench.harness.providers.datalab --pdf doc.pdf --schema s.json --out out.json \\
-        --mode balanced
+    oeb predict --provider datalab --doc doc.pdf --schema schema.json \
+        --options '{"mode": "balanced"}'
 """
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ import httpx
 
 from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
                           VendorError)
-from ._cli import run_cli
 
 DEFAULT_BASE_URL = "https://www.datalab.to"
 
@@ -42,7 +41,7 @@ class Config:
     poll_interval: float = 5.0
 
 
-def normalize_schema(schema: dict) -> dict:
+def prepare_schema(schema: dict) -> dict:
     """Collapse nullable unions and de-require the fields that were nullable.
 
     The API expresses optionality by omission from `required`, not by a `["string", "null"]`
@@ -56,7 +55,7 @@ def normalize_schema(schema: dict) -> dict:
         for k, v in props.items():
             if isinstance(v, dict) and isinstance(v.get("type"), list) and "null" in v["type"]:
                 nullable.add(k)
-        schema["properties"] = {k: normalize_schema(v) if isinstance(v, dict) else v
+        schema["properties"] = {k: prepare_schema(v) if isinstance(v, dict) else v
                                 for k, v in props.items()}
     if "required" in schema and nullable:
         schema["required"] = [r for r in schema["required"] if r not in nullable]
@@ -66,7 +65,7 @@ def normalize_schema(schema: dict) -> dict:
         non_null = [t for t in schema["type"] if t != "null"]
         schema["type"] = non_null[0] if non_null else "string"
     if isinstance(schema.get("items"), dict):
-        schema["items"] = normalize_schema(schema["items"])
+        schema["items"] = prepare_schema(schema["items"])
     return schema
 
 
@@ -109,7 +108,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
             resp = client.post(
                 f"{base_url}/api/v1/extract",
                 files={"file": (pdf.name, fh, "application/pdf")},
-                data={"page_schema": json.dumps(normalize_schema(schema)),
+                data={"page_schema": json.dumps(schema),
                       "extraction_mode": config.mode, "output_format": "json"})
         if resp.status_code != 200:
             raise VendorError(f"HTTP {resp.status_code}: {resp.text[:300]}",
@@ -163,10 +162,3 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                     job_id=request_id)
             time.sleep(config.poll_interval)
 
-
-def main() -> None:
-    run_cli(extract, Config, "datalab")
-
-
-if __name__ == "__main__":
-    main()

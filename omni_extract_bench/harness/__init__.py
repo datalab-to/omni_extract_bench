@@ -29,6 +29,7 @@ THE SURFACE
                                      and the evidence for it in one dict
     Extraction, Cost                 what an adapter hands back
     VendorError, VendorTimeout       a failure of the call; `.transient` decides a retry
+    DialectError                     the schema would not shape for this vendor; no call made
     AccountFailure                   raised, never returned: not a fact about a document
     MissingCredential                likewise: an unset API key
     MissingDependency                likewise: an adapter that could not import its SDK
@@ -47,29 +48,27 @@ result alone -- a parser bug is then fixed by re-reading a file instead of re-pa
 calls, which is what it cost once.
 """
 
-from .extraction import (AccountFailure, Cost, Extraction, MissingCredential,
-                         MissingDependency, VendorError, VendorTimeout)
+from .extraction import (Adapter, AccountFailure, Cost, DialectError, Extraction,
+                         MissingCredential, MissingDependency, VendorError, VendorTimeout)
 
-_LAZY = ("predict", "adapter", "settings_for", "PROVIDERS", "WORKERS", "DEFAULT_TIMEOUT")
-
-
-def __getattr__(name):
-    """PEP 562: the engine's names resolve on first use, so importing this package for
-    an exception type does not pull in an adapter's SDK."""
-    if name in _LAZY:
-        from . import vendor
-        return getattr(vendor, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def __dir__():
-    return sorted(set(globals()) | set(_LAZY))
-
+# THE VENDOR SDKs ARE CHECKED ONCE, HERE. Importing this package means running a vendor, and
+# every adapter is imported with it -- so a missing install is one message naming the extra,
+# not a per-adapter surprise six hours into a run. The scorer never imports this package
+# (`tests/test_score_standalone.py` fails if that changes), so a scoring-only machine still
+# needs none of it.
+try:
+    from .vendor import DEFAULT_TIMEOUT, PROVIDERS, WORKERS, adapter, predict, settings_for
+except ImportError as exc:
+    raise MissingDependency(
+        f"the harness could not import what the vendor adapters need:\n"
+        f"    {exc}\n"
+        f"    pip install 'omni-extract-bench[harness]'"
+    ) from None
 
 __all__ = [
-    "predict", "adapter",
+    "predict", "adapter", "Adapter",
     "Extraction", "Cost",
-    "VendorError", "VendorTimeout",
+    "VendorError", "VendorTimeout", "DialectError",
     "AccountFailure", "MissingCredential", "MissingDependency",
     "PROVIDERS", "WORKERS", "DEFAULT_TIMEOUT", "settings_for",
 ]

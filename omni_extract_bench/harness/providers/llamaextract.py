@@ -13,8 +13,7 @@ shows it now validates. Entitlements change — check a tier against the API, no
 Auth: LLAMA_CLOUD_API_KEY (llx-...).
 
 Usage:
-    python -m omni_extract_bench.harness.providers.llamaextract \
-        --pdf doc.pdf --schema schema.json --out /tmp/llamaextract.json
+    oeb predict --provider llamaextract --doc doc.pdf --schema schema.json
 
 Adapted from longextract_bench (MIT, (c) 2026 Micro1) -- see providers/LICENSE-micro1.
 """
@@ -33,7 +32,6 @@ from pathlib import Path
 
 from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
                           VendorError)
-from ._cli import run_cli
 
 BASE = "https://api.cloud.llamaindex.ai"
 TIER = "agentic_plus"
@@ -51,7 +49,7 @@ class Config:
     poll_interval: int = 5
 
 
-def _adapt_schema(schema: dict, defs: dict | None = None) -> dict:
+def prepare_schema(schema: dict, defs: dict | None = None) -> dict:
     """Inline $ref/$defs, drop $-prefixed metadata keys, and collapse type-lists to a
     single type. The latter is required: LlamaExtract turns `"type": ["array","null"]`
     into an anyOf and the array branch loses its `items` → 400 schema_validation. We
@@ -62,7 +60,7 @@ def _adapt_schema(schema: dict, defs: dict | None = None) -> dict:
     if not isinstance(schema, dict):
         return schema
     if "$ref" in schema:
-        return _adapt_schema(
+        return prepare_schema(
             copy.deepcopy(defs.get(schema["$ref"].split("/")[-1], {})), defs
         )
     node = {k: v for k, v in schema.items() if not k.startswith("$")}
@@ -76,7 +74,7 @@ def _adapt_schema(schema: dict, defs: dict | None = None) -> dict:
                           if k not in ("anyOf", "oneOf", "allOf")}
                 for k, v in pick.items():
                     merged.setdefault(k, v)
-                return _adapt_schema(merged, defs)
+                return prepare_schema(merged, defs)
 
     t = node.get("type")
     if isinstance(t, list):
@@ -99,10 +97,10 @@ def _adapt_schema(schema: dict, defs: dict | None = None) -> dict:
 
     if "properties" in node:
         node["properties"] = {
-            k: _adapt_schema(v, defs) for k, v in node["properties"].items()
+            k: prepare_schema(v, defs) for k, v in node["properties"].items()
         }
     if "items" in node:
-        node["items"] = _adapt_schema(node["items"], defs)
+        node["items"] = prepare_schema(node["items"], defs)
     return node
 
 
@@ -185,7 +183,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                data=json.dumps({
                    "file_input": file_id,
                    "configuration": {"tier": config.tier, "extraction_target": "per_doc",
-                                     "data_schema": _adapt_schema(schema)},
+                                     "data_schema": schema},
                }).encode())
     job_id = job.get("id") or job.get("job_id")
 
@@ -229,10 +227,3 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
         cost=Cost(),
         job_id=job_id)
 
-
-def main() -> None:
-    run_cli(extract, Config, "llamaextract", description="LlamaExtract v2")
-
-
-if __name__ == "__main__":
-    main()

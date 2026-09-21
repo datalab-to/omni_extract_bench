@@ -1,14 +1,21 @@
-"""Vendor adapters: one module per vendor, each an `extract()` function.
+"""Vendor adapters: one module per vendor, each satisfying `harness.extraction.Adapter`.
 
-    extract(pdf, schema, *, timeout, config: Config) -> Extraction
+    Config          what the vendor can be asked
+    prepare_schema  the JSON Schema -> whatever this vendor's API takes
+    extract         makes the call, parses the answer, returns both
 
-It makes the vendor call, parses the answer, and returns both. It does not RETURN a failure --
-it raises `VendorError` (or `VendorTimeout`) from where the failure happened, while it still
-knows what happened. `harness/extraction.py` has the contract.
+`extract` does not RETURN a failure -- it raises `VendorError` (or `VendorTimeout`) from where
+the failure happened, while it still knows what happened. `harness/extraction.py` has the
+contract, and `vendor.ADAPTERS` maps a provider name to one of these modules.
 
-Each also keeps a `main()`, so one document can still be reproduced by hand:
+One document is reproduced by hand with `oeb predict`, which goes through `vendor.predict`
+and so applies the same parity rules and writes the same record a benchmark run would:
 
-    python -m omni_extract_bench.harness.providers.<vendor> --pdf X.pdf --schema S.json --out O.json
+    oeb predict --provider <vendor> --doc X.pdf --schema S.json
+
+The adapters used to carry a `main()` each, generating their own flags from the same `Config`.
+That was a second way in, and it prepared the schema differently from the benchmark it existed
+to explain -- it applied no overlay and stripped no benchmark-only keys.
 
 No `__all__` and nothing imported here. Importing a vendor adapter pulls its HTTP client, and
 those come with the `harness` extra -- so naming them at package level would make

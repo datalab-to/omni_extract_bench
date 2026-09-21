@@ -19,6 +19,7 @@ import json
 import pathlib
 import signal
 import subprocess
+import types
 import sys
 import tempfile
 import threading
@@ -65,10 +66,28 @@ report("...and nothing is written, so every document stays resumable",
 print("\nAND A REAL SIGINT STOPS A RUN, ON A DOCUMENT BOUNDARY")
 script = out / "run_it.py"
 script.write_text(f'''
-import sys, json, pathlib, time
+import sys, json, pathlib, time, types
 sys.path.insert(0, {str(ROOT)!r})
 import omni_extract_bench.benchmark as B
 import omni_extract_bench.harness.vendor as V
+
+_REAL_ADAPTER = V.adapter
+
+
+def as_adapter(lookup):
+    """A stub `provider -> extract` as an adapter: the three names `Adapter` asks for.
+
+    `Config` and `prepare_schema` come from the real adapter, so a test that means to fake
+    only the vendor call is not also faking the declaration or the schema it is sent.
+    """
+    def wrapped(provider):
+        real = _REAL_ADAPTER(provider)
+        return types.SimpleNamespace(Config=real.Config,
+                                     prepare_schema=real.prepare_schema,
+                                     extract=lookup(provider))
+    return wrapped
+
+
 from omni_extract_bench.harness.extraction import Cost, Extraction
 
 out = pathlib.Path(sys.argv[1])
@@ -80,7 +99,7 @@ for i in range(40):
                 "properties": {{"a": {{"type": "string"}}}}}}))
 B.fetch = lambda *_: out
 B.read_manifest = lambda *a, **k: docs
-V.adapter = lambda prov: (lambda pdf, schema, *, timeout, **o:
+V.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o:
     time.sleep(0.4) or Extraction(result={{"a": "x"}}, cost=Cost(usd=0.5)))
 B.run(["datalab", "reducto"], out=out, score_workers=1, predict_workers={{"*": 2}})
 ''')
@@ -124,6 +143,22 @@ import omni_extract_bench.harness.vendor as V                                  #
 from omni_extract_bench.harness.extraction import (                            # noqa: E402
     AccountFailure, Cost, Extraction)
 
+_REAL_ADAPTER = V.adapter
+
+
+def as_adapter(lookup):
+    """A stub `provider -> extract` as an adapter: the three names `Adapter` asks for.
+
+    `Config` and `prepare_schema` come from the real adapter, so a test that means to fake
+    only the vendor call is not also faking the declaration or the schema it is sent.
+    """
+    def wrapped(provider):
+        real = _REAL_ADAPTER(provider)
+        return types.SimpleNamespace(Config=real.Config,
+                                     prepare_schema=real.prepare_schema,
+                                     extract=lookup(provider))
+    return wrapped
+
 acct = pathlib.Path(tempfile.mkdtemp())
 pair = []
 for i in range(6):
@@ -144,7 +179,7 @@ def broke_adapter(prov):
 
 
 saved_adapter, saved_fetch, saved_manifest = V.adapter, B.fetch, B.read_manifest
-V.adapter = broke_adapter
+V.adapter = as_adapter(broke_adapter)
 B.fetch = lambda *_: acct
 B.read_manifest = lambda *a, **k: pair
 try:
@@ -194,7 +229,7 @@ for i in range(20):
     twenty.append(B.Doc(f"d{i}", "s", pdf, g,
                         {"type": "object", "properties": {"a": {"type": "string"}}}))
 paid = collections.Counter()
-V.adapter = lambda prov: (lambda pdf, schema, *, timeout, **o: (
+V.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o: (
     paid.update([prov]), Extraction(result={"a": "x"}, cost=Cost(usd=0.1)))[1])
 real_write_json = B.write_json_atomic
 B.write_json_atomic = lambda path, obj, **kw: (

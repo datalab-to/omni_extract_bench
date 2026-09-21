@@ -4,7 +4,6 @@ from pathlib import Path
 import httpx
 
 from ..dialects import resolve_refs, to_strict_dialect
-from ._cli import run_cli
 from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
                           VendorError)
 
@@ -130,10 +129,9 @@ def extract(pdf: Path, schema: dict, *, timeout: float = DEFAULT_TIMEOUT_S,
 
     budget = Budget(timeout)
     with httpx.Client(headers=headers(key, config.api_version), timeout=120) as c:
-        sent = to_strict_dialect(resolve_refs(rename_reserved(schema)))
         try:
             file_id = upload(c, pdf, config.base_url)
-            run_id = submit(c, file_id, sent, config.base_url, config.array_strategy)
+            run_id = submit(c, file_id, schema, config.base_url, config.array_strategy)
         except httpx.HTTPStatusError as exc:
             raise VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
                               status=exc.response.status_code,
@@ -160,10 +158,11 @@ def extract(pdf: Path, schema: dict, *, timeout: float = DEFAULT_TIMEOUT_S,
                       job_id=run_id)
 
 
-def main() -> None:
-    run_cli(extract, Config, "extend")
-
-
+#: `id` is reserved by Extend. The rename is HALF A PAIR: `rename_reserved` goes out with the
+#: schema (via `prepare_schema`, applied by `predict`) and `restore_reserved` comes back with the
+#: vendor's answer, inside `extract` -- the response is the only thing that can undo it. Both
+#: read this one mapping, so the two halves cannot disagree about a name; if you drop the rename
+#: from `prepare_schema`, drop the `restore_reserved` call with it.
 RESERVED = {"id": "id__"}
 
 
@@ -183,6 +182,11 @@ def rename_reserved(node):
     return out
 
 
+def prepare_schema(schema):
+    """The schema Extend is sent: reserved names aliased, $refs inlined, strict dialect."""
+    return to_strict_dialect(resolve_refs(rename_reserved(schema)))
+
+
 def restore_reserved(obj):
     back = {v: k for k, v in RESERVED.items()}
     if isinstance(obj, list):
@@ -191,6 +195,3 @@ def restore_reserved(obj):
         return {back.get(k, k): restore_reserved(v) for k, v in obj.items()}
     return obj
 
-
-if __name__ == "__main__":
-    main()

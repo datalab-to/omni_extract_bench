@@ -13,8 +13,11 @@ Run: python3 tests/test_predict.py
 """
 import dataclasses
 import json
+import subprocess
 import sys
 import tempfile
+import textwrap
+import types
 from pathlib import Path
 
 import os as _os, sys as _sys
@@ -51,11 +54,14 @@ seen = {}
 
 
 def stub(fn):
-    """Install `fn` as every provider's adapter.
+    """Install `fn` as every provider's `extract`, keeping the real adapter otherwise.
 
     The stub's own signature does not matter: the options come from the REAL adapter's
     `Config`, which is a declaration rather than something inferred from whatever is standing
     in for `extract`. A stub used to have to replicate the signature to be believed.
+
+    `Config` and `prepare_schema` come from the real adapter for the same reason -- a stand-in
+    that answered those itself would be testing the stand-in.
     """
     def counted(pdf, schema, *, timeout=None, config=None):
         opts = dataclasses.asdict(config) if config is not None else {}
@@ -64,7 +70,13 @@ def stub(fn):
         counted.calls += 1
         return fn(pdf, schema, timeout=timeout, **opts)
     counted.calls = 0
-    vendor.adapter = lambda provider: counted
+
+    def lookup(provider):
+        real = _REAL_ADAPTER(provider)
+        return types.SimpleNamespace(Config=real.Config,
+                                     prepare_schema=real.prepare_schema,
+                                     extract=counted)
+    vendor.adapter = lookup
     return counted
 
 
@@ -203,17 +215,28 @@ for exc, kind in ((VendorError("HTTP 402: no credits", status=402), AccountFailu
 vendor.adapter = _REAL_ADAPTER
 
 print("\nA MISSING SDK IS FOUND AT THE IMPORT, NOT IN A MESSAGE")
-import omni_extract_bench.harness.vendor as _v                                 # noqa: E402
-_real = _v.importlib.import_module
-_v.importlib.import_module = lambda *a, **k: (_ for _ in ()).throw(ImportError("No module named 'httpx'"))
-try:
-    _v.adapter("mistral")
-    report("a missing SDK raises MissingDependency", False, "it returned an adapter")
-except MissingDependency as exc:
-    report("a missing SDK raises MissingDependency", True)
-    report("...naming the extra to install", "omni-extract-bench[harness]" in str(exc))
-finally:
-    _v.importlib.import_module = _real
+# Importing the harness imports every adapter, so a missing SDK is one message at the import
+# rather than a per-adapter surprise. Checked in a subprocess because this one already has it.
+_blocked = subprocess.run(
+    [sys.executable, "-c", textwrap.dedent("""
+        import builtins
+        _real_import = builtins.__import__
+        def _no_httpx(name, *a, **k):
+            if name == "httpx" or name.startswith("httpx."):
+                raise ImportError("No module named 'httpx'")
+            return _real_import(name, *a, **k)
+        builtins.__import__ = _no_httpx
+        try:
+            import omni_extract_bench.harness
+        except BaseException as exc:
+            print(type(exc).__name__)
+            print(exc)
+    """)],
+    capture_output=True, text=True, cwd=_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+report("a missing SDK raises MissingDependency",
+       "MissingDependency" in _blocked.stdout, _blocked.stdout + _blocked.stderr[-300:])
+report("...naming the extra to install",
+       "omni-extract-bench[harness]" in _blocked.stdout, _blocked.stdout)
 
 print("\nAND AN UNKNOWN PROVIDER IS REFUSED BY NAME")
 try:

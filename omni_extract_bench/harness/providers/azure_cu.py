@@ -16,7 +16,7 @@ Two things worth knowing before comparing its numbers with anyone else's:
 
 Auth: AZURE_CU_ENDPOINT + AZURE_CU_KEY.
 
-    python -m omni_extract_bench.harness.providers.azure_cu --pdf doc.pdf --schema s.json --out out.json
+    oeb predict --provider azure-cu --doc doc.pdf --schema schema.json
 """
 from __future__ import annotations
 
@@ -32,7 +32,6 @@ import httpx
 
 from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
                           VendorError)
-from ._cli import run_cli
 
 API_VERSION = "2025-05-01-preview"
 DEFAULT_COMPLETION_MODEL = "gpt-4.1-mini"
@@ -82,7 +81,9 @@ def _field(prop: dict) -> dict:
     return {"type": "string", "description": desc}
 
 
-def field_schema(schema: dict) -> dict:
+def prepare_schema(schema: dict) -> dict:
+    """Azure takes a `fieldSchema`, not a JSON Schema -- so this vendor's payload is not a
+    schema at all, and `extract` sends whatever shape the API takes."""
     return {"fields": {k: _field(v) for k, v in ((schema or {}).get("properties") or {}).items()}}
 
 
@@ -111,7 +112,7 @@ _ANALYZER_LOCK = threading.Lock()
 
 
 def _ensure_analyzer(client, endpoint: str, api_version: str, digest: str, analyzer_id: str,
-                     schema: dict, completion_model: str, budget, poll_interval: float) -> None:
+                     fields: dict, completion_model: str, budget, poll_interval: float) -> None:
     """Create the analyzer for this schema once per process, not once per thread.
 
     UNDER THE LOCK FOR THE WHOLE CREATE-AND-WAIT, not just the cache lookup. A 409 says the
@@ -131,7 +132,7 @@ def _ensure_analyzer(client, endpoint: str, api_version: str, digest: str, analy
             f"?api-version={api_version}",
             json={"baseAnalyzerId": "prebuilt-documentAnalyzer",
                   "config": {"returnDetails": False, "completion": completion_model},
-                  "fieldSchema": field_schema(schema)})
+                  "fieldSchema": fields})
         if r.status_code != 409:
             if r.status_code >= 400:
                 raise VendorError(f"creating analyzer: HTTP {r.status_code}: {r.text[:300]}",
@@ -175,7 +176,10 @@ def _await(client, op_url: str, *, budget, poll_interval: float, want_result: bo
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
             config: Config = Config()) -> Extraction:
-    """Create (or reuse) an analyzer for this schema, analyse the document, poll for the result.
+    """Create (or reuse) an analyzer for this field schema, analyse the document, poll for it.
+
+    `schema` here is already the Azure `fieldSchema` -- `DIALECT` is applied by the caller, so
+    what arrives is what goes on the wire.
 
     Azure does not report a per-call cost, so `cost.usd` is None and the record says
     `billed_out_of_band` -- rather than inventing a figure from a price list.
@@ -188,6 +192,10 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     budget = Budget(timeout)
 
     with httpx.Client(headers={"Ocp-Apim-Subscription-Key": key}, timeout=120) as client:
+        # The digest keys a SERVER-SIDE analyzer that a 409 then reuses, so it must hash the
+        # payload the analyzer is built from. Hashing the JSON Schema it was derived from meant
+        # a fix to `field_schema` left every already-analysed schema on its old analyzer, with
+        # nothing to show the two had diverged.
         digest = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[:16]
         analyzer_id = f"oeb-{digest}"
         _ensure_analyzer(client, endpoint, config.api_version, digest, analyzer_id, schema,
@@ -216,10 +224,3 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                       cost=Cost(),
                       job_id=analyzer_id)
 
-
-def main() -> None:
-    run_cli(extract, Config, "azure-cu")
-
-
-if __name__ == "__main__":
-    main()

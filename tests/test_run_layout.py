@@ -23,6 +23,24 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
 import omni_extract_bench.harness.vendor as V                                  # noqa: E402
+
+_REAL_ADAPTER = V.adapter
+
+
+def as_adapter(lookup):
+    """A stub `provider -> extract` as an adapter: the three names `Adapter` asks for.
+
+    `Config` and `prepare_schema` come from the real adapter, so a test that means to fake
+    only the vendor call is not also faking the declaration or the schema it is sent.
+    """
+    def wrapped(provider):
+        real = _REAL_ADAPTER(provider)
+        return types.SimpleNamespace(Config=real.Config,
+                                     prepare_schema=real.prepare_schema,
+                                     extract=lookup(provider))
+    return wrapped
+
+
 from omni_extract_bench.harness.extraction import (AccountFailure, Cost,       # noqa: E402
                                                    Extraction)
 from omni_extract_bench.harness.vendor import out_name                          # noqa: E402
@@ -81,17 +99,19 @@ def _datalab_defaulting_to(tier):
         poll_interval: float = 5.0
 
     module.Config = Config
+    module.prepare_schema = lambda schema: schema
+    module.extract = lambda *a, **k: None
     return lambda provider: module
 
 
-_real_module = V._module
+_real_adapter = V.adapter
 try:
-    V._module = _datalab_defaulting_to("balanced")
+    V.adapter = _datalab_defaulting_to("balanced")
     was_stock, was_pinned = named("datalab"), named("datalab", mode="accurate")
-    V._module = _datalab_defaulting_to("accurate")
+    V.adapter = _datalab_defaulting_to("accurate")
     now_stock, now_pinned = named("datalab"), named("datalab", mode="balanced")
 finally:
-    V._module = _real_module
+    V.adapter = _real_adapter
 report("the same name never means two different settings", was_stock != now_stock,
        f"{was_stock} vs {now_stock}")
 report("...and the same settings always mean the same name", was_stock == now_pinned,
@@ -134,7 +154,7 @@ for i in range(3):
 B.fetch = lambda *_: out
 B.read_manifest = lambda *a, **k: docs
 called = []
-V.adapter = lambda prov: (lambda pdf, schema, *, timeout, config: (
+V.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, config: (
     called.append(config.mode),
     Extraction(result={"a": config.mode}, cost=Cost(usd=0.1)))[1])
 
@@ -273,7 +293,7 @@ def counting(prov):
     return extract
 
 
-V.adapter = counting
+V.adapter = as_adapter(counting)
 B.run(["datalab"], out=wide, score_workers=1,
       options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
 report("two runs of one vendor share its concurrency cap, not double it",
@@ -329,7 +349,7 @@ report("...and nothing is cut off, whatever the widest cell is",
 print("\nAND ASKS BEFORE IT SPENDS")
 ask = pathlib.Path(tempfile.mkdtemp())
 B.fetch = lambda *_: ask
-V.adapter = counting
+V.adapter = as_adapter(counting)
 shown, called = [], {"n": 0}
 
 
@@ -342,7 +362,7 @@ def counting_adapter(prov):
     return extract
 
 
-V.adapter = counting_adapter
+V.adapter = as_adapter(counting_adapter)
 declined = B.BenchmarkRun(["datalab"], out=ask, score_workers=1,
                           predict_workers={"*": 1}).execute(
     confirm=lambda plan: (shown.append(plan), False)[1])
@@ -385,7 +405,7 @@ def uneven(prov):
     return extract
 
 
-V.adapter = uneven
+V.adapter = as_adapter(uneven)
 # `setdefault`, because a benchmark raises two displays -- one for predicting and one for
 # grading -- and it is the predicting one whose per-leg elapsed this is about.
 _exit, elapsed = Progress.__exit__, {}
@@ -407,7 +427,7 @@ print("\nAND THE CAP BELONGS TO THE SERVICE, NOT TO THE NAME YOU TYPED")
 models = pathlib.Path(tempfile.mkdtemp())
 B.fetch = lambda *_: models
 live["n"] = live["peak"] = 0
-V.adapter = counting
+V.adapter = as_adapter(counting)
 ids = ["openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash"]
 B.run(ids, out=models, score_workers=1)
 report("three model ids share one budget, not one each",
@@ -438,7 +458,7 @@ def broke(prov):
     return extract
 
 
-V.adapter = broke
+V.adapter = as_adapter(broke)
 try:
     B.run(["datalab"], out=acct, score_workers=1,
           options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})

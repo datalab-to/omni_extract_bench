@@ -12,8 +12,7 @@ the benchmark calls Reducto:
 Auth: REDUCTO_API_KEY.
 
 Usage:
-    python -m omni_extract_bench.harness.providers.reducto \
-        --pdf path/to/document.pdf --schema path/to/schema.json --out /tmp/reducto_out.json
+    oeb predict --provider reducto --doc doc.pdf --schema schema.json
 
 Adapted from longextract_bench (MIT, (c) 2026 Micro1) -- see providers/LICENSE-micro1.
 """
@@ -30,7 +29,6 @@ import httpx
 
 from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
                           VendorError, as_object)
-from ._cli import run_cli
 
 BASE_URL = "https://platform.reducto.ai"
 DEFAULT_DEEP_EXTRACT_MODEL = "v2"
@@ -167,6 +165,11 @@ def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
         time.sleep(interval)
 
 
+def prepare_schema(schema: dict) -> dict:
+    """This vendor takes a JSON Schema as written; nothing to reshape."""
+    return schema
+
+
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
             config: Config = Config()) -> Extraction:
     """Upload, submit an async extract, poll to completion.
@@ -218,10 +221,3 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                       job_id=job_id)
 
 
-def main() -> None:
-    run_cli(extract, Config, "reducto",
-            description="Reducto deep extract (v2, citations off)")
-
-
-if __name__ == "__main__":
-    main()
