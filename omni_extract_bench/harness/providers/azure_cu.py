@@ -45,13 +45,30 @@ class Config:
 
     `completion_model` is a DEPLOYMENT CHOICE, not a product tier: `gpt-4.1-mini` and `gpt-4.1`
     are different systems behind one API, so which one ran has to be published beside the score.
+
+    `endpoint` is a setting for the same reason, and it is HERE rather than read inside
+    `extract` so the record states it: it selects an Azure resource and region, and two runs
+    against different deployments used to produce records nothing could tell apart. The KEY
+    stays in the environment -- that is a credential and belongs in no record.
     """
 
+    endpoint: str = dataclasses.field(
+        default="", metadata={"help": "default: $AZURE_CU_ENDPOINT"})
     completion_model: str = dataclasses.field(
         default=DEFAULT_COMPLETION_MODEL,
         metadata={"help": "the deployment behind the analyzer; publish it with the score"})
     api_version: str = API_VERSION
     poll_interval: float = 3.0
+
+    def __post_init__(self):
+        """Resolve the endpoint HERE, not in `extract`, so the Config still says what was sent.
+
+        Left empty rather than raising when the variable is unset: `config_for` runs for
+        `oeb providers` and for a run's directory name, neither of which needs a credential.
+        `extract` is where a missing one is a failure, and it says so.
+        """
+        object.__setattr__(self, "endpoint", (self.endpoint
+                                              or os.environ.get("AZURE_CU_ENDPOINT", "")).rstrip("/"))
 
 
 def _field(prop: dict) -> dict:
@@ -184,11 +201,10 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     Azure does not report a per-call cost, so `cost.usd` is None and the record says
     `billed_out_of_band` -- rather than inventing a figure from a price list.
     """
-    endpoint = os.environ.get("AZURE_CU_ENDPOINT")
+    endpoint = config.endpoint
     key = os.environ.get("AZURE_CU_KEY")
     if not endpoint or not key:
         raise MissingCredential("AZURE_CU_ENDPOINT and AZURE_CU_KEY must be set")
-    endpoint = endpoint.rstrip("/")
     budget = Budget(timeout)
 
     with httpx.Client(headers={"Ocp-Apim-Subscription-Key": key}, timeout=120) as client:

@@ -17,8 +17,17 @@ PROVIDERS = pathlib.Path(__file__).resolve().parents[1] / "omni_extract_bench/ha
 CREDENTIAL = {
     "DATALAB_API_KEY", "REDUCTO_API_KEY", "EXTEND_API_KEY", "MISTRAL_API_KEY",
     "LLAMA_CLOUD_API_KEY", "LLAMAPARSE_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY",
-    "AZURE_CU_ENDPOINT", "AZURE_CU_KEY", "EXTEND_WORKSPACE_ID",
+    "AZURE_CU_KEY", "EXTEND_WORKSPACE_ID",
 }
+
+#: An environment variable may still supply the DEFAULT of a `Config` field -- what the rule
+#: forbids is steering a run without saying so, and a resolved field is said in
+#: `run_manifest.settings`. Allowed only where the read happens in `Config.__post_init__`, and
+#: only with the check below that the value really does reach the recorded settings.
+#: `AZURE_CU_ENDPOINT` sat in CREDENTIAL until it was promoted: it is not a credential, it
+#: selects an Azure resource and region, and two runs against different ones were
+#: indistinguishable in the record.
+RESOLVED_INTO_CONFIG = {"AZURE_CU_ENDPOINT": ("azure_cu", "endpoint")}
 
 
 def env_reads(path: pathlib.Path) -> list[tuple[str, int]]:
@@ -47,8 +56,9 @@ assert modules, "no adapters found"
 offenders = {}
 for path in modules:
     for name, line in env_reads(path):
-        if name not in CREDENTIAL:
-            offenders.setdefault(path.name, []).append(f"{name} (line {line})")
+        if name in CREDENTIAL or name in RESOLVED_INTO_CONFIG:
+            continue
+        offenders.setdefault(path.name, []).append(f"{name} (line {line})")
 
 assert not offenders, (
     "adapters must take settings as arguments, not out of the environment:\n"
@@ -88,3 +98,24 @@ for module in ("datalab", "reducto", "llamaextract", "azure_cu"):
         assert got is not dataclasses.MISSING and got is not None, \
             f"{module}.Config.{name} should carry its literal default, got {got!r}"
 print("every promoted setting carries its literal default on the Config")
+
+import os  # noqa: E402
+
+from omni_extract_bench.harness.vendor import settings_for  # noqa: E402
+
+PROVIDER_OF = {"azure_cu": "azure-cu"}
+for var, (module, field) in RESOLVED_INTO_CONFIG.items():
+    assert field in config_fields(module), f"{module}.Config has no {field!r} to resolve into"
+    src = (PROVIDERS / f"{module}.py").read_text()
+    assert "__post_init__" in src and var in src.split("__post_init__", 1)[1][:600], \
+        f"{module} reads {var} outside Config.__post_init__, so a run need not record it"
+    marker = "https://recorded-by-the-test.example"
+    saved = os.environ.get(var)
+    os.environ[var] = marker
+    try:
+        got = settings_for(PROVIDER_OF[module]).get(field)
+    finally:
+        os.environ.pop(var) if saved is None else os.environ.__setitem__(var, saved)
+    assert got == marker, \
+        f"{var} steered the run but `run_manifest.settings.{field}` says {got!r}"
+print(f"{len(RESOLVED_INTO_CONFIG)} env-sourced default(s) reach the record")
