@@ -40,6 +40,14 @@ def named(provider, **opts):
     return out_name(provider, opts)
 
 
+def _refused(call):
+    try:
+        call()
+        return False
+    except ValueError:
+        return True
+
+
 print("\nA NAME IS A FUNCTION OF THE SETTINGS")
 # Every name carries a digest of the WHOLE resolved settings, so a directory holds one
 # configuration. The readable half is the difference from the defaults and is decoration.
@@ -313,6 +321,43 @@ report("...and the whole cap is in use, not half of it each",
        live["peak"] > WORKERS["datalab"] // 2,
        f'peak {live["peak"]}, which a cap split two ways could not exceed '
        f'{WORKERS["datalab"] // 2}')
+
+print("\nAND SAYS WHAT A RESUME WOULD COST, BEFORE IT COSTS IT")
+# The plan a `BenchmarkRun` can state without a download or a vendor call, and -- once the
+# corpus is known -- what each run still owes. `--rescore` is why the two halves are counted
+# separately: every prediction can be on disk and every grade still outstanding.
+from omni_extract_bench.benchmark import BenchmarkRun                          # noqa: E402
+
+seen_dir = pathlib.Path(tempfile.mkdtemp())
+plan = BenchmarkRun(["datalab"], out=seen_dir,
+                    options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+report("the plan is available before anything is fetched or called",
+       len(plan.runs) == 2 and len(plan.providers) == 1
+       and plan.providers[0].adapter == "datalab", repr(plan))
+report("...and two model ids land under one adapter, on one budget",
+       len(BenchmarkRun(["openai/gpt-5.6-sol", "anthropic/claude-opus-5"]).providers) == 1)
+report("a bad option is refused by the constructor, before any download",
+       _refused(lambda: BenchmarkRun(["datalab"], options={"datalb": {"mode": "fast"}})))
+
+bal, acc = plan.runs
+bal.records.mkdir(parents=True, exist_ok=True)
+for d in docs[:2]:
+    B.write_json_atomic(bal.records / f"{d.doc_id}.json", {"done": True})
+(bal.out).mkdir(parents=True, exist_ok=True)
+(bal.out / "scores.jsonl").write_text(
+    "".join(json.dumps({"doc_id": d.doc_id, "suite": "s", "status": "scored"}) + "\n"
+            for d in docs))
+report("a run counts what it would still predict, and still grade",
+       bal.outstanding(docs) == (len(docs) - 2, 0), str(bal.outstanding(docs)))
+report("...a run with nothing on disk owes everything",
+       acc.outstanding(docs) == (len(docs), len(docs)), str(acc.outstanding(docs)))
+# `grading_split` is the one definition, so this cannot promise 0 and then grade 3.
+report("--rescore owes every grade again, however many are on disk",
+       bal.outstanding(docs, rescore=True) == (len(docs) - 2, len(docs)),
+       str(bal.outstanding(docs, rescore=True)))
+report("the plan states it per run, once the corpus is known",
+       f"{len(docs) - 2:>5} to predict,     0 to grade" in plan.describe(docs),
+       plan.describe(docs))
 
 print("\nEACH RUN IS TIMED FOR ITSELF, NOT FOR THE QUEUE IT SHARES")
 # One queue serves every run of a vendor, so finishing them together reported the whole

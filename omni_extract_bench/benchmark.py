@@ -4,29 +4,23 @@
     oeb benchmark --providers datalab reducto --out runs/
     oeb benchmark --providers datalab --limit 5              # smoke test
 
-THREE LEVELS, ONE PER CLASS, EACH ABLE TO SAY WHAT IT WILL DO:
+Three levels of abstraction == three classes.
 
     BenchmarkRun   the invocation      every Run, grouped by adapter, predicted then graded
     ProviderRun    one adapter         every Run on it, through one pool sized to that service
-    Run            one configuration   a provider plus its options -- the unit everything keys on
+    Run            one configuration   a provider plus its options 
 
     >>> print(BenchmarkRun(["datalab"],
     ...                    options={"datalab": [{"mode": "balanced"},
     ...                                         {"mode": "accurate"}]}).describe())
     benchmark: 2 run(s) over 1 adapter(s), 1800s per document -> runs
       datalab            2 run(s), 10 document(s) at a time
-          datalab-f46415c9                   datalab                  mode=balanced
-          datalab-01a72762                   datalab                  mode=accurate
+          datalab-f46415c9                     mode=balanced
+          datalab-01a72762                     mode=accurate
 
 That costs nothing -- no download, no vendor call -- so the plan can be read before the money
 is spent, and `go()` logs the same lines on its way in so a run that did spend says what it
 bought.
-
-    fetch          the corpus from HuggingFace: manifest, PDFs and gold
-    read_manifest  620 rows -> Doc(doc_id, suite, pdf, gt, schema)
-    plan           --providers and --options -> a Run per configuration measured
-    score_all      score() each prediction against its gold
-    summarise      per suite, and across them
 
 Resumable and idempotent. A document is predicted again only when it has no record,
 and graded again only when it has no row in `scores.jsonl` -- so an interrupted run carries on
@@ -175,10 +169,29 @@ class Run:
         """What every file this Run writes says about itself, before any numbers."""
         return {"run": self.label, "provider": self.provider, "settings": self.settings()}
 
-    def describe(self) -> str:
-        """One line: what this Run will ask, for a plan printed before anything is spent."""
+    def outstanding(self, docs: list[Doc], verdicts: bool = False,
+                    rescore: bool = False) -> tuple[int, int]:
+        """How many of `docs` this Run would predict, and how many it would then grade.
+
+        What a resume COSTS, which is the question worth answering before one starts: the two
+        halves are independent, and a Run with every prediction on disk can still owe 620
+        grades after a `--rescore`.
+        """
+        to_predict = sum(1 for doc in docs if self.needs(doc))
+        _, wanted = grading_split(self.out, docs, verdicts=verdicts, rescore=rescore)
+        return to_predict, len(wanted)
+
+    def describe(self, work: tuple[int, int] | None = None) -> str:
+        """One line: what this Run asks, and what it still owes when `work` is known.
+
+        The provider is not a column of its own because `label` already carries it -- it is
+        `out_name(provider, options)`, so `openai__gpt-5.6-sol-28890c89` names its model.
+        """
         asked = ", ".join(f"{k}={v}" for k, v in sorted(self.options.items())) or "stock"
-        return f"{self.label:<34} {self.provider:<24} {asked}"
+        line = f"{self.label:<36} {asked:<22}"
+        if work is None:
+            return line.rstrip()
+        return f"{line} {work[0]:>5} to predict, {work[1]:>5} to grade"
 
     # ── where its files are ──────────────────────────────────────────────────────────────
     @property
@@ -287,11 +300,12 @@ class ProviderRun:
     def __repr__(self) -> str:
         return f"ProviderRun({self.adapter}, {len(self.runs)} runs, {self.workers} at a time)"
 
-    def describe(self) -> str:
+    def describe(self, work: dict[str, tuple[int, int]] | None = None) -> str:
         """This adapter and the Runs under it, indented beneath a line naming the cap."""
         head = (f"  {self.adapter:<18} {len(self.runs)} run(s), "
                 f"{self.workers} document(s) at a time")
-        return "\n".join([head] + [f"      {r.describe()}" for r in self.runs])
+        return "\n".join([head] + [f"      {r.describe((work or {}).get(r.label))}"
+                                   for r in self.runs])
 
     def _give_up(self, run: Run, exc: Exception, why: str = "") -> tuple:
         """Stop this vendor, remember why, and report this document as never attempted."""
@@ -429,15 +443,26 @@ def read_scores(out: Path, verdicts: bool = False) -> dict[str, dict]:
     return rows
 
 
-def score_all(docs: list[Doc], provider: str, out: Path, verdicts: bool = False,
-              workers: int = 0, rescore: bool = False) -> list[dict]:
-    """Grade the predictions on disk, and write one line per document."""
+def grading_split(out: Path, docs: list[Doc], verdicts: bool = False,
+                  rescore: bool = False) -> tuple[dict[str, dict], list[Doc]]:
+    """The grades this selection may reuse, and the documents still to grade.
+
+    ONE DEFINITION, because `describe` promises what a resume will cost and `score_all` is
+    what it then costs. Two copies of this rule would drift, and the promise is the half that
+    would be wrong -- a plan that says 8 documents and then grades 620.
+    """
     known = read_scores(out, verdicts=verdicts)
     if rescore:
         # This selection only: rows the run did not select are still theirs to keep.
         selected = {d.doc_id for d in docs}
         known = {k: v for k, v in known.items() if k not in selected}
-    wanted = [d for d in docs if d.doc_id not in known]
+    return known, [d for d in docs if d.doc_id not in known]
+
+
+def score_all(docs: list[Doc], provider: str, out: Path, verdicts: bool = False,
+              workers: int = 0, rescore: bool = False) -> list[dict]:
+    """Grade the predictions on disk, and write one line per document."""
+    known, wanted = grading_split(out, docs, verdicts=verdicts, rescore=rescore)
     if len(wanted) < len(docs):
         log.info("%s: %d of %d documents already scored, %d to grade",
                  provider, len(docs) - len(wanted), len(docs), len(wanted))
@@ -630,8 +655,15 @@ class BenchmarkRun:
         return (f"BenchmarkRun({len(self.runs)} runs over "
                 f"{len(self.providers)} adapters -> {self.out})")
 
-    def describe(self) -> str:
-        """The whole plan, before a byte is downloaded or a vendor is called."""
+    def describe(self, docs: list[Doc] | None = None) -> str:
+        """The whole plan. With `docs`, what each Run still owes; without, what it would ask.
+
+        Both are useful and at different moments: before the corpus is on disk there is no
+        such thing as "612 to predict", and once it is, that is the only number worth reading.
+        """
+        work = None if docs is None else {
+            r.label: r.outstanding(docs, verdicts=self.verdicts, rescore=self.rescore)
+            for r in self.runs}
         scope = [f"{len(self.runs)} run(s) over {len(self.providers)} adapter(s)",
                  f"{self.timeout:.0f}s per document"]
         if self.suites:
@@ -642,8 +674,10 @@ class BenchmarkRun:
             scope.append("SCORE ONLY, no vendor is called")
         if self.rescore:
             scope.append("RESCORING, grades on disk ignored")
+        if docs is not None:
+            scope.append(f"{len(docs)} documents selected")
         return "\n".join([f"benchmark: {', '.join(scope)} -> {self.out}"]
-                          + [p.describe() for p in self.providers])
+                          + [p.describe(work) for p in self.providers])
 
     def prepare(self) -> None:
         """Each Run's directory, and what it asked, written BEFORE it asks.
@@ -708,12 +742,15 @@ class BenchmarkRun:
 
     def go(self) -> dict:
         """Fetch, predict, score, write it down. Returns the summary it also writes."""
-        for line in self.describe().splitlines():
-            log.info("%s", line)
         root = fetch(self.data_root)
         docs = read_manifest(root / MANIFEST, root, suites=self.suites, limit=self.limit)
         if not docs:
             raise ValueError("no documents selected: check --suites and --limit")
+        # AFTER the corpus, so the plan states what this will actually cost rather than what
+        # it would cost from nothing. A resume that is mostly done should say so before it
+        # starts, not after.
+        for line in self.describe(docs).splitlines():
+            log.info("%s", line)
         self.prepare()
         if not self.score_only:
             self.predict(docs)
