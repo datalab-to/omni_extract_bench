@@ -20,7 +20,6 @@ Adapted from longextract_bench (MIT, (c) 2026 Micro1) -- see providers/LICENSE-m
 
 from __future__ import annotations
 
-import copy
 import dataclasses
 import json
 import os
@@ -30,6 +29,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from ..dialects import drop_schema_metadata, resolve_refs, to_typed_enum_dialect
 from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
                           VendorError)
 
@@ -49,59 +49,19 @@ class Config:
     poll_interval: int = 5
 
 
-def prepare_schema(schema: dict, defs: dict | None = None) -> dict:
-    """Inline $ref/$defs, drop $-prefixed metadata keys, and collapse type-lists to a
-    single type. The latter is required: LlamaExtract turns `"type": ["array","null"]`
-    into an anyOf and the array branch loses its `items` → 400 schema_validation. We
-    drop the "null" so arrays/objects/scalars stay single-typed (items preserved). No
-    field, description, enum, or type-category is changed — pure dialect cleanup."""
-    if defs is None:
-        defs = schema.get("$defs", {})
-    if not isinstance(schema, dict):
-        return schema
-    if "$ref" in schema:
-        return prepare_schema(
-            copy.deepcopy(defs.get(schema["$ref"].split("/")[-1], {})), defs
-        )
-    node = {k: v for k, v in schema.items() if not k.startswith("$")}
+def prepare_schema(schema: dict) -> dict:
+    """Inline $refs, drop $-prefixed metadata, and reduce to the subset the v2 API accepts.
 
-    for comb in ("anyOf", "oneOf", "allOf"):
-        branches = [b for b in (node.get(comb) or []) if isinstance(b, dict)]
-        if branches:
-            pick = next((b for b in branches if b.get("type") != "null"), None)
-            if pick is not None:
-                merged = {k: v for k, v in node.items()
-                          if k not in ("anyOf", "oneOf", "allOf")}
-                for k, v in pick.items():
-                    merged.setdefault(k, v)
-                return prepare_schema(merged, defs)
+    Three constraints, each learned from a rejection, and all three are what
+    `to_typed_enum_dialect` already encodes -- this used to restate them:
 
-    t = node.get("type")
-    if isinstance(t, list):
-        non_null = [x for x in t if x != "null"]
-        node["type"] = non_null[0] if non_null else "string"
-
-    if "enum" in node and "type" not in node:
-        vals = [v for v in node["enum"] if v is not None]
-        kinds = {type(v) for v in vals}
-        node["type"] = ({str: "string", bool: "boolean", int: "integer", float: "number"}
-                        .get(kinds.pop()) if len(kinds) == 1 else "string")
-
-    if isinstance(node.get("enum"), list) and node.get("type") in (
-            "string", "boolean", "integer", "number"):
-        node["enum"] = [v for v in node["enum"] if v is not None]
-
-    ap = node.get("additionalProperties")
-    if isinstance(ap, dict):
-        node["additionalProperties"] = True
-
-    if "properties" in node:
-        node["properties"] = {
-            k: prepare_schema(v, defs) for k, v in node["properties"].items()
-        }
-    if "items" in node:
-        node["items"] = prepare_schema(node["items"], defs)
-    return node
+      * a nullable ARRAY must not stay a union. LlamaExtract turns `["array","null"]` into an
+        anyOf whose array branch loses its `items`, and answers with 400 schema_validation.
+      * a typeless enum is rejected ("Invalid type for field"), and once a type is inferred the
+        `null` member no longer matches it ("Input should be a valid string at ...enum.3").
+      * `additionalProperties` as a SCHEMA is rejected ("Input should be a valid boolean").
+    """
+    return to_typed_enum_dialect(drop_schema_metadata(resolve_refs(schema)))
 
 
 def _req(

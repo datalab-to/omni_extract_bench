@@ -137,7 +137,12 @@ def to_typed_enum_dialect(node):
     if not isinstance(node, dict):
         return node
 
-    node = collapse_nullable_union(node)
+    collapsed = collapse_nullable_union(node)
+    if collapsed is not node:
+        # RECURSE on the merged node, as `to_strict_dialect` does: a union whose own branch is
+        # a union (`Optional[list[str] | dict]`) otherwise keeps the inner `anyOf`, and a
+        # nested union is what the vendor rejected in the first place.
+        return to_typed_enum_dialect(collapsed)
     out = dict(node)
 
     declared = out.get("type")
@@ -163,6 +168,19 @@ def to_typed_enum_dialect(node):
     if isinstance(out.get("items"), dict):
         out["items"] = to_typed_enum_dialect(out["items"])
     return out
+
+
+def drop_schema_metadata(node):
+    """Remove `$`-prefixed annotations -- `$schema`, `$id`, `$comment`.
+
+    `resolve_refs` consumes `$ref` and `$defs`; these are what is left, and they describe the
+    document rather than the data. Several validators reject them as unknown keys.
+    """
+    if isinstance(node, list):
+        return [drop_schema_metadata(x) for x in node]
+    if not isinstance(node, dict):
+        return node
+    return {k: drop_schema_metadata(v) for k, v in node.items() if not k.startswith("$")}
 
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.S)

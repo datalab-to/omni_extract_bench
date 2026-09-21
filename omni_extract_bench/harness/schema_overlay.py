@@ -58,29 +58,6 @@ CONVENTIONS = [
 ]
 
 
-STRUCTURAL_CONVENTIONS = []
-
-
-def _resolve(node, root):
-    """Follow a local $ref one hop, so structural rules can see through $defs."""
-    if not isinstance(node, dict):
-        return {}
-    ref = node.get("$ref")
-    if not isinstance(ref, str) or not ref.startswith("#/"):
-        return node
-    cur = root
-    for part in ref[2:].split("/"):
-        cur = (cur or {}).get(part) if isinstance(cur, dict) else None
-    return cur if isinstance(cur, dict) else {}
-
-
-def _row_properties(array_node, root):
-    """Property names of an array's row type, resolving $ref."""
-    items = array_node.get("items")
-    if not isinstance(items, dict):
-        return set()
-    return set((_resolve(items, root).get("properties") or {}).keys())
-
 
 def _matches(name: str, conv) -> bool:
     n = name.lower()
@@ -117,26 +94,4 @@ def apply_overlay(schema: dict, _name: str = "") -> dict:
 
     walk(out)
 
-    def walk_structural(node):
-        if not isinstance(node, dict):
-            return
-        for _k, v in (node.get("properties") or {}).items():
-            if isinstance(v, dict) and v.get("type") == "array":
-                rowprops = _row_properties(v, out)
-                for conv in STRUCTURAL_CONVENTIONS:
-                    if all(r in rowprops for r in conv["row_has"]):
-                        d = v.get("description") or ""
-                        if conv["text"] not in d:
-                            v["description"] = (d + " " + conv["text"]).strip()
-            walk_structural(v)
-        it = node.get("items")
-        if isinstance(it, dict):
-            walk_structural(it)
-        for br in ("anyOf", "oneOf", "allOf"):
-            for sub in node.get(br, []) or []:
-                walk_structural(sub)
-        for _k, v in (node.get("$defs") or {}).items():
-            walk_structural(v)
-
-    walk_structural(out)
     return out
