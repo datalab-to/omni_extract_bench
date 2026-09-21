@@ -5,10 +5,10 @@
     extract         makes the call, parses the answer, returns both
 
 `extract` does not RETURN a failure -- it raises `VendorError` (or `VendorTimeout`) from where
-the failure happened, while it still knows what happened. `harness/extraction.py` has the
-contract, and `vendor.ADAPTERS` maps a provider name to one of these modules.
+the failure happened, while it still knows what happened. `harness/contract.py` states the
+contract, and `registry.ADAPTERS` maps a provider name to one of these modules.
 
-One document is reproduced by hand with `oeb predict`, which goes through `vendor.predict`
+One document is reproduced by hand with `oeb predict`, which goes through `document.predict`
 and so applies the same parity rules and writes the same record a benchmark run would:
 
     oeb predict --provider <vendor> --doc X.pdf --schema S.json
@@ -17,7 +17,8 @@ The adapters used to carry a `main()` each, generating their own flags from the 
 That was a second way in, and it prepared the schema differently from the benchmark it existed
 to explain -- it applied no overlay and stripped no benchmark-only keys.
 
-No `__all__` and nothing imported here. Importing a vendor adapter pulls its HTTP client, and
-those come with the `harness` extra -- so naming them at package level would make
-`import omni_extract_bench.harness.providers` fail on a scoring-only machine.
+No `__all__` and nothing imported here, so `import omni_extract_bench.harness.providers`
+costs nothing on a machine that only scores. `registry` imports every adapter by name, and
+importing THAT pulls their HTTP clients -- which is why the `harness` extra is checked once,
+in `harness/__init__.py`, rather than per adapter.
 """

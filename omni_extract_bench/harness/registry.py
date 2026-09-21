@@ -16,15 +16,7 @@ import dataclasses
 import hashlib
 import json
 import re
-import time
-from pathlib import Path
 
-from . import schema as SCHEMA
-from .responses import cost_from_response
-from .schema import strip_benchmark_keys
-from .budget import Budget
-from .contract import Cost, Extraction
-from .errors import AccountFailure, DialectError, VendorError, VendorTimeout
 from .providers import (azure_cu, datalab, extend, llamaextract, llm_single_shot, mistral,
                         reducto)
 
@@ -117,8 +109,6 @@ def config_for(provider: str, options: dict | None = None):
     An option the adapter does not have is REFUSED, by name, rather than ignored -- a typo
     that goes through changes nothing and the run reports as stock.
     """
-    import dataclasses
-
     config_type = adapter(provider).Config
     options = options or {}
     if MODEL_SEPARATOR in provider:
@@ -142,6 +132,4 @@ def settings_for(provider: str, options: dict | None = None) -> dict:
     There are no credentials in it -- every adapter reads its key from the environment -- so
     nothing secret reaches a record or a directory name.
     """
-    import dataclasses
-
     return dataclasses.asdict(config_for(provider, options))

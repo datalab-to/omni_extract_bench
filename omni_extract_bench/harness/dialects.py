@@ -16,10 +16,9 @@ Only adapters import this. Nothing here runs unless an adapter's `prepare_schema
 """
 from __future__ import annotations
 
+# Re-exported: an adapter's `prepare_schema` composes it with the transforms below, and the
+# scorer's copy is the one that must agree with what a vendor was sent.
 from ..metric import resolve_refs  # noqa: F401
-
-import json
-import re
 
 
 def collapse_nullable_union(node):

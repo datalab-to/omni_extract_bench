@@ -22,12 +22,11 @@ vendor was handed 128000. Resolve it in `__post_init__`, where the Config still 
 """
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from typing import Any, NamedTuple, Protocol
 
 class Adapter(Protocol):
-    """What every module in `providers/` provides. `vendor.ADAPTERS` holds one of each.
+    """What every module in `providers/` provides. `registry.ADAPTERS` holds one of each.
 
     Three names, and nothing else is looked up on an adapter:
 

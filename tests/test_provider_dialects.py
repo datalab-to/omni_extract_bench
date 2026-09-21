@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for the vendor adapters' schema handling, without calling a vendor.
 
-`vendor.predict`'s contract is that a schema may be RE-ENCODED for a vendor but never CHANGED:
+`predict`'s contract is that a schema may be RE-ENCODED for a vendor but never CHANGED:
 "same fields, same types, same descriptions". That is the part of the harness a score depends
 on -- a transform that drops a field asks a vendor a smaller question and then grades it as if
 it had been asked the whole one -- and it is pure, so it needs no API key to check.
