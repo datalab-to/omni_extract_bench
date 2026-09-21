@@ -196,13 +196,14 @@ class Run:
         return to_predict, len(wanted)
 
     def score(self, docs: list[Doc], verdicts: bool = False, workers: int = 0,
-              rescore: bool = False) -> list[dict]:
+              rescore: bool = False, progress=NULL) -> list[dict]:
         """Grade this Run's predictions, resumable per document, and write one line each. `self`
         never reaches the process pool: a Run holding a live reporter cannot be pickled."""
         known, wanted = grading_split(self.out, docs, verdicts=verdicts, rescore=rescore)
         if len(wanted) < len(docs):
             log.info("%s: %d of %d documents already scored, %d to grade",
                      self.label, len(docs) - len(wanted), len(docs), len(wanted))
+        progress.start(len(wanted))
 
         grade = functools.partial(score_one, provider=self.provider, out=self.out,
                                   verdicts=verdicts)
@@ -221,7 +222,8 @@ class Run:
                     with cf.ProcessPoolExecutor(max_workers=workers or SCORE_WORKERS) as pool:
                         futures = {pool.submit(grade, doc): doc.doc_id for doc in remaining}
                         for future in cf.as_completed(futures):
-                            graded[futures[future]] = future.result()
+                            graded[futures[future]] = row = future.result()
+                            progress.record(error=row["status"] != "scored")
                     remaining = []
                 except BrokenProcessPool:
                     if graded:
@@ -231,8 +233,10 @@ class Run:
                                 "press it again; if it was not, put the call under "
                                 "`if __name__ == \"__main__\":` or pass score_workers=1.")
             for doc in remaining:
-                graded[doc.doc_id] = grade(doc)
+                graded[doc.doc_id] = row = grade(doc)
+                progress.record(error=row["status"] != "scored")
         finally:
+            progress.finish()
             write_scores(self.out, so_far())
             if len(graded) < len(wanted):
                 log.warning("scoring stopped after %d of %d documents; the rest are graded "
@@ -681,19 +685,27 @@ class BenchmarkRun:
 
     def score(self, docs: list[Doc]) -> dict:
         """Grade every Run, serially, and publish each as soon as it is graded. Serial because
-        grading saturates every core."""
+        grading saturates every core.
+
+        A SECOND PHASE, NOT A SECOND DISPLAY. Grading starts once every vendor has answered, so
+        it gets a table of its own in the same shape -- with no cost and nothing in flight,
+        because there is no vendor. Streaming it instead, so a run that finished predicting
+        began grading, would put a process pool beside the live thread pools to save minutes at
+        the end of a run that spends hours at the start of it.
+        """
         summary = {}
-        for run in self.runs:
-            mine = run.score(docs, verdicts=self.verdicts, workers=self.score_workers,
-                             rescore=self.rescore)
-            summary[run.label] = {**run.head(), **summarise(mine)}
-            write_json_atomic(run.out / "summary.json",
-                              {**run.head(),
-                               **summarise(list(read_scores(run.out).values()))}, indent=2)
-            s = summary[run.label]
-            log.info("%s: accuracy %.4f over %d suites, coverage %d/%d",
-                     run.label, s["accuracy"], len(s["per_suite"]), s["scored"],
-                     s["documents"])
+        with Progress([r.label for r in self.runs]) as bars:
+            for run in self.runs:
+                mine = run.score(docs, verdicts=self.verdicts, workers=self.score_workers,
+                                 rescore=self.rescore, progress=bars.reporter(run.label))
+                summary[run.label] = {**run.head(), **summarise(mine)}
+                write_json_atomic(run.out / "summary.json",
+                                  {**run.head(),
+                                   **summarise(list(read_scores(run.out).values()))}, indent=2)
+                s = summary[run.label]
+                log.info("%s: accuracy %.4f over %d suites, coverage %d/%d",
+                         run.label, s["accuracy"], len(s["per_suite"]), s["scored"],
+                         s["documents"])
         return summary
 
     def corpus(self) -> list[Doc]:

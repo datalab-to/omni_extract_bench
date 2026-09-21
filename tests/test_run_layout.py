@@ -382,9 +382,11 @@ def uneven(prov):
 
 
 V.adapter = uneven
+# `setdefault`, because a benchmark raises two displays -- one for predicting and one for
+# grading -- and it is the predicting one whose per-leg elapsed this is about.
 _exit, elapsed = Progress.__exit__, {}
-Progress.__exit__ = lambda self, *a: (elapsed.update(
-    {n: s.elapsed for n, s in self.stats.items()}), _exit(self, *a))[1]
+Progress.__exit__ = lambda self, *a: ([elapsed.setdefault(n, s.elapsed)
+                                       for n, s in self.stats.items()], _exit(self, *a))[1]
 try:
     B.run(["datalab"], out=timed, score_workers=1,
           options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})

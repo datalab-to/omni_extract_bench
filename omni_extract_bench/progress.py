@@ -126,8 +126,12 @@ def format_flight(stats: Stats) -> str:
     buy more throughput; `3/25` says something else is the limit. Bare, because the table heads
     the column and the log line labels it -- said in both it read `10/10 in flight` under a
     heading of `in flight`.
+
+    A CALLER THAT DECLARED NO WORKERS IS NOT IDLE, IT IS NOT AT A VENDOR. Grading has a pool
+    and no network, so there is nothing in flight to report and the column stays empty -- `0`
+    would read as a stalled provider.
     """
-    if not stats.running and stats.finished is not None:
+    if not stats.running and (stats.finished is not None or not stats.workers):
         return ""
     return f"{stats.running}/{stats.workers}" if stats.workers else str(stats.running)
 
