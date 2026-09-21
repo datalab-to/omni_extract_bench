@@ -70,8 +70,12 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     # vendor never saw -- which it did, while each adapter reshaped the schema privately.
     asked = SCHEMA.strip_benchmark_keys(
         SCHEMA.apply_overlay(schema) if overlay else schema)
+    # Resolved BEFORE the guard: an adapter with no `prepare_schema` at all is a harness bug,
+    # and swallowing that AttributeError would file it as one settled DialectError per
+    # document -- 620 stored zeros for a missing attribute, none of them re-attempted.
+    shape = api.prepare_schema
     try:
-        sent = api.prepare_schema(asked)
+        sent = shape(asked)
     except Exception as exc:  # noqa: BLE001 -- a dialect may raise anything; see DialectError
         sent = asked
         error = DialectError(f"{provider} could not shape this schema: "

@@ -17,16 +17,18 @@ so a score cannot come to depend on a transport, a vendor dialect, or an envelop
 
     pip install 'omni-extract-bench[harness]'
 
-AN ADAPTER IS A FUNCTION, not a program:
+AN ADAPTER IS A MODULE, not a program -- `contract.Adapter` states it:
 
-    extract(pdf, schema, *, timeout, config: Config) -> Extraction
+    Config          what the vendor can be asked
+    prepare_schema  the JSON Schema -> whatever this vendor's API takes
+    extract         (pdf, schema, *, timeout, config) -> Extraction
 
-It makes the call, parses the answer, returns both, and RAISES its failures from where they
-happen. Not a subprocess watched by a transport tap, which is the shape this replaced: every
-fact that cost -- a tempfile dance, a `sitecustomize` injection, a cross-process log merge, an
-error channel that was the last line of the child's stderr -- the adapter already had. "Timed
-out while the vendor was still working" was being recovered by reading an HTTP log, from the
-code that ran the poll loop.
+`extract` makes the call, parses the answer, returns both, and RAISES its failures from where
+they happen. Not a subprocess watched by a transport tap, which is the shape this replaced:
+every fact that cost -- a tempfile dance, a `sitecustomize` injection, a cross-process log
+merge, an error channel that was the last line of the child's stderr -- the adapter already
+had. "Timed out while the vendor was still working" was being recovered by reading an HTTP
+log, from the code that ran the poll loop.
 
 THE SURFACE
 -----------
@@ -65,10 +67,14 @@ from .errors import (AccountFailure, DialectError, MissingCredential, MissingDep
 try:
     from .document import predict
     from .registry import DEFAULT_TIMEOUT, PROVIDERS, WORKERS, adapter, settings_for
-except ModuleNotFoundError as exc:
-    # ONLY a third-party module. Catching every ImportError told a refactor that had broken an
-    # import inside this package to go and install an extra it already had -- the one message
-    # guaranteed not to help. Ours is re-raised as itself.
+except ImportError as exc:
+    # `exc.name` is the module that could not be produced, and it tells the two cases apart:
+    # `openai` for an SDK that is missing OR installed at an incompatible version, and one of
+    # ours for an import this package broke itself. Catching only ModuleNotFoundError missed
+    # the incompatible-version case, whose message ("cannot import name 'OpenAI' from
+    # 'openai'") is the one where naming the extra helps most. Catching every ImportError
+    # without this guard sent a refactor that broke an internal import off to reinstall a
+    # package it already had.
     if (exc.name or "").startswith(__name__.split(".")[0]):
         raise
     raise MissingDependency(

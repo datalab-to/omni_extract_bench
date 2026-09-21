@@ -17,8 +17,9 @@ The adapters used to carry a `main()` each, generating their own flags from the 
 That was a second way in, and it prepared the schema differently from the benchmark it existed
 to explain -- it applied no overlay and stripped no benchmark-only keys.
 
-No `__all__` and nothing imported here, so `import omni_extract_bench.harness.providers`
-costs nothing on a machine that only scores. `registry` imports every adapter by name, and
-importing THAT pulls their HTTP clients -- which is why the `harness` extra is checked once,
-in `harness/__init__.py`, rather than per adapter.
+No `__all__` and nothing imported here -- but that no longer makes this package cheap to
+import. `harness/__init__.py` runs first and imports `registry`, which names every adapter, so
+reaching this module at all pulls httpx and openai with it. That is why the `harness` extra is
+checked once, there, instead of per adapter. The scorer is what stays free of all this: it
+never imports `harness`, and `tests/test_score_standalone.py` fails if that changes.
 """
