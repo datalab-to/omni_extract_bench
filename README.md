@@ -212,7 +212,7 @@ On the example above, printing one line each:
 - Normalize scalar values of the flattened addresses; and
 - For each array that appears, Hungarian match (recursively for nested arrays) based on array element content to align ambiguous predicted and gold addresses (there may unmatched predicted addresses — false positives, and unmatched gold addresses — false negatives).
 
-Full specification: [`docs/METRIC_SPEC.md`](./docs/METRIC_SPEC.md).
+Full specification: [`METRIC_SPEC.md`](./docs/METRIC_SPEC.md).
 
 ## Predict
 
