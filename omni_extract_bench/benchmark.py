@@ -4,20 +4,37 @@
     oeb benchmark --providers datalab reducto --out runs/
     oeb benchmark --providers datalab --limit 5              # smoke test
 
+THREE LEVELS, ONE PER CLASS, EACH ABLE TO SAY WHAT IT WILL DO:
+
+    BenchmarkRun   the invocation      every Run, grouped by adapter, predicted then graded
+    ProviderRun    one adapter         every Run on it, through one pool sized to that service
+    Run            one configuration   a provider plus its options -- the unit everything keys on
+
+    >>> print(BenchmarkRun(["datalab"],
+    ...                    options={"datalab": [{"mode": "balanced"},
+    ...                                         {"mode": "accurate"}]}).describe())
+    benchmark: 2 run(s) over 1 adapter(s), 1800s per document -> runs
+      datalab            2 run(s), 10 document(s) at a time
+          datalab-f46415c9                   datalab                  mode=balanced
+          datalab-01a72762                   datalab                  mode=accurate
+
+That costs nothing -- no download, no vendor call -- so the plan can be read before the money
+is spent, and `go()` logs the same lines on its way in so a run that did spend says what it
+bought.
+
     fetch          the corpus from HuggingFace: manifest, PDFs and gold
     read_manifest  620 rows -> Doc(doc_id, suite, pdf, gt, schema)
-    predict_all    each document through one vendor, under the harness's parity rules
+    plan           --providers and --options -> a Run per configuration measured
     score_all      score() each prediction against its gold
-    summarise      per suite, then UNIFIED
+    summarise      per suite, and across them
 
-RESUMABLE, AND SAFE TO RUN TWICE. A document is predicted again only when it has no record,
+Resumable and idempotent. A document is predicted again only when it has no record,
 and graded again only when it has no row in `scores.jsonl` -- so an interrupted run carries on
 instead of paying twice. Nothing checks the metric has not changed under a resume; `--rescore`
 is how to say it has.
 
-THE ORCHESTRATION, DELIBERATELY NOT THE LIBRARY. `score` grades one document and
-`harness.predict` produces one prediction; which documents, in what order and how many at once
-are decisions about a corpus. What this file does, you can do differently.
+This is the orchestration around primitives `score` and `grade`. `score` grades one document and
+`harness.predict` produces one prediction.
 
     pip install 'omni-extract-bench[benchmark,harness]'
 
@@ -101,29 +118,14 @@ def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[D
 
 
 # ── 2. predictions ───────────────────────────────────────────────────────────────────────
-def write_json(path: Path, obj, *, indent: int | None = None) -> None:
-    """Write a file that is either wholly there or not there at all.
-
-    `write_text` killed part way through leaves a truncated file that still EXISTS, and a
-    resume asking "was this attempted?" would skip it forever. The temp file shares a
-    directory with the target, because rename is only atomic within a filesystem.
-
-    `indent` for the few files a person opens; the per-document ones are read by the machine
-    and there are 620 of them per run.
-    """
+def write_json_atomic(path: Path, obj, *, indent: int | None = None) -> None:
     tmp = path.with_name(f".{path.name}.partial")
     tmp.write_text(json.dumps(obj, default=str, indent=indent))
     os.replace(tmp, path)
 
 
 def needs_run(record_path: Path) -> bool:
-    """True when this document has not been attempted yet.
-
-    A record means the vendor was called and answered, well or badly; whether a failure
-    deserved another try was `predict`'s decision and the attempts are spent. The record is
-    written LAST, so its presence means the prediction beside it is complete. Parsed rather
-    than stat-ed: a file that will not parse is from a run that died.
-    """
+    """True when this document has not been attempted yet."""
     if not record_path.exists():
         return True
     try:
@@ -133,173 +135,240 @@ def needs_run(record_path: Path) -> bool:
     return False
 
 
-class Leg(NamedTuple):
-    """One run: what it asks, of whom, where it writes, which bar it advances.
+class Run:
+    """One configuration this benchmark measures: a provider plus its options.
 
-    `label` is `out_name(provider, options)` -- the string that already names the directory,
-    the summary row and the progress line. It is a FIELD rather than implied by the call
-    because one pool now drains several runs, so every task has to say which one it came from
-    on the way back.
+    THE UNIT EVERYTHING IS KEYED BY. `label` is `out_name(provider, options)`, and that one
+    string names the directory, the summary row, the progress line and the log lines -- so two
+    tiers of one vendor cannot be mistaken for each other anywhere.
 
-    `provider` is here for the same reason and is NOT the group: legs are grouped by adapter,
-    and `openai/gpt-5.6-sol` and `anthropic/claude-opus-5` share `llm_single_shot` while being
-    different models. The group decides the pool; the leg decides what gets asked.
+    `provider` is separate from the grouping: Runs are grouped by ADAPTER, and
+    `openai/gpt-5.6-sol` and `anthropic/claude-opus-5` share `llm_single_shot` while being
+    different models. The group decides the pool; the Run decides what gets asked.
+
+    MUTABLE, BUT ONLY ON THE MAIN THREAD. Workers READ a Run -- its provider, its options, its
+    paths -- and never touch the counters, which `ProviderRun` folds in from its own
+    `as_completed` loop. So none of this needs a lock, and nothing here may start being written
+    from a worker without one.
     """
 
-    label: str
-    provider: str
-    options: dict
-    out: Path
-    progress: object = NULL
+    def __init__(self, label: str, provider: str, options: dict, out: Path, progress=NULL):
+        self.label, self.provider, self.options = label, provider, options
+        self.out, self.progress = out, progress
+        self.todo = self.left = 0                     # documents to run, and still outstanding
+        self.counts: collections.Counter[str] = collections.Counter()
+        self.spend: list[float] = []                  # dollars, where the vendor reports them
+        self.billed: list[float] = []                 # credits, where it reports its own unit
+        self.took: list[float] = []                   # wall-clock per document
 
+    def __repr__(self) -> str:
+        return f"Run({self.label})"
 
-def predict_provider(legs: list[Leg], docs: list[Doc], adapter: str, timeout: float,
-                     workers: int, stop: threading.Event | None = None) -> None:
-    """Every document of every run on ONE adapter, through one pool sized to that service.
+    # ── what it is ───────────────────────────────────────────────────────────────────────
+    def settings(self) -> dict:
+        """The whole resolved configuration, not just what the caller passed."""
+        from .harness.vendor import settings_for
 
-        <leg.out>/predictions/<doc_id>.json    the bare extraction -- what scoring reads
-        <leg.out>/records/<doc_id>.json        the schema sent, the cost, the manifest
+        return settings_for(self.provider, self.options)
 
-    Two files because they are read at different times and are different sizes: scoring wants
-    the answer, an audit wants everything, and only one of them is worth loading 620 of.
+    def head(self) -> dict:
+        """What every file this Run writes says about itself, before any numbers."""
+        return {"run": self.label, "provider": self.provider, "settings": self.settings()}
 
-    ONE POOL PER VENDOR, NOT PER RUN. The cap is a fact about the vendor -- how many documents
-    it will hold at once -- so the pool that enforces it has to be the vendor's too. A pool per
-    run put `WORKERS["datalab"] = 10` in flight twice over when one invocation measured two
-    datalab tiers, and dividing the cap between the runs instead fixes the count while leaving
-    it static: the tier that finishes first hands its half back to nobody. One queue drains
-    across every run of the vendor, so the whole cap is always in use and no run can exceed it.
+    def describe(self) -> str:
+        """One line: what this Run will ask, for a plan printed before anything is spent."""
+        asked = ", ".join(f"{k}={v}" for k, v in sorted(self.options.items())) or "stock"
+        return f"{self.label:<34} {self.provider:<24} {asked}"
 
-    It also makes `mine` a fact about the right thing. A credit ceiling or an unset key is true
-    of the ACCOUNT, so it stops every run of that vendor rather than each discovering it in
-    turn, a wave of documents apart.
-    """
-    by_label = {leg.label: leg for leg in legs}
-    work: list[tuple[Leg, Doc]] = []
-    todo_of: dict[str, int] = {}
-    seen = {leg.label: {"tally": collections.Counter(), "spend": [], "billed": [], "took": []}
-            for leg in legs}
-    for leg in legs:
-        (leg.out / "predictions").mkdir(parents=True, exist_ok=True)
-        (leg.out / "records").mkdir(parents=True, exist_ok=True)
-        todo = [d for d in docs if needs_run(leg.out / "records" / f"{d.doc_id}.json")]
-        log.info("%s: %d documents, %d to run", leg.label, len(docs), len(todo))
-        # The denominator is the VENDOR's cap, which every run of it shares. Two legs both
-        # reading `/10` are reading the same ten.
-        leg.progress.start(len(todo), workers)
-        todo_of[leg.label] = len(todo)
-        work += [(leg, doc) for doc in todo]
+    # ── where its files are ──────────────────────────────────────────────────────────────
+    @property
+    def predictions(self) -> Path:
+        """The bare extractions. What scoring reads, and all it reads."""
+        return self.out / "predictions"
+
+    @property
+    def records(self) -> Path:
+        """The schema sent, the cost, the manifest. What an audit reads."""
+        return self.out / "records"
+
+    def needs(self, doc: Doc) -> bool:
+        """True when this Run has not attempted this document yet."""
+        return needs_run(self.records / f"{doc.doc_id}.json")
+
+    def store(self, doc: Doc, record: dict) -> None:
+        """Write one answer down. THE ORDER IS THE COMMIT.
+
+        The prediction lands first and the record is the marker `needs` reads, so a process
+        killed between them leaves a document that looks unattempted and is run again -- the
+        cheap mistake. The other order buys the expensive one: a record with no answer beside
+        it, which no resume ever revisits.
+        """
+        write_json_atomic(self.predictions / f"{doc.doc_id}.json", record["result"])
+        write_json_atomic(self.records / f"{doc.doc_id}.json", record)
+
+    # ── what it came to ──────────────────────────────────────────────────────────────────
+    def begin(self, docs: list[Doc], workers: int) -> list[Doc]:
+        """Make room, work out what is left to do, and open the progress line for it."""
+        self.predictions.mkdir(parents=True, exist_ok=True)
+        self.records.mkdir(parents=True, exist_ok=True)
+        todo = [doc for doc in docs if self.needs(doc)]
+        self.todo = self.left = len(todo)
+        log.info("%s: %d documents, %d to run", self.label, len(docs), len(todo))
+        self.progress.start(len(todo), workers)
         if not todo:
-            leg.progress.finish()
+            self.progress.finish()        # nothing will land, so nothing else will finish it
+        return todo
 
-    left = dict(todo_of)               # documents still outstanding, per run
-    mine = threading.Event()
-    stopping = lambda: mine.is_set() or (stop is not None and stop.is_set())   # noqa: E731
-    fatal: list[Exception] = []
+    def landed(self, status: str, usd, credits, wall_s) -> None:
+        """One document came back, well or badly."""
+        self.counts[status] += 1
+        for bucket, value in ((self.spend, usd), (self.billed, credits), (self.took, wall_s)):
+            if value is not None:
+                bucket.append(value)
+        # A skipped document was never reached, so it is not progress: it would fill the bar on
+        # the way out of a Run that failed on its first document.
+        if status != "skipped":
+            self.progress.record(error=status == "error", usd=usd, credits=credits,
+                                 wall_s=wall_s)
+        # WHEN THIS RUN'S LAST DOCUMENT LANDS, not when the vendor's queue empties. One queue
+        # serves every Run of a vendor, so finishing them together reported the whole vendor's
+        # wall time on each line.
+        self.left -= 1
+        if not self.left:
+            self.progress.finish()
 
-    # One place a vendor gives up, so the three ways cannot drift. Locked because
-    # check-then-set is not atomic: two workers failing together both passed the test.
-    halt = threading.Lock()
-
-    def give_up(leg: Leg, exc: Exception, why: str = "") -> tuple:
-        """Stop this vendor, remember why, and report this document as never attempted."""
-        with halt:
-            if not mine.is_set():
-                if why:
-                    log.error("%s: %s -- %s", leg.label, why, exc)
-                fatal.append(exc)
-                mine.set()
-        return leg.label, "skipped", None, None, None
-
-    def run_one(leg: Leg, doc: Doc) -> tuple:
-        if stopping():
-            return leg.label, "skipped", None, None, None
-        try:
-            # The block is exactly the call, so the in-flight count is what the vendor holds,
-            # not what our pool has queued.
-            with leg.progress.calling():
-                record = predict(leg.provider, doc.pdf, doc.schema, timeout=timeout,
-                                 **leg.options)
-            # ORDER IS THE COMMIT: the prediction lands first, the record is the marker
-            # `needs_run` reads. Killed between them the document looks unattempted and is run
-            # again -- the cheap mistake.
-            write_json(leg.out / "predictions" / f"{doc.doc_id}.json", record["result"])
-            write_json(leg.out / "records" / f"{doc.doc_id}.json", record)
-        except (MissingDependency, MissingCredential) as exc:
-            # Ours, identical for every document, not transient.
-            return give_up(leg, exc)
-        except AccountFailure as exc:
-            # RAISED, not merely logged: its skipped documents have no prediction, so the
-            # summary would report a vendor that was never asked as one that could not answer.
-            return give_up(leg, exc, "STOPPED, account-level failure")
-        except Exception as exc:          # noqa: BLE001 -- unknown, so assume it is ours
-            # Anything `predict` did not turn into a record, or anything the writes raise. It
-            # will repeat, so stop rather than buy the same failure 600 more times.
-            return give_up(leg, exc)
-        cost = record.get("cost") or {}
-        return (leg.label, "error" if record.get("error") else "ok",
-                cost.get("usd"), cost.get("credits"), cost.get("wall_s"))
-
-    with cf.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(run_one, leg, doc) for leg, doc in work]
-        try:
-            for future in cf.as_completed(futures):
-                label, status, usd, credits, wall_s = future.result()
-                got = seen[label]
-                got["tally"][status] += 1
-                for key, value in (("spend", usd), ("billed", credits), ("took", wall_s)):
-                    if value is not None:
-                        got[key].append(value)
-                # A skipped document was never reached, so it is not progress: it would fill
-                # the bar on the way out of a run that failed on its first document.
-                if status != "skipped":
-                    by_label[label].progress.record(error=status == "error", usd=usd,
-                                                    credits=credits, wall_s=wall_s)
-                # when this run's, not when the vendor's queue empties.
-                left[label] -= 1
-                if not left[label]:
-                    by_label[label].progress.finish()
-        except KeyboardInterrupt:
-            mine.set()
-            for future in futures:
-                future.cancel()
-            log.warning("%s: interrupted -- %s; documents not yet written come back on the "
-                        "next run", adapter,
-                        {k: dict(v["tally"]) for k, v in seen.items()})
-            raise
-
-    for leg in legs:
-        got, n = seen[leg.label], todo_of[leg.label]
-        # `len(spend)` is reported because several vendors price only some documents: a bare
-        # total over a corpus where half reported nothing reads as the bill and is a fraction.
-        if got["took"]:
+    def report(self) -> None:
+        """This Run's last word, for a log with no bar to look at."""
+        if self.took:
             # The mean AND the range: 4s-and-1800s is a different proposition from a steady
             # 900s.
             log.info("%s: %.1fs per document on average (min %.1f, max %.1f over %d)",
-                     leg.label, sum(got["took"]) / len(got["took"]), min(got["took"]),
-                     max(got["took"]), len(got["took"]))
-        if got["spend"]:
-            log.info("%s: $%.2f reported over %d of %d documents", leg.label,
-                     sum(got["spend"]), len(got["spend"]), n)
-        if got["billed"]:
+                     self.label, sum(self.took) / len(self.took), min(self.took),
+                     max(self.took), len(self.took))
+        # `len(spend)` is reported because several vendors price only some documents: a bare
+        # total over a corpus where half reported nothing reads as the bill and is a fraction.
+        if self.spend:
+            log.info("%s: $%.2f reported over %d of %d documents", self.label,
+                     sum(self.spend), len(self.spend), self.todo)
+        if self.billed:
             # Credits stay in the vendor's own unit; the rate is contract-specific.
-            log.info("%s: %g credits reported over %d of %d documents", leg.label,
-                     sum(got["billed"]), len(got["billed"]), n)
-        if n and not got["spend"] and not got["billed"]:
-            log.info("%s: no per-document cost reported (billed out of band)", leg.label)
+            log.info("%s: %g credits reported over %d of %d documents", self.label,
+                     sum(self.billed), len(self.billed), self.todo)
+        if self.todo and not self.spend and not self.billed:
+            log.info("%s: no per-document cost reported (billed out of band)", self.label)
 
-    # After the pool drains, so no worker is still writing. The documents it stopped keep no
-    # file, so they stay resumable.
-    if fatal:
-        raise fatal[0]
+
+class ProviderRun:
+    """Every Run on one adapter, through one pool sized to that service.
+
+    ONE POOL PER ADAPTER, NOT PER RUN. The cap is a fact about the vendor -- how many documents
+    it will hold at once -- so the pool that enforces it has to be the vendor's too. A pool per
+    Run put `WORKERS["datalab"] = 10` in flight twice over when one invocation measured two
+    datalab tiers, and dividing the cap between them fixes the count while leaving it static:
+    the tier that finishes first hands its half back to nobody. One queue drains across every
+    Run of the adapter, so the whole cap is always in use and no Run can exceed it.
+
+    THE ADAPTER, NOT THE PROVIDER NAME, and for six of seven vendors those are the same thing.
+    They part company for model ids: `openai/gpt-5.6-sol` and `anthropic/claude-opus-5` are two
+    names for one `llm_single_shot`, one OpenRouter endpoint and one key.
+    """
+
+    def __init__(self, adapter: str, runs: list[Run], workers: int):
+        self.adapter, self.runs, self.workers = adapter, runs, workers
+        # TWO SCOPES: the caller's `stop` is a Ctrl-C and halts every vendor, `mine` is an
+        # unset key or a credit ceiling and halts this one. Sharing a single event made a
+        # healthy vendor publish 17% coverage because another ran out of credits.
+        self.mine = threading.Event()
+        self.fatal: list[Exception] = []
+        # One place a vendor gives up, so the three ways cannot drift. Locked because
+        # check-then-set is not atomic: two workers failing together both passed the test.
+        self.halt = threading.Lock()
+
+    def __repr__(self) -> str:
+        return f"ProviderRun({self.adapter}, {len(self.runs)} runs, {self.workers} at a time)"
+
+    def describe(self) -> str:
+        """This adapter and the Runs under it, indented beneath a line naming the cap."""
+        head = (f"  {self.adapter:<18} {len(self.runs)} run(s), "
+                f"{self.workers} document(s) at a time")
+        return "\n".join([head] + [f"      {r.describe()}" for r in self.runs])
+
+    def _give_up(self, run: Run, exc: Exception, why: str = "") -> tuple:
+        """Stop this vendor, remember why, and report this document as never attempted."""
+        with self.halt:
+            if not self.mine.is_set():
+                if why:
+                    log.error("%s: %s -- %s", run.label, why, exc)
+                self.fatal.append(exc)
+                self.mine.set()
+        return run.label, "skipped", None, None, None
+
+    def _predict_one(self, run: Run, doc: Doc, timeout: float, stopping) -> tuple:
+        if stopping():
+            return run.label, "skipped", None, None, None
+        try:
+            # The block is exactly the call, so the in-flight count is what the vendor holds,
+            # not what our pool has queued.
+            with run.progress.calling():
+                record = predict(run.provider, doc.pdf, doc.schema, timeout=timeout,
+                                 **run.options)
+            # INSIDE the guard, because a full disk fails here: these writes once sat past the
+            # last `except`, and the vendor was paid for every remaining document while not one
+            # answer could be stored.
+            run.store(doc, record)
+        except (MissingDependency, MissingCredential) as exc:
+            # Ours, identical for every document, not transient.
+            return self._give_up(run, exc)
+        except AccountFailure as exc:
+            # RAISED, not merely logged: its skipped documents have no prediction, so the
+            # summary would report a vendor that was never asked as one that could not answer.
+            return self._give_up(run, exc, "STOPPED, account-level failure")
+        except Exception as exc:          # noqa: BLE001 -- unknown, so assume it is ours
+            # Anything `predict` did not turn into a record, or anything the writes raise. It
+            # will repeat, so stop rather than buy the same failure 600 more times.
+            return self._give_up(run, exc)
+        cost = record.get("cost") or {}
+        return (run.label, "error" if record.get("error") else "ok",
+                cost.get("usd"), cost.get("credits"), cost.get("wall_s"))
+
+    def predict(self, docs: list[Doc], timeout: float,
+                stop: threading.Event | None = None) -> None:
+        """Every document of every Run here, and raise whatever stopped the vendor."""
+        by_label = {run.label: run for run in self.runs}
+        work = [(run, doc) for run in self.runs for doc in run.begin(docs, self.workers)]
+        stopping = lambda: self.mine.is_set() or (stop is not None and stop.is_set())  # noqa: E731
+
+        with cf.ThreadPoolExecutor(max_workers=self.workers) as pool:
+            futures = [pool.submit(self._predict_one, run, doc, timeout, stopping)
+                       for run, doc in work]
+            try:
+                for future in cf.as_completed(futures):
+                    label, *outcome = future.result()
+                    by_label[label].landed(*outcome)
+            except KeyboardInterrupt:
+                self.mine.set()
+                for future in futures:
+                    future.cancel()
+                log.warning("%s: interrupted -- %s; documents not yet written come back on "
+                            "the next run", self.adapter,
+                            {r.label: dict(r.counts) for r in self.runs})
+                raise
+
+        for run in self.runs:
+            run.report()
+
+        # After the pool drains, so no worker is still writing. The documents it stopped keep
+        # no file, so they stay resumable.
+        if self.fatal:
+            raise self.fatal[0]
 
 
 def predict_all(docs: list[Doc], provider: str, out: Path, timeout: float, workers: int,
                 options: dict | None = None, progress=NULL, label: str | None = None,
                 stop: threading.Event | None = None) -> None:
-    """One run of one vendor: `predict_provider` with a single leg."""
-    predict_provider([Leg(label or provider, provider, options or {}, out, progress)],
-                     docs, provider, timeout, workers, stop)
+    """One Run of one vendor: a `ProviderRun` holding exactly one."""
+    one = Run(label or provider, provider, options or {}, out, progress)
+    ProviderRun(provider, [one], workers).predict(docs, timeout, stop)
 
 
 # ── 3. scores ────────────────────────────────────────────────────────────────────────────
@@ -337,12 +406,7 @@ def score_one(doc: Doc, *, provider: str, out: Path, verdicts: bool = False) -> 
 
 
 def read_scores(out: Path, verdicts: bool = False) -> dict[str, dict]:
-    """Scores already on disk for this provider, keyed by document.
-
-    What makes grading resumable per document. It does NOT check the metric is the one that
-    produced them -- editing the scorer and resuming would mix two definitions, and that is
-    the caller's to avoid with `rescore`. One unreadable line costs one document, not the file.
-    """
+    """Scores already on disk for this provider, keyed by document."""
     rows: dict[str, dict] = {}
     path = out / "scores.jsonl"
     try:
@@ -367,20 +431,7 @@ def read_scores(out: Path, verdicts: bool = False) -> dict[str, dict]:
 
 def score_all(docs: list[Doc], provider: str, out: Path, verdicts: bool = False,
               workers: int = 0, rescore: bool = False) -> list[dict]:
-    """Grade the predictions on disk, and write one line per document.
-
-    EVERY DOCUMENT COMES BACK, including ones with no usable prediction: coverage is only
-    visible if a failure occupies a row. Such a row carries NO metrics -- just the status and
-    what happened -- rather than zeros, which would claim the model tried and missed every
-    field. `summarise` is where they count as zero, when it averages.
-
-    PROCESSES, not threads: this is the one CPU-bound half of a run, and
-    `_worth_if_paired`'s recursion is interpreted Python that would serialise on the GIL.
-
-    RESUMABLE PER DOCUMENT -- a document already in `scores.jsonl` is not graded again;
-    `rescore=True` grades everything regardless. The file is in document order whatever order
-    the workers finish in, so a run stays comparable with the one before it.
-    """
+    """Grade the predictions on disk, and write one line per document."""
     known = read_scores(out, verdicts=verdicts)
     if rescore:
         # This selection only: rows the run did not select are still theirs to keep.
@@ -451,19 +502,7 @@ ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
 
 
 def over(rows: list[dict]) -> dict:
-    """How a set of documents went: coverage, the three metrics, and where the errors were.
-
-    A MEAN OVER DOCUMENTS. Every document counts once, however many fields it holds -- the
-    corpus runs from 26 addresses to 35,239, and a ratio of sums would let that one document
-    decide the number for all of them (`METRIC_SPEC.md` section 7 -- a value's weight is
-    inversely proportional to the size of the document holding it).
-
-    OVER THE DOCUMENTS THAT SCORED, all of it, so one denominator holds for the whole block.
-    `precision` is why: a document with no usable prediction asserted nothing, and scoring its
-    `matched / asserted` zero would say everything it claimed was wrong. What the failures cost
-    is `coverage`, right beside these -- and `accuracy * coverage` is the mean over every
-    document with the failures counted as zero, if that is the number you want.
-    """
+    """How a set of documents went: coverage, the three metrics, and where the errors were."""
     scored = [r for r in rows if r["status"] == "scored"]
 
     def mean(of) -> float:
@@ -482,19 +521,7 @@ def over(rows: list[dict]) -> dict:
 
 
 def summarise(rows: list[dict]) -> dict:
-    """The run, and then each suite, in the same shape.
-
-    NO CORPUS NUMBER IS PICKED FOR YOU. Weighting the suites equally rather than by size is a
-    real choice (`METRIC_SPEC.md` section 7) and this does not make it: `per_suite` carries the
-    same block per suite, so the suite-weighted figure is a mean of four numbers you can take
-    yourself, for any of these and not just accuracy.
-
-        unified = mean(s["accuracy"] for s in summary["per_suite"].values())
-
-    The suites are not close to the same size -- 329, 202, 47, 42 -- so the top-level figures
-    and that mean are different numbers, and which one belongs in a table is the table author's
-    to say rather than this function's.
-    """
+    """The run, and then each suite, in the same shape."""
     by_suite: dict[str, list[dict]] = collections.defaultdict(list)
     for row in rows:
         by_suite[row["suite"]].append(row)
@@ -507,20 +534,7 @@ DEFAULT_WORKERS = 5
 
 
 def workers_for(providers, requested: dict[str, int] | int | None) -> int:
-    """How many documents to have in flight at one vendor.
-
-    A worker holds its document through the whole poll loop, so this IS the number of jobs in
-    flight server-side, not a request rate -- at five-second polls, ten in flight is two
-    requests a second.
-
-    `providers` is every provider NAME sharing one adapter, because the pool is the adapter's:
-    `openai/gpt-5.6-sol` and `anthropic/claude-opus-5` are two names for one OpenRouter key.
-    `--predict-workers` still takes the names people type, so where several of them name
-    different numbers the SMALLEST wins -- a cap is a ceiling somebody asked for, and honouring
-    the lowest cannot exceed any of them.
-
-    A named provider beats a bare number, which beats the adapter's own limit.
-    """
+    """How many documents to have in flight at one vendor."""
     from .harness.vendor import resolve
 
     names = [providers] if isinstance(providers, str) else list(providers)
@@ -532,8 +546,9 @@ def workers_for(providers, requested: dict[str, int] | int | None) -> int:
             requested.get("*") or WORKERS.get(resolve(names[0]), DEFAULT_WORKERS))
 
 
-def plan(providers: list[str], options: dict | None = None) -> list[tuple[str, str, dict]]:
-    """(label, provider, options) for every configuration this invocation measures.
+def plan(providers: list[str], options: dict | None = None,
+         out: Path = Path("runs")) -> list[Run]:
+    """A `Run` for every configuration this invocation measures.
 
     A RUN IS A PROVIDER PLUS ITS OPTIONS, not a provider. `--options` may give one provider a
     LIST of option sets, and each is its own run -- which is how one invocation compares a
@@ -549,139 +564,167 @@ def plan(providers: list[str], options: dict | None = None) -> list[tuple[str, s
     """
     from .harness.vendor import out_name
 
-    # A KEY THAT MATCHES NO PROVIDER IS A TYPO, and a silent one: the options are dropped and
-    # the run reports as stock, which is a steered measurement wearing a stock label.
     unknown = sorted(set(options or {}) - set(providers))
     if unknown:
         raise ValueError(
             f"--options names {unknown[0]!r}, which is not in --providers "
             f"({', '.join(providers)}). Its options would be silently ignored.")
 
-    runs: dict[str, tuple[str, str, dict]] = {}
+    runs: dict[str, Run] = {}
     for provider in providers:
         asked = (options or {}).get(provider)
         if isinstance(asked, list) and not asked:
-            # Otherwise the provider silently contributes no runs, and an empty `runs` reaches
-            # the pool as `max_workers=0`.
             raise ValueError(f"--options gives {provider!r} an empty list, so it would not "
                              f"run at all. Give it options, or leave it out.")
         for one in (asked if isinstance(asked, list) else [asked]):
             label = out_name(provider, one)
-            runs.setdefault(label, (label, provider, one or {}))
+            runs.setdefault(label, Run(label, provider, one or {}, out / label))
     return list(runs.values())
 
 
-def run(providers: list[str], *, out: Path = Path("runs"),
-        data_root: Path = Path("benchmark"), suites: list[str] | None = None, limit: int = 0,
-        timeout: float = 1800.0, predict_workers: dict[str, int] | int | None = None,
-        score_workers: int = 0, verdicts: bool = False, rescore: bool = False,
-        score_only: bool = False, options: dict | None = None) -> dict:
-    """Fetch, predict, score, write it down. Returns the summary it also writes to `out`.
-
-    Keyword arguments and no argparse, so this stays callable from a notebook; it raises
-    rather than exits, for the same reason.
+class BenchmarkRun:
+    """One invocation: every Run, grouped by adapter, predicted then graded then written down.
 
         <out>/<provider>-<digest>/
-            settings.json                      what this run asked, before it asked it
-            summary.json                       what it came to, as soon as it is graded
-            predictions/<doc_id>.json          the bare extraction -- what scoring reads
-            records/<doc_id>.json              the schema sent, the cost, the manifest
-            scores.jsonl                       one graded row per document
+            settings.json     what this Run asked, before it asked it
+            summary.json      what it came to, as soon as it is graded
+            predictions/<doc_id>.json    the bare extraction -- what scoring reads
+            records/<doc_id>.json        the schema sent, the cost, the manifest
+            scores.jsonl                 one graded row per document
 
-    A run directory is self-contained, and there is no table across them: `runs/*/summary.json`
-    is one, aggregated however its reader likes, and a file here would only be one opinion
-    about that written down -- stale the moment another run lands beside it.
+    A Run directory is self-contained, and there is no table across them:
+    `runs/*/summary.json` is one, aggregated however its reader likes, and a file here would
+    only be one opinion about that written down -- stale the moment another Run lands beside it.
 
-    `options` is `{provider: {option: value}}` and lands in `run_manifest.settings`, because
-    a run that turned a vendor down must not be able to look stock afterwards.
-
-    `predict_workers` is `{provider: count}` (see `workers_for`) -- the names people type, of
-    which several can share one budget: every `org/model` id is one OpenRouter key. It is
-    separate from `score_workers` because they buy different resources: documents a vendor
-    holds at once, against local cores that grade.
+    THE PLAN IS AVAILABLE BEFORE ANYTHING IS SPENT. Construct one and call `describe()`: it
+    validates the providers and the options, works out the Runs and their caps, and says so --
+    all without a download or a vendor call. `go()` logs the same thing on its way in, so a run
+    that did cost money says what it bought.
     """
-    from .harness.vendor import resolve, settings_for
 
-    for provider in providers:
-        resolve(provider)          # raises ValueError naming the vendors, before any download
-    runs = plan(providers, options)
+    def __init__(self, providers: list[str], *, out: Path = Path("runs"),
+                 data_root: Path = Path("benchmark"), suites: list[str] | None = None,
+                 limit: int = 0, timeout: float = 1800.0,
+                 predict_workers: dict[str, int] | int | None = None, score_workers: int = 0,
+                 verdicts: bool = False, rescore: bool = False, score_only: bool = False,
+                 options: dict | None = None):
+        from .harness.vendor import resolve
 
-    root = fetch(data_root)
-    docs = read_manifest(root / MANIFEST, root, suites=suites, limit=limit)
-    if not docs:
-        raise ValueError("no documents selected: check --suites and --limit")
+        for provider in providers:
+            resolve(provider)      # raises ValueError naming the vendors, before any download
+        self.out, self.data_root, self.suites, self.limit = out, data_root, suites, limit
+        self.timeout, self.score_workers = timeout, score_workers
+        self.verdicts, self.rescore, self.score_only = verdicts, rescore, score_only
+        self.runs = plan(providers, options, out)
+        # GROUPED BY ADAPTER, not by the name typed: every `org/model` id is one
+        # `llm_single_shot` against one OpenRouter key, so three of them named separately are
+        # still one budget.
+        grouped: dict[str, list[Run]] = collections.defaultdict(list)
+        for run in self.runs:
+            grouped[resolve(run.provider)].append(run)
+        self.providers = [ProviderRun(adapter, group,
+                                      workers_for([r.provider for r in group], predict_workers))
+                          for adapter, group in grouped.items()]
 
-    # The directory is `<provider>-<digest of the settings>`
-    dirs = {label: out / label for label, _, _ in runs}
-    for label, provider, opts in runs:
-        dirs[label].mkdir(parents=True, exist_ok=True)
-        write_json(dirs[label] / "settings.json",
-                   {"provider": provider, "settings": settings_for(provider, opts),
-                    "timeout_s": timeout}, indent=2)
+    def __repr__(self) -> str:
+        return (f"BenchmarkRun({len(self.runs)} runs over "
+                f"{len(self.providers)} adapters -> {self.out})")
 
+    def describe(self) -> str:
+        """The whole plan, before a byte is downloaded or a vendor is called."""
+        scope = [f"{len(self.runs)} run(s) over {len(self.providers)} adapter(s)",
+                 f"{self.timeout:.0f}s per document"]
+        if self.suites:
+            scope.append(f"suites {', '.join(self.suites)}")
+        if self.limit:
+            scope.append(f"first {self.limit} documents")
+        if self.score_only:
+            scope.append("SCORE ONLY, no vendor is called")
+        if self.rescore:
+            scope.append("RESCORING, grades on disk ignored")
+        return "\n".join([f"benchmark: {', '.join(scope)} -> {self.out}"]
+                          + [p.describe() for p in self.providers])
 
-    stop = threading.Event()           # one Ctrl-C stops every provider, not just one
-    if not score_only:
-        with Progress([label for label, _, _ in runs]) as bars:
-            # GROUPED BY VENDOR, because that is what the concurrency cap is about. Two
-            # datalab tiers are two runs and one vendor: they get a bar each, their own
-            # directories and their own rows, and share the ten documents datalab will hold.
-            # KEYED BY ADAPTER, not by the name typed: every `org/model` id is one
-            # `llm_single_shot` against one OpenRouter key, so three of them named separately
-            # are still one budget.
-            legs: dict[str, list[Leg]] = collections.defaultdict(list)
-            for label, provider, opts in runs:
-                legs[resolve(provider)].append(
-                    Leg(label, provider, opts, dirs[label], bars.reporter(label)))
-            with cf.ThreadPoolExecutor(max_workers=len(legs)) as pool:
-                futures = {pool.submit(predict_provider, group, docs, adapter, timeout,
-                                       workers_for([leg.provider for leg in group],
-                                                   predict_workers),
-                                       stop): adapter
-                           for adapter, group in legs.items()}
-                # `result()` re-raises what a provider raised. Leaving the loop still drains
-                # the pool, so the other vendors finish and their predictions are on disk.
+    def prepare(self) -> None:
+        """Each Run's directory, and what it asked, written BEFORE it asks.
+
+        `summary.json` is written after grading, so a Run interrupted or stopped by a credit
+        ceiling never reaches one -- and its directory is a digest, which says nothing a person
+        can read. This is where they read it.
+        """
+        for run in self.runs:
+            run.out.mkdir(parents=True, exist_ok=True)
+            write_json_atomic(run.out / "settings.json",
+                              {**run.head(), "timeout_s": self.timeout}, indent=2)
+
+    def predict(self, docs: list[Doc]) -> None:
+        """Every adapter at once. Predicting is network wait, so they do not slow each other."""
+        stop = threading.Event()       # one Ctrl-C stops every vendor, not just one
+        with Progress([r.label for r in self.runs]) as bars:
+            for run in self.runs:
+                run.progress = bars.reporter(run.label)
+            with cf.ThreadPoolExecutor(max_workers=len(self.providers)) as pool:
+                futures = {pool.submit(p.predict, docs, self.timeout, stop): p.adapter
+                           for p in self.providers}
+                # `result()` re-raises what a vendor raised. Leaving the loop still drains the
+                # pool, so the others finish and their predictions are on disk.
                 try:
                     for future in cf.as_completed(futures):
                         future.result()
                 except KeyboardInterrupt:
-                    # THE INTERRUPT LANDS HERE, not in `predict_provider`: Python delivers it
-                    # to the main thread, and the vendors are in workers where a handler can
-                    # never see it. Both halves are needed -- `cancel_futures` drops vendors
-                    # that have not started, and only the flag reaches the ones that have,
-                    # because a running thread cannot be cancelled in Python.
+                    # THE INTERRUPT LANDS HERE, not in `ProviderRun`: Python delivers it to the
+                    # main thread, and the vendors are in workers where a handler can never see
+                    # it. Both halves are needed -- `cancel_futures` drops vendors that have
+                    # not started, and only the flag reaches the ones that have, because a
+                    # running thread cannot be cancelled in Python.
                     stop.set()
                     pool.shutdown(wait=False, cancel_futures=True)
                     log.warning("interrupted -- finishing the calls already in flight; "
                                 "documents not yet written come back on the next run")
                     raise
 
-    # KEYED BY THE RUN, NOT BY THE VENDOR, and it is the same string that named the directory.
-    # A measured configuration is (provider, what it was steered with); keyed by the vendor
-    # alone, a steered run and a stock one are one row, and the second silently replaces the
-    # first. `provider` and `settings` ride along in the row, so a published table can be
-    # labelled however its author likes without parsing the key back apart.
-    summary = {}
-    for label, provider, opts in runs:
-        head = {"run": label, "provider": provider, "settings": settings_for(provider, opts)}
-        mine = score_all(docs, provider, dirs[label], verdicts=verdicts,
-                         workers=score_workers, rescore=rescore)
-        summary[label] = {**head, **summarise(mine)}
-        # WRITTEN AS SOON AS THIS RUN IS GRADED, so a run that finished is readable whether or
-        # not the ones after it do. Grading is serial, and holding every summary until the last
-        # vendor is how an invocation that stops half way leaves directories of answers and
-        # nothing that reads them.
-        #
-        # AND IT DESCRIBES THE DIRECTORY, NOT THIS INVOCATION -- `summarise` over every row in
-        # `scores.jsonl`, not over the selection. `runs/*/summary.json` is what a reader
-        # aggregates, and what it says must not depend on how the last run happened to be
-        # limited: `--limit 2` against a graded 620 would leave a two-document summary sitting
-        # on a full run, and a table built from those is wrong by a factor of 300. The RETURN
-        # value answers the other question -- what did I just run -- so it stays the selection.
-        write_json(dirs[label] / "summary.json",
-                   {**head, **summarise(list(read_scores(dirs[label]).values()))}, indent=2)
-        s = summary[label]
-        log.info("%s: accuracy %.4f over %d suites, coverage %d/%d",
-                 label, s["accuracy"], len(s["per_suite"]), s["scored"], s["documents"])
+    def score(self, docs: list[Doc]) -> dict:
+        """Grade every Run, serially, and publish each as soon as it is graded.
 
-    return summary
+        SERIAL because grading saturates every core: two Runs at once would only contend, and
+        letting it overlap a vendor call would put local CPU load inside a published latency.
+        """
+        summary = {}
+        for run in self.runs:
+            mine = score_all(docs, run.provider, run.out, verdicts=self.verdicts,
+                             workers=self.score_workers, rescore=self.rescore)
+            summary[run.label] = {**run.head(), **summarise(mine)}
+            # THE FILE DESCRIBES THE DIRECTORY, the return value describes this invocation.
+            # They differ only on a narrowed resume, where `--limit 2` against a graded 620
+            # would otherwise leave a two-document summary sitting on a full run.
+            write_json_atomic(run.out / "summary.json",
+                              {**run.head(),
+                               **summarise(list(read_scores(run.out).values()))}, indent=2)
+            s = summary[run.label]
+            log.info("%s: accuracy %.4f over %d suites, coverage %d/%d",
+                     run.label, s["accuracy"], len(s["per_suite"]), s["scored"],
+                     s["documents"])
+        return summary
+
+    def go(self) -> dict:
+        """Fetch, predict, score, write it down. Returns the summary it also writes."""
+        for line in self.describe().splitlines():
+            log.info("%s", line)
+        root = fetch(self.data_root)
+        docs = read_manifest(root / MANIFEST, root, suites=self.suites, limit=self.limit)
+        if not docs:
+            raise ValueError("no documents selected: check --suites and --limit")
+        self.prepare()
+        if not self.score_only:
+            self.predict(docs)
+        return self.score(docs)
+
+
+def run(providers: list[str], **kwargs) -> dict:
+    """Fetch, predict, score, write it down. Returns the summary it also writes to `out`.
+
+    Keyword arguments and no argparse, so this stays callable from a notebook; it raises rather
+    than exits, for the same reason. `BenchmarkRun(providers, **kwargs)` is the same thing with
+    the plan available first -- `describe()` says what it would do, and costs nothing.
+    """
+    return BenchmarkRun(providers, **kwargs).go()

@@ -209,15 +209,16 @@ for i in range(20):
 paid = collections.Counter()
 V.adapter = lambda prov: (lambda pdf, schema, *, timeout, **o: (
     paid.update([prov]), Extraction(result={"a": "x"}, cost=Cost(usd=0.1)))[1])
-real_write_json = B.write_json
-B.write_json = lambda path, obj: (_ for _ in ()).throw(OSError("No space left on device"))
+real_write_json = B.write_json_atomic
+B.write_json_atomic = lambda path, obj, **kw: (
+    (_ for _ in ()).throw(OSError("No space left on device")))
 try:
     B.predict_all(twenty, "datalab", disk / "x", timeout=5, workers=4)
     report("a failed write stops the vendor", False, "predict_all returned normally")
 except OSError:
     report("a failed write stops the vendor", True)
 finally:
-    B.write_json = real_write_json
+    B.write_json_atomic = real_write_json
     V.adapter = saved_adapter
 report("...after a couple of documents, not all twenty", paid["datalab"] <= 8,
        f"{paid['datalab']} of 20 paid for with nothing stored")
