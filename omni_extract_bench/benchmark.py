@@ -13,10 +13,13 @@ Three levels of abstraction == three classes.
     >>> print(BenchmarkRun(["datalab"],
     ...                    options={"datalab": [{"mode": "balanced"},
     ...                                         {"mode": "accurate"}]}).describe())
-    benchmark: 2 run(s) over 1 adapter(s), 1800s per document -> runs
-      datalab            2 run(s), 10 document(s) at a time
-          datalab-f46415c9                     mode=balanced
-          datalab-01a72762                     mode=accurate
+    benchmark: 2 runs over 1 adapter, 1800s per document -> runs
+    ╭─────────┬─────────┬──────────────────┬───────────────┬─────────┬───────╮
+    │ adapter │ at once │ run              │ asks          │ predict │ grade │
+    ├─────────┼─────────┼──────────────────┼───────────────┼─────────┼───────┤
+    │ datalab │      10 │ datalab-f46415c9 │ mode=balanced │         │       │
+    │         │         │ datalab-01a72762 │ mode=accurate │         │       │
+    ╰─────────┴─────────┴──────────────────┴───────────────┴─────────┴───────╯
 
 That costs nothing -- no download, no vendor call -- so the plan can be read before the money
 is spent, and `go()` logs the same lines on its way in so a run that did spend says what it
@@ -39,6 +42,7 @@ from __future__ import annotations
 
 import collections
 import concurrent.futures as cf
+import io
 import functools
 import json
 import logging
@@ -49,12 +53,25 @@ from pathlib import Path
 from typing import NamedTuple
 
 from . import score
+from rich import box
+from rich.console import Console, Group
+from rich.table import Table
+from rich.text import Text
+
 from .progress import NULL, Progress
 from .harness import (WORKERS, AccountFailure, MissingCredential, MissingDependency,
                       predict)
 
 
 log = logging.getLogger(__name__)
+
+PLAN_WIDTH = 120
+
+
+def plural(n: int, word: str) -> str:
+    """`1 document`, `2 documents`. A plan that says "1 documents" reads as a bug."""
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
 
 REPO = "datalab-to/omni_extract_bench"
 MANIFEST = "manifest.parquet"
@@ -241,17 +258,22 @@ class Run:
         answered = {**known, **graded}
         return [answered[d.doc_id] for d in docs if d.doc_id in answered]
 
-    def describe(self, work: tuple[int, int] | None = None) -> str:
-        """One line: what this Run asks, and what it still owes when `work` is known.
+    def cells(self, work: tuple[int, int] | None = None) -> list[str]:
+        """This Run as table cells: what it asks, and what it still owes when `work` is known.
 
-        The provider is not a column of its own because `label` already carries it -- it is
+        Cells rather than a line, because a column is only as wide as its widest value and
+        this does not know what that is. Padded by hand, `agentic_table_mode=default` ran past
+        its allowance and pushed every count after it out of line.
+
+        The counts are bare numbers, headed rather than labelled per row: `620 to predict` on
+        every line is 22 characters of the same two words, and they were what ran off the end
+        of an 80-column terminal.
+
+        The provider is not a column of its own because `label` already carries it: it is
         `out_name(provider, options)`, so `openai__gpt-5.6-sol-28890c89` names its model.
         """
         asked = ", ".join(f"{k}={v}" for k, v in sorted(self.options.items())) or "stock"
-        line = f"{self.label:<36} {asked:<22}"
-        if work is None:
-            return line.rstrip()
-        return f"{line} {work[0]:>5} to predict, {work[1]:>5} to grade"
+        return [self.label, asked, *(("", "") if work is None else (str(work[0]), str(work[1])))]
 
     @property
     def predictions(self) -> Path:
@@ -343,12 +365,9 @@ class ProviderRun:
     def __repr__(self) -> str:
         return f"ProviderRun({self.adapter}, {len(self.runs)} runs, {self.workers} at a time)"
 
-    def describe(self, work: dict[str, tuple[int, int]] | None = None) -> str:
-        """This adapter and the Runs under it, indented beneath a line naming the cap."""
-        head = (f"  {self.adapter:<18} {len(self.runs)} run(s), "
-                f"{self.workers} document(s) at a time")
-        return "\n".join([head] + [f"      {r.describe((work or {}).get(r.label))}"
-                                   for r in self.runs])
+    def heading(self) -> str:
+        """The adapter and the cap every Run under it shares."""
+        return self.adapter
 
     def _give_up(self, run: Run, exc: Exception, why: str = "") -> tuple:
         """Stop this vendor, remember why, and report this document as never attempted."""
@@ -614,29 +633,59 @@ class BenchmarkRun:
         return (f"BenchmarkRun({len(self.runs)} runs over "
                 f"{len(self.providers)} adapters -> {self.out})")
 
-    def describe(self, docs: list[Doc] | None = None) -> str:
-        """The whole plan. With `docs`, what each Run still owes; without, what it would ask.
+    def plan_view(self, docs: list[Doc] | None = None) -> Group:
+        """The whole plan as one renderable. With `docs`, what each Run still owes.
 
         Both are useful and at different moments: before the corpus is on disk there is no
         such thing as "612 to predict", and once it is, that is the only number worth reading.
+
+        ONE STRUCTURE, TWO RENDERINGS. `describe` turns this into text for a log; the command
+        line prints it in colour. Neither lays out its own columns, so neither can be the one
+        that goes crooked.
         """
         work = None if docs is None else {
             r.label: r.outstanding(docs, verdicts=self.verdicts, rescore=self.rescore)
             for r in self.runs}
-        scope = [f"{len(self.runs)} run(s) over {len(self.providers)} adapter(s)",
+        scope = [f"{plural(len(self.runs), 'run')} over "
+                 f"{plural(len(self.providers), 'adapter')}",
                  f"{self.timeout:.0f}s per document"]
         if self.suites:
             scope.append(f"suites {', '.join(self.suites)}")
-        if self.limit:
-            scope.append(f"first {self.limit} documents")
+        if docs is not None:
+            scope.append(f"{plural(len(docs), 'document')} selected")
+        elif self.limit:
+            scope.append(f"first {self.limit}")
         if self.score_only:
             scope.append("SCORE ONLY, no vendor is called")
         if self.rescore:
             scope.append("RESCORING, grades on disk ignored")
-        if docs is not None:
-            scope.append(f"{len(docs)} documents selected")
-        return "\n".join([f"benchmark: {', '.join(scope)} -> {self.out}"]
-                          + [p.describe(work) for p in self.providers])
+
+        # A REAL TABLE, so a cell too wide for the terminal WRAPS rather than being cut. The
+        # adapter is its own column instead of a heading row: in column one a heading is the
+        # widest cell there is, and it was padding every label out to its width.
+        table = Table(box=box.ROUNDED, header_style="dim", expand=False)
+        table.add_column("adapter", overflow="fold")
+        table.add_column("at once", justify="right", no_wrap=True)
+        table.add_column("run", overflow="fold")
+        table.add_column("asks", overflow="fold")
+        table.add_column("predict", justify="right", no_wrap=True)
+        table.add_column("grade", justify="right", no_wrap=True)
+        for provider in self.providers:
+            for n, run in enumerate(provider.runs):
+                label, asked, to_predict, to_grade = run.cells((work or {}).get(run.label))
+                table.add_row(Text(provider.heading() if n == 0 else "", style="bold"),
+                              Text(str(provider.workers) if n == 0 else ""),
+                              Text(label), Text(asked, style="cyan"),
+                              Text(to_predict, style="" if to_predict in ("", "0") else "bold"),
+                              Text(to_grade, style="" if to_grade in ("", "0") else "bold"),
+                              end_section=n == len(provider.runs) - 1)
+        return Group(Text(f"benchmark: {', '.join(scope)} -> {self.out}", style="bold"), table)
+
+    def describe(self, docs: list[Doc] | None = None) -> str:
+        """`plan_view` as plain text, for a log that has no colour and no width to ask about."""
+        console = Console(file=io.StringIO(), width=PLAN_WIDTH, no_color=True, highlight=False)
+        console.print(self.plan_view(docs))
+        return "\n".join(line.rstrip() for line in console.file.getvalue().splitlines())
 
     def prepare(self) -> None:
         """Each Run's directory, and what it asked, written BEFORE it asks.
@@ -709,11 +758,10 @@ class BenchmarkRun:
         because a run that spends money should say what it bought.
         """
         docs = self.corpus()
-        plan = self.describe(docs)
         if confirm is None:
-            for line in plan.splitlines():
+            for line in self.describe(docs).splitlines():
                 log.info("%s", line)
-        elif not confirm(plan):
+        elif not confirm(self.plan_view(docs)):
             log.warning("nothing run")
             return {}
         self.prepare()

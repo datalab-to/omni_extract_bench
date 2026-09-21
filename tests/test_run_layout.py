@@ -9,6 +9,7 @@ A silently wrong number, arrived at by a resume doing its job.
 Run: python3 tests/test_run_layout.py
 """
 import dataclasses
+import io
 import json
 import pathlib
 import re
@@ -285,6 +286,7 @@ report("...and the whole cap is in use, not half of it each",
 
 print("\nAND SAYS WHAT A RESUME WOULD COST, BEFORE IT COSTS IT")
 from omni_extract_bench.benchmark import BenchmarkRun                          # noqa: E402
+from rich.console import Console                                               # noqa: E402
 
 seen_dir = pathlib.Path(tempfile.mkdtemp())
 plan = BenchmarkRun(["datalab"], out=seen_dir,
@@ -312,9 +314,13 @@ report("...a run with nothing on disk owes everything",
 report("--rescore owes every grade again, however many are on disk",
        bal.outstanding(docs, rescore=True) == (len(docs) - 2, len(docs)),
        str(bal.outstanding(docs, rescore=True)))
+stated = plan.describe(docs)
+row = next(line for line in stated.splitlines() if named("datalab") in line)
+cells = [c.strip() for c in row.split("\u2502")]
 report("the plan states it per run, once the corpus is known",
-       f"{len(docs) - 2:>5} to predict,     0 to grade" in plan.describe(docs),
-       plan.describe(docs))
+       cells[-3:-1] == [str(len(docs) - 2), "0"], row)
+report("...and nothing is cut off, whatever the widest cell is",
+       "\u2026" not in stated, stated)
 
 print("\nAND ASKS BEFORE IT SPENDS")
 ask = pathlib.Path(tempfile.mkdtemp())
@@ -338,8 +344,17 @@ declined = B.BenchmarkRun(["datalab"], out=ask, score_workers=1,
     confirm=lambda plan: (shown.append(plan), False)[1])
 report("a declined plan calls no vendor at all", called["n"] == 0, f'{called["n"]} calls')
 report("...and gives back nothing rather than a half summary", declined == {})
+# The callback is handed a rich renderable, not text: the terminal gets colour and column
+# widths a log cannot. Rendered here to read it back.
+def as_text(renderable):
+    console = Console(file=io.StringIO(), width=100, no_color=True)
+    console.print(renderable)
+    return console.file.getvalue()
+
+
 report("...having shown what it would have done",
-       named("datalab") in shown[0] and "to predict" in shown[0], shown[0] if shown else "")
+       named("datalab") in as_text(shown[0]) and "predict" in as_text(shown[0]),
+       as_text(shown[0]) if shown else "")
 report("...and wrote no summary.json", not list(ask.glob("*/summary.json")))
 
 called["n"] = 0

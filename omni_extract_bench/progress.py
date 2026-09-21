@@ -37,6 +37,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from rich import box
 from rich.console import Console, Group
 from rich.live import Live
 from rich.progress_bar import ProgressBar
@@ -193,8 +194,11 @@ def render(stats: dict[str, Stats]) -> Group:
     Colour carries only what the numbers already say -- red where errors are not zero, green
     where a provider is finished -- so a terminal that strips it loses nothing.
     """
-    table = Table(box=None, pad_edge=False, header_style="dim", expand=False)
-    table.add_column("run", no_wrap=True)
+    table = Table(box=box.SIMPLE_HEAD, pad_edge=False, header_style="dim", expand=False)
+    # `fold` so a long label wraps rather than being cut, `min_width` so it cannot be folded
+    # away to nothing when the terminal is tight -- rich will shrink a foldable column to one
+    # character before it drops a fixed one.
+    table.add_column("run", overflow="fold", min_width=16)
     table.add_column("", width=BAR_WIDTH, no_wrap=True)
     table.add_column("done", justify="right", no_wrap=True)
     table.add_column("ok", justify="right", no_wrap=True)
@@ -387,10 +391,12 @@ class Progress:
 
 
 class _Interleaved(logging.Handler):
-    """A log handler that does not walk over the bars: stop the live region, write, start it.
+    """A log handler that does not walk over the bars.
 
-    The wrapped handler holds its own stream, so it writes straight past rich -- stopping the
-    live region first is what puts the line above the table instead of through it.
+    A handler holds the stream it was built with, so it writes straight past rich and its own
+    redirect never sees it. Printing through the live console instead is what puts the line
+    ABOVE the table rather than through it -- and what stops each line leaving a copy of the
+    table behind, which stopping and restarting the live region did.
     """
 
     def __init__(self, progress: Progress, inner: logging.Handler):
@@ -398,13 +404,12 @@ class _Interleaved(logging.Handler):
         self.progress, self.inner = progress, inner
 
     def emit(self, record: logging.LogRecord) -> None:
+        console = self.progress._console
+        # A handler writing somewhere else -- a file -- cannot walk over a terminal, so it is
+        # left alone. One writing to OUR stream goes through rich's console instead, which
+        # moves the live region down and prints above it.
+        if console is None or getattr(self.inner, "stream", None) is not self.progress.stream:
+            self.inner.emit(record)
+            return
         with self.progress.lock:
-            live = self.progress._live
-            if live is None:
-                self.inner.emit(record)
-                return
-            live.stop()
-            try:
-                self.inner.emit(record)
-            finally:
-                live.start(refresh=True)
+            console.print(self.inner.format(record), highlight=False, markup=False)

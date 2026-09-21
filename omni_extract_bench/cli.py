@@ -185,7 +185,7 @@ def cmd_predict(args) -> int:
     return 1 if record.get("error") else 0
 
 
-def confirm_plan(plan: str) -> bool:
+def confirm_plan(plan) -> bool:
     """Show what the benchmark is about to do, and ask. `-y` / `--yes` skips this entirely.
 
     A benchmark run costs real money and takes hours, so the default is to say what it will
@@ -195,7 +195,9 @@ def confirm_plan(plan: str) -> bool:
     NOBODY TO ASK IS NOT THE SAME AS NO. A pipe, a cron job or a CI step has no terminal, so
     it proceeds -- it was scripted, which is consent. Only an interactive session is asked.
     """
-    print(plan, file=sys.stderr)
+    from rich.console import Console
+
+    Console(stderr=True, highlight=False).print(plan)
     if not sys.stdin.isatty():
         return True
     try:
