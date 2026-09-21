@@ -15,13 +15,17 @@ Three levels of abstraction == three classes.
     ...                                         {"mode": "accurate"}]}).describe())
     benchmark: 2 runs over 1 adapter, 1800s per document, our corpus -> runs
     ╭─────────┬─────────┬──────────────────┬─────────────────────────────────┬─────────┬───────╮
-    │ adapter │ at once │ run              │ asks                            │ predict │ grade │
+    │ adapter │ at once │ run              │ settings                        │ predict │ grade │
     ├─────────┼─────────┼──────────────────┼─────────────────────────────────┼─────────┼───────┤
     │ datalab │      10 │ datalab-f46415c9 │ base_url=https://www.datalab.to │         │       │
+    │         │         │                  │ ─────────────────────────────── │         │       │
     │         │         │                  │ mode=balanced                   │         │       │
+    │         │         │                  │ ─────────────────────────────── │         │       │
     │         │         │                  │ poll_interval=5.0               │         │       │
     │         │         │ datalab-01a72762 │ base_url=https://www.datalab.to │         │       │
+    │         │         │                  │ ─────────────────────────────── │         │       │
     │         │         │                  │ mode=accurate                   │         │       │
+    │         │         │                  │ ─────────────────────────────── │         │       │
     │         │         │                  │ poll_interval=5.0               │         │       │
     ╰─────────┴─────────┴──────────────────┴─────────────────────────────────┴─────────┴───────╯
 
@@ -59,6 +63,7 @@ from typing import NamedTuple
 from . import score
 from rich import box
 from rich.console import Console, Group
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
@@ -270,8 +275,21 @@ class Run:
         answered = {**known, **graded}
         return [answered[d.doc_id] for d in docs if d.doc_id in answered]
 
+    def asked(self) -> list[str]:
+        """Every setting this Run sends the vendor, one string each.
+
+        THE RESOLVED SETTINGS, not what the caller happened to pass. A Run that named no
+        options is not asking for nothing -- it is asking for the adapter's maximum tier, and
+        the column used to say `stock`, which named neither the tier nor that there was one.
+
+        `''` for an empty value, as `oeb providers` spells it: `system_prompt=` on its own
+        reads as missing, and an empty prompt is a setting rather than the absence of one.
+        """
+        return [f"{k}={v if v != '' else chr(39) * 2}"
+                for k, v in sorted(self.settings().items())]
+
     def cells(self, work: tuple[int, int] | None = None) -> list[str]:
-        """This Run as table cells: what it asks, and what it still owes when `work` is known.
+        """This Run as table cells: its name, and what it still owes when `work` is known.
 
         Cells rather than a line, because a column is only as wide as its widest value and
         this does not know what that is. Padded by hand, `agentic_table_mode=default` ran past
@@ -284,17 +302,7 @@ class Run:
         The provider is not a column of its own because `label` already carries it: it is
         `out_name(provider, options)`, so `openai__gpt-5.6-sol-28890c89` names its model.
         """
-        # THE RESOLVED SETTINGS, not what the caller happened to pass. A run that named no
-        # options is not asking for nothing -- it is asking for the adapter's maximum tier,
-        # and "stock" said neither which tier that is nor that it had one.
-        #
-        # One per line, because a cell in a table can hold several and the alternative is a
-        # comma-joined string as wide as `base_url` makes it.
-        # `''` for an empty value, as `oeb providers` spells it: `system_prompt=` on its own
-        # reads as missing, and an empty prompt is a setting rather than the absence of one.
-        asked = "\n".join(f"{k}={v if v != '' else chr(39) * 2}"
-                          for k, v in sorted(self.settings().items())) or "-"
-        return [self.label, asked, *(("", "") if work is None else (str(work[0]), str(work[1])))]
+        return [self.label, *(("", "") if work is None else (str(work[0]), str(work[1])))]
 
     @property
     def predictions(self) -> Path:
@@ -609,6 +617,23 @@ def plan(providers: list[str], options: dict | None = None,
     return list(runs.values())
 
 
+def settings_cell(asked: list[str]) -> Group:
+    """One setting per line, ruled off from the next.
+
+    A `Rule` rather than a nested table or a row of dashes: it is sized to the cell rich gives
+    it, which nothing here knows in advance, and it draws BETWEEN settings rather than boxing
+    them -- every other construct pads the top and bottom as well.
+    """
+    if not asked:
+        return Group(Text("-", style="dim"))       # mistral: nothing to ask at all
+    rows: list = []
+    for n, setting in enumerate(asked):
+        if n:
+            rows.append(Rule(style="dim"))
+        rows.append(Text(setting, style="cyan"))
+    return Group(*rows)
+
+
 class BenchmarkRun:
     """One invocation: every Run, grouped by adapter, predicted then graded then written down.
 
@@ -691,15 +716,15 @@ class BenchmarkRun:
         table.add_column("adapter", overflow="fold")
         table.add_column("at once", justify="right", no_wrap=True)
         table.add_column("run", overflow="fold")
-        table.add_column("asks", overflow="fold")
+        table.add_column("settings", overflow="fold")
         table.add_column("predict", justify="right", no_wrap=True)
         table.add_column("grade", justify="right", no_wrap=True)
         for provider in self.providers:
             for n, run in enumerate(provider.runs):
-                label, asked, to_predict, to_grade = run.cells((work or {}).get(run.label))
+                label, to_predict, to_grade = run.cells((work or {}).get(run.label))
                 table.add_row(Text(provider.heading() if n == 0 else "", style="bold"),
                               Text(str(provider.workers) if n == 0 else ""),
-                              Text(label), Text(asked, style="cyan"),
+                              Text(label), settings_cell(run.asked()),
                               Text(to_predict, style="" if to_predict in ("", "0") else "bold"),
                               Text(to_grade, style="" if to_grade in ("", "0") else "bold"),
                               end_section=n == len(provider.runs) - 1)
