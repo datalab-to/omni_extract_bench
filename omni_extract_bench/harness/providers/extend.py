@@ -4,8 +4,9 @@ from pathlib import Path
 import httpx
 
 from ..dialects import resolve_refs, to_strict_dialect
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
-                          VendorError)
+from ..budget import Budget, PollRetry
+from ..contract import Cost, Extraction
+from ..errors import MissingCredential, VendorError
 
 BASE = "https://api.extend.ai"
 API_VERSION = "2026-02-09"

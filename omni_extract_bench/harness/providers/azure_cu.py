@@ -30,8 +30,11 @@ from pathlib import Path
 
 import httpx
 
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
-                          VendorError)
+from ..budget import Budget, PollRetry
+
+from ..contract import Cost, Extraction
+
+from ..errors import MissingCredential, VendorError
 
 API_VERSION = "2025-05-01-preview"
 DEFAULT_COMPLETION_MODEL = "gpt-4.1-mini"

@@ -14,8 +14,8 @@ Run: python3 tests/test_poll_retry.py
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
-from omni_extract_bench.harness.extraction import (                            # noqa: E402
-    Budget, PollRetry, TRANSIENT_STATUSES, VendorError)
+from omni_extract_bench.harness.budget import Budget, PollRetry
+from omni_extract_bench.harness.errors import TRANSIENT_STATUSES, VendorError
 
 FAILS = []
 

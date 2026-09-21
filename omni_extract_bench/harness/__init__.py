@@ -4,11 +4,16 @@ The package above this one is the metric. `metric.py` reaches exactly `matching`
 `recognise` and `values` -- `tests/test_score_standalone.py` fails if that ever widens --
 so a score cannot come to depend on a transport, a vendor dialect, or an envelope convention.
 
-    vendor.py        `predict()` -- one document, one vendor, under the parity rules
-    extraction.py    what an adapter returns, and how it reports a failure
-    dialects.py      reshapes a JSON Schema into what a given vendor will accept
-    schema_overlay.py writes a gold convention into the field descriptions every vendor sees
-    providers/       one module per vendor, each an `extract()` function
+    contract.py      what an adapter IS: `Adapter`, and the `Extraction`/`Cost` it returns
+    errors.py        how a call fails, and whether a retry can fix it
+    budget.py        spending one document's share of the clock
+    schema.py        what EVERY vendor is asked -- strip the benchmark's keys, state the
+                     gold conventions
+    dialects.py      reshaping that for ONE vendor; only adapters import it
+    responses.py     making sense of what came back: fenced JSON, list replies, cost units
+    registry.py      which adapter, at what settings, filed under what name
+    document.py      run one document, return the answer and the evidence for it
+    providers/       one module per vendor, each satisfying `Adapter`
 
     pip install 'omni-extract-bench[harness]'
 
@@ -48,8 +53,9 @@ result alone -- a parser bug is then fixed by re-reading a file instead of re-pa
 calls, which is what it cost once.
 """
 
-from .extraction import (Adapter, AccountFailure, Cost, DialectError, Extraction,
-                         MissingCredential, MissingDependency, VendorError, VendorTimeout)
+from .contract import Adapter, Cost, Extraction
+from .errors import (AccountFailure, DialectError, MissingCredential, MissingDependency,
+                     VendorError, VendorTimeout)
 
 # THE VENDOR SDKs ARE CHECKED ONCE, HERE. Importing this package means running a vendor, and
 # every adapter is imported with it -- so a missing install is one message naming the extra,
@@ -57,8 +63,14 @@ from .extraction import (Adapter, AccountFailure, Cost, DialectError, Extraction
 # (`tests/test_score_standalone.py` fails if that changes), so a scoring-only machine still
 # needs none of it.
 try:
-    from .vendor import DEFAULT_TIMEOUT, PROVIDERS, WORKERS, adapter, predict, settings_for
-except ImportError as exc:
+    from .document import predict
+    from .registry import DEFAULT_TIMEOUT, PROVIDERS, WORKERS, adapter, settings_for
+except ModuleNotFoundError as exc:
+    # ONLY a third-party module. Catching every ImportError told a refactor that had broken an
+    # import inside this package to go and install an extra it already had -- the one message
+    # guaranteed not to help. Ours is re-raised as itself.
+    if (exc.name or "").startswith(__name__.split(".")[0]):
+        raise
     raise MissingDependency(
         f"the harness could not import what the vendor adapters need:\n"
         f"    {exc}\n"

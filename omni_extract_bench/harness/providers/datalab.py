@@ -23,8 +23,11 @@ from pathlib import Path
 
 import httpx
 
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
-                          VendorError)
+from ..budget import Budget, PollRetry
+
+from ..contract import Cost, Extraction
+
+from ..errors import MissingCredential, VendorError
 
 DEFAULT_BASE_URL = "https://www.datalab.to"
 

@@ -29,7 +29,7 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
-from omni_extract_bench.harness.vendor import out_name                         # noqa: E402
+from omni_extract_bench.harness.registry import out_name  # noqa: E402
 
 FAILS = []
 ROOT = pathlib.Path(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
@@ -69,7 +69,7 @@ script.write_text(f'''
 import sys, json, pathlib, time, types
 sys.path.insert(0, {str(ROOT)!r})
 import omni_extract_bench.benchmark as B
-import omni_extract_bench.harness.vendor as V
+import omni_extract_bench.harness.registry as V
 
 _REAL_ADAPTER = V.adapter
 
@@ -88,7 +88,7 @@ def as_adapter(lookup):
     return wrapped
 
 
-from omni_extract_bench.harness.extraction import Cost, Extraction
+from omni_extract_bench.harness.contract import Cost, Extraction
 
 out = pathlib.Path(sys.argv[1])
 docs = []
@@ -139,9 +139,9 @@ report("no half-written file survives anywhere",
 
 print("\nONE VENDOR'S BILLING PROBLEM IS NOT EVERY VENDOR'S")
 import collections                                                             # noqa: E402
-import omni_extract_bench.harness.vendor as V                                  # noqa: E402
-from omni_extract_bench.harness.extraction import (                            # noqa: E402
-    AccountFailure, Cost, Extraction)
+import omni_extract_bench.harness.registry as V                                  # noqa: E402
+from omni_extract_bench.harness.contract import Cost, Extraction
+from omni_extract_bench.harness.errors import AccountFailure
 
 _REAL_ADAPTER = V.adapter
 

@@ -17,7 +17,9 @@ from pathlib import Path
 
 import httpx
 
-from ..extraction import Cost, Extraction, MissingCredential, VendorError
+from ..contract import Cost, Extraction
+
+from ..errors import MissingCredential, VendorError
 
 MODEL = "mistral-ocr-latest"
 URL = "https://api.mistral.ai/v1/ocr"

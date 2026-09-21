@@ -101,7 +101,7 @@ print("every promoted setting carries its literal default on the Config")
 
 import os  # noqa: E402
 
-from omni_extract_bench.harness.vendor import settings_for  # noqa: E402
+from omni_extract_bench.harness.registry import settings_for  # noqa: E402
 
 PROVIDER_OF = {"azure_cu": "azure-cu"}
 for var, (module, field) in RESOLVED_INTO_CONFIG.items():

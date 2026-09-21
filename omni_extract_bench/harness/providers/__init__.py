@@ -1,4 +1,4 @@
-"""Vendor adapters: one module per vendor, each satisfying `harness.extraction.Adapter`.
+"""Vendor adapters: one module per vendor, each satisfying `harness.contract.Adapter`.
 
     Config          what the vendor can be asked
     prepare_schema  the JSON Schema -> whatever this vendor's API takes

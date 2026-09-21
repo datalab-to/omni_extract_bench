@@ -1,34 +1,30 @@
-#!/usr/bin/env python3
-"""Non-destructive schema overlay — writes benchmark conventions into field descriptions.
+"""What EVERY vendor is asked -- the question, before any vendor's dialect touches it.
 
-Rationale: several benchmark fields are scored against a convention the schema never states,
-so every vendor is penalised for guessing differently. The fix is to SAY the convention, not
-to loosen the comparator (a substring-accept would credit a vendor that dumps a paragraph).
+Two things, and `predict` applies them together:
 
-This overlay is applied when a schema is handed to a vendor. It never edits the benchmark's
-own dataset files — those stay pristine so the published corpus is unmodified and the
-overlay is auditable on its own.
+  STRIP    remove annotations the BENCHMARK added (`evaluation_config`, `default`). Sending
+           our own grader metadata as part of the task is simply a bug; one vendor validates
+           strictly and rejected 8 of 40 documents over them.
+  STATE    write a gold convention into the field descriptions every vendor sees, rather than
+           loosening the comparator -- which would credit a vendor that dumps a paragraph.
 
-CONVENTION 1 — SIGN OF MONETARY FLOWS: **magnitude**
-    Chosen on evidence, not taste:
-      * ground truth already stores magnitudes (+98.2 for capital expenditures)
-      * 14 of 21 vendor readings with a signal already emit positive; only 7 emit negative
-      * the field name already carries direction (`capex`, `dividends_paid`,
-        `share_repurchases` are outflows by definition), so a sign adds nothing
-      * it needs zero GT edits, so it introduces no risk of corrupting the corpus
-    A parenthesised figure in the source is a PRESENTATION of an outflow, not a negative
-    quantity. Vendors that emit -98.2 are not wrong about the world — they're answering an
-    unasked question, and now the schema asks it explicitly.
-
-    Note this is complementary to the grader's sign-NOTATION tolerance: "(98.2)", "-98.2"
-    and "−98.2" are all read as the same signed number, and then the convention decides
-    which sign the field wants.
-
-Usage:  from schema_overlay import apply_overlay;  schema = apply_overlay(schema)
-        python3 schema_overlay.py --preview     # show what would change
+Neither ever edits the benchmark's dataset files: the published corpus stays unmodified and
+the overlay is auditable on its own.
 """
 from __future__ import annotations
 import copy
+
+BENCHMARK_ONLY_KEYS = ("evaluation_config", "default")
+
+
+def strip_benchmark_keys(node, keys=BENCHMARK_ONLY_KEYS):
+    """Remove harness-added annotations. Safe for every vendor; changes no field or type."""
+    if isinstance(node, list):
+        return [strip_benchmark_keys(x, keys) for x in node]
+    if not isinstance(node, dict):
+        return node
+    return {k: strip_benchmark_keys(v, keys) for k, v in node.items() if k not in keys}
+
 
 CONVENTIONS = [
     {

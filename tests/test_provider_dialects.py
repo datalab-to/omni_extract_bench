@@ -17,13 +17,16 @@ import sys
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
-from omni_extract_bench.harness import schema_overlay  # noqa: E402
+from omni_extract_bench.harness import schema as SCHEMA  # noqa: E402
 from omni_extract_bench.harness.providers import datalab  # noqa: E402
 from omni_extract_bench.harness.dialects import (  # noqa: E402
-    resolve_refs as deref, strip_benchmark_keys as strip_bench_keys, to_strict_dialect,
+    resolve_refs as deref, to_strict_dialect,
 )
-from omni_extract_bench.harness.extraction import VendorError  # noqa: E402
-from omni_extract_bench.harness.vendor import _is_account_failure  # noqa: E402
+from omni_extract_bench.harness.schema import (  # noqa: E402
+    strip_benchmark_keys as strip_bench_keys,
+)
+from omni_extract_bench.harness.errors import VendorError  # noqa: E402
+from omni_extract_bench.harness.document import _is_account_failure  # noqa: E402
 
 FAILS = []
 
@@ -174,7 +177,7 @@ import copy as _copy                                                        # no
 from omni_extract_bench.harness.providers import (azure_cu, llamaextract,   # noqa: E402
                                                   extend as _extend)
 
-_BASE = deref(strip_bench_keys(schema_overlay.apply_overlay(FAIR)))
+_BASE = deref(strip_bench_keys(SCHEMA.apply_overlay(FAIR)))
 _WANT_DESC = sorted(descriptions(_BASE))
 _WANT_NAMES = field_names(_BASE)
 check("the baseline asks for every field with a description",
@@ -225,7 +228,7 @@ print("\n[5b] schema_sent IS the payload the vendor received")
 
 def _prepared_by(mod, schema):
     """What `predict` sends this adapter: the universal layer, then its own prepare_schema."""
-    return mod.prepare_schema(strip_bench_keys(schema_overlay.apply_overlay(schema)))
+    return mod.prepare_schema(strip_bench_keys(SCHEMA.apply_overlay(schema)))
 
 import pathlib                                                              # noqa: E402
 _ANNOTATED = {"type": "object", "evaluation_config": "array_llm",
@@ -235,7 +238,7 @@ for _name, _mod in (("datalab", datalab), ("llamaextract", llamaextract),
                     ("extend", _extend), ("azure-cu", azure_cu), ("mistral", mistral)):
     _prepared = _prepared_by(_mod, _copy.deepcopy(_ANNOTATED))
     check(f"{_name}: the adapter's own prepare_schema is what ran",
-          _prepared == _mod.prepare_schema(strip_bench_keys(schema_overlay.apply_overlay(
+          _prepared == _mod.prepare_schema(strip_bench_keys(SCHEMA.apply_overlay(
               _copy.deepcopy(_ANNOTATED)))))
     check(f"{_name}: benchmark-only keys never reach the vendor",
           "evaluation_config" not in json.dumps(_prepared)
@@ -243,7 +246,7 @@ for _name, _mod in (("datalab", datalab), ("llamaextract", llamaextract),
 
 check("a dialect-less adapter is identity, not a dropped schema",
       _prepared_by(mistral, _copy.deepcopy(_ANNOTATED))
-      == strip_bench_keys(schema_overlay.apply_overlay(_copy.deepcopy(_ANNOTATED))))
+      == strip_bench_keys(SCHEMA.apply_overlay(_copy.deepcopy(_ANNOTATED))))
 check("llamaextract's payload is the collapsed one, not the JSON Schema it came from",
       "anyOf" not in json.dumps(_prepared_by(llamaextract, _copy.deepcopy(_ANNOTATED))))
 check("azure-cu's payload is a fieldSchema, not a JSON Schema",
@@ -252,9 +255,10 @@ check("extend's payload carries the aliased name",
       "id__" in json.dumps(_prepared_by(_extend, {"type": "object", "properties": {
           "id": {"type": "string"}}})))
 
-import omni_extract_bench.harness.vendor as _vendor                          # noqa: E402
-from omni_extract_bench.harness.extraction import (DialectError,             # noqa: E402
-                                                  VendorError as _VendorError)
+import omni_extract_bench.harness.document as _document                        # noqa: E402
+import omni_extract_bench.harness.registry as _registry                        # noqa: E402
+from omni_extract_bench.harness.errors import (DialectError,             # noqa: E402
+                                               VendorError as _VendorError)
 
 
 class _Spy:
@@ -272,12 +276,16 @@ class _Spy:
 
 
 def _predict_with(spy, schema):
-    """`predict`, with this adapter in place of the real one."""
-    real, _vendor.adapter = _vendor.adapter, lambda provider: spy
+    """`predict`, with this adapter in place of the real one.
+
+    The adapter is substituted on `registry`, which is where `document.predict` looks it up --
+    it holds no bound copy, so the substitution is seen.
+    """
+    real, _registry.adapter = _registry.adapter, lambda provider: spy
     try:
-        return _vendor.predict("llamaextract", pathlib.Path(__file__), schema)
+        return _document.predict("llamaextract", pathlib.Path(__file__), schema)
     finally:
-        _vendor.adapter = real
+        _registry.adapter = real
 
 
 _spy = _Spy(llamaextract.prepare_schema)
@@ -311,22 +319,22 @@ check("benchmark-only keys are still stripped from that fallback",
 
 
 print("\n[5d] every adapter satisfies the Adapter protocol")
-for _name in list(_vendor.PROVIDERS) + ["openai/gpt-5.6-sol"]:
-    _mod = _vendor.adapter(_name)
+for _name in list(_registry.PROVIDERS) + ["openai/gpt-5.6-sol"]:
+    _mod = _registry.adapter(_name)
     check(f"{_name}: has Config, prepare_schema, extract",
           all(hasattr(_mod, n) for n in ("Config", "prepare_schema", "extract")),
           f"missing {[n for n in ('Config','prepare_schema','extract') if not hasattr(_mod,n)]}")
 check("a model id routes to the one LLM adapter",
-      _vendor.resolve("openai/gpt-5.6-sol") == _vendor.resolve("anthropic/claude-opus-5")
+      _registry.resolve("openai/gpt-5.6-sol") == _registry.resolve("anthropic/claude-opus-5")
       == "llm_single_shot")
 
 
-print("\n[5] schema_overlay states a convention without changing the task")
-ov = schema_overlay.apply_overlay(SAMPLE)
+print("\n[5] the overlay states a convention without changing the task")
+ov = SCHEMA.apply_overlay(SAMPLE)
 check("leaf addresses unchanged", set(leaves(ov)) == set(leaves(SAMPLE)))
 check("types unchanged", leaves(ov) == leaves(SAMPLE))
 check("input not mutated", "evaluation_config" in SAMPLE)
-check("applying twice is idempotent", schema_overlay.apply_overlay(ov) == ov)
+check("applying twice is idempotent", SCHEMA.apply_overlay(ov) == ov)
 
 print("\n[7] every real corpus schema survives every vendor's transform")
 CORPUS = _os.environ.get("OEB_CORPUS")
@@ -342,7 +350,7 @@ else:
         name = _os.path.basename(_os.path.dirname(p))
         if set(leaves(datalab.prepare_schema(s))) != base:
             drops["datalab"].append(name)
-        if set(leaves(schema_overlay.apply_overlay(s))) != base:
+        if set(leaves(SCHEMA.apply_overlay(s))) != base:
             drops["overlay"].append(name)
         if set(leaves(strip_bench_keys(s))) != base:
             drops["strip"].append(name)

@@ -13,14 +13,9 @@ import sys
 
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.harness.dialects import (  # noqa: E402
-    cost_from_response,
-    parse_model_json,
-    resolve_refs,
-    strip_benchmark_keys,
-    to_strict_dialect,
-    to_typed_enum_dialect,
-)
+from omni_extract_bench.harness.dialects import resolve_refs, to_strict_dialect, to_typed_enum_dialect
+from omni_extract_bench.harness.responses import cost_from_response, parse_model_json
+from omni_extract_bench.harness.schema import strip_benchmark_keys
 
 FAILS = []
 

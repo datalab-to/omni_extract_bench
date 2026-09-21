@@ -183,7 +183,7 @@ class Run:
 
     def settings(self) -> dict:
         """The whole resolved configuration, not just what the caller passed."""
-        from .harness.vendor import settings_for
+        from .harness.registry import settings_for
 
         return settings_for(self.provider, self.options)
 
@@ -502,7 +502,7 @@ DEFAULT_WORKERS = 5
 
 def workers_for(providers, requested: dict[str, int] | int | None) -> int:
     """How many documents to have in flight at one vendor."""
-    from .harness.vendor import resolve
+    from .harness.registry import resolve
 
     names = [providers] if isinstance(providers, str) else list(providers)
     if isinstance(requested, int):
@@ -517,7 +517,7 @@ def plan(providers: list[str], options: dict | None = None,
          out: Path = Path("runs")) -> list[Run]:
     """A `Run` per configuration measured, deduplicated by label. `--options` may give one
     provider a LIST, and each entry is a Run of its own."""
-    from .harness.vendor import out_name
+    from .harness.registry import out_name
 
     unknown = sorted(set(options or {}) - set(providers))
     if unknown:
@@ -562,7 +562,7 @@ class BenchmarkRun:
                  predict_workers: dict[str, int] | int | None = None, score_workers: int = 0,
                  verdicts: bool = True, rescore: bool = False, score_only: bool = False,
                  options: dict | None = None):
-        from .harness.vendor import resolve
+        from .harness.registry import resolve
 
         for provider in providers:
             resolve(provider)
