@@ -151,7 +151,7 @@ from omni_extract_bench.benchmark import BenchmarkRun
 BenchmarkRun(
   providers,              # e.g. ["datalab"]
   out="runs",             # where runs go
-  data_root=None,
+  data_root=None,         # where the corpus lands. Default: the HuggingFace cache
   manifest=None,          # own manifest instead of ours
   repo=None,              # a different HuggingFace dataset. Default: ours
   suites=None,            # limit to these suites

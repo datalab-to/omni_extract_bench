@@ -276,8 +276,9 @@ def main(argv=None) -> int:
                    help="where predictions, scores and the summary go. Default: runs/")
     b.add_argument("--data-root", type=pathlib.Path,
                    help="where the corpus is downloaded to, and what a relative path in the "
-                        "manifest is relative to. Default: benchmark/, or the manifest's own "
-                        "directory when --manifest is given")
+                        "manifest is relative to. Default: the HuggingFace cache, which is "
+                        "shared between working directories, or the manifest's own directory "
+                        "when --manifest is given")
     b.add_argument("--repo",
                    help="a different HuggingFace dataset to fetch the corpus from. "
                         "Default: ours")

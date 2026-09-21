@@ -99,7 +99,15 @@ class Doc(NamedTuple):
     schema: dict
 
 
-def fetch(root: Path, repo: str = REPO) -> Path:
+def fetch(root: Path | None = None, repo: str = REPO) -> Path:
+    """The corpus on disk. With no `root` it lands in the HuggingFace cache, which is where it
+    belongs: shared between every checkout and every working directory, so the second folder
+    you run from resolves it for free.
+
+    `local_dir` was passed unconditionally, at `benchmark/` under whatever the working
+    directory happened to be, and `local_dir` bypasses the cache -- so a corpus already on the
+    machine was downloaded again, in full, once per folder.
+    """
     try:
         from huggingface_hub import snapshot_download
     except ImportError:
@@ -109,8 +117,9 @@ def fetch(root: Path, repo: str = REPO) -> Path:
             "The scorer itself needs none of it -- `score` and `oeb score` work without."
         ) from None
 
-    log.info("fetching the corpus into %s", root)
-    return Path(snapshot_download(repo, repo_type="dataset", local_dir=str(root)))
+    log.info("fetching the corpus into %s", root or "the huggingface cache")
+    return Path(snapshot_download(repo, repo_type="dataset",
+                                  **({"local_dir": str(root)} if root else {})))
 
 
 def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[Doc]:
@@ -702,13 +711,14 @@ class BenchmarkRun:
         return summary
 
     def corpus(self) -> list[Doc]:
-        """The documents this invocation selects, fetching ours when no manifest was brought. A
-        relative path resolves against `--data-root`, else the manifest's own directory."""
+        """The documents this invocation selects, fetching ours when no manifest was brought.
+        A relative path resolves against `--data-root`, else the manifest's own directory; ours
+        goes to the HuggingFace cache unless `--data-root` names somewhere else."""
         if self.manifest is not None:
             root = self.data_root if self.data_root is not None else self.manifest.parent
             path = self.manifest
         else:
-            root = fetch(self.data_root or Path("benchmark"), self.repo)
+            root = fetch(self.data_root, self.repo)
             path = root / MANIFEST
         docs = read_manifest(path, root, suites=self.suites, limit=self.limit)
         if not docs:
