@@ -10,6 +10,7 @@ provides primitives (`score` and `predict`) to run your own! The README is split
 4. **[Predict](#predict)** — predict on one document and its schema in your code or from the cli.
 5. **[Licence](#licence)** — Apache 2.0
 
+And take a look at [`docs/API.md`](./docs/API.md) for more in-depth documentation of public functionality.
 
 ## Install
 
