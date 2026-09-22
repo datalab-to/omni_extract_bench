@@ -821,7 +821,9 @@ def score(pred: Any, gt: Any, schema: Any,
             f"structured outputs rejects one outright -- so a document shaped like this was "
             f"never asked for. Wrap it in an object, on both sides."
         )
-    if not isinstance(schema, dict) or not schema:
+    if schema is not None and not isinstance(schema, dict):
+        raise TypeError(f"schema must be a JSON object, got {type(schema).__name__}.")
+    if not schema:
         raise TypeError(
             "a schema is required. Without it an additionalProperties object cannot be "
             "found, so an ungraded subtree would be graded silently, and the slots the "

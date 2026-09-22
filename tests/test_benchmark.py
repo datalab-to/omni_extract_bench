@@ -142,15 +142,15 @@ try:
     tmp = Path(tempfile.mkdtemp())
     docs = _bench.BenchmarkRun(["datalab"], manifest=byo(tmp, _relative)).corpus()
     report("a relative path resolves against the manifest's own directory",
-           len(docs) == 2 and all(d.pdf.exists() and d.gt.exists() for d in docs),
-           str([str(d.pdf) for d in docs]))
+           len(docs) == 2 and all(d.doc_path.exists() and d.gt_path.exists() for d in docs),
+           str([str(d.doc_path) for d in docs]))
     report("...and the schema comes through parsed, per document",
            docs[0].schema == BYO_SCHEMA and docs[0].suite == "mine")
 
     tmp = Path(tempfile.mkdtemp())
     docs = _bench.BenchmarkRun(["datalab"], manifest=byo(tmp, _absolute)).corpus()
     report("an absolute path is used as it is, whatever the root",
-           all(d.pdf.exists() for d in docs), str([str(d.pdf) for d in docs]))
+           all(d.doc_path.exists() for d in docs), str([str(d.doc_path) for d in docs]))
 
     # The corpus moves after the manifest is written: relative paths need to be told where.
     tmp = Path(tempfile.mkdtemp())
@@ -160,9 +160,81 @@ try:
     docs = _bench.BenchmarkRun(["datalab"], manifest=moved / "manifest.parquet",
                                data_root=moved).corpus()
     report("...and --data-root overrides what it is relative to",
-           all(d.pdf.exists() for d in docs))
+           all(d.doc_path.exists() for d in docs))
 finally:
     _bench.fetch = _real_fetch
+
+# COLUMNS is written out rather than read off Doc._fields, so the two are free to drift. What
+# may NOT drift is the direction a corpus on disk feels: a manifest carrying exactly COLUMNS
+# and nothing else has to be enough to read, or the reader has grown a column nobody was told
+# about and the KeyError is back.
+_exact = Path(tempfile.mkdtemp()) / "m.parquet"
+# "{}" is at once a valid doc_id, a usable path and valid JSON, so the row is built from
+# COLUMNS itself: a column added to COLUMNS is covered here without editing this line.
+_pq.write_table(_pa.Table.from_pylist([{c: "{}" for c in _bench.COLUMNS}]), _exact)
+try:
+    _only = _bench.read_manifest(_exact, _exact.parent)
+    report("a manifest of exactly COLUMNS is enough to read",
+           len(_only) == 1 and _only[0].schema == {})
+except Exception as exc:                                                       # noqa: BLE001
+    report("a manifest of exactly COLUMNS is enough to read", False,
+           f"{type(exc).__name__}: {exc}")
+
+# A manifest that IS there but is not one: named at the file, not as a KeyError with a column
+# name in it and no file, and not as a bare JSONDecodeError over a corpus of thousands.
+_short = Path(tempfile.mkdtemp()) / "m.parquet"
+_pq.write_table(_pa.Table.from_pylist(
+    [{"doc_id": "a", "doc_path": "x.pdf", "gt_path": "x.json", "schema": "{}"}]), _short)
+try:
+    _bench.read_manifest(_short, _short.parent)
+    report("a manifest missing a column is refused", False, "it was accepted")
+except ValueError as exc:
+    report("a manifest missing a column names the column and the file",
+           "suite" in str(exc) and str(_short) in str(exc), str(exc))
+
+_bad_schema = Path(tempfile.mkdtemp()) / "m.parquet"
+_pq.write_table(_pa.Table.from_pylist(
+    [{"doc_id": "a", "suite": "s", "doc_path": "x.pdf", "gt_path": "x.json",
+      "schema": "{not json"}]), _bad_schema)
+try:
+    _bench.read_manifest(_bad_schema, _bad_schema.parent)
+    report("a schema column that is not JSON is refused", False, "it was accepted")
+except ValueError as exc:
+    report("...and an unreadable schema names the row it is in",
+           "row 0" in str(exc) and "a" in str(exc), str(exc))
+
+# A dataset with no manifest in it is not a corpus, and the corpus is a gigabyte: say so
+# before the download, not after it.
+import huggingface_hub as _hf                                                  # noqa: E402
+
+_real_exists, _real_snapshot = _hf.file_exists, _hf.snapshot_download
+_hf.file_exists = lambda *a, **k: False
+_hf.snapshot_download = lambda *a, **k: (_ for _ in ()).throw(
+    AssertionError("a gigabyte was downloaded before the manifest was asked for"))
+try:
+    _bench.fetch(repo="someone/no-manifest")
+    report("a dataset without a manifest is refused", False, "it was accepted")
+except ValueError as exc:
+    report("a dataset without a manifest is refused, before anything is downloaded",
+           "someone/no-manifest" in str(exc) and "manifest.parquet" in str(exc), str(exc))
+# A hub that will not answer -- offline, with the corpus already in the cache -- is not an
+# answer of no. The download decides, as it did before there was a check at all.
+_hf.file_exists = lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
+_hf.snapshot_download = lambda *a, **k: "/cached/corpus"
+try:
+    report("...but a hub that cannot be reached does not stop a cached corpus",
+           _bench.fetch(repo="ours") == Path("/cached/corpus"))
+finally:
+    _hf.file_exists, _hf.snapshot_download = _real_exists, _real_snapshot
+
+# A manifest that is not there is named, whether it is ours or one that was pointed at.
+_gone = Path(tempfile.mkdtemp()) / "nope.parquet"
+try:
+    _bench.read_manifest(_gone, _gone.parent)
+    report("a manifest that does not exist is refused", False, "it was accepted")
+except ValueError as exc:
+    report("a manifest that does not exist is named in the error",
+           str(_gone) in str(exc) and "doc_id" in str(exc), str(exc))
 
 # A directory is named for the provider and its options and never for the corpus, so nothing
 # in the NAME keeps two corpora apart. `settings.json` records which one, and `prepare` reads
