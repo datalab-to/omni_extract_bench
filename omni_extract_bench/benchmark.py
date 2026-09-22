@@ -86,6 +86,9 @@ def plural(n: int, word: str) -> str:
 
 REPO = "datalab-to/omni_extract_bench"
 MANIFEST = "manifest.parquet"
+#: What a manifest row says, and all it has to say. Named here because the error that
+#: reports a missing one quotes them, and so does `--manifest`'s help.
+COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
 
 
 class Doc(NamedTuple):
@@ -105,13 +108,30 @@ def fetch(root: Path | None = None, repo: str = REPO) -> Path:
     you run from resolves it for free.
     """
     try:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import file_exists, snapshot_download
     except ImportError:
         raise ImportError(
             "huggingface_hub is needed to fetch the benchmark corpus, and is not installed:\n"
             "    pip install 'omni-extract-bench[benchmark]'\n"
             "The scorer itself needs none of it -- `score` and `oeb score` work without."
         ) from None
+
+    # Asked BEFORE the download, because a corpus is gigabytes and a dataset without a
+    # manifest is not a corpus at all -- waiting for all of it to be told so is the wrong
+    # order. A hub that will not answer (offline, a cached corpus) is not an answer of no:
+    # the download runs, and `read_manifest` says it if the manifest really is missing.
+    try:
+        missing = not file_exists(repo, MANIFEST, repo_type="dataset")
+    except OSError:
+        missing = False
+    if missing:
+        raise ValueError(
+            f"the HuggingFace dataset {repo} has no {MANIFEST} at its root, so there is "
+            f"nothing to benchmark: a corpus is a manifest -- columns doc_id, suite, "
+            f"doc_path, gt_path, schema -- beside the documents it names, as ours is at "
+            f"https://huggingface.co/datasets/{REPO}. Point --manifest at a parquet of your "
+            f"own to benchmark documents that are already on disk."
+        )
 
     log.info("fetching the corpus into %s", root or "the huggingface cache")
     return Path(snapshot_download(repo, repo_type="dataset",
@@ -127,9 +147,23 @@ def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[D
             "    pip install 'omni-extract-bench[benchmark]'"
         ) from None
     if not path.exists():
-        raise ValueError(f"manifest file at {path} does not exist. Ensure benchmark dataset follows the same convention as https://huggingface.co/datasets/datalab-to/omni_extract_bench.")
+        raise ValueError(
+            f"there is no manifest at {path}. It is a parquet file with one row per "
+            f"document, as {', '.join(COLUMNS)}; ours is at "
+            f"https://huggingface.co/datasets/{REPO}, and a corpus of your own follows the "
+            f"same convention."
+        )
+    table = pq.read_table(path)
+    # Every column, once, before any row: a manifest short of one is short of it everywhere,
+    # and read off a row it is a `KeyError` with a column name and no file in it.
+    absent = [c for c in COLUMNS if c not in table.column_names]
+    if absent:
+        has = ", ".join(table.column_names) or "no columns"
+        raise ValueError(f"{path} has no {', '.join(absent)} column"
+                         f"{'s' if len(absent) > 1 else ''}. A manifest names one document "
+                         f"per row, as {', '.join(COLUMNS)}; this one has {has}.")
     docs = []
-    for n, row in enumerate(pq.read_table(path).to_pylist()):
+    for n, row in enumerate(table.to_pylist()):
         if suites and row["suite"] not in suites:
             continue
         # A doc_id IS a filename -- `predictions/<doc_id>.json` -- and the key a resume reads.
@@ -140,11 +174,18 @@ def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[D
             raise ValueError(f"{path}: row {n} has doc_id {doc_id!r}, which is not a filename. "
                              f"It names this document's prediction, its record and its row in "
                              f"scores.jsonl, so it has to be one path component.")
+        # Same reason: an unreadable schema is this row's, and says so here rather than as a
+        # bare `Expecting value: line 1 column 1` over a corpus of thousands.
+        try:
+            schema = json.loads(row["schema"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{path}: row {n} ({doc_id}) has a schema column that is not "
+                             f"JSON: {exc}") from None
         docs.append(Doc(doc_id=doc_id,
                         suite=row["suite"],
                         pdf=root / row["doc_path"],
                         gt=root / row["gt_path"],
-                        schema=json.loads(row["schema"])))
+                        schema=schema))
     docs.sort(key=lambda d: (d.suite, d.doc_id))
     return docs[:limit] if limit else docs
 

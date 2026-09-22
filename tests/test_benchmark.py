@@ -164,6 +164,62 @@ try:
 finally:
     _bench.fetch = _real_fetch
 
+# A manifest that IS there but is not one: named at the file, not as a KeyError with a column
+# name in it and no file, and not as a bare JSONDecodeError over a corpus of thousands.
+_short = Path(tempfile.mkdtemp()) / "m.parquet"
+_pq.write_table(_pa.Table.from_pylist(
+    [{"doc_id": "a", "doc_path": "x.pdf", "gt_path": "x.json", "schema": "{}"}]), _short)
+try:
+    _bench.read_manifest(_short, _short.parent)
+    report("a manifest missing a column is refused", False, "it was accepted")
+except ValueError as exc:
+    report("a manifest missing a column names the column and the file",
+           "suite" in str(exc) and str(_short) in str(exc), str(exc))
+
+_bad_schema = Path(tempfile.mkdtemp()) / "m.parquet"
+_pq.write_table(_pa.Table.from_pylist(
+    [{"doc_id": "a", "suite": "s", "doc_path": "x.pdf", "gt_path": "x.json",
+      "schema": "{not json"}]), _bad_schema)
+try:
+    _bench.read_manifest(_bad_schema, _bad_schema.parent)
+    report("a schema column that is not JSON is refused", False, "it was accepted")
+except ValueError as exc:
+    report("...and an unreadable schema names the row it is in",
+           "row 0" in str(exc) and "a" in str(exc), str(exc))
+
+# A dataset with no manifest in it is not a corpus, and the corpus is a gigabyte: say so
+# before the download, not after it.
+import huggingface_hub as _hf                                                  # noqa: E402
+
+_real_exists, _real_snapshot = _hf.file_exists, _hf.snapshot_download
+_hf.file_exists = lambda *a, **k: False
+_hf.snapshot_download = lambda *a, **k: (_ for _ in ()).throw(
+    AssertionError("a gigabyte was downloaded before the manifest was asked for"))
+try:
+    _bench.fetch(repo="someone/no-manifest")
+    report("a dataset without a manifest is refused", False, "it was accepted")
+except ValueError as exc:
+    report("a dataset without a manifest is refused, before anything is downloaded",
+           "someone/no-manifest" in str(exc) and "manifest.parquet" in str(exc), str(exc))
+# A hub that will not answer -- offline, with the corpus already in the cache -- is not an
+# answer of no. The download decides, as it did before there was a check at all.
+_hf.file_exists = lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
+_hf.snapshot_download = lambda *a, **k: "/cached/corpus"
+try:
+    report("...but a hub that cannot be reached does not stop a cached corpus",
+           _bench.fetch(repo="ours") == Path("/cached/corpus"))
+finally:
+    _hf.file_exists, _hf.snapshot_download = _real_exists, _real_snapshot
+
+# A manifest that is not there is named, whether it is ours or one that was pointed at.
+_gone = Path(tempfile.mkdtemp()) / "nope.parquet"
+try:
+    _bench.read_manifest(_gone, _gone.parent)
+    report("a manifest that does not exist is refused", False, "it was accepted")
+except ValueError as exc:
+    report("a manifest that does not exist is named in the error",
+           str(_gone) in str(exc) and "doc_id" in str(exc), str(exc))
+
 # A directory is named for the provider and its options and never for the corpus, so nothing
 # in the NAME keeps two corpora apart. `settings.json` records which one, and `prepare` reads
 # it back -- otherwise `scores.jsonl` merges both by doc_id and `summary.json` averages them.
