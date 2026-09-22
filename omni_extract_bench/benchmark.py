@@ -94,13 +94,7 @@ COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
 
 
 class Doc(NamedTuple):
-    """One benchmark document, resolved once from the manifest. The schema is parsed here so
-    the vendor and the scorer are handed the same object.
-
-    Named for the manifest columns it comes from, so that debugging a manifest and reading the
-    runner use one vocabulary. `doc_path` is not necessarily a PDF -- a corpus of scanned PNGs
-    is a corpus -- which is what the field was called before this, and wrongly.
-    """
+    """One benchmark element."""
 
     doc_id: str
     suite: str
