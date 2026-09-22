@@ -91,7 +91,7 @@ check("nullable union collapsed then re-nulled",
       props["note"]["type"] == ["string", "null"], str(props["note"]))
 check("disallowed key dropped", "title" not in props["name"])
 
-print("\n[4] typed-enum dialect — enum needs a type, and then the null must go")
+print("\n[4] typed-enum dialect — enum needs a type, and the null is part of it")
 typed = to_typed_enum_dialect({
     "type": "object",
     "properties": {
@@ -104,9 +104,13 @@ typed = to_typed_enum_dialect({
     },
 })
 sev = typed["properties"]["severity"]
-check("type inferred from enum values", sev.get("type") == "string", str(sev))
-check("null removed once typed", None not in sev["enum"], str(sev))
-check("nested union collapsed", "anyOf" not in json.dumps(typed["properties"]["skills"]))
+check("type inferred from enum values", sev.get("type") == ["string", "null"], str(sev))
+check("a null member keeps the enum nullable", None in sev["enum"], str(sev))
+check("a union is kept, not collapsed to its non-null branch",
+      "anyOf" in typed["properties"]["skills"], str(typed["properties"]["skills"]))
+check("...and its branches are adapted in place",
+      typed["properties"]["skills"]["anyOf"][1]["additionalProperties"] is True,
+      str(typed["properties"]["skills"]))
 ap = to_typed_enum_dialect({"type": "object", "additionalProperties": {"type": "array"}})
 check("additionalProperties reduced to boolean", ap["additionalProperties"] is True)
 
