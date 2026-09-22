@@ -27,6 +27,8 @@ def read_json(path: str):
     """
     try:
         return json.loads(pathlib.Path(path).read_text())
+    except FileNotFoundError:
+        raise ValueError(f"{path}: no such file") from None
     except json.JSONDecodeError as exc:
         raise ValueError(f"{path}: not JSON -- {exc}") from None
 

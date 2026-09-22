@@ -142,7 +142,9 @@ for bad in (None, {}, "not a schema", []):
         score(PRED, GT, bad)
         report(f"{bad!r} is refused", False, "no TypeError raised")
     except TypeError as exc:
-        report(f"{bad!r} is refused", "schema is required" in str(exc), str(exc)[:70])
+        report(f"{bad!r} is refused",
+               "schema is required" in str(exc) or "schema must be" in str(exc),
+               str(exc)[:70])
 note("without it an open map cannot be found, and a fabricated value cannot be told")
 note("from an invented one -- reporting fabricated=0 would be a false claim")
 
