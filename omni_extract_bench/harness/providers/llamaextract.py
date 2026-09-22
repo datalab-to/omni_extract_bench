@@ -29,7 +29,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from ..schema import MAX_REF_DEPTH, collapse_nullable_union, resolve_refs
+from ..schema import MAX_REF_DEPTH, resolve_refs
 from ..budget import Budget, PollRetry
 from ..contract import Cost, Extraction
 from ..errors import MissingCredential, VendorError
@@ -50,43 +50,48 @@ class Config:
     poll_interval: int = 5
 
 
+JSON_TYPE_NAMES = {str: "string", bool: "boolean", int: "integer", float: "number"}
+
+
+def enum_type(members: list):
+    """The `type` an enum needs: the type of each member, `"null"` included.
+
+    A list when the members are of more than one type, which is what keeps a nullable enum
+    nullable -- `["MILD", "MODERATE", null]` is `["string", "null"]`, not `"string"` with the
+    null quietly dropped.
+    """
+    names = sorted({JSON_TYPE_NAMES[type(m)] for m in members
+                    if m is not None and type(m) in JSON_TYPE_NAMES})
+    if not names:
+        names = ["string"]
+    if None in members:
+        names.append("null")
+    return names[0] if len(names) == 1 else names
+
+
 def to_typed_enum_dialect(node):
     """Reshape for a vendor that requires every enum to declare a matching type.
 
-    ``{"enum": ["MILD", "MODERATE", null]}`` is valid JSON Schema and rejected here twice over:
-    once for having no ``type``, and then -- after a type is inferred -- for the ``null`` member
-    not matching it. The type is inferred from the enum's own values rather than defaulted, and
-    the null is removed, since nullability belongs to the field's optionality, not to the value
-    set. Also reduces ``additionalProperties`` from a schema to a boolean, which some validators
-    require; the map stays open, only the per-value constraint is lost.
+    ``{"enum": ["MILD", "MODERATE", null]}`` is valid JSON Schema and rejected here for having
+    no ``type``. The type is inferred from the enum's own values, the null among them, so the
+    field stays as nullable as it was declared: a benchmark that quietly forbids null asks this
+    vendor a different question than the schema asks, and then scores the answer as if it had
+    not. Unions are recursed into rather than collapsed, for the same reason. Also reduces
+    ``additionalProperties`` from a schema to a boolean, which some validators require; the map
+    stays open, only the per-value constraint is lost.
     """
     if isinstance(node, list):
         return [to_typed_enum_dialect(x) for x in node]
     if not isinstance(node, dict):
         return node
 
-    collapsed = collapse_nullable_union(node)
-    if collapsed is not node:
-        # RECURSE on the merged node, as extend's `to_strict_dialect` does: a union whose branch is
-        # a union (`Optional[list[str] | dict]`) otherwise keeps the inner `anyOf`, and a
-        # nested union is what the vendor rejected in the first place.
-        return to_typed_enum_dialect(collapsed)
     out = dict(node)
-
-    declared = out.get("type")
-    if isinstance(declared, list):
-        non_null = [t for t in declared if t != "null"]
-        out["type"] = non_null[0] if non_null else "string"
+    for comb in ("anyOf", "oneOf", "allOf"):
+        if isinstance(out.get(comb), list):
+            out[comb] = [to_typed_enum_dialect(b) for b in out[comb]]
 
     if "enum" in out and "type" not in out:
-        values = [v for v in out["enum"] if v is not None]
-        kinds = {type(v) for v in values}
-        out["type"] = ({str: "string", bool: "boolean", int: "integer", float: "number"}
-                       .get(kinds.pop()) if len(kinds) == 1 else "string")
-
-    if isinstance(out.get("enum"), list) and out.get("type") in (
-            "string", "boolean", "integer", "number"):
-        out["enum"] = [v for v in out["enum"] if v is not None]
+        out["type"] = enum_type(out["enum"])
 
     if isinstance(out.get("additionalProperties"), dict):
         out["additionalProperties"] = True
@@ -114,14 +119,16 @@ def drop_schema_metadata(node):
 def prepare_schema(schema: dict) -> dict:
     """Inline $refs, drop $-prefixed metadata, and reduce to the subset the v2 API accepts.
 
-    Three constraints, each learned from a rejection, and all three are what
-    `to_typed_enum_dialect` already encodes -- this used to restate them:
+    Two constraints, each learned from a rejection, and both are what `to_typed_enum_dialect`
+    encodes:
 
-      * a nullable ARRAY must not stay a union. LlamaExtract turns `["array","null"]` into an
-        anyOf whose array branch loses its `items`, and answers with 400 schema_validation.
-      * a typeless enum is rejected ("Invalid type for field"), and once a type is inferred the
-        `null` member no longer matches it ("Input should be a valid string at ...enum.3").
+      * a typeless enum is rejected ("Invalid type for field"), so the type is inferred from
+        the enum's own members -- `null` included, rather than stripped.
       * `additionalProperties` as a SCHEMA is rejected ("Input should be a valid boolean").
+
+    What the schema declares as nullable is sent as nullable. Collapsing a union to its
+    non-null branch, and dropping a `null` enum member, told this vendor the field was required
+    when the corpus says it is not.
     """
     return to_typed_enum_dialect(
         drop_schema_metadata(resolve_refs(schema, max_depth=MAX_REF_DEPTH)))
