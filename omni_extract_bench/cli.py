@@ -9,23 +9,6 @@
 `benchmark` is the whole published benchmark -- fetch the corpus, run it through each
 vendor, score, write it down -- and lives in `benchmark.py`, which is a script rather than
 library code precisely because it makes the orchestration decisions the library refuses to.
-
-There is no manifest and no runner. Scoring a corpus is a loop over this command, or better
-over `score` itself -- written the way your corpus is laid out, rather than the way a table
-would have to be. That loop is the caller's, because it is where the decisions live that this
-package has no business making: which documents, in what order, how many at once, what to do
-with a prediction that came back as a recorded failure, and how to aggregate at the end
-(`docs/METRIC_SPEC.md` section 7 on why a flat mean over documents is not the right one).
-
-A subcommand rather than a bare `oeb`, because producing predictions is the other half of this
-repository and will want a verb of its own.
-
-NOTHING HERE CATCHES. A `ValueError` from a manifest that is not there reaches the terminal as
-a `ValueError`, traceback and all, exactly as it reaches a caller who imported `run` instead of
-typing `oeb benchmark`. The command line was once the friendlier of the two, printing the
-message and swallowing the frames; that made the CLI and the API two different surfaces to
-learn, and turned a bug in this package into something indistinguishable from a bad flag. One
-behaviour, one thing to learn, and the traceback names the line that raised.
 """
 from __future__ import annotations
 
