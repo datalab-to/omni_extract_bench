@@ -9,16 +9,6 @@
 `benchmark` is the whole published benchmark -- fetch the corpus, run it through each
 vendor, score, write it down -- and lives in `benchmark.py`, which is a script rather than
 library code precisely because it makes the orchestration decisions the library refuses to.
-
-There is no manifest and no runner. Scoring a corpus is a loop over this command, or better
-over `score` itself -- written the way your corpus is laid out, rather than the way a table
-would have to be. That loop is the caller's, because it is where the decisions live that this
-package has no business making: which documents, in what order, how many at once, what to do
-with a prediction that came back as a recorded failure, and how to aggregate at the end
-(`docs/METRIC_SPEC.md` section 7 on why a flat mean over documents is not the right one).
-
-A subcommand rather than a bare `oeb`, because producing predictions is the other half of this
-repository and will want a verb of its own.
 """
 from __future__ import annotations
 
@@ -37,6 +27,8 @@ def read_json(path: str):
     """
     try:
         return json.loads(pathlib.Path(path).read_text())
+    except FileNotFoundError:
+        raise ValueError(f"{path}: no such file") from None
     except json.JSONDecodeError as exc:
         raise ValueError(f"{path}: not JSON -- {exc}") from None
 
@@ -187,15 +179,10 @@ def _count(text: str, shown: str) -> int:
 
 def cmd_predict(args) -> int:
     """One document through one vendor. The mirror of `oeb score`: files in, JSON out."""
-    from .harness import (AccountFailure, MissingCredential, MissingDependency, VendorError,
-                          predict)
+    from .harness import predict
 
-    try:
-        record = predict(args.provider, args.doc, read_json(args.schema), timeout=args.timeout,
-                         **read_options(args.options, per_provider=False))
-    except (MissingCredential, MissingDependency, AccountFailure, VendorError) as exc:
-        print(f"  {exc}", file=sys.stderr)
-        return 1
+    record = predict(args.provider, args.doc, read_json(args.schema), timeout=args.timeout,
+                     **read_options(args.options, per_provider=False))
     json.dump(record, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
     return 1 if record.get("error") else 0
@@ -225,21 +212,15 @@ def confirm_plan(plan) -> bool:
 def cmd_benchmark(args) -> int:
     from .benchmark import run
 
-    from .harness import AccountFailure, MissingCredential, MissingDependency
-
-    try:
-        summary = run(args.providers, out=args.out, data_root=args.data_root,
-                      manifest=args.manifest, repo=args.repo, suites=args.suites,
-                      limit=args.limit, timeout=args.timeout,
-                      predict_workers=read_workers(args.predict_workers),
-                      score_workers=args.score_workers,
-                      verdicts=args.verdicts, rescore=args.rescore,
-                      score_only=args.score_only,
-                      options=read_options(args.options),
-                      confirm=None if args.yes else confirm_plan)
-    except (MissingCredential, MissingDependency, AccountFailure) as exc:
-        print(f"  {exc}", file=sys.stderr)
-        return 1
+    summary = run(args.providers, out=args.out, data_root=args.data_root,
+                  manifest=args.manifest, repo=args.repo, suites=args.suites,
+                  limit=args.limit, timeout=args.timeout,
+                  predict_workers=read_workers(args.predict_workers),
+                  score_workers=args.score_workers,
+                  verdicts=args.verdicts, rescore=args.rescore,
+                  score_only=args.score_only,
+                  options=read_options(args.options),
+                  confirm=None if args.yes else confirm_plan)
     if not summary:
         return 1              # the plan was declined, so there is nothing to print
     json.dump(summary, sys.stdout, indent=2)
@@ -348,11 +329,7 @@ def main(argv=None) -> int:
     root.setLevel(logging.WARNING)
     logging.getLogger(__package__).setLevel(logging.WARNING if args.quiet else logging.INFO)
 
-    try:
-        return args.fn(args)
-    except (ValueError, TypeError, OSError, ImportError) as exc:
-        print(f"  {exc}", file=sys.stderr)
-        return 1
+    return args.fn(args)
 
 
 if __name__ == "__main__":
