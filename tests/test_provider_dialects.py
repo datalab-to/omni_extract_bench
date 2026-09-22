@@ -244,8 +244,8 @@ for _name, _mod in (("datalab", datalab), ("llamaextract", llamaextract),
 check("a dialect-less adapter is identity, not a dropped schema",
       _prepared_by(mistral, _copy.deepcopy(_ANNOTATED))
       == strip_bench_keys(SCHEMA.apply_overlay(_copy.deepcopy(_ANNOTATED))))
-check("llamaextract's payload is the collapsed one, not the JSON Schema it came from",
-      "anyOf" not in json.dumps(_prepared_by(llamaextract, _copy.deepcopy(_ANNOTATED))))
+check("llamaextract is sent the nullability the schema declares, not a collapsed union",
+      "anyOf" in json.dumps(_prepared_by(llamaextract, _copy.deepcopy(_ANNOTATED))))
 check("azure-cu's payload is a fieldSchema, not a JSON Schema",
       "fields" in _prepared_by(azure_cu, _copy.deepcopy(_ANNOTATED)))
 check("extend's payload carries the aliased name",
