@@ -20,8 +20,10 @@ Auth: OPENROUTER_API_KEY, or OPENAI_API_KEY. Another OpenAI-compatible endpoint 
 with `base_url=` (`--base-url`), which is an argument and not an environment variable, so the
 record can say which endpoint answered.
 
-    python -m omni_extract_bench.harness.providers.llm_single_shot --pdf doc.pdf --schema s.json --out out.json \\
-        --model anthropic/claude-opus-5
+    oeb predict --provider anthropic/claude-opus-5 --doc doc.pdf --schema schema.json
+
+    The model IS the provider name -- `--options {"model": ...}` is refused, so a run
+    cannot be stored under a model it did not use.
 """
 from __future__ import annotations
 
@@ -35,10 +37,13 @@ from pathlib import Path
 
 import openai
 
-from ..dialects import parse_model_json
+from ..responses import parse_model_json
 
-from ..extraction import Budget, Cost, Extraction, MissingCredential, VendorError
-from ._cli import run_cli
+from ..budget import Budget
+
+from ..contract import Cost, Extraction
+
+from ..errors import MissingCredential, VendorError
 
 SYSTEM_PROMPT = """\
 You are a document data extraction system. You will be given a PDF document \
@@ -96,6 +101,11 @@ class Config:
 
 def max_output_for(model: str) -> int:
     return MODEL_MAX_OUTPUT.get(model, DEFAULT_MAX_OUTPUT_TOKENS)
+
+
+def prepare_schema(schema: dict) -> dict:
+    """This vendor takes a JSON Schema as written; nothing to reshape."""
+    return schema
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
@@ -185,10 +195,3 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     raise VendorError(f"all {config.attempts} attempts returned an unusable answer: {last}",
                       status=200, body=json.dumps({"calls": calls, "model": model})[:4000])
 
-
-def main() -> None:
-    run_cli(extract, Config, "llm-single-shot")
-
-
-if __name__ == "__main__":
-    main()

@@ -19,6 +19,7 @@ import json
 import pathlib
 import signal
 import subprocess
+import types
 import sys
 import tempfile
 import threading
@@ -28,7 +29,7 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
-from omni_extract_bench.harness.vendor import out_name                         # noqa: E402
+from omni_extract_bench.harness.registry import out_name  # noqa: E402
 
 FAILS = []
 ROOT = pathlib.Path(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
@@ -65,11 +66,32 @@ report("...and nothing is written, so every document stays resumable",
 print("\nAND A REAL SIGINT STOPS A RUN, ON A DOCUMENT BOUNDARY")
 script = out / "run_it.py"
 script.write_text(f'''
-import sys, json, pathlib, time
+import sys, json, pathlib, time, types
 sys.path.insert(0, {str(ROOT)!r})
 import omni_extract_bench.benchmark as B
-import omni_extract_bench.harness.vendor as V
-from omni_extract_bench.harness.extraction import Cost, Extraction
+import omni_extract_bench.harness.document as D
+import omni_extract_bench.harness.registry as V
+
+_REAL_ADAPTER = V.adapter  # the real lookup, for Config and __name__
+
+
+def as_adapter(lookup):
+    """A stub `provider -> extract` as an adapter: the three names `Adapter` asks for.
+
+    `Config` and `prepare_schema` come from the real adapter, so a test that means to fake
+    only the vendor call is not also faking the declaration or the schema it is sent.
+    """
+    def wrapped(provider):
+        real = _REAL_ADAPTER(provider)
+        # __name__ included: an adapter is a MODULE, and `resolve` reads it to file the run
+        # under the right vendor. A double that omits it is not standing in for an adapter.
+        return types.SimpleNamespace(__name__=real.__name__, Config=real.Config,
+                                     prepare_schema=real.prepare_schema,
+                                     extract=lookup(provider))
+    return wrapped
+
+
+from omni_extract_bench.harness.contract import Cost, Extraction
 
 out = pathlib.Path(sys.argv[1])
 docs = []
@@ -80,7 +102,7 @@ for i in range(40):
                 "properties": {{"a": {{"type": "string"}}}}}}))
 B.fetch = lambda *_: out
 B.read_manifest = lambda *a, **k: docs
-V.adapter = lambda prov: (lambda pdf, schema, *, timeout, **o:
+D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o:
     time.sleep(0.4) or Extraction(result={{"a": "x"}}, cost=Cost(usd=0.5)))
 B.run(["datalab", "reducto"], out=out, score_workers=1, predict_workers={{"*": 2}})
 ''')
@@ -120,9 +142,28 @@ report("no half-written file survives anywhere",
 
 print("\nONE VENDOR'S BILLING PROBLEM IS NOT EVERY VENDOR'S")
 import collections                                                             # noqa: E402
-import omni_extract_bench.harness.vendor as V                                  # noqa: E402
-from omni_extract_bench.harness.extraction import (                            # noqa: E402
-    AccountFailure, Cost, Extraction)
+import omni_extract_bench.harness.document as D
+import omni_extract_bench.harness.registry as V                                  # noqa: E402
+from omni_extract_bench.harness.contract import Cost, Extraction
+from omni_extract_bench.harness.errors import AccountFailure
+
+_REAL_ADAPTER = V.adapter  # the real lookup, for Config and __name__
+
+
+def as_adapter(lookup):
+    """A stub `provider -> extract` as an adapter: the three names `Adapter` asks for.
+
+    `Config` and `prepare_schema` come from the real adapter, so a test that means to fake
+    only the vendor call is not also faking the declaration or the schema it is sent.
+    """
+    def wrapped(provider):
+        real = _REAL_ADAPTER(provider)
+        # __name__ included: an adapter is a MODULE, and `resolve` reads it to file the run
+        # under the right vendor. A double that omits it is not standing in for an adapter.
+        return types.SimpleNamespace(__name__=real.__name__, Config=real.Config,
+                                     prepare_schema=real.prepare_schema,
+                                     extract=lookup(provider))
+    return wrapped
 
 acct = pathlib.Path(tempfile.mkdtemp())
 pair = []
@@ -143,8 +184,8 @@ def broke_adapter(prov):
     return extract
 
 
-saved_adapter, saved_fetch, saved_manifest = V.adapter, B.fetch, B.read_manifest
-V.adapter = broke_adapter
+saved_adapter, saved_fetch, saved_manifest = D.adapter, B.fetch, B.read_manifest
+D.adapter = as_adapter(broke_adapter)
 B.fetch = lambda *_: acct
 B.read_manifest = lambda *a, **k: pair
 try:
@@ -194,7 +235,7 @@ for i in range(20):
     twenty.append(B.Doc(f"d{i}", "s", pdf, g,
                         {"type": "object", "properties": {"a": {"type": "string"}}}))
 paid = collections.Counter()
-V.adapter = lambda prov: (lambda pdf, schema, *, timeout, **o: (
+D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o: (
     paid.update([prov]), Extraction(result={"a": "x"}, cost=Cost(usd=0.1)))[1])
 real_write_json = B.write_json_atomic
 B.write_json_atomic = lambda path, obj, **kw: (
@@ -207,7 +248,7 @@ except OSError:
     report("a failed write stops the vendor", True)
 finally:
     B.write_json_atomic = real_write_json
-    V.adapter = saved_adapter
+    D.adapter = saved_adapter
 report("...after a couple of documents, not all twenty", paid["datalab"] <= 8,
        f"{paid['datalab']} of 20 paid for with nothing stored")
 

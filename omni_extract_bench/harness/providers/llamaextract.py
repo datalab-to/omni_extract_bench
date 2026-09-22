@@ -13,15 +13,13 @@ shows it now validates. Entitlements change — check a tier against the API, no
 Auth: LLAMA_CLOUD_API_KEY (llx-...).
 
 Usage:
-    python -m omni_extract_bench.harness.providers.llamaextract \
-        --pdf doc.pdf --schema schema.json --out /tmp/llamaextract.json
+    oeb predict --provider llamaextract --doc doc.pdf --schema schema.json
 
 Adapted from longextract_bench (MIT, (c) 2026 Micro1) -- see providers/LICENSE-micro1.
 """
 
 from __future__ import annotations
 
-import copy
 import dataclasses
 import json
 import os
@@ -31,9 +29,10 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
-                          VendorError)
-from ._cli import run_cli
+from ..schema import MAX_REF_DEPTH, collapse_nullable_union, resolve_refs
+from ..budget import Budget, PollRetry
+from ..contract import Cost, Extraction
+from ..errors import MissingCredential, VendorError
 
 BASE = "https://api.cloud.llamaindex.ai"
 TIER = "agentic_plus"
@@ -51,59 +50,81 @@ class Config:
     poll_interval: int = 5
 
 
-def _adapt_schema(schema: dict, defs: dict | None = None) -> dict:
-    """Inline $ref/$defs, drop $-prefixed metadata keys, and collapse type-lists to a
-    single type. The latter is required: LlamaExtract turns `"type": ["array","null"]`
-    into an anyOf and the array branch loses its `items` → 400 schema_validation. We
-    drop the "null" so arrays/objects/scalars stay single-typed (items preserved). No
-    field, description, enum, or type-category is changed — pure dialect cleanup."""
-    if defs is None:
-        defs = schema.get("$defs", {})
-    if not isinstance(schema, dict):
-        return schema
-    if "$ref" in schema:
-        return _adapt_schema(
-            copy.deepcopy(defs.get(schema["$ref"].split("/")[-1], {})), defs
-        )
-    node = {k: v for k, v in schema.items() if not k.startswith("$")}
+def to_typed_enum_dialect(node):
+    """Reshape for a vendor that requires every enum to declare a matching type.
 
-    for comb in ("anyOf", "oneOf", "allOf"):
-        branches = [b for b in (node.get(comb) or []) if isinstance(b, dict)]
-        if branches:
-            pick = next((b for b in branches if b.get("type") != "null"), None)
-            if pick is not None:
-                merged = {k: v for k, v in node.items()
-                          if k not in ("anyOf", "oneOf", "allOf")}
-                for k, v in pick.items():
-                    merged.setdefault(k, v)
-                return _adapt_schema(merged, defs)
+    ``{"enum": ["MILD", "MODERATE", null]}`` is valid JSON Schema and rejected here twice over:
+    once for having no ``type``, and then -- after a type is inferred -- for the ``null`` member
+    not matching it. The type is inferred from the enum's own values rather than defaulted, and
+    the null is removed, since nullability belongs to the field's optionality, not to the value
+    set. Also reduces ``additionalProperties`` from a schema to a boolean, which some validators
+    require; the map stays open, only the per-value constraint is lost.
+    """
+    if isinstance(node, list):
+        return [to_typed_enum_dialect(x) for x in node]
+    if not isinstance(node, dict):
+        return node
 
-    t = node.get("type")
-    if isinstance(t, list):
-        non_null = [x for x in t if x != "null"]
-        node["type"] = non_null[0] if non_null else "string"
+    collapsed = collapse_nullable_union(node)
+    if collapsed is not node:
+        # RECURSE on the merged node, as extend's `to_strict_dialect` does: a union whose branch is
+        # a union (`Optional[list[str] | dict]`) otherwise keeps the inner `anyOf`, and a
+        # nested union is what the vendor rejected in the first place.
+        return to_typed_enum_dialect(collapsed)
+    out = dict(node)
 
-    if "enum" in node and "type" not in node:
-        vals = [v for v in node["enum"] if v is not None]
-        kinds = {type(v) for v in vals}
-        node["type"] = ({str: "string", bool: "boolean", int: "integer", float: "number"}
-                        .get(kinds.pop()) if len(kinds) == 1 else "string")
+    declared = out.get("type")
+    if isinstance(declared, list):
+        non_null = [t for t in declared if t != "null"]
+        out["type"] = non_null[0] if non_null else "string"
 
-    if isinstance(node.get("enum"), list) and node.get("type") in (
+    if "enum" in out and "type" not in out:
+        values = [v for v in out["enum"] if v is not None]
+        kinds = {type(v) for v in values}
+        out["type"] = ({str: "string", bool: "boolean", int: "integer", float: "number"}
+                       .get(kinds.pop()) if len(kinds) == 1 else "string")
+
+    if isinstance(out.get("enum"), list) and out.get("type") in (
             "string", "boolean", "integer", "number"):
-        node["enum"] = [v for v in node["enum"] if v is not None]
+        out["enum"] = [v for v in out["enum"] if v is not None]
 
-    ap = node.get("additionalProperties")
-    if isinstance(ap, dict):
-        node["additionalProperties"] = True
+    if isinstance(out.get("additionalProperties"), dict):
+        out["additionalProperties"] = True
 
-    if "properties" in node:
-        node["properties"] = {
-            k: _adapt_schema(v, defs) for k, v in node["properties"].items()
-        }
-    if "items" in node:
-        node["items"] = _adapt_schema(node["items"], defs)
-    return node
+    if isinstance(out.get("properties"), dict):
+        out["properties"] = {k: to_typed_enum_dialect(v) for k, v in out["properties"].items()}
+    if isinstance(out.get("items"), dict):
+        out["items"] = to_typed_enum_dialect(out["items"])
+    return out
+
+
+def drop_schema_metadata(node):
+    """Remove `$`-prefixed annotations -- `$schema`, `$id`, `$comment`.
+
+    `resolve_refs` consumes `$ref` and `$defs`; these are what is left, and they describe the
+    document rather than the data. Several validators reject them as unknown keys.
+    """
+    if isinstance(node, list):
+        return [drop_schema_metadata(x) for x in node]
+    if not isinstance(node, dict):
+        return node
+    return {k: drop_schema_metadata(v) for k, v in node.items() if not k.startswith("$")}
+
+
+def prepare_schema(schema: dict) -> dict:
+    """Inline $refs, drop $-prefixed metadata, and reduce to the subset the v2 API accepts.
+
+    Three constraints, each learned from a rejection, and all three are what
+    `to_typed_enum_dialect` already encodes -- this used to restate them:
+
+      * a nullable ARRAY must not stay a union. LlamaExtract turns `["array","null"]` into an
+        anyOf whose array branch loses its `items`, and answers with 400 schema_validation.
+      * a typeless enum is rejected ("Invalid type for field"), and once a type is inferred the
+        `null` member no longer matches it ("Input should be a valid string at ...enum.3").
+      * `additionalProperties` as a SCHEMA is rejected ("Input should be a valid boolean").
+    """
+    return to_typed_enum_dialect(
+        drop_schema_metadata(resolve_refs(schema, max_depth=MAX_REF_DEPTH)))
 
 
 def _req(
@@ -185,7 +206,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                data=json.dumps({
                    "file_input": file_id,
                    "configuration": {"tier": config.tier, "extraction_target": "per_doc",
-                                     "data_schema": _adapt_schema(schema)},
+                                     "data_schema": schema},
                }).encode())
     job_id = job.get("id") or job.get("job_id")
 
@@ -229,10 +250,3 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
         cost=Cost(),
         job_id=job_id)
 
-
-def main() -> None:
-    run_cli(extract, Config, "llamaextract", description="LlamaExtract v2")
-
-
-if __name__ == "__main__":
-    main()

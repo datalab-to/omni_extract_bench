@@ -17,7 +17,7 @@ PROVIDERS = pathlib.Path(__file__).resolve().parents[1] / "omni_extract_bench/ha
 CREDENTIAL = {
     "DATALAB_API_KEY", "REDUCTO_API_KEY", "EXTEND_API_KEY", "MISTRAL_API_KEY",
     "LLAMA_CLOUD_API_KEY", "LLAMAPARSE_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY",
-    "AZURE_CU_ENDPOINT", "AZURE_CU_KEY", "EXTEND_WORKSPACE_ID",
+    "AZURE_CU_KEY", "EXTEND_WORKSPACE_ID",
 }
 
 
@@ -67,7 +67,7 @@ PROMOTED = {
     "reducto": ("agentic_table_mode",),
     "extend": ("array_strategy", "api_version", "base_url"),
     "llamaextract": ("tier",),
-    "azure_cu": ("completion_model",),
+    "azure_cu": ("completion_model", "endpoint"),
     "llm_single_shot": ("base_url",),
 }
 def config_fields(module):
@@ -88,3 +88,28 @@ for module in ("datalab", "reducto", "llamaextract", "azure_cu"):
         assert got is not dataclasses.MISSING and got is not None, \
             f"{module}.Config.{name} should carry its literal default, got {got!r}"
 print("every promoted setting carries its literal default on the Config")
+
+# A RUN DIRECTORY MUST NOT DEPEND ON THE SHELL. `out_name` digests every setting, so a field
+# whose default is read from the environment makes the directory a function of the environment:
+# predict with the variable set, resume without it, and `needs_run` looks somewhere with no
+# records and re-buys the corpus. `endpoint` did exactly that for one commit.
+import os  # noqa: E402
+
+from omni_extract_bench.harness.registry import out_name  # noqa: E402
+
+saved = os.environ.get("AZURE_CU_ENDPOINT")
+os.environ["AZURE_CU_ENDPOINT"] = "https://set-in-the-shell.example"
+try:
+    with_var = out_name("azure-cu")
+finally:
+    os.environ.pop("AZURE_CU_ENDPOINT") if saved is None else os.environ.__setitem__(
+        "AZURE_CU_ENDPOINT", saved)
+without_var = out_name("azure-cu")
+assert with_var == without_var, (
+    f"azure-cu's run directory changed with the environment: {with_var} vs {without_var}")
+
+explicit = out_name("azure-cu", {"endpoint": "https://a.example"})
+assert explicit != without_var, "an endpoint passed as an option must still name its own run"
+assert explicit != out_name("azure-cu", {"endpoint": "https://b.example"}), \
+    "two endpoints must not share a run directory"
+print("a run directory is a function of the options, not of the shell")

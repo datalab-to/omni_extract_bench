@@ -4,24 +4,30 @@ The package above this one is the metric. `metric.py` reaches exactly `matching`
 `recognise` and `values` -- `tests/test_score_standalone.py` fails if that ever widens --
 so a score cannot come to depend on a transport, a vendor dialect, or an envelope convention.
 
-    vendor.py        `predict()` -- one document, one vendor, under the parity rules
-    extraction.py    what an adapter returns, and how it reports a failure
-    dialects.py      reshapes a JSON Schema into what a given vendor will accept
-    schema_overlay.py writes a gold convention into the field descriptions every vendor sees
-    providers/       one module per vendor, each an `extract()` function
+    contract.py      what an adapter IS: `Adapter`, and the `Extraction`/`Cost` it returns
+    errors.py        how a call fails, and whether a retry can fix it
+    budget.py        spending one document's share of the clock
+    schema.py        the schema vendors are sent: the universal layer, and the shared
+                     pieces adapters re-encode it with
+    responses.py     making sense of what came back: fenced JSON, list replies, cost units
+    registry.py      which adapter, at what settings, filed under what name
+    document.py      run one document, return the answer and the evidence for it
+    providers/       one module per vendor, each satisfying `Adapter`
 
     pip install 'omni-extract-bench[harness]'
 
-AN ADAPTER IS A FUNCTION, not a program:
+AN ADAPTER IS A MODULE, not a program -- `contract.Adapter` states it:
 
-    extract(pdf, schema, *, timeout, config: Config) -> Extraction
+    Config          what the vendor can be asked
+    prepare_schema  the JSON Schema -> whatever this vendor's API takes
+    extract         (pdf, schema, *, timeout, config) -> Extraction
 
-It makes the call, parses the answer, returns both, and RAISES its failures from where they
-happen. Not a subprocess watched by a transport tap, which is the shape this replaced: every
-fact that cost -- a tempfile dance, a `sitecustomize` injection, a cross-process log merge, an
-error channel that was the last line of the child's stderr -- the adapter already had. "Timed
-out while the vendor was still working" was being recovered by reading an HTTP log, from the
-code that ran the poll loop.
+`extract` makes the call, parses the answer, returns both, and RAISES its failures from where
+they happen. Not a subprocess watched by a transport tap, which is the shape this replaced:
+every fact that cost -- a tempfile dance, a `sitecustomize` injection, a cross-process log
+merge, an error channel that was the last line of the child's stderr -- the adapter already
+had. "Timed out while the vendor was still working" was being recovered by reading an HTTP
+log, from the code that ran the poll loop.
 
 THE SURFACE
 -----------
@@ -29,10 +35,11 @@ THE SURFACE
                                      and the evidence for it in one dict
     Extraction, Cost                 what an adapter hands back
     VendorError, VendorTimeout       a failure of the call; `.transient` decides a retry
+    DialectError                     the schema would not shape for this vendor; no call made
     AccountFailure                   raised, never returned: not a fact about a document
     MissingCredential                likewise: an unset API key
     MissingDependency                likewise: an adapter that could not import its SDK
-    PROVIDERS, WORKERS, DEFAULT_TIMEOUT                     advisory, for building a loop
+    PROVIDERS, DEFAULT_TIMEOUT       advisory, for building a loop
 
 Orchestration is absent on purpose. Which documents, in what order, and how many at once are
 decisions about a corpus, not about a document, and a library that made them would be deciding
@@ -47,29 +54,38 @@ result alone -- a parser bug is then fixed by re-reading a file instead of re-pa
 calls, which is what it cost once.
 """
 
-from .extraction import (AccountFailure, Cost, Extraction, MissingCredential,
-                         MissingDependency, VendorError, VendorTimeout)
+from .contract import Adapter, Cost, Extraction
+from .errors import (AccountFailure, DialectError, MissingCredential, MissingDependency,
+                     VendorError, VendorTimeout)
 
-_LAZY = ("predict", "adapter", "settings_for", "PROVIDERS", "WORKERS", "DEFAULT_TIMEOUT")
-
-
-def __getattr__(name):
-    """PEP 562: the engine's names resolve on first use, so importing this package for
-    an exception type does not pull in an adapter's SDK."""
-    if name in _LAZY:
-        from . import vendor
-        return getattr(vendor, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def __dir__():
-    return sorted(set(globals()) | set(_LAZY))
-
+# THE VENDOR SDKs ARE CHECKED ONCE, HERE. Importing this package means running a vendor, and
+# every adapter is imported with it -- so a missing install is one message naming the extra,
+# not a per-adapter surprise six hours into a run. The scorer never imports this package
+# (`tests/test_score_standalone.py` fails if that changes), so a scoring-only machine still
+# needs none of it.
+try:
+    from .document import predict
+    from .registry import DEFAULT_TIMEOUT, PROVIDERS, adapter, resolve, settings_for
+except ImportError as exc:
+    # `exc.name` is the module that could not be produced, and it tells the two cases apart:
+    # `openai` for an SDK that is missing OR installed at an incompatible version, and one of
+    # ours for an import this package broke itself. Catching only ModuleNotFoundError missed
+    # the incompatible-version case, whose message ("cannot import name 'OpenAI' from
+    # 'openai'") is the one where naming the extra helps most. Catching every ImportError
+    # without this guard sent a refactor that broke an internal import off to reinstall a
+    # package it already had.
+    if (exc.name or "").startswith(__name__.split(".")[0]):
+        raise
+    raise MissingDependency(
+        f"the harness could not import what the vendor adapters need:\n"
+        f"    {exc}\n"
+        f"    pip install 'omni-extract-bench[harness]'"
+    ) from None
 
 __all__ = [
-    "predict", "adapter",
+    "predict", "adapter", "Adapter",
     "Extraction", "Cost",
-    "VendorError", "VendorTimeout",
+    "VendorError", "VendorTimeout", "DialectError",
     "AccountFailure", "MissingCredential", "MissingDependency",
-    "PROVIDERS", "WORKERS", "DEFAULT_TIMEOUT", "settings_for",
+    "PROVIDERS", "DEFAULT_TIMEOUT", "settings_for", "resolve",
 ]

@@ -421,6 +421,9 @@ thing `predict` returns as `record["result"]`.
 Everything else about that document. Two files because scoring wants the answer and an audit
 wants all of it.
 
+**`schema_sent` is not the schema you passed in.** Vendors accept different subsets of JSON
+Schema, so the harness re-encodes yours to fit each one before sending it.
+
 ```json
 {
   "result":  "...",
@@ -438,7 +441,7 @@ wants all of it.
     "billed_out_of_band": false
   },
   "job_id": "32RBrjAbYxN0yDlOF__lDQ",
-  "schema_sent": {"...": "the schema this vendor received"},
+  "schema_sent": {"...": "the schema this vendor was actually given -- see below"},
   "run_manifest": {
     "timeout_s": 1800,
     "settings": {"mode": "balanced", "base_url": "https://www.datalab.to", "poll_interval": 5.0},

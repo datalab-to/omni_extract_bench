@@ -138,7 +138,7 @@ scored, on either side.**
 *words* are ink and remain ordinary values — `N/A`, `None` and `-` appear as real gold 24,980
 times, and 67 documents hold both those strings and `null` in one file.
 
-This is a comparability guarantee, not a convenience: `harness/dialects.py` makes strict vendors
+This is a comparability guarantee, not a convenience: `harness/schema.py` makes strict vendors
 emit `null` where permissive ones omit the key, so scoring them differently would move a score
 with the serialisation convention the harness imposed. The deeper reason absence cannot earn
 credit is that it would make the score depend on **schema width instead of document content** —

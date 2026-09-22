@@ -77,7 +77,7 @@ def cmd_providers(args) -> int:
     from rich.table import Table
 
     from .harness import PROVIDERS
-    from .harness.vendor import config_for
+    from .harness.registry import config_for
 
     console = Console()
 

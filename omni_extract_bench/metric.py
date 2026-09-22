@@ -125,7 +125,7 @@ def is_open_map(node) -> bool:
 
     ``additionalProperties`` asks the extractor to invent the property names by reading them
     off the page. This benchmark does not evaluate that shape: extraction APIs are built around
-    a schema that names its fields, and `dialects.STRICT_ALLOWED_KEYS` does not even forward
+    a schema that names its fields, and extend's `STRICT_ALLOWED_KEYS` does not even forward
     the keyword, so a strict vendor receives a bare ``{"type": "object"}`` and has nothing to
     answer with. Grading such a node would score a request the harness never delivered.
 

@@ -14,9 +14,9 @@ Two things worth knowing before comparing its numbers with anyone else's:
     That is the vendor's surface, not a benchmark choice, but it means a schema this adapter
     sends is a lossier statement of the task than the one other vendors receive.
 
-Auth: AZURE_CU_ENDPOINT + AZURE_CU_KEY.
+Auth: AZURE_CU_KEY. The `endpoint` is an OPTION, not a credential -- see `Config`.
 
-    python -m omni_extract_bench.harness.providers.azure_cu --pdf doc.pdf --schema s.json --out out.json
+    oeb predict --provider azure-cu --doc doc.pdf --schema schema.json
 """
 from __future__ import annotations
 
@@ -30,9 +30,11 @@ from pathlib import Path
 
 import httpx
 
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
-                          VendorError)
-from ._cli import run_cli
+from ..budget import Budget, PollRetry
+
+from ..contract import Cost, Extraction
+
+from ..errors import MissingCredential, VendorError
 
 API_VERSION = "2025-05-01-preview"
 DEFAULT_COMPLETION_MODEL = "gpt-4.1-mini"
@@ -46,13 +48,36 @@ class Config:
 
     `completion_model` is a DEPLOYMENT CHOICE, not a product tier: `gpt-4.1-mini` and `gpt-4.1`
     are different systems behind one API, so which one ran has to be published beside the score.
+
+    `endpoint` is a setting for the same reason: it selects an Azure resource and region, and
+    two runs against different deployments used to produce records nothing could tell apart.
+    It is an OPTION with a literal default, exactly like datalab's and extend's `base_url` --
+    it was read from `$AZURE_CU_ENDPOINT` for one commit, and that made the run DIRECTORY a
+    function of the shell, so a resume from a terminal without the variable set looked in a
+    directory with no records and re-bought the corpus. There is no public Azure endpoint to
+    default to, so the default is empty and `extract` says what to pass.
+
+    The KEY stays in the environment -- that is a credential and belongs in no record.
     """
 
+    endpoint: str = dataclasses.field(
+        default="", metadata={"help": "the Azure resource to analyse against, e.g. "
+                                      "https://<resource>.cognitiveservices.azure.com"})
     completion_model: str = dataclasses.field(
         default=DEFAULT_COMPLETION_MODEL,
         metadata={"help": "the deployment behind the analyzer; publish it with the score"})
     api_version: str = API_VERSION
     poll_interval: float = 3.0
+
+    def __post_init__(self):
+        """Normalise here, so the Config holds what the URLs are actually built from.
+
+        Empty is allowed rather than required: `config_for` runs for `oeb providers` and for a
+        run's directory name, and a `Config` with a required field cannot be built at all --
+        every adapter writes `config: Config = Config()` as a default argument, evaluated at
+        import. `extract` is where a missing endpoint is a failure, and it says so.
+        """
+        object.__setattr__(self, "endpoint", self.endpoint.rstrip("/"))
 
 
 def _field(prop: dict) -> dict:
@@ -82,7 +107,9 @@ def _field(prop: dict) -> dict:
     return {"type": "string", "description": desc}
 
 
-def field_schema(schema: dict) -> dict:
+def prepare_schema(schema: dict) -> dict:
+    """Azure takes a `fieldSchema`, not a JSON Schema -- so this vendor's payload is not a
+    schema at all, and `extract` sends whatever shape the API takes."""
     return {"fields": {k: _field(v) for k, v in ((schema or {}).get("properties") or {}).items()}}
 
 
@@ -106,13 +133,33 @@ def fields_to_dict(fields: dict) -> dict:
     return {k: _value(v) for k, v in (fields or {}).items()}
 
 
-_ANALYZERS: dict[str, str] = {}
+_ANALYZERS: dict[tuple[str, str], str] = {}
 _ANALYZER_LOCK = threading.Lock()
 
 
-def _ensure_analyzer(client, endpoint: str, api_version: str, digest: str, analyzer_id: str,
-                     schema: dict, completion_model: str, budget, poll_interval: float) -> None:
-    """Create the analyzer for this schema once per process, not once per thread.
+def analyzer_id(fields: dict, completion_model: str, api_version: str) -> str:
+    """The analyzer's name: a digest of EVERYTHING the analyzer is built from.
+
+    An analyzer is a server-side object, reused by name, and a `409` on the PUT means it
+    already exists -- which this treats as success. So anything that changes what the analyzer
+    IS has to change its name, or the 409 silently hands back somebody else's.
+
+    Naming it after the field schema alone did exactly that with `completion_model`, which goes
+    into the PUT body and not into the name. Run the corpus with `gpt-4.1-mini`, run it again
+    with `gpt-4.1`: same name, 409, every document analysed against the first deployment while
+    the record says the second. Two published numbers, one model, and nothing to show for it.
+    """
+    spelled = json.dumps({"fieldSchema": fields, "completion": completion_model,
+                          "api_version": api_version}, sort_keys=True)
+    return f"oeb-{hashlib.sha256(spelled.encode()).hexdigest()[:16]}"
+
+
+def _ensure_analyzer(client, analyzer: str, fields: dict, config: Config, budget) -> None:
+    """Create the analyzer once per process, not once per thread.
+
+    KEYED BY (endpoint, analyzer) -- the cache is process-wide and an analyzer lives inside one
+    Azure resource, so keying it by the analyzer alone let a second leg on a different endpoint
+    skip its own creation and then 404 on every document.
 
     UNDER THE LOCK FOR THE WHOLE CREATE-AND-WAIT, not just the cache lookup. A 409 says the
     analyzer EXISTS, not that it is READY -- so a thread that lost the race would skip the
@@ -124,22 +171,23 @@ def _ensure_analyzer(client, endpoint: str, api_version: str, digest: str, analy
     by the holding document's own budget.
     """
     with _ANALYZER_LOCK:
-        if digest in _ANALYZERS:
+        if (config.endpoint, analyzer) in _ANALYZERS:
             return
         r = client.put(
-            f"{endpoint}/contentunderstanding/analyzers/{analyzer_id}"
-            f"?api-version={api_version}",
+            f"{config.endpoint}/contentunderstanding/analyzers/{analyzer}"
+            f"?api-version={config.api_version}",
             json={"baseAnalyzerId": "prebuilt-documentAnalyzer",
-                  "config": {"returnDetails": False, "completion": completion_model},
-                  "fieldSchema": field_schema(schema)})
+                  "config": {"returnDetails": False,
+                             "completion": config.completion_model},
+                  "fieldSchema": fields})
         if r.status_code != 409:
             if r.status_code >= 400:
                 raise VendorError(f"creating analyzer: HTTP {r.status_code}: {r.text[:300]}",
                                   status=r.status_code, body=r.text)
             if r.headers.get("Operation-Location"):
                 _await(client, r.headers["Operation-Location"], budget=budget,
-                       poll_interval=poll_interval, want_result=False)
-        _ANALYZERS[digest] = analyzer_id
+                       poll_interval=config.poll_interval, want_result=False)
+        _ANALYZERS[(config.endpoint, analyzer)] = analyzer
 
 
 def _await(client, op_url: str, *, budget, poll_interval: float, want_result: bool):
@@ -175,24 +223,27 @@ def _await(client, op_url: str, *, budget, poll_interval: float, want_result: bo
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
             config: Config = Config()) -> Extraction:
-    """Create (or reuse) an analyzer for this schema, analyse the document, poll for the result.
+    """Create (or reuse) an analyzer for this field schema, analyse the document, poll for it.
+
+    `schema` here is already the Azure `fieldSchema` -- `DIALECT` is applied by the caller, so
+    what arrives is what goes on the wire.
 
     Azure does not report a per-call cost, so `cost.usd` is None and the record says
     `billed_out_of_band` -- rather than inventing a figure from a price list.
     """
-    endpoint = os.environ.get("AZURE_CU_ENDPOINT")
+    endpoint = config.endpoint
     key = os.environ.get("AZURE_CU_KEY")
     if not endpoint or not key:
-        raise MissingCredential("AZURE_CU_ENDPOINT and AZURE_CU_KEY must be set")
-    endpoint = endpoint.rstrip("/")
+        raise MissingCredential(
+            "azure-cu needs AZURE_CU_KEY in the environment and an endpoint in its options:\n"
+            "    --options '{\"azure-cu\": {\"endpoint\": "
+            "\"https://<resource>.cognitiveservices.azure.com\"}}'")
     budget = Budget(timeout)
 
     with httpx.Client(headers={"Ocp-Apim-Subscription-Key": key}, timeout=120) as client:
-        digest = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[:16]
-        analyzer_id = f"oeb-{digest}"
-        _ensure_analyzer(client, endpoint, config.api_version, digest, analyzer_id, schema,
-                         config.completion_model, budget, config.poll_interval)
-        r = client.post(f"{endpoint}/contentunderstanding/analyzers/{analyzer_id}:analyze"
+        analyzer = analyzer_id(schema, config.completion_model, config.api_version)
+        _ensure_analyzer(client, analyzer, schema, config, budget)
+        r = client.post(f"{endpoint}/contentunderstanding/analyzers/{analyzer}:analyze"
                         f"?api-version={config.api_version}",
                         content=pdf.read_bytes(),
                         headers={"Content-Type": "application/octet-stream"})
@@ -214,12 +265,5 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     return Extraction(result=fields_to_dict(contents[0].get("fields") or {}),
                       raw=body,
                       cost=Cost(),
-                      job_id=analyzer_id)
+                      job_id=analyzer)
 
-
-def main() -> None:
-    run_cli(extract, Config, "azure-cu")
-
-
-if __name__ == "__main__":
-    main()

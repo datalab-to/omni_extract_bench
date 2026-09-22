@@ -3,10 +3,10 @@ import dataclasses, json, os, time
 from pathlib import Path
 import httpx
 
-from ..dialects import resolve_refs, to_strict_dialect
-from ._cli import run_cli
-from ..extraction import (Budget, Cost, Extraction, MissingCredential, PollRetry,
-                          VendorError)
+from ..schema import MAX_REF_DEPTH, collapse_nullable_union, resolve_refs
+from ..budget import Budget, PollRetry
+from ..contract import Cost, Extraction
+from ..errors import MissingCredential, VendorError
 
 BASE = "https://api.extend.ai"
 API_VERSION = "2026-02-09"
@@ -130,10 +130,9 @@ def extract(pdf: Path, schema: dict, *, timeout: float = DEFAULT_TIMEOUT_S,
 
     budget = Budget(timeout)
     with httpx.Client(headers=headers(key, config.api_version), timeout=120) as c:
-        sent = to_strict_dialect(resolve_refs(rename_reserved(schema)))
         try:
             file_id = upload(c, pdf, config.base_url)
-            run_id = submit(c, file_id, sent, config.base_url, config.array_strategy)
+            run_id = submit(c, file_id, schema, config.base_url, config.array_strategy)
         except httpx.HTTPStatusError as exc:
             raise VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
                               status=exc.response.status_code,
@@ -160,10 +159,11 @@ def extract(pdf: Path, schema: dict, *, timeout: float = DEFAULT_TIMEOUT_S,
                       job_id=run_id)
 
 
-def main() -> None:
-    run_cli(extract, Config, "extend")
-
-
+#: `id` is reserved by Extend. The rename is HALF A PAIR: `rename_reserved` goes out with the
+#: schema (via `prepare_schema`, applied by `predict`) and `restore_reserved` comes back with the
+#: vendor's answer, inside `extract` -- the response is the only thing that can undo it. Both
+#: read this one mapping, so the two halves cannot disagree about a name; if you drop the rename
+#: from `prepare_schema`, drop the `restore_reserved` call with it.
 RESERVED = {"id": "id__"}
 
 
@@ -183,6 +183,70 @@ def rename_reserved(node):
     return out
 
 
+STRICT_ALLOWED_KEYS = ("type", "enum", "properties", "items", "required", "description")
+
+
+def to_strict_dialect(node, in_items=False, allowed=STRICT_ALLOWED_KEYS):
+    """Reshape for a vendor that validates strictly and requires nullable properties.
+
+    Three rules, and they differ BY POSITION -- the detail that makes this worth writing down,
+    because applying nullability everywhere fixes properties and breaks array items at once:
+
+      * keys       an allowlist (see ``STRICT_ALLOWED_KEYS``)
+      * properties must be nullable: ``["string", "null"]``, and enums must include ``null``
+      * items      must be a BARE type: a ``["string","null"]`` union is rejected here
+
+    Modelled on Extend's validator; useful for any vendor with the same shape of constraints.
+    """
+    if isinstance(node, list):
+        return [to_strict_dialect(x, in_items, allowed) for x in node]
+    if not isinstance(node, dict):
+        return node
+
+    if "type" not in node and "enum" not in node:
+        collapsed = collapse_nullable_union(node)
+        if collapsed is not node:
+            return to_strict_dialect(collapsed, in_items, allowed)
+
+    out = {}
+    for key in allowed:
+        if key not in node:
+            continue
+        value = node[key]
+        if key == "properties" and isinstance(value, dict):
+            out[key] = {k: to_strict_dialect(v, False, allowed) for k, v in value.items()}
+        elif key == "items":
+            out[key] = to_strict_dialect(value, True, allowed)
+        else:
+            out[key] = value
+
+    declared = out.get("type")
+    if isinstance(declared, list):
+        out["type"] = next((t for t in declared if t != "null"), None)
+    if "type" not in out and "enum" not in out and out.get("properties"):
+        out["type"] = "object"
+
+    if in_items:
+        if isinstance(out.get("type"), str) and out["type"] in (
+                "string", "number", "integer", "boolean"):
+            return {"type": out["type"]}
+        return {k: v for k, v in out.items()
+                if k in ("type", "properties", "items", "required")}
+
+    if isinstance(out.get("type"), str) and out["type"] in (
+            "string", "number", "integer", "boolean"):
+        out["type"] = [out["type"], "null"]
+    if isinstance(out.get("enum"), list) and None not in out["enum"]:
+        out["enum"] = list(out["enum"]) + [None]
+    return out
+
+
+def prepare_schema(schema):
+    """The schema Extend is sent: reserved names aliased, $refs inlined, strict dialect."""
+    return to_strict_dialect(
+        resolve_refs(rename_reserved(schema), max_depth=MAX_REF_DEPTH))
+
+
 def restore_reserved(obj):
     back = {v: k for k, v in RESERVED.items()}
     if isinstance(obj, list):
@@ -191,6 +255,3 @@ def restore_reserved(obj):
         return {back.get(k, k): restore_reserved(v) for k, v in obj.items()}
     return obj
 
-
-if __name__ == "__main__":
-    main()

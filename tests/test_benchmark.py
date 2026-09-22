@@ -252,8 +252,8 @@ report("an empty run does not divide by zero",
 
 print("\nA MISSING SDK STOPS THE PROVIDER AND STORES NOTHING")
 from omni_extract_bench import benchmark as _bench                         # noqa: E402
-from omni_extract_bench.harness import vendor as _vendor                   # noqa: E402
-from omni_extract_bench.harness.extraction import MissingDependency        # noqa: E402
+from omni_extract_bench.harness import registry as _vendor                   # noqa: E402
+from omni_extract_bench.harness.errors import MissingDependency  # noqa: E402
 
 _pdf = TMP / "doc.pdf"
 _pdf.write_bytes(b"%PDF-1.4\n")
