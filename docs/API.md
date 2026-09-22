@@ -422,16 +422,7 @@ Everything else about that document. Two files because scoring wants the answer 
 wants all of it.
 
 **`schema_sent` is not the schema you passed in.** Vendors accept different subsets of JSON
-Schema, so the harness re-encodes yours to fit each one before sending it -- collapsing a
-nullable union into a plain type, inlining a `$ref`, renaming a field whose name a vendor
-reserves, or in one case rewriting it into a shape that is not JSON Schema at all. Same
-fields, same types, same descriptions: only the encoding changes.
-
-`schema_sent` is the result of that -- the payload that actually went over the wire. So if a
-vendor rejects a schema, this is the one it rejected, and if a vendor answers oddly, this is
-what it was answering. It is recorded even when the call fails, and it is recorded before
-the call, so a document that never reached the vendor still says what it would have been
-sent.
+Schema, so the harness re-encodes yours to fit each one before sending it.
 
 ```json
 {
