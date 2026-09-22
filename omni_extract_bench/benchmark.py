@@ -70,7 +70,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .progress import NULL, Progress
-from .harness import (WORKERS, AccountFailure, MissingCredential, MissingDependency,
+from .harness import (AccountFailure, MissingCredential, MissingDependency,
                       predict)
 
 
@@ -126,7 +126,8 @@ def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[D
             "pyarrow is needed to read the benchmark manifest, and is not installed:\n"
             "    pip install 'omni-extract-bench[benchmark]'"
         ) from None
-
+    if not path.exists():
+        raise ValueError(f"manifest file at {path} does not exist. Ensure benchmark dataset follows the same convention as https://huggingface.co/datasets/datalab-to/omni_extract_bench.")
     docs = []
     for n, row in enumerate(pq.read_table(path).to_pylist()):
         if suites and row["suite"] not in suites:
@@ -496,6 +497,22 @@ def summarise(rows: list[dict]) -> dict:
         by_suite[row["suite"]].append(row)
     return {**over(rows), "per_suite": {s: over(v) for s, v in sorted(by_suite.items())}}
 
+
+#: Documents in flight per adapter. Keyed by ADAPTER MODULE name (`harness.resolve`), not by
+#: provider name, so every OpenRouter model id shares one budget instead of taking one each.
+#:
+#: It lives here, not in the harness: how many documents to have in flight at once is a
+#: decision about a corpus, and `harness` declares orchestration absent on purpose. The numbers
+#: are what each vendor tolerated in practice, not a published limit.
+WORKERS = {
+    "datalab": 10,
+    "reducto": 3,
+    "llamaextract": 3,
+    "azure_cu": 3,
+    "llm_single_shot": 5,
+    "mistral": 5,
+    "extend": 5,
+}
 
 DEFAULT_WORKERS = 5
 

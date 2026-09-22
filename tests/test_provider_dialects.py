@@ -19,11 +19,8 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 from omni_extract_bench.harness import schema as SCHEMA  # noqa: E402
 from omni_extract_bench.harness.providers import datalab  # noqa: E402
-from omni_extract_bench.harness.dialects import (  # noqa: E402
-    resolve_refs as deref,
-)
 from omni_extract_bench.harness.schema import (  # noqa: E402
-    strip_benchmark_keys as strip_bench_keys,
+    resolve_refs as deref, strip_benchmark_keys as strip_bench_keys,
 )
 from omni_extract_bench.harness.errors import VendorError  # noqa: E402
 from omni_extract_bench.harness.document import _is_account_failure  # noqa: E402
@@ -278,14 +275,14 @@ class _Spy:
 def _predict_with(spy, schema):
     """`predict`, with this adapter in place of the real one.
 
-    The adapter is substituted on `registry`, which is where `document.predict` looks it up --
-    it holds no bound copy, so the substitution is seen.
+    Substituted on `document`, which is where `predict` looks the adapter up. `registry` keeps
+    the real one, so `config_for` still builds the real Config.
     """
-    real, _registry.adapter = _registry.adapter, lambda provider: spy
+    real, _document.adapter = _document.adapter, lambda provider: spy
     try:
         return _document.predict("llamaextract", pathlib.Path(__file__), schema)
     finally:
-        _registry.adapter = real
+        _document.adapter = real
 
 
 _spy = _Spy(llamaextract.prepare_schema)
@@ -372,8 +369,8 @@ class _FakeClient:
 
 azure_cu._ANALYZERS.clear()
 for _ep in ("https://a.example", "https://b.example", "https://a.example"):
-    azure_cu._ensure_analyzer(_FakeClient(), _ep, _V, _base, _s1, "gpt-4.1-mini",
-                              _Budget(60), 0.1)
+    azure_cu._ensure_analyzer(_FakeClient(), _base, _s1,
+                              azure_cu.Config(endpoint=_ep, api_version=_V), _Budget(60))
 check("each endpoint gets its own analyzer created",
       sorted(_puts) == ["https://a.example", "https://b.example"],
       f"PUTs went to {_puts} -- a second resource skipping creation 404s every document")

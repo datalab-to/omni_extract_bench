@@ -1,0 +1,11 @@
+{
+  "run": "datalab-f46415c9",
+  "provider": "datalab",
+  "settings": {
+    "mode": "balanced",
+    "base_url": "https://www.datalab.to",
+    "poll_interval": 5.0
+  },
+  "timeout_s": 1800,
+  "corpus": "huggingface datalab-to/document-agent-corpus"
+}

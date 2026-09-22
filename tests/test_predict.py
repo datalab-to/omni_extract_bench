@@ -34,6 +34,7 @@ from omni_extract_bench.harness.errors import AccountFailure, MissingCredential,
 FAILS = []
 document.TRANSIENT_BACKOFF = (0, 0, 0)
 _REAL_ADAPTER = registry.adapter
+_REAL_DOC_ADAPTER = document.adapter
 
 
 def report(name, cond, detail=""):
@@ -76,10 +77,15 @@ def stub(fn):
 
     def lookup(provider):
         real = _REAL_ADAPTER(provider)
-        return types.SimpleNamespace(Config=real.Config,
+        # __name__ too: an adapter is a MODULE, and `resolve` reads it off whatever the
+        # lookup returns.
+        return types.SimpleNamespace(__name__=real.__name__, Config=real.Config,
                                      prepare_schema=real.prepare_schema,
                                      extract=counted)
-    registry.adapter = lookup
+    # Substituted on `document`, which is where `predict` reads the adapter. `registry` keeps
+    # the real one, so `config_for` still builds the real Config -- this stub fakes the CALL,
+    # not the declaration.
+    document.adapter = lookup
     return counted
 
 
@@ -215,7 +221,7 @@ for exc, kind in ((VendorError("HTTP 402: no credits", status=402), AccountFailu
     except Exception as other:                                       # noqa: BLE001
         report(f"{type(exc).__name__} raises {kind.__name__}", False, f"got {other!r}")
 
-registry.adapter = _REAL_ADAPTER
+document.adapter = _REAL_DOC_ADAPTER
 
 print("\nA MISSING SDK IS FOUND AT THE IMPORT, NOT IN A MESSAGE")
 # Importing the harness imports every adapter, so a missing SDK is one message at the import

@@ -154,8 +154,7 @@ def analyzer_id(fields: dict, completion_model: str, api_version: str) -> str:
     return f"oeb-{hashlib.sha256(spelled.encode()).hexdigest()[:16]}"
 
 
-def _ensure_analyzer(client, endpoint: str, api_version: str, analyzer: str,
-                     fields: dict, completion_model: str, budget, poll_interval: float) -> None:
+def _ensure_analyzer(client, analyzer: str, fields: dict, config: Config, budget) -> None:
     """Create the analyzer once per process, not once per thread.
 
     KEYED BY (endpoint, analyzer) -- the cache is process-wide and an analyzer lives inside one
@@ -172,13 +171,14 @@ def _ensure_analyzer(client, endpoint: str, api_version: str, analyzer: str,
     by the holding document's own budget.
     """
     with _ANALYZER_LOCK:
-        if (endpoint, analyzer) in _ANALYZERS:
+        if (config.endpoint, analyzer) in _ANALYZERS:
             return
         r = client.put(
-            f"{endpoint}/contentunderstanding/analyzers/{analyzer}"
-            f"?api-version={api_version}",
+            f"{config.endpoint}/contentunderstanding/analyzers/{analyzer}"
+            f"?api-version={config.api_version}",
             json={"baseAnalyzerId": "prebuilt-documentAnalyzer",
-                  "config": {"returnDetails": False, "completion": completion_model},
+                  "config": {"returnDetails": False,
+                             "completion": config.completion_model},
                   "fieldSchema": fields})
         if r.status_code != 409:
             if r.status_code >= 400:
@@ -186,8 +186,8 @@ def _ensure_analyzer(client, endpoint: str, api_version: str, analyzer: str,
                                   status=r.status_code, body=r.text)
             if r.headers.get("Operation-Location"):
                 _await(client, r.headers["Operation-Location"], budget=budget,
-                       poll_interval=poll_interval, want_result=False)
-        _ANALYZERS[(endpoint, analyzer)] = analyzer
+                       poll_interval=config.poll_interval, want_result=False)
+        _ANALYZERS[(config.endpoint, analyzer)] = analyzer
 
 
 def _await(client, op_url: str, *, budget, poll_interval: float, want_result: bool):
@@ -242,8 +242,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
 
     with httpx.Client(headers={"Ocp-Apim-Subscription-Key": key}, timeout=120) as client:
         analyzer = analyzer_id(schema, config.completion_model, config.api_version)
-        _ensure_analyzer(client, endpoint, config.api_version, analyzer, schema,
-                         config.completion_model, budget, config.poll_interval)
+        _ensure_analyzer(client, analyzer, schema, config, budget)
         r = client.post(f"{endpoint}/contentunderstanding/analyzers/{analyzer}:analyze"
                         f"?api-version={config.api_version}",
                         content=pdf.read_bytes(),

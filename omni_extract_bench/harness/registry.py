@@ -34,8 +34,12 @@ ADAPTERS = {
 PROVIDERS = sorted(ADAPTERS)
 
 
-def _registered(provider: str):
-    """The adapter module this provider name means. One lookup, one error message."""
+def adapter(provider: str):
+    """The module that talks to this vendor: its `Config`, `prepare_schema` and `extract`.
+
+    Any OpenRouter model id is the single-shot LLM adapter, which is why model ids need no
+    entry above -- there is one adapter for all of them, and the id is one of its settings.
+    """
     if MODEL_SEPARATOR in provider:
         return llm_single_shot
     if provider not in ADAPTERS:
@@ -45,23 +49,10 @@ def _registered(provider: str):
     return ADAPTERS[provider]
 
 
-def adapter(provider: str):
-    """The module that talks to this vendor: its `Config`, `prepare_schema` and `extract`.
-
-    Any OpenRouter model id is the single-shot LLM adapter, which is why model ids need no
-    entry above -- there is one adapter for all of them, and the id is one of its settings.
-    """
-    return _registered(provider)
-
-
 def resolve(provider: str) -> str:
     """This adapter's module name -- what `WORKERS` is keyed by, and what groups the runs of
-    one adapter together however many model ids reached it.
-
-    Read off the registry rather than through `adapter`, so a run is still filed under the
-    vendor it names when a caller has substituted the adapter itself.
-    """
-    return _registered(provider).__name__.rsplit(".", 1)[-1]
+    one adapter together however many model ids reached it."""
+    return adapter(provider).__name__.rsplit(".", 1)[-1]
 
 
 def out_name(provider: str, options: dict | None = None) -> str:
@@ -86,17 +77,6 @@ def out_name(provider: str, options: dict | None = None) -> str:
     digest = hashlib.sha256(spelled.encode()).hexdigest()[:8]
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", provider.replace(MODEL_SEPARATOR, "__"))
     return f"{name}-{digest}"
-
-
-WORKERS = {
-    "datalab": 10,
-    "reducto": 3,
-    "llamaextract": 3,
-    "azure_cu": 3,
-    "llm_single_shot": 5,
-    "mistral": 5,
-    "extend": 5,
-}
 
 
 def config_for(provider: str, options: dict | None = None):

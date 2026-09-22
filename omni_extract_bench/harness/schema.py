@@ -1,6 +1,7 @@
-"""What EVERY vendor is asked -- the question, before any vendor's dialect touches it.
+"""The schema the vendors are sent: what every one of them is asked, and the pieces more than
+one adapter needs to re-encode it.
 
-Two things, and `predict` applies them together:
+THE UNIVERSAL LAYER -- `predict` applies both to every vendor, in this order:
 
   STRIP    remove annotations the BENCHMARK added (`evaluation_config`, `default`). Sending
            our own grader metadata as part of the task is simply a bug; one vendor validates
@@ -10,9 +11,53 @@ Two things, and `predict` applies them together:
 
 Neither ever edits the benchmark's dataset files: the published corpus stays unmodified and
 the overlay is auditable on its own.
+
+SHARED RE-ENCODING -- below the conventions. Every vendor accepts a slightly different subset
+of JSON Schema, and the ones that validate strictly reject what the permissive ones accept
+silently; send one shape to everyone and the strict vendors score zero on documents they could
+have handled, which is a fact about the harness reported as a fact about the vendor. In one run
+a vendor came 8th of 9 with 19 of 40 documents failed, all of it schema delivery, and placed
+4th once fixed.
+
+A transform whose only caller is one adapter lives in that adapter, next to the
+`prepare_schema` that composes it -- `to_strict_dialect` is Extend's, `to_typed_enum_dialect`
+and `drop_schema_metadata` are LlamaExtract's. What is here is what more than one of them
+needs. The rule for all of them: a transform may change how a constraint is ENCODED, never
+what is ASKED FOR. Resolving a $ref, collapsing a nullable union, or moving a null from an
+enum to the field's optionality are encodings. Removing a field is not.
 """
 from __future__ import annotations
 import copy
+
+# Re-exported: adapters compose it with the transforms below, and the scorer's copy is the one
+# that must agree with what a vendor was sent.
+from ..metric import resolve_refs  # noqa: F401
+
+MAX_REF_DEPTH = 200
+
+
+def collapse_nullable_union(node):
+    """Reduce ``anyOf: [{...}, {"type": "null"}]`` to its non-null branch, merging siblings.
+
+    The nullable idiom declares no type of its own, which several vendors reject. Collapsing it
+    is also what a grader does when deciding which branch an answer is judged against, so the
+    delivered schema matches the scoring.
+    """
+    if not isinstance(node, dict):
+        return node
+    for branch_key in ("anyOf", "oneOf", "allOf"):
+        branches = [b for b in (node.get(branch_key) or []) if isinstance(b, dict)]
+        if not branches:
+            continue
+        pick = next((b for b in branches if b.get("type") != "null"), None)
+        if pick is not None:
+            merged = {k: v for k, v in node.items()
+                      if k not in ("anyOf", "oneOf", "allOf")}
+            for k, v in pick.items():
+                merged.setdefault(k, v)
+            return merged
+    return node
+
 
 BENCHMARK_ONLY_KEYS = ("evaluation_config", "default")
 

@@ -13,7 +13,7 @@ import sys
 
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.harness.dialects import resolve_refs
+from omni_extract_bench.harness.schema import resolve_refs
 from omni_extract_bench.harness.providers.llamaextract import to_typed_enum_dialect
 from omni_extract_bench.harness.providers.extend import to_strict_dialect
 from omni_extract_bench.harness.responses import cost_from_response, parse_model_json

@@ -3,7 +3,7 @@ import dataclasses, json, os, time
 from pathlib import Path
 import httpx
 
-from ..dialects import MAX_REF_DEPTH, collapse_nullable_union, resolve_refs
+from ..schema import MAX_REF_DEPTH, collapse_nullable_union, resolve_refs
 from ..budget import Budget, PollRetry
 from ..contract import Cost, Extraction
 from ..errors import MissingCredential, VendorError

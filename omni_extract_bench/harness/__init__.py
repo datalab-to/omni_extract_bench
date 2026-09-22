@@ -7,9 +7,8 @@ so a score cannot come to depend on a transport, a vendor dialect, or an envelop
     contract.py      what an adapter IS: `Adapter`, and the `Extraction`/`Cost` it returns
     errors.py        how a call fails, and whether a retry can fix it
     budget.py        spending one document's share of the clock
-    schema.py        what EVERY vendor is asked -- strip the benchmark's keys, state the
-                     gold conventions
-    dialects.py      reshaping that for ONE vendor; only adapters import it
+    schema.py        the schema vendors are sent: the universal layer, and the shared
+                     pieces adapters re-encode it with
     responses.py     making sense of what came back: fenced JSON, list replies, cost units
     registry.py      which adapter, at what settings, filed under what name
     document.py      run one document, return the answer and the evidence for it
@@ -40,7 +39,7 @@ THE SURFACE
     AccountFailure                   raised, never returned: not a fact about a document
     MissingCredential                likewise: an unset API key
     MissingDependency                likewise: an adapter that could not import its SDK
-    PROVIDERS, WORKERS, DEFAULT_TIMEOUT                     advisory, for building a loop
+    PROVIDERS, DEFAULT_TIMEOUT       advisory, for building a loop
 
 Orchestration is absent on purpose. Which documents, in what order, and how many at once are
 decisions about a corpus, not about a document, and a library that made them would be deciding
@@ -66,7 +65,7 @@ from .errors import (AccountFailure, DialectError, MissingCredential, MissingDep
 # needs none of it.
 try:
     from .document import predict
-    from .registry import DEFAULT_TIMEOUT, PROVIDERS, WORKERS, adapter, settings_for
+    from .registry import DEFAULT_TIMEOUT, PROVIDERS, adapter, resolve, settings_for
 except ImportError as exc:
     # `exc.name` is the module that could not be produced, and it tells the two cases apart:
     # `openai` for an SDK that is missing OR installed at an incompatible version, and one of
@@ -88,5 +87,5 @@ __all__ = [
     "Extraction", "Cost",
     "VendorError", "VendorTimeout", "DialectError",
     "AccountFailure", "MissingCredential", "MissingDependency",
-    "PROVIDERS", "WORKERS", "DEFAULT_TIMEOUT", "settings_for",
+    "PROVIDERS", "DEFAULT_TIMEOUT", "settings_for", "resolve",
 ]

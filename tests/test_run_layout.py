@@ -22,9 +22,10 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
+import omni_extract_bench.harness.document as D
 import omni_extract_bench.harness.registry as V                                  # noqa: E402
 
-_REAL_ADAPTER = V.adapter
+_REAL_ADAPTER = V.adapter  # the real lookup, for Config and __name__
 
 
 def as_adapter(lookup):
@@ -35,7 +36,9 @@ def as_adapter(lookup):
     """
     def wrapped(provider):
         real = _REAL_ADAPTER(provider)
-        return types.SimpleNamespace(Config=real.Config,
+        # __name__ included: an adapter is a MODULE, and `resolve` reads it to file the run
+        # under the right vendor. A double that omits it is not standing in for an adapter.
+        return types.SimpleNamespace(__name__=real.__name__, Config=real.Config,
                                      prepare_schema=real.prepare_schema,
                                      extract=lookup(provider))
     return wrapped
@@ -154,7 +157,7 @@ for i in range(3):
 B.fetch = lambda *_: out
 B.read_manifest = lambda *a, **k: docs
 called = []
-V.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, config: (
+D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, config: (
     called.append(config.mode),
     Extraction(result={"a": config.mode}, cost=Cost(usd=0.1)))[1])
 
@@ -266,7 +269,7 @@ except ValueError as exc:
 
 import threading as _threading                                                 # noqa: E402
 import time as _time                                                           # noqa: E402
-from omni_extract_bench.harness import WORKERS                                 # noqa: E402
+from omni_extract_bench.benchmark import WORKERS                               # noqa: E402
 
 wide = pathlib.Path(tempfile.mkdtemp())
 many = []
@@ -293,7 +296,7 @@ def counting(prov):
     return extract
 
 
-V.adapter = as_adapter(counting)
+D.adapter = as_adapter(counting)
 B.run(["datalab"], out=wide, score_workers=1,
       options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
 report("two runs of one vendor share its concurrency cap, not double it",
@@ -349,7 +352,7 @@ report("...and nothing is cut off, whatever the widest cell is",
 print("\nAND ASKS BEFORE IT SPENDS")
 ask = pathlib.Path(tempfile.mkdtemp())
 B.fetch = lambda *_: ask
-V.adapter = as_adapter(counting)
+D.adapter = as_adapter(counting)
 shown, called = [], {"n": 0}
 
 
@@ -362,7 +365,7 @@ def counting_adapter(prov):
     return extract
 
 
-V.adapter = as_adapter(counting_adapter)
+D.adapter = as_adapter(counting_adapter)
 declined = B.BenchmarkRun(["datalab"], out=ask, score_workers=1,
                           predict_workers={"*": 1}).execute(
     confirm=lambda plan: (shown.append(plan), False)[1])
@@ -405,7 +408,7 @@ def uneven(prov):
     return extract
 
 
-V.adapter = as_adapter(uneven)
+D.adapter = as_adapter(uneven)
 # `setdefault`, because a benchmark raises two displays -- one for predicting and one for
 # grading -- and it is the predicting one whose per-leg elapsed this is about.
 _exit, elapsed = Progress.__exit__, {}
@@ -427,7 +430,7 @@ print("\nAND THE CAP BELONGS TO THE SERVICE, NOT TO THE NAME YOU TYPED")
 models = pathlib.Path(tempfile.mkdtemp())
 B.fetch = lambda *_: models
 live["n"] = live["peak"] = 0
-V.adapter = as_adapter(counting)
+D.adapter = as_adapter(counting)
 ids = ["openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash"]
 B.run(ids, out=models, score_workers=1)
 report("three model ids share one budget, not one each",
@@ -458,7 +461,7 @@ def broke(prov):
     return extract
 
 
-V.adapter = as_adapter(broke)
+D.adapter = as_adapter(broke)
 try:
     B.run(["datalab"], out=acct, score_workers=1,
           options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})

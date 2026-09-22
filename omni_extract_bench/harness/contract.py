@@ -3,36 +3,31 @@
 A leaf module: it imports nothing from this package, so every adapter and the runner above
 them can share these without a cycle.
 
-THE CONTRACT. An adapter is a MODULE with three names -- see `Adapter` below:
+`Adapter` states the contract every vendor module satisfies. It is stated THERE and nowhere
+else, including here -- two copies of a contract are two things to keep in step.
 
-    Config          what the vendor can be asked
-    prepare_schema  the JSON Schema -> whatever this vendor's API takes
-    extract         (pdf, schema, *, timeout, config) -> Extraction
-
-`extract` makes the vendor call, parses the answer, and returns both.
-
-`Config` is a frozen dataclass whose FIELDS are what the vendor can be asked -- one
-declaration, read by `--options`, by `oeb providers`, and by `run_manifest.settings` for the
-record. Nothing infers an option from a
-signature and nothing restates a default somewhere else.
-
-A field must hold what the vendor is actually SENT. A `None` that `extract` later resolves
-into a real value is a setting the record cannot state: it writes down `None` while the
-vendor was handed 128000. Resolve it in `__post_init__`, where the Config still says it.
+One rule about `Config` that `Adapter` cannot express in a type: a field must hold what the
+vendor is actually SENT. A `None` that `extract` later resolves into a real value is a setting
+the record cannot state -- it writes down `None` while the vendor was handed 128000. Resolve
+it in `__post_init__`, where the Config still says it.
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, NamedTuple, Protocol
 
+
 class Adapter(Protocol):
     """What every module in `providers/` provides. `registry.ADAPTERS` holds one of each.
 
     Three names, and nothing else is looked up on an adapter:
 
-        Config          a frozen dataclass; its fields are what the vendor can be asked
+        Config          a frozen dataclass; its fields are what the vendor can be asked, and
+                        the one declaration `--options`, `oeb providers` and
+                        `run_manifest.settings` all read
         prepare_schema  the JSON Schema -> whatever this vendor's API takes
-        extract         make the call, parse the answer, return it
+        extract         make the call, parse the answer, return it; RAISE failures from where
+                        they happen rather than returning them
 
     `prepare_schema` is separate from `extract` so that ONE value is both what `extract`
     receives and what the record stores: an adapter that reshaped privately inside `extract`

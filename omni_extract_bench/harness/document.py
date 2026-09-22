@@ -31,8 +31,7 @@ from . import schema as SCHEMA
 from .budget import Budget
 from .contract import Cost, Extraction
 from .errors import AccountFailure, DialectError, VendorError, VendorTimeout
-from . import registry
-from .registry import DEFAULT_TIMEOUT, MODEL_SEPARATOR, config_for
+from .registry import DEFAULT_TIMEOUT, MODEL_SEPARATOR, adapter, config_for
 from .responses import cost_from_response
 
 TRANSIENT_ATTEMPTS = 4
@@ -55,7 +54,7 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     of returning them: neither is a fact about the document, both are identical for every one
     of them, and a returned failure is written down as a settled answer no resume re-attempts.
     """
-    api = registry.adapter(provider)
+    api = adapter(provider)
     pdf = Path(pdf)
     if not pdf.exists():
         raise FileNotFoundError(f"no document at {pdf}")
@@ -68,8 +67,8 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     # WHAT THE VENDOR IS SENT, made once. `sent` is the object `extract` receives and the
     # object the record stores as `schema_sent`, so the record cannot describe a schema the
     # vendor never saw -- which it did, while each adapter reshaped the schema privately.
-    asked = SCHEMA.strip_benchmark_keys(
-        SCHEMA.apply_overlay(schema) if overlay else schema)
+    overlaid = SCHEMA.apply_overlay(schema) if overlay else schema
+    asked = SCHEMA.strip_benchmark_keys(overlaid)
     # Resolved BEFORE the guard: an adapter with no `prepare_schema` at all is a harness bug,
     # and swallowing that AttributeError would file it as one settled DialectError per
     # document -- 620 stored zeros for a missing attribute, none of them re-attempted.
@@ -80,27 +79,28 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
         sent = asked
         error = DialectError(f"{provider} could not shape this schema: "
                              f"{type(exc).__name__}: {exc}"[:400])
-    # A schema that would not shape never reaches the vendor: no attempts, `cost.attempts` 0,
-    # and the record below carries the DialectError as this document's settled answer.
-    for attempt in range(0 if error else TRANSIENT_ATTEMPTS):
-        attempts = attempt + 1
-        try:
-            got = api.extract(pdf, sent, timeout=budget.remaining(), config=config)
-            error = None
-            break
-        except VendorError as exc:
-            if _is_account_failure(exc):
-                raise AccountFailure(str(exc)[:200]) from None
-            error = exc
-            if not exc.transient or attempt == TRANSIENT_ATTEMPTS - 1:
+    # A schema that would not shape never reaches the vendor: the DialectError set above is
+    # this document's settled answer, and `cost.attempts` stays 0 to say the call never went.
+    if error is None:
+        for attempt in range(TRANSIENT_ATTEMPTS):
+            attempts = attempt + 1
+            try:
+                got = api.extract(pdf, sent, timeout=budget.remaining(), config=config)
+                error = None
                 break
-            time.sleep(min(TRANSIENT_BACKOFF[min(attempt, len(TRANSIENT_BACKOFF) - 1)],
-                           budget.remaining()))
-            if budget.expired():
-                error = VendorTimeout(
-                    f"the uniform {timeout:.0f}s budget was spent over {attempts} attempt(s); "
-                    f"last failure: {exc}"[:400])
-                break
+            except VendorError as exc:
+                if _is_account_failure(exc):
+                    raise AccountFailure(str(exc)[:200]) from None
+                error = exc
+                if not exc.transient or attempt == TRANSIENT_ATTEMPTS - 1:
+                    break
+                time.sleep(min(TRANSIENT_BACKOFF[min(attempt, len(TRANSIENT_BACKOFF) - 1)],
+                               budget.remaining()))
+                if budget.expired():
+                    error = VendorTimeout(
+                        f"the uniform {timeout:.0f}s budget was spent over {attempts} "
+                        f"attempt(s); last failure: {exc}"[:400])
+                    break
 
     elapsed = round(time.time() - started, 1)
     if got is not None and got.cost.usd is None:
@@ -129,7 +129,7 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
             "settings": dataclasses.asdict(config),
             "model": provider if MODEL_SEPARATOR in provider else None,
             "timed_out": isinstance(error, VendorTimeout),
-            "conventions_applied": overlay and SCHEMA.apply_overlay(schema) != schema,
+            "conventions_applied": overlay and overlaid != schema,
             "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         },
     }
