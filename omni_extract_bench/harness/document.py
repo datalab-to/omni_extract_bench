@@ -58,6 +58,8 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     pdf = Path(pdf)
     if not pdf.exists():
         raise FileNotFoundError(f"no document at {pdf}")
+    if not isinstance(schema, dict):
+        raise TypeError(f"schema must be a JSON object, got {type(schema).__name__}.")
 
     config = config_for(provider, options)
     budget = Budget(timeout)
