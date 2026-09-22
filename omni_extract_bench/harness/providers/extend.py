@@ -3,7 +3,7 @@ import dataclasses, json, os, time
 from pathlib import Path
 import httpx
 
-from ..schema import MAX_REF_DEPTH, collapse_nullable_union, resolve_refs
+from ..schema import MAX_REF_DEPTH, resolve_refs
 from ..budget import Budget, PollRetry
 from ..contract import Cost, Extraction
 from ..errors import MissingCredential, VendorError
@@ -184,6 +184,29 @@ def rename_reserved(node):
 
 
 STRICT_ALLOWED_KEYS = ("type", "enum", "properties", "items", "required", "description")
+
+
+def collapse_nullable_union(node):
+    """Reduce ``anyOf: [{...}, {"type": "null"}]`` to its non-null branch, merging siblings.
+
+    The nullable idiom declares no type of its own, and Extend's validator wants a type. The
+    nullability is not lost by collapsing here: `to_strict_dialect` puts it back in the form
+    Extend requires -- `["string", "null"]`, and `null` among an enum's members.
+    """
+    if not isinstance(node, dict):
+        return node
+    for branch_key in ("anyOf", "oneOf", "allOf"):
+        branches = [b for b in (node.get(branch_key) or []) if isinstance(b, dict)]
+        if not branches:
+            continue
+        pick = next((b for b in branches if b.get("type") != "null"), None)
+        if pick is not None:
+            merged = {k: v for k, v in node.items()
+                      if k not in ("anyOf", "oneOf", "allOf")}
+            for k, v in pick.items():
+                merged.setdefault(k, v)
+            return merged
+    return node
 
 
 def to_strict_dialect(node, in_items=False, allowed=STRICT_ALLOWED_KEYS):

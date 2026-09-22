@@ -36,29 +36,6 @@ from ..metric import resolve_refs  # noqa: F401
 MAX_REF_DEPTH = 200
 
 
-def collapse_nullable_union(node):
-    """Reduce ``anyOf: [{...}, {"type": "null"}]`` to its non-null branch, merging siblings.
-
-    The nullable idiom declares no type of its own, which several vendors reject. Collapsing it
-    is also what a grader does when deciding which branch an answer is judged against, so the
-    delivered schema matches the scoring.
-    """
-    if not isinstance(node, dict):
-        return node
-    for branch_key in ("anyOf", "oneOf", "allOf"):
-        branches = [b for b in (node.get(branch_key) or []) if isinstance(b, dict)]
-        if not branches:
-            continue
-        pick = next((b for b in branches if b.get("type") != "null"), None)
-        if pick is not None:
-            merged = {k: v for k, v in node.items()
-                      if k not in ("anyOf", "oneOf", "allOf")}
-            for k, v in pick.items():
-                merged.setdefault(k, v)
-            return merged
-    return node
-
-
 BENCHMARK_ONLY_KEYS = ("evaluation_config", "default")
 
 
