@@ -164,6 +164,22 @@ try:
 finally:
     _bench.fetch = _real_fetch
 
+# COLUMNS is written out rather than read off Doc._fields, so the two are free to drift. What
+# may NOT drift is the direction a corpus on disk feels: a manifest carrying exactly COLUMNS
+# and nothing else has to be enough to read, or the reader has grown a column nobody was told
+# about and the KeyError is back.
+_exact = Path(tempfile.mkdtemp()) / "m.parquet"
+# "{}" is at once a valid doc_id, a usable path and valid JSON, so the row is built from
+# COLUMNS itself: a column added to COLUMNS is covered here without editing this line.
+_pq.write_table(_pa.Table.from_pylist([{c: "{}" for c in _bench.COLUMNS}]), _exact)
+try:
+    _only = _bench.read_manifest(_exact, _exact.parent)
+    report("a manifest of exactly COLUMNS is enough to read",
+           len(_only) == 1 and _only[0].schema == {})
+except Exception as exc:                                                       # noqa: BLE001
+    report("a manifest of exactly COLUMNS is enough to read", False,
+           f"{type(exc).__name__}: {exc}")
+
 # A manifest that IS there but is not one: named at the file, not as a KeyError with a column
 # name in it and no file, and not as a bare JSONDecodeError over a corpus of thousands.
 _short = Path(tempfile.mkdtemp()) / "m.parquet"
