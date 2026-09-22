@@ -86,19 +86,26 @@ def plural(n: int, word: str) -> str:
 
 REPO = "datalab-to/omni_extract_bench"
 MANIFEST = "manifest.parquet"
-#: What a manifest row says, and all it has to say. Named here because the error that
-#: reports a missing one quotes them, and so does `--manifest`'s help.
+#: What a manifest row says, and all it has to say. Named here because the error that reports
+#: a missing one quotes them, and so does `--manifest`'s help. It matches `Doc`'s fields today
+#: and is still written out rather than read off them: this is the shape of files already on
+#: disk, so a field `Doc` grows later must not silently invalidate every manifest there is.
 COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
 
 
 class Doc(NamedTuple):
     """One benchmark document, resolved once from the manifest. The schema is parsed here so
-    the vendor and the scorer are handed the same object."""
+    the vendor and the scorer are handed the same object.
+
+    Named for the manifest columns it comes from, so that debugging a manifest and reading the
+    runner use one vocabulary. `doc_path` is not necessarily a PDF -- a corpus of scanned PNGs
+    is a corpus -- which is what the field was called before this, and wrongly.
+    """
 
     doc_id: str
     suite: str
-    pdf: Path
-    gt: Path
+    doc_path: Path
+    gt_path: Path
     schema: dict
 
 
@@ -183,8 +190,8 @@ def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[D
                              f"JSON: {exc}") from None
         docs.append(Doc(doc_id=doc_id,
                         suite=row["suite"],
-                        pdf=root / row["doc_path"],
-                        gt=root / row["gt_path"],
+                        doc_path=root / row["doc_path"],
+                        gt_path=root / row["gt_path"],
                         schema=schema))
     docs.sort(key=lambda d: (d.suite, d.doc_id))
     return docs[:limit] if limit else docs
@@ -394,7 +401,7 @@ class ProviderRun:
             return run.label, "skipped", None, None, None
         try:
             with run.progress.calling():
-                record = predict(run.provider, doc.pdf, doc.schema, timeout=timeout,
+                record = predict(run.provider, doc.doc_path, doc.schema, timeout=timeout,
                                  **run.options)
             run.store(doc, record)
         except (MissingDependency, MissingCredential) as exc:
@@ -456,7 +463,7 @@ def score_one(doc: Doc, *, provider: str, out: Path, verdicts: bool = False) -> 
         reason = (pred or {}).get("__error__") if isinstance(pred, dict) else "not an object"
         return {**row, "status": "error", "error": str(reason or "empty prediction")}
     try:
-        result = score(pred, json.loads(doc.gt.read_text()), doc.schema, verdicts=verdicts)
+        result = score(pred, json.loads(doc.gt_path.read_text()), doc.schema, verdicts=verdicts)
         if verdicts:
             (out / "verdicts").mkdir(parents=True, exist_ok=True)
             (out / "verdicts" / f"{doc.doc_id}.jsonl").write_text(

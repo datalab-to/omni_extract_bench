@@ -142,15 +142,15 @@ try:
     tmp = Path(tempfile.mkdtemp())
     docs = _bench.BenchmarkRun(["datalab"], manifest=byo(tmp, _relative)).corpus()
     report("a relative path resolves against the manifest's own directory",
-           len(docs) == 2 and all(d.pdf.exists() and d.gt.exists() for d in docs),
-           str([str(d.pdf) for d in docs]))
+           len(docs) == 2 and all(d.doc_path.exists() and d.gt_path.exists() for d in docs),
+           str([str(d.doc_path) for d in docs]))
     report("...and the schema comes through parsed, per document",
            docs[0].schema == BYO_SCHEMA and docs[0].suite == "mine")
 
     tmp = Path(tempfile.mkdtemp())
     docs = _bench.BenchmarkRun(["datalab"], manifest=byo(tmp, _absolute)).corpus()
     report("an absolute path is used as it is, whatever the root",
-           all(d.pdf.exists() for d in docs), str([str(d.pdf) for d in docs]))
+           all(d.doc_path.exists() for d in docs), str([str(d.doc_path) for d in docs]))
 
     # The corpus moves after the manifest is written: relative paths need to be told where.
     tmp = Path(tempfile.mkdtemp())
@@ -160,7 +160,7 @@ try:
     docs = _bench.BenchmarkRun(["datalab"], manifest=moved / "manifest.parquet",
                                data_root=moved).corpus()
     report("...and --data-root overrides what it is relative to",
-           all(d.pdf.exists() for d in docs))
+           all(d.doc_path.exists() for d in docs))
 finally:
     _bench.fetch = _real_fetch
 
