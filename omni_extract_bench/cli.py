@@ -19,6 +19,13 @@ with a prediction that came back as a recorded failure, and how to aggregate at 
 
 A subcommand rather than a bare `oeb`, because producing predictions is the other half of this
 repository and will want a verb of its own.
+
+NOTHING HERE CATCHES. A `ValueError` from a manifest that is not there reaches the terminal as
+a `ValueError`, traceback and all, exactly as it reaches a caller who imported `run` instead of
+typing `oeb benchmark`. The command line was once the friendlier of the two, printing the
+message and swallowing the frames; that made the CLI and the API two different surfaces to
+learn, and turned a bug in this package into something indistinguishable from a bad flag. One
+behaviour, one thing to learn, and the traceback names the line that raised.
 """
 from __future__ import annotations
 
@@ -187,15 +194,10 @@ def _count(text: str, shown: str) -> int:
 
 def cmd_predict(args) -> int:
     """One document through one vendor. The mirror of `oeb score`: files in, JSON out."""
-    from .harness import (AccountFailure, MissingCredential, MissingDependency, VendorError,
-                          predict)
+    from .harness import predict
 
-    try:
-        record = predict(args.provider, args.doc, read_json(args.schema), timeout=args.timeout,
-                         **read_options(args.options, per_provider=False))
-    except (MissingCredential, MissingDependency, AccountFailure, VendorError) as exc:
-        print(f"  {exc}", file=sys.stderr)
-        return 1
+    record = predict(args.provider, args.doc, read_json(args.schema), timeout=args.timeout,
+                     **read_options(args.options, per_provider=False))
     json.dump(record, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
     return 1 if record.get("error") else 0
@@ -225,21 +227,15 @@ def confirm_plan(plan) -> bool:
 def cmd_benchmark(args) -> int:
     from .benchmark import run
 
-    from .harness import AccountFailure, MissingCredential, MissingDependency
-
-    try:
-        summary = run(args.providers, out=args.out, data_root=args.data_root,
-                      manifest=args.manifest, repo=args.repo, suites=args.suites,
-                      limit=args.limit, timeout=args.timeout,
-                      predict_workers=read_workers(args.predict_workers),
-                      score_workers=args.score_workers,
-                      verdicts=args.verdicts, rescore=args.rescore,
-                      score_only=args.score_only,
-                      options=read_options(args.options),
-                      confirm=None if args.yes else confirm_plan)
-    except (MissingCredential, MissingDependency, AccountFailure) as exc:
-        print(f"  {exc}", file=sys.stderr)
-        return 1
+    summary = run(args.providers, out=args.out, data_root=args.data_root,
+                  manifest=args.manifest, repo=args.repo, suites=args.suites,
+                  limit=args.limit, timeout=args.timeout,
+                  predict_workers=read_workers(args.predict_workers),
+                  score_workers=args.score_workers,
+                  verdicts=args.verdicts, rescore=args.rescore,
+                  score_only=args.score_only,
+                  options=read_options(args.options),
+                  confirm=None if args.yes else confirm_plan)
     if not summary:
         return 1              # the plan was declined, so there is nothing to print
     json.dump(summary, sys.stdout, indent=2)
@@ -348,11 +344,7 @@ def main(argv=None) -> int:
     root.setLevel(logging.WARNING)
     logging.getLogger(__package__).setLevel(logging.WARNING if args.quiet else logging.INFO)
 
-    try:
-        return args.fn(args)
-    except (ValueError, TypeError, OSError, ImportError) as exc:
-        print(f"  {exc}", file=sys.stderr)
-        return 1
+    return args.fn(args)
 
 
 if __name__ == "__main__":

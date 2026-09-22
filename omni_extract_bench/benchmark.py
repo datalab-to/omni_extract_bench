@@ -128,8 +128,7 @@ def fetch(root: Path | None = None, repo: str = REPO) -> Path:
     if missing:
         raise ValueError(
             f"the HuggingFace dataset {repo} has no {MANIFEST} at its root, so there is "
-            f"nothing to benchmark: a corpus is a manifest -- columns doc_id, suite, "
-            f"doc_path, gt_path, schema -- beside the documents it names, as ours is at "
+            f"nothing to benchmark. It must follows the same structure as ours at "
             f"https://huggingface.co/datasets/{REPO}. Point --manifest at a parquet of your "
             f"own to benchmark documents that are already on disk."
         )
