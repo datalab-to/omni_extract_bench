@@ -151,9 +151,8 @@ from omni_extract_bench.benchmark import BenchmarkRun
 BenchmarkRun(
   providers,              # e.g. ["datalab"]
   out="runs",             # where runs go
-  data_root=None,         # where the corpus lands. Default: the HuggingFace cache
-  manifest=None,          # own manifest instead of ours
-  repo=None,              # a different HuggingFace dataset. Default: ours
+  data_root=None,         # what a manifest on disk's relative paths resolve against
+  manifest=None,          # a path, or hf://datasets/<org>/<name>[@rev]/<path>. Default: ours
   suites=None,            # limit to these suites
   limit=0,                # first N documents
   timeout=1800.0,
@@ -255,10 +254,14 @@ oeb benchmark --providers datalab --manifest my/corpus/manifest.parquet
 ```
 
 Same parquet shape as [ours](https://huggingface.co/datasets/datalab-to/omni_extract_bench). Or
-you can point to your own HuggingFace dataset, which is fetched the same way ours is.
+point at a manifest in any HuggingFace dataset, which is fetched the same way ours is and whose
+paths resolve against that dataset's root. One dataset can hold several manifests, such as a
+subset, and `@revision` pins the commit.
 
 ```bash
-oeb benchmark --providers datalab --repo someone/their-corpus
+oeb benchmark --providers datalab \
+  --manifest hf://datasets/datalab-to/omni_extract_bench/manifests/sample40-predictive-across-vendors-2026-09-22.parquet
+oeb benchmark --providers datalab --manifest hf://datasets/someone/their-corpus@v2/manifest.parquet
 ```
 
 Whichever you use, the run records it in `settings.json` and refuses a directory that already

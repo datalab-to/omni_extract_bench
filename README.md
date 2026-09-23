@@ -49,6 +49,13 @@ oeb benchmark \
 
 This will execute 4 different runs -- one for each pair (provider, settings).
 
+`--manifest` picks the documents: a parquet on disk, or one in a HuggingFace dataset. For example, a 40-document subset of ours:
+
+```bash
+oeb benchmark --providers datalab --out runs/ \
+  --manifest hf://datasets/datalab-to/omni_extract_bench/manifests/sample40-predictive-across-vendors-2026-09-22.parquet
+```
+
 See [`docs/API.md`](./docs/API.md) for more details on what `oeb benchmark` writes and **how you can run on your own benchmark dataset**.
 
 ## Score

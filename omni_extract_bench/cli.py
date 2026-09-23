@@ -213,7 +213,7 @@ def cmd_benchmark(args) -> int:
     from .benchmark import run
 
     summary = run(args.providers, out=args.out, data_root=args.data_root,
-                  manifest=args.manifest, repo=args.repo, suites=args.suites,
+                  manifest=args.manifest, suites=args.suites,
                   limit=args.limit, timeout=args.timeout,
                   predict_workers=read_workers(args.predict_workers),
                   score_workers=args.score_workers,
@@ -256,18 +256,18 @@ def main(argv=None) -> int:
     b.add_argument("--out", type=pathlib.Path, default=pathlib.Path("runs"),
                    help="where predictions, scores and the summary go. Default: runs/")
     b.add_argument("--data-root", type=pathlib.Path,
-                   help="where the corpus is downloaded to, and what a relative path in the "
-                        "manifest is relative to. Default: the HuggingFace cache, which is "
-                        "shared between working directories, or the manifest's own directory "
-                        "when --manifest is given")
-    b.add_argument("--repo",
-                   help="a different HuggingFace dataset to fetch the corpus from. "
-                        "Default: ours")
-    b.add_argument("--manifest", type=pathlib.Path,
-                   help="a parquet manifest of your own instead of our corpus, which is then "
-                        "not downloaded at all. Columns: doc_id, suite, doc_path, gt_path, "
-                        "and a schema column holding JSON. An absolute doc_path is used as it "
-                        "is; a relative one resolves against --data-root")
+                   help="what a relative path in a manifest on disk resolves against. "
+                        "Default: the manifest's own directory. Not with an hf:// manifest, "
+                        "whose paths are its dataset's")
+    # Note: a str, not a Path, because a Path folds the '//' out of an hf:// address.
+    b.add_argument("--manifest",
+                   help="the documents to run: a parquet on disk, or one in a HuggingFace "
+                        "dataset as hf://datasets/<org>/<name>[@<revision>]/<path>, which is "
+                        "fetched into the HuggingFace cache. Columns: doc_id, suite, doc_path, "
+                        "gt_path, and a schema column holding JSON. An absolute doc_path is "
+                        "used as it is; a relative one resolves against --data-root, or the "
+                        "dataset's root. Default: ours, "
+                        "hf://datasets/datalab-to/omni_extract_bench/manifest.parquet")
     b.add_argument("--suites", nargs="+", help="limit to these suites")
     b.add_argument("--limit", type=int, default=0, help="first N documents; for a smoke test")
     b.add_argument("--timeout", type=float, default=1800,
