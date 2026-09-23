@@ -247,25 +247,39 @@ oeb benchmark \
 
 That's 4 runs.
 
-### A manifest of your own
+### Choosing the documents: `--manifest`
 
-```bash
-oeb benchmark --providers datalab --manifest my/corpus/manifest.parquet
-```
+A manifest is a parquet file with one row per document with columns:
 
-Same parquet shape as [ours](https://huggingface.co/datasets/datalab-to/omni_extract_bench). Or
-point at a manifest in any HuggingFace dataset, which is fetched the same way ours is and whose
-paths resolve against that dataset's root. One dataset can hold several manifests, such as a
-subset, and `@revision` pins the commit.
+- `doc_id`
+- `suite`
+- `doc_path`
+- `gt_path`
+- `schema`
+
+It is the same shape as [ours](https://huggingface.co/datasets/datalab-to/omni_extract_bench).
+
+With no `--manifest`, a run uses ours: `hf://datasets/datalab-to/omni_extract_bench/manifest.parquet`. Otherwise you can pass:
+
+*A subset of ours.* Our dataset holds more than one manifest; this one is 40 documents. For example,
 
 ```bash
 oeb benchmark --providers datalab \
   --manifest hf://datasets/datalab-to/omni_extract_bench/manifests/sample40-predictive-across-vendors-2026-09-22.parquet
+```
+
+*A manifest in any HuggingFace dataset*. For example,
+
+```bash
 oeb benchmark --providers datalab --manifest hf://datasets/someone/their-corpus@v2/manifest.parquet
 ```
 
-Whichever you use, the run records it in `settings.json` and refuses a directory that already
-holds another one.
+*A manifest on disk.* Nothing is downloaded, and its relative paths resolve against its own
+directory, or `--data-root`. For example:
+
+```bash
+oeb benchmark --providers datalab --manifest my/corpus/manifest.parquet
+```
 
 ### Resuming
 
