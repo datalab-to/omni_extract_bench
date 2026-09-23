@@ -87,8 +87,6 @@ def plural(n: int, word: str) -> str:
 REPO = "datalab-to/omni_extract_bench"
 MANIFEST = "manifest.parquet"
 HF_DATASETS = "hf://datasets/"
-#: Ours, and the default. Any manifest is a path on disk or a file in a HuggingFace dataset,
-#: so a corpus with several (a subset, a suite) needs no second flag to say which.
 DEFAULT_MANIFEST = f"{HF_DATASETS}{REPO}/{MANIFEST}"
 #: What a manifest row says, and all it has to say. Named here because the error that reports
 #: a missing one quotes them, and so does `--manifest`'s help. It matches `Doc`'s fields today
@@ -123,8 +121,6 @@ def hf_path(manifest: str | Path) -> HfPath | None:
     """The HuggingFace file `manifest` addresses, or `None` when it is a path on disk."""
     form = f"hf://datasets/<org>/<name>[@<revision>]/<path>, e.g. {DEFAULT_MANIFEST}"
     s = str(manifest)
-    # Note: `Path` folds `//` to `/`, so an address that went through one arrives as `hf:/...`
-    # and would otherwise read as a relative path on disk that does not exist.
     if isinstance(manifest, Path) and s.startswith("hf:"):
         raise ValueError(f"the manifest {s!r} was made a Path, which folds the '//' out of an "
                          f"address. Pass it as a str: {form}")
@@ -661,10 +657,8 @@ class BenchmarkRun:
 
         for provider in providers:
             resolve(provider)
-        # `None` rather than DEFAULT_MANIFEST, so the cli has no copy.
         self.out, self.data_root = out, data_root
         self.manifest = manifest or DEFAULT_MANIFEST
-        # Parsed here, so a malformed address is refused before anything is fetched or bought.
         if hf_path(self.manifest) is not None and data_root is not None:
             raise ValueError(f"--data-root {data_root} cannot move {self.manifest}: a manifest "
                              f"in a HuggingFace dataset resolves its paths against that "
@@ -673,8 +667,6 @@ class BenchmarkRun:
         #: Names the corpus, for `settings.json` to record and `prepare` to check. Not
         #: `corpus`, which is the method that fetches it.
         self.corpus_id = str(self.manifest)
-        #: The dataset commit `corpus()` read, for `settings.json`; `None` on disk. Recorded,
-        #: not compared: a commit that only adds a manifest must not refuse every resume.
         self.corpus_revision: str | None = None
         self.suites, self.limit = suites, limit
         self.timeout, self.score_workers = timeout, score_workers
