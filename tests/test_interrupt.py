@@ -11,7 +11,9 @@ a Ctrl-C that appears to do nothing at all.
 
 It went undetected once because the obvious ways to test it do not deliver the signal: a bash
 background job has SIGINT set to SIG_IGN, and a pty without a controlling terminal never turns
-^C into a signal. `subprocess.send_signal` is what a terminal actually does.
+^C into a signal. `subprocess.send_signal` is what a terminal actually does. An ignored SIGINT
+is also inherited, and Python installs no KeyboardInterrupt handler over one, so each child
+script restores the handler itself: otherwise a CI runner that ignores SIGINT fails this test.
 
 Run: python3 tests/test_interrupt.py
 """
@@ -66,7 +68,8 @@ report("...and nothing is written, so every document stays resumable",
 print("\nAND A REAL SIGINT STOPS A RUN, ON A DOCUMENT BOUNDARY")
 script = out / "run_it.py"
 script.write_text(f'''
-import sys, json, pathlib, time, types
+import sys, json, pathlib, signal, time, types
+signal.signal(signal.SIGINT, signal.default_int_handler)
 sys.path.insert(0, {str(ROOT)!r})
 import omni_extract_bench.benchmark as B
 import omni_extract_bench.harness.document as D
@@ -285,7 +288,8 @@ report("...and the file holds all five",
 print("\nAND AN INTERRUPT WHILE SCORING KEEPS WHAT IT GRADED")
 score_script = out / "score_it.py"
 score_script.write_text(f"""
-import sys, json, pathlib
+import sys, json, pathlib, signal
+signal.signal(signal.SIGINT, signal.default_int_handler)
 sys.path.insert(0, {str(ROOT)!r})
 import omni_extract_bench.benchmark as B
 
