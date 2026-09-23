@@ -667,7 +667,7 @@ class BenchmarkRun:
         #: Names the corpus, for `settings.json` to record and `prepare` to check. Not
         #: `corpus`, which is the method that fetches it.
         self.corpus_id = str(self.manifest)
-        self.corpus_revision: str | None = None
+        self.corpus_commit: str | None = None
         self.suites, self.limit = suites, limit
         self.timeout, self.score_workers = timeout, score_workers
         self.verdicts, self.rescore, self.score_only = verdicts, rescore, score_only
@@ -755,9 +755,9 @@ class BenchmarkRun:
                 if was and was != self.corpus_id:
                     raise ValueError(f"{run.out} holds {run.provider} against {was}, and this "
                                      f"run is against {self.corpus_id}. Use a different --out.")
-            revision = {"corpus_revision": self.corpus_revision} if self.corpus_revision else {}
+            commit = {"corpus_commit": self.corpus_commit} if self.corpus_commit else {}
             write_json_atomic(settings, {**run.head(), "timeout_s": self.timeout,
-                                         "corpus": self.corpus_id, **revision}, indent=2)
+                                         "corpus": self.corpus_id, **commit}, indent=2)
 
     def predict(self, docs: list[Doc]) -> None:
         """Every adapter at once. Predicting is network wait, so they do not slow each other."""
@@ -813,7 +813,7 @@ class BenchmarkRun:
         else:
             root = fetch(at)
             path = root / at.path
-            self.corpus_revision = root.name
+            self.corpus_commit = root.name
         docs = read_manifest(path, root, suites=self.suites, limit=self.limit)
         if not docs:
             raise ValueError("no documents selected: check --suites and --limit")

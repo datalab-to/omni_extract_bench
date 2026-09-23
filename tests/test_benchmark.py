@@ -287,12 +287,12 @@ try:
     _docs = _sub.corpus()
     report("a manifest below a dataset's root reads paths from the dataset's root",
            _docs[0].doc_path == _snap / "pdfs" / "d0.pdf", str(_docs[0].doc_path))
-    report("...and the commit it was read at is kept", _sub.corpus_revision == "0123abcd")
+    report("...and the commit it was read at is kept", _sub.corpus_commit == "0123abcd")
     _sub.prepare()
     _written = json.loads((_sub.runs[0].out / "settings.json").read_text())
     report("...and settings.json records it beside the address",
            _written["corpus"] == "hf://datasets/o/n/manifests/sub.parquet"
-           and _written["corpus_revision"] == "0123abcd", str(_written))
+           and _written["corpus_commit"] == "0123abcd", str(_written))
 finally:
     _bench.fetch = _real_fetch
 try:
