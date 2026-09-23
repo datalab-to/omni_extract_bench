@@ -16,7 +16,7 @@ Three levels of abstraction == three classes.
     benchmark
     out         runs
     runs        2 over 1 adapter
-    corpus      huggingface datalab-to/omni_extract_bench
+    corpus      hf://datasets/datalab-to/omni_extract_bench/manifest.parquet
     timeout     1800s per document
     score only  false
     rescoring   false
@@ -86,6 +86,8 @@ def plural(n: int, word: str) -> str:
 
 REPO = "datalab-to/omni_extract_bench"
 MANIFEST = "manifest.parquet"
+HF_DATASETS = "hf://datasets/"
+DEFAULT_MANIFEST = f"{HF_DATASETS}{REPO}/{MANIFEST}"
 #: What a manifest row says, and all it has to say. Named here because the error that reports
 #: a missing one quotes them, and so does `--manifest`'s help. It matches `Doc`'s fields today
 #: and is still written out rather than read off them: this is the shape of files already on
@@ -103,10 +105,43 @@ class Doc(NamedTuple):
     schema: dict
 
 
-def fetch(root: Path | None = None, repo: str = REPO) -> Path:
-    """The corpus on disk. With no `root` it lands in the HuggingFace cache, which is where it
-    belongs: shared between every checkout and every working directory, so the second folder
-    you run from resolves it for free.
+class HfPath(NamedTuple):
+    """A file in a HuggingFace dataset, as `hf://datasets/<repo>[@<revision>]/<path>`."""
+
+    repo: str
+    revision: str | None
+    path: str
+
+    def __str__(self) -> str:
+        at = f"@{self.revision}" if self.revision else ""
+        return f"{HF_DATASETS}{self.repo}{at}/{self.path}"
+
+
+def hf_path(manifest: str | Path) -> HfPath | None:
+    """The HuggingFace file `manifest` addresses, or `None` when it is a path on disk."""
+    form = f"hf://datasets/<org>/<name>[@<revision>]/<path>, e.g. {DEFAULT_MANIFEST}"
+    s = str(manifest)
+    if isinstance(manifest, Path) and s.startswith("hf:"):
+        raise ValueError(f"the manifest {s!r} was made a Path, which folds the '//' out of an "
+                         f"address. Pass it as a str: {form}")
+    if not s.startswith("hf://"):
+        return None
+    if not s.startswith(HF_DATASETS):
+        raise ValueError(f"{s!r} is not a HuggingFace dataset; a manifest is read from one "
+                         f"as {form}")
+    org, _, rest = s.removeprefix(HF_DATASETS).partition("/")
+    name, _, path = rest.partition("/")
+    name, at, revision = name.partition("@")
+    if not org or not name or not path or (at and not revision):
+        raise ValueError(f"{s!r} does not name a file in a HuggingFace dataset. Write it as "
+                         f"{form}")
+    return HfPath(f"{org}/{name}", revision or None, path)
+
+
+def fetch(at: HfPath) -> Path:
+    """The dataset `at` is in, on disk: the snapshot folder, named for its commit. It lands in
+    the HuggingFace cache, which is where it belongs: shared between every checkout and every
+    working directory, so the second folder you run from resolves it for free.
     """
     try:
         from huggingface_hub import file_exists, snapshot_download
@@ -122,20 +157,19 @@ def fetch(root: Path | None = None, repo: str = REPO) -> Path:
     # order. A hub that will not answer (offline, a cached corpus) is not an answer of no:
     # the download runs, and `read_manifest` says it if the manifest really is missing.
     try:
-        missing = not file_exists(repo, MANIFEST, repo_type="dataset")
+        missing = not file_exists(at.repo, at.path, repo_type="dataset", revision=at.revision)
     except OSError:
         missing = False
     if missing:
         raise ValueError(
-            f"the HuggingFace dataset {repo} has no {MANIFEST} at its root, so there is "
-            f"nothing to benchmark. It must follows the same structure as ours at "
+            f"there is no manifest at {at}, so there is nothing to benchmark. A dataset holds "
+            f"one or more, each following the same structure as ours at "
             f"https://huggingface.co/datasets/{REPO}. Point --manifest at a parquet of your "
             f"own to benchmark documents that are already on disk."
         )
 
-    log.info("fetching the corpus into %s", root or "the huggingface cache")
-    return Path(snapshot_download(repo, repo_type="dataset",
-                                  **({"local_dir": str(root)} if root else {})))
+    log.info("fetching %s into the huggingface cache", at)
+    return Path(snapshot_download(at.repo, repo_type="dataset", revision=at.revision))
 
 
 def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[Doc]:
@@ -613,8 +647,7 @@ class BenchmarkRun:
     `describe()` says what it would do, with no download and no vendor call."""
 
     def __init__(self, providers: list[str], *, out: Path = Path("runs"),
-                 data_root: Path | None = None, manifest: Path | None = None,
-                 repo: str | None = None,
+                 data_root: Path | None = None, manifest: str | Path | None = None,
                  suites: list[str] | None = None,
                  limit: int = 0, timeout: float = 1800.0,
                  predict_workers: dict[str, int] | int | None = None, score_workers: int = 0,
@@ -624,12 +657,17 @@ class BenchmarkRun:
 
         for provider in providers:
             resolve(provider)
-        self.out, self.data_root, self.manifest = out, data_root, manifest
-        self.repo = repo or REPO           # `None` rather than REPO, so the cli has no copy
+        self.out, self.data_root = out, data_root
+        self.manifest = manifest or DEFAULT_MANIFEST
+        if hf_path(self.manifest) is not None and data_root is not None:
+            raise ValueError(f"--data-root {data_root} cannot move {self.manifest}: a manifest "
+                             f"in a HuggingFace dataset resolves its paths against that "
+                             f"dataset. Drop --data-root, or point --manifest at a parquet on "
+                             f"disk.")
         #: Names the corpus, for `settings.json` to record and `prepare` to check. Not
         #: `corpus`, which is the method that fetches it.
-        self.corpus_id = (f"manifest {manifest}" if manifest
-                          else f"huggingface {self.repo}")
+        self.corpus_id = str(self.manifest)
+        self.corpus_commit: str | None = None
         self.suites, self.limit = suites, limit
         self.timeout, self.score_workers = timeout, score_workers
         self.verdicts, self.rescore, self.score_only = verdicts, rescore, score_only
@@ -717,8 +755,9 @@ class BenchmarkRun:
                 if was and was != self.corpus_id:
                     raise ValueError(f"{run.out} holds {run.provider} against {was}, and this "
                                      f"run is against {self.corpus_id}. Use a different --out.")
+            commit = {"corpus_commit": self.corpus_commit} if self.corpus_commit else {}
             write_json_atomic(settings, {**run.head(), "timeout_s": self.timeout,
-                                         "corpus": self.corpus_id}, indent=2)
+                                         "corpus": self.corpus_id, **commit}, indent=2)
 
     def predict(self, docs: list[Doc]) -> None:
         """Every adapter at once. Predicting is network wait, so they do not slow each other."""
@@ -765,15 +804,16 @@ class BenchmarkRun:
         return summary
 
     def corpus(self) -> list[Doc]:
-        """The documents this invocation selects, fetching ours when no manifest was brought.
-        A relative path resolves against `--data-root`, else the manifest's own directory; ours
-        goes to the HuggingFace cache unless `--data-root` names somewhere else."""
-        if self.manifest is not None:
-            root = self.data_root if self.data_root is not None else self.manifest.parent
-            path = self.manifest
+        """The documents this invocation selects, fetching the dataset when the manifest is in
+        one. A relative path in a manifest on disk resolves against `--data-root`, else the
+        manifest's own directory; in a dataset, against the dataset's root."""
+        if (at := hf_path(self.manifest)) is None:
+            path = Path(self.manifest)
+            root = self.data_root if self.data_root is not None else path.parent
         else:
-            root = fetch(self.data_root, self.repo)
-            path = root / MANIFEST
+            root = fetch(at)
+            path = root / at.path
+            self.corpus_commit = root.name
         docs = read_manifest(path, root, suites=self.suites, limit=self.limit)
         if not docs:
             raise ValueError("no documents selected: check --suites and --limit")

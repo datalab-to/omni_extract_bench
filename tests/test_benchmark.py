@@ -6,8 +6,8 @@ result: WHICH documents get re-attempted on a resume, WHAT happens to a document
 could not answer, and HOW the corpus number is aggregated. A mistake in the first spends money
 or loses a document silently; a mistake in the last is a wrong headline.
 
-`fetch_manifest` and `fetch_documents` are not covered: they are a HuggingFace download, and a
-test that asserts one is testing `huggingface_hub`. Everything downstream of them is here.
+`fetch`'s download is not covered: it is a HuggingFace download, and a test that asserts one is
+testing `huggingface_hub`. What it is asked for, and everything downstream of it, is here.
 
 Run: python3 tests/test_benchmark.py
 """
@@ -106,6 +106,41 @@ report("benchmark-only annotations are not gradable slots either way",
        score({"id": "A-1"}, {"id": "A-1"}, REF_SCHEMA)["accuracy"] == 1.0)
 report("the caller's schema is not mutated by preparing it",
        "$defs" in REF_SCHEMA and "$ref" in json.dumps(REF_SCHEMA))
+
+print("\nWHERE A MANIFEST IS: ON DISK, OR IN A HUGGINGFACE DATASET")
+from omni_extract_bench.benchmark import (                                     # noqa: E402
+    DEFAULT_MANIFEST, HfPath, hf_path)
+
+_SUBSET = "hf://datasets/datalab-to/omni_extract_bench/manifests/sample40.parquet"
+report("ours is an address like any other",
+       hf_path(DEFAULT_MANIFEST)
+       == HfPath("datalab-to/omni_extract_bench", None, "manifest.parquet"))
+report("a manifest below the root keeps its whole path",
+       hf_path(_SUBSET) == HfPath("datalab-to/omni_extract_bench", None,
+                                  "manifests/sample40.parquet"))
+report("@revision pins the dataset",
+       hf_path("hf://datasets/o/n@v1.2/m.parquet") == HfPath("o/n", "v1.2", "m.parquet"))
+for _addr in (DEFAULT_MANIFEST, _SUBSET, "hf://datasets/o/n@abc123/a/b.parquet"):
+    report(f"an address prints back as written: {_addr}", str(hf_path(_addr)) == _addr)
+for _local in ("manifest.parquet", "runs/../m.parquet", "/abs/m.parquet",
+               Path("rel/m.parquet"), Path("/abs/m.parquet")):
+    report(f"a path on disk is not an address: {_local!r}", hf_path(_local) is None)
+for _bad in ("hf://models/o/n/m.parquet", "hf://spaces/o/n/m.parquet", "hf://datasets/o",
+             "hf://datasets/o/n", "hf://datasets/o/n/", "hf://datasets//n/m.parquet",
+             "hf://datasets/o/n@/m.parquet"):
+    try:
+        hf_path(_bad)
+        report(f"a malformed address is refused: {_bad}", False, "it was accepted")
+    except ValueError as exc:
+        report(f"a malformed address is refused, and named: {_bad}",
+               _bad in str(exc) and DEFAULT_MANIFEST in str(exc), str(exc))
+# `Path("hf://...")` is `hf:/...`: a relative file that does not exist. Said at the address,
+# not as "there is no manifest at hf:/datasets/..." after the fact.
+try:
+    hf_path(Path(_SUBSET))
+    report("an address made a Path is refused", False, "it was accepted")
+except ValueError as exc:
+    report("an address made a Path is refused, with the fix", "as a str" in str(exc), str(exc))
 
 print("\nA MANIFEST OF YOUR OWN, INSTEAD OF OURS")
 import omni_extract_bench.benchmark as _bench                                  # noqa: E402
@@ -211,21 +246,67 @@ _real_exists, _real_snapshot = _hf.file_exists, _hf.snapshot_download
 _hf.file_exists = lambda *a, **k: False
 _hf.snapshot_download = lambda *a, **k: (_ for _ in ()).throw(
     AssertionError("a gigabyte was downloaded before the manifest was asked for"))
+_nowhere = "hf://datasets/someone/corpus@v2/manifests/nope.parquet"
 try:
-    _bench.fetch(repo="someone/no-manifest")
-    report("a dataset without a manifest is refused", False, "it was accepted")
+    _bench.fetch(hf_path(_nowhere))
+    report("a dataset without the manifest is refused", False, "it was accepted")
 except ValueError as exc:
-    report("a dataset without a manifest is refused, before anything is downloaded",
-           "someone/no-manifest" in str(exc) and "manifest.parquet" in str(exc), str(exc))
-# A hub that will not answer -- offline, with the corpus already in the cache -- is not an
-# answer of no. The download decides, as it did before there was a check at all.
-_hf.file_exists = lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
-_hf.snapshot_download = lambda *a, **k: "/cached/corpus"
+    report("a dataset without the manifest is refused, before anything is downloaded",
+           _nowhere in str(exc), str(exc))
+# The check asks for the manifest that was addressed, at the revision that was addressed.
+_asked = []
+_hf.file_exists = lambda *a, **k: _asked.append((a, k)) or True
+_hf.snapshot_download = lambda *a, **k: _asked.append((a, k)) or "/cached/corpus"
 try:
+    _bench.fetch(hf_path(_nowhere))
+    report("the check and the download both ask for the addressed file and revision",
+           _asked == [(("someone/corpus", "manifests/nope.parquet"),
+                       {"repo_type": "dataset", "revision": "v2"}),
+                      (("someone/corpus",), {"repo_type": "dataset", "revision": "v2"})],
+           str(_asked))
+    # A hub that will not answer -- offline, with the corpus already in the cache -- is not
+    # an answer of no. The download decides, as it did before there was a check at all.
+    _hf.file_exists = lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
     report("...but a hub that cannot be reached does not stop a cached corpus",
-           _bench.fetch(repo="ours") == Path("/cached/corpus"))
+           _bench.fetch(hf_path(DEFAULT_MANIFEST)) == Path("/cached/corpus"))
 finally:
     _hf.file_exists, _hf.snapshot_download = _real_exists, _real_snapshot
+
+# A manifest in a dataset resolves against the dataset, wherever in it the manifest sits, and
+# the commit it was read at is what `settings.json` records beside the address.
+_snap = Path(tempfile.mkdtemp()) / "0123abcd"
+(_snap / "manifests").mkdir(parents=True)
+_rows = [{"doc_id": "d0", "suite": "s", "doc_path": "pdfs/d0.pdf", "gt_path": "gold/d0.json",
+          "schema": json.dumps(BYO_SCHEMA)}]
+_pq.write_table(_pa.Table.from_pylist(_rows), _snap / "manifests" / "sub.parquet")
+_real_fetch, _bench.fetch = _bench.fetch, lambda *_: _snap
+try:
+    _sub = _bench.BenchmarkRun(
+        ["datalab"], out=Path(tempfile.mkdtemp()),
+        manifest="hf://datasets/o/n/manifests/sub.parquet")
+    _docs = _sub.corpus()
+    report("a manifest below a dataset's root reads paths from the dataset's root",
+           _docs[0].doc_path == _snap / "pdfs" / "d0.pdf", str(_docs[0].doc_path))
+    report("...and the commit it was read at is kept", _sub.corpus_commit == "0123abcd")
+    _sub.prepare()
+    _written = json.loads((_sub.runs[0].out / "settings.json").read_text())
+    report("...and settings.json records it beside the address",
+           _written["corpus"] == "hf://datasets/o/n/manifests/sub.parquet"
+           and _written["corpus_commit"] == "0123abcd", str(_written))
+finally:
+    _bench.fetch = _real_fetch
+try:
+    _bench.BenchmarkRun(["datalab"], manifest=_SUBSET, data_root=Path("/elsewhere"))
+    report("--data-root with a manifest in a dataset is refused", False, "it was accepted")
+except ValueError as exc:
+    report("--data-root with a manifest in a dataset is refused, naming both",
+           "/elsewhere" in str(exc) and _SUBSET in str(exc), str(exc))
+try:
+    _bench.BenchmarkRun(["datalab"], manifest="hf://datasets/o/n")
+    report("a malformed address is refused when the run is built", False, "it was accepted")
+except ValueError:
+    report("a malformed address is refused when the run is built, before anything is bought",
+           True)
 
 # A manifest that is not there is named, whether it is ours or one that was pointed at.
 _gone = Path(tempfile.mkdtemp()) / "nope.parquet"
@@ -244,7 +325,7 @@ first = _bench.BenchmarkRun(["datalab"], out=two, manifest=Path("/corpora/a.parq
 first.prepare()
 report("settings.json records which corpus the run measured",
        json.loads((first.runs[0].out / "settings.json").read_text())["corpus"]
-       == "manifest /corpora/a.parquet")
+       == "/corpora/a.parquet")
 try:
     _bench.BenchmarkRun(["datalab"], out=two, manifest=Path("/corpora/b.parquet")).prepare()
     report("a second corpus in the same directory is refused", False, "it was accepted")
@@ -253,11 +334,10 @@ except ValueError as exc:
            "a.parquet" in str(exc) and "b.parquet" in str(exc), str(exc))
 first.prepare()
 report("...and the same corpus again is not", True)
-report("our corpus names itself too",
-       _bench.BenchmarkRun(["datalab"]).corpus_id.startswith("huggingface "))
-report("...and --repo changes it",
-       _bench.BenchmarkRun(["datalab"], repo="someone/other").corpus_id
-       == "huggingface someone/other")
+report("our corpus names itself too, by its address",
+       _bench.BenchmarkRun(["datalab"]).corpus_id == DEFAULT_MANIFEST)
+report("...and a subset of it is a different corpus",
+       _bench.BenchmarkRun(["datalab"], manifest=_SUBSET).corpus_id == _SUBSET)
 
 # A doc_id IS a filename: `predictions/<doc_id>.json`, and the key a resume reads. Caught at
 # the manifest, where the row can be named, not as a FileNotFoundError in a worker hours in.
@@ -356,7 +436,7 @@ import unittest.mock                                                       # noq
 from omni_extract_bench import benchmark                                   # noqa: E402
 
 for missing, call, wanted in [
-    ("huggingface_hub", lambda: benchmark.fetch(TMP / "corpus"), "huggingface_hub"),
+    ("huggingface_hub", lambda: benchmark.fetch(benchmark.hf_path(benchmark.DEFAULT_MANIFEST)), "huggingface_hub"),
     ("pyarrow.parquet", lambda: benchmark.read_manifest(TMP / "m.parquet", TMP), "pyarrow"),
 ]:
     with unittest.mock.patch.dict(sys.modules, {missing: None}):
