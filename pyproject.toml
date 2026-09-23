@@ -1,6 +1,6 @@
 [project]
 name = "omni-extract-bench"
-version = "0.1.5"
+version = "0.1.6"
 description = "One scorer for document-extraction benchmarks: leaf value accuracy with optimal row matching."
 readme = "README.md"
 requires-python = ">=3.11"
