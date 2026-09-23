@@ -20,8 +20,7 @@ assert len(paths) == len(delays), f"{len(paths)} frames vs {len(delays)} delays"
 
 frames = [Image.open(p).convert("RGB").resize((W, H), Image.LANCZOS) for p in paths]
 
-# One palette for the whole film. Sample each frame with NEAREST so the swatches are real
-# pixel colours rather than fresh blends invented by a smooth resize.
+# NEAREST keeps the swatches to real pixel colours, not blends from a smooth resize.
 tile = (W // 4, H // 4)
 master = Image.new("RGB", (tile[0], tile[1] * len(frames)))
 for i, f in enumerate(frames):

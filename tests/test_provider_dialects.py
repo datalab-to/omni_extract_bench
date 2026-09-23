@@ -181,9 +181,7 @@ check("the baseline asks for every field with a description",
       len(_WANT_DESC) == 5 and {"id", "total", "rows", "sku", "qty"} <= _WANT_NAMES,
       f"{len(_WANT_DESC)} descriptions, names {sorted(_WANT_NAMES)}")
 
-# READ OFF THE ADAPTERS, never re-stated here. This table used to hand-copy each transform,
-# so it could agree with itself while disagreeing with the code it was checking -- the same
-# way `schema_sent` once named a schema no vendor had seen.
+# Read off the adapters, never restated, so this cannot agree with itself and not the code.
 from omni_extract_bench.harness.providers import mistral, reducto            # noqa: E402
 
 _DIALECTS = {
@@ -295,10 +293,8 @@ check("a REJECTED schema is still recorded",
 
 
 print("\n[5e] a deep $ref chain still describes its field")
-# `resolve_refs` counts NODES walked, not $refs followed, so its default budget of 12 buys
-# about four hops. Past that the $ref is left in place, `drop_schema_metadata` removes it, and
-# the field arrives as `{}` -- asked of the vendor with nothing said about it, and no error.
-# The real corpus tops out at two hops; this guards the cliff, not today's schemas.
+# `resolve_refs` budgets nodes, not $refs: 12 is about four hops, past which a field silently
+# becomes `{}`. The corpus tops out at two.
 
 
 def _ref_chain(depth):
@@ -335,9 +331,7 @@ for _name, _mod in (("llamaextract", llamaextract), ("extend", _extend)):
 
 
 print("\n[5f] azure-cu's analyzer is named after everything it is built from")
-# An analyzer is a SERVER-SIDE object reused by name, and a 409 on the PUT is read as success.
-# So anything that changes what the analyzer is must change its name, or the 409 hands back
-# somebody else's -- silently, with the record naming the deployment that did not run.
+# Analyzers are reused by name and a 409 counts as success, so a change must change the name.
 _V = "2025-05-01-preview"
 _s1 = azure_cu.prepare_schema({"type": "object", "properties": {"a": {"type": "string"}}})
 _s2 = azure_cu.prepare_schema({"type": "object", "properties": {"b": {"type": "string"}}})

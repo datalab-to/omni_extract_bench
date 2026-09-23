@@ -29,8 +29,7 @@ enum to the field's optionality are encodings. Removing a field is not.
 from __future__ import annotations
 import copy
 
-# Re-exported: adapters compose it with the transforms below, and the scorer's copy is the one
-# that must agree with what a vendor was sent.
+# Re-exported, so adapters resolve refs exactly as the scorer does.
 from ..metric import resolve_refs  # noqa: F401
 
 MAX_REF_DEPTH = 200

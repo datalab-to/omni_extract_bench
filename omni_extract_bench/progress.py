@@ -199,9 +199,7 @@ def render(stats: dict[str, Stats]) -> Group:
     where a provider is finished -- so a terminal that strips it loses nothing.
     """
     table = Table(box=box.SIMPLE_HEAD, pad_edge=False, header_style="dim", expand=False)
-    # `fold` so a long label wraps rather than being cut, `min_width` so it cannot be folded
-    # away to nothing when the terminal is tight -- rich will shrink a foldable column to one
-    # character before it drops a fixed one.
+    # `fold` wraps a long label; `min_width` stops rich shrinking it to one character.
     table.add_column("run", overflow="fold", min_width=16)
     table.add_column("", width=BAR_WIDTH, no_wrap=True)
     table.add_column("done", justify="right", no_wrap=True)
@@ -213,8 +211,7 @@ def render(stats: dict[str, Stats]) -> Group:
     table.add_column("dur", justify="right", no_wrap=True)
     for name, s in stats.items():
         if s.total is None:
-            # In the bar's column, not the last one: `waiting` under a heading of `dur` reads
-            # as a duration, and it is the absence of one.
+            # In the bar's column: under `dur`, `waiting` would read as a duration.
             table.add_row(Text(name, style="dim"), Text("waiting", style="dim"),
                           "", "", "", "", "", "", "")
             continue
@@ -230,9 +227,6 @@ def render(stats: dict[str, Stats]) -> Group:
             format_flight(s),
             format_money(s),
             format_duration(s.mean_wall) if s.mean_wall is not None else "",
-            # How long this provider has been going, which stops where it finished. No
-            # `done in` prefix and no branch: the column is headed, and a run that is still
-            # going has an elapsed worth reading too.
             Text(format_duration(s.elapsed), style="dim" if done else ""),
         )
     total = format_total(stats) if len(stats) > 1 else ""
@@ -377,14 +371,12 @@ class Progress:
     def __enter__(self) -> "Progress":
         if self.live:
             self._console = Console(file=self.stream, highlight=False)
-            # `get_renderable` rather than a ticker of our own: rich refreshes on its own
-            # thread and asks for the table each time, so there is one clock instead of two.
+            # rich asks for the table on its own refresh thread: one clock, not two.
             self._live = Live(get_renderable=self._renderable, console=self._console,
                               refresh_per_second=max(1, int(1 / self._tick)),
                               redirect_stdout=False, redirect_stderr=False)
             self._live.start()
-            # A log line must not land inside the live region. Handlers hold the stream they
-            # were built with, so rich's own redirect cannot catch them -- they are wrapped.
+            # Handlers keep the stream they were built with, out of rich's reach: wrap them.
             root = logging.getLogger()
             self._saved_handlers = root.handlers[:]
             root.handlers[:] = [_Interleaved(self, h) for h in self._saved_handlers]
@@ -414,9 +406,7 @@ class _Interleaved(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         console = self.progress._console
-        # A handler writing somewhere else -- a file -- cannot walk over a terminal, so it is
-        # left alone. One writing to OUR stream goes through rich's console instead, which
-        # moves the live region down and prints above it.
+        # Only a handler on our stream can overwrite the live region; a file handler is left alone.
         if console is None or getattr(self.inner, "stream", None) is not self.progress.stream:
             self.inner.emit(record)
             return

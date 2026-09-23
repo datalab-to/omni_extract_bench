@@ -222,7 +222,7 @@ def cmd_benchmark(args) -> int:
                   options=read_options(args.options),
                   confirm=None if args.yes else confirm_plan)
     if not summary:
-        return 1              # the plan was declined, so there is nothing to print
+        return 1              # declined, so nothing to print
     json.dump(summary, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0

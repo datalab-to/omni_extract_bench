@@ -88,10 +88,8 @@ REPO = "datalab-to/omni_extract_bench"
 MANIFEST = "manifest.parquet"
 HF_DATASETS = "hf://datasets/"
 DEFAULT_MANIFEST = f"{HF_DATASETS}{REPO}/{MANIFEST}"
-#: What a manifest row says, and all it has to say. Named here because the error that reports
-#: a missing one quotes them, and so does `--manifest`'s help. It matches `Doc`'s fields today
-#: and is still written out rather than read off them: this is the shape of files already on
-#: disk, so a field `Doc` grows later must not silently invalidate every manifest there is.
+#: Written out rather than read off `Doc`: manifests on disk have this shape, and a field `Doc`
+#: grows later must not invalidate them.
 COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
 
 
@@ -152,10 +150,8 @@ def fetch(at: HfPath) -> Path:
             "The scorer itself needs none of it -- `score` and `oeb score` work without."
         ) from None
 
-    # Asked BEFORE the download, because a corpus is gigabytes and a dataset without a
-    # manifest is not a corpus at all -- waiting for all of it to be told so is the wrong
-    # order. A hub that will not answer (offline, a cached corpus) is not an answer of no:
-    # the download runs, and `read_manifest` says it if the manifest really is missing.
+    # Asked before a download of gigabytes. A hub that will not answer (offline, cached) is not
+    # a no: the download runs, and `read_manifest` reports a manifest that really is missing.
     try:
         missing = not file_exists(at.repo, at.path, repo_type="dataset", revision=at.revision)
     except OSError:
@@ -188,8 +184,6 @@ def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[D
             f"same convention."
         )
     table = pq.read_table(path)
-    # Every column, once, before any row: a manifest short of one is short of it everywhere,
-    # and read off a row it is a `KeyError` with a column name and no file in it.
     absent = [c for c in COLUMNS if c not in table.column_names]
     if absent:
         has = ", ".join(table.column_names) or "no columns"
@@ -200,16 +194,12 @@ def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[D
     for n, row in enumerate(table.to_pylist()):
         if suites and row["suite"] not in suites:
             continue
-        # A doc_id IS a filename -- `predictions/<doc_id>.json` -- and the key a resume reads.
-        # Caught here, where the row can be named; caught downstream it is a FileNotFoundError
-        # inside a worker thread, hours in.
+        # A doc_id is a filename (`predictions/<doc_id>.json`); caught here, the row can be named.
         doc_id = row["doc_id"]
         if not doc_id or doc_id in (".", "..") or Path(doc_id).name != doc_id:
             raise ValueError(f"{path}: row {n} has doc_id {doc_id!r}, which is not a filename. "
                              f"It names this document's prediction, its record and its row in "
                              f"scores.jsonl, so it has to be one path component.")
-        # Same reason: an unreadable schema is this row's, and says so here rather than as a
-        # bare `Expecting value: line 1 column 1` over a corpus of thousands.
         try:
             schema = json.loads(row["schema"])
         except (TypeError, json.JSONDecodeError) as exc:
@@ -577,12 +567,8 @@ def summarise(rows: list[dict]) -> dict:
     return {**over(rows), "per_suite": {s: over(v) for s, v in sorted(by_suite.items())}}
 
 
-#: Documents in flight per adapter. Keyed by ADAPTER MODULE name (`harness.resolve`), not by
-#: provider name, so every OpenRouter model id shares one budget instead of taking one each.
-#:
-#: It lives here, not in the harness: how many documents to have in flight at once is a
-#: decision about a corpus, and `harness` declares orchestration absent on purpose. The numbers
-#: are what each vendor tolerated in practice, not a published limit.
+#: Documents in flight per adapter, keyed by adapter module so every OpenRouter model shares
+#: one budget. What each vendor tolerated in practice, not a published limit.
 WORKERS = {
     "datalab": 10,
     "reducto": 3,
@@ -668,8 +654,6 @@ class BenchmarkRun:
                              f"in a HuggingFace dataset resolves its paths against that "
                              f"dataset. Drop --data-root, or point --manifest at a parquet on "
                              f"disk.")
-        #: Names the corpus, for `settings.json` to record and `prepare` to check. Not
-        #: `corpus`, which is the method that fetches it.
         self.corpus_id = str(self.manifest)
         self.corpus_commit: str | None = None
         self.suites, self.limit = suites, limit
@@ -703,11 +687,8 @@ class BenchmarkRun:
             table.add_row("documents", f"first {self.limit}")
         table.add_row("timeout", f"{self.timeout:.0f}s per document")
         if self.suites:
-            # Its own row, so the commas in it cannot read as more facts -- joined into one
-            # sentence, `suites a, b, c` made `b` look like a clause of its own.
             table.add_row("suites", ", ".join(self.suites))
-        # Both, always, even when false: `score only  false` is what says this will call a
-        # vendor and spend money, and saying it only by absence is not saying it.
+        # Shown even when false: `score only  false` is what says this will spend money.
         for name, on in (("score only", self.score_only), ("rescoring", self.rescore)):
             table.add_row(name, Text(str(on).lower(), style="bold" if on else "dim"))
         return table
@@ -719,9 +700,7 @@ class BenchmarkRun:
             r.label: r.outstanding(docs, verdicts=self.verdicts, rescore=self.rescore)
             for r in self.runs}
 
-        # A REAL TABLE, so a cell too wide for the terminal WRAPS rather than being cut. The
-        # adapter is its own column instead of a heading row: in column one a heading is the
-        # widest cell there is, and it was padding every label out to its width.
+        # A table, so a cell too wide for the terminal wraps rather than being cut.
         table = Table(box=box.ROUNDED, header_style="dim", expand=False)
         table.add_column("adapter", overflow="fold")
         table.add_column("at once", justify="right", no_wrap=True)
@@ -753,8 +732,7 @@ class BenchmarkRun:
             run.out.mkdir(parents=True, exist_ok=True)
             settings = run.out / "settings.json"
             if settings.exists():
-                # A directory is named for the provider and its options, never for the corpus,
-                # so two corpora would land in one and `summary.json` would average both.
+                # Named for provider and options, not corpus: two corpora would share one.
                 was = json.loads(settings.read_text()).get("corpus")
                 if was and was != self.corpus_id:
                     raise ValueError(f"{run.out} holds {run.provider} against {was}, and this "

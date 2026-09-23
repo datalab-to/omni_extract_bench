@@ -23,10 +23,8 @@ from pathlib import Path
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
-# TWO handles, because they are two modules and the tests PATCH both: `document` holds
-# `predict` and the retry policy, `registry` holds the lookup and the `Config`. Aliasing them
-# to one name silently sends a patch to the wrong module -- `TRANSIENT_BACKOFF = (0, 0, 0)`
-# set on the registry leaves `document` sleeping the real 20/60/120.
+# Two modules, patched separately: `document` holds `predict` and the retry policy,
+# `registry` the lookup and `Config`.
 from omni_extract_bench.harness import document, registry  # noqa: E402
 from omni_extract_bench.harness.contract import Cost, Extraction
 from omni_extract_bench.harness.errors import AccountFailure, MissingCredential, MissingDependency, VendorError, VendorTimeout
@@ -77,14 +75,11 @@ def stub(fn):
 
     def lookup(provider):
         real = _REAL_ADAPTER(provider)
-        # __name__ too: an adapter is a MODULE, and `resolve` reads it off whatever the
-        # lookup returns.
+        # __name__ too: `resolve` reads it off whatever the lookup returns.
         return types.SimpleNamespace(__name__=real.__name__, Config=real.Config,
                                      prepare_schema=real.prepare_schema,
                                      extract=counted)
-    # Substituted on `document`, which is where `predict` reads the adapter. `registry` keeps
-    # the real one, so `config_for` still builds the real Config -- this stub fakes the CALL,
-    # not the declaration.
+    # On `document`, where `predict` reads it; `registry` keeps the real Config.
     document.adapter = lookup
     return counted
 
@@ -224,8 +219,7 @@ for exc, kind in ((VendorError("HTTP 402: no credits", status=402), AccountFailu
 document.adapter = _REAL_DOC_ADAPTER
 
 print("\nA MISSING SDK IS FOUND AT THE IMPORT, NOT IN A MESSAGE")
-# Importing the harness imports every adapter, so a missing SDK is one message at the import
-# rather than a per-adapter surprise. Checked in a subprocess because this one already has it.
+# In a subprocess, because this one already has the SDKs.
 _blocked = subprocess.run(
     [sys.executable, "-c", textwrap.dedent("""
         import builtins

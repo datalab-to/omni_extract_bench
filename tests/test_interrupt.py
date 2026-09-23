@@ -150,7 +150,7 @@ import omni_extract_bench.harness.registry as V                                 
 from omni_extract_bench.harness.contract import Cost, Extraction
 from omni_extract_bench.harness.errors import AccountFailure
 
-_REAL_ADAPTER = V.adapter  # the real lookup, for Config and __name__
+_REAL_ADAPTER = V.adapter
 
 
 def as_adapter(lookup):
@@ -161,8 +161,7 @@ def as_adapter(lookup):
     """
     def wrapped(provider):
         real = _REAL_ADAPTER(provider)
-        # __name__ included: an adapter is a MODULE, and `resolve` reads it to file the run
-        # under the right vendor. A double that omits it is not standing in for an adapter.
+        # __name__ too: `resolve` reads it to file the run under the right vendor.
         return types.SimpleNamespace(__name__=real.__name__, Config=real.Config,
                                      prepare_schema=real.prepare_schema,
                                      extract=lookup(provider))
@@ -347,8 +346,7 @@ graded = []
 real_score_one = B.score_one
 B.score_one = lambda doc, **k: graded.append(doc.doc_id) or real_score_one(doc, **k)
 try:
-    # `verdicts=False` said out loud, because the point of the last two is what happens when
-    # rows that HAVE none are asked for them, and the default now writes them.
+    # Explicit, because the last two checks are about rows that have no verdicts.
     B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=False)
     report("a first pass grades everything", len(graded) == 6, str(len(graded)))
 
