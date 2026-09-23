@@ -58,22 +58,14 @@ from .contract import Adapter, Cost, Extraction
 from .errors import (AccountFailure, DialectError, MissingCredential, MissingDependency,
                      VendorError, VendorTimeout)
 
-# THE VENDOR SDKs ARE CHECKED ONCE, HERE. Importing this package means running a vendor, and
-# every adapter is imported with it -- so a missing install is one message naming the extra,
-# not a per-adapter surprise six hours into a run. The scorer never imports this package
-# (`tests/test_score_standalone.py` fails if that changes), so a scoring-only machine still
-# needs none of it.
+# Vendor SDKs are checked once, at import: one message naming the extra, not a failure hours
+# into a run. The scorer never imports this package, so scoring needs none of them.
 try:
     from .document import predict
     from .registry import DEFAULT_TIMEOUT, PROVIDERS, adapter, resolve, settings_for
 except ImportError as exc:
-    # `exc.name` is the module that could not be produced, and it tells the two cases apart:
-    # `openai` for an SDK that is missing OR installed at an incompatible version, and one of
-    # ours for an import this package broke itself. Catching only ModuleNotFoundError missed
-    # the incompatible-version case, whose message ("cannot import name 'OpenAI' from
-    # 'openai'") is the one where naming the extra helps most. Catching every ImportError
-    # without this guard sent a refactor that broke an internal import off to reinstall a
-    # package it already had.
+    # `exc.name` tells an SDK that is missing or incompatible apart from an import of ours that
+    # broke; only the first is fixed by installing the extra.
     if (exc.name or "").startswith(__name__.split(".")[0]):
         raise
     raise MissingDependency(

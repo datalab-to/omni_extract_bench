@@ -66,14 +66,11 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     started = time.time()
     got, error, attempts = None, None, 0
 
-    # WHAT THE VENDOR IS SENT, made once. `sent` is the object `extract` receives and the
-    # object the record stores as `schema_sent`, so the record cannot describe a schema the
-    # vendor never saw -- which it did, while each adapter reshaped the schema privately.
+    # `sent` is both what `extract` receives and what the record stores as `schema_sent`.
     overlaid = SCHEMA.apply_overlay(schema) if overlay else schema
     asked = SCHEMA.strip_benchmark_keys(overlaid)
-    # Resolved BEFORE the guard: an adapter with no `prepare_schema` at all is a harness bug,
-    # and swallowing that AttributeError would file it as one settled DialectError per
-    # document -- 620 stored zeros for a missing attribute, none of them re-attempted.
+    # Outside the guard: a missing `prepare_schema` is a harness bug, not a DialectError per
+    # document.
     shape = api.prepare_schema
     try:
         sent = shape(asked)
@@ -81,8 +78,7 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
         sent = asked
         error = DialectError(f"{provider} could not shape this schema: "
                              f"{type(exc).__name__}: {exc}"[:400])
-    # A schema that would not shape never reaches the vendor: the DialectError set above is
-    # this document's settled answer, and `cost.attempts` stays 0 to say the call never went.
+    # The DialectError is this document's answer; `cost.attempts` stays 0, as nothing was sent.
     if error is None:
         for attempt in range(TRANSIENT_ATTEMPTS):
             attempts = attempt + 1

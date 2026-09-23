@@ -159,11 +159,8 @@ def extract(pdf: Path, schema: dict, *, timeout: float = DEFAULT_TIMEOUT_S,
                       job_id=run_id)
 
 
-#: `id` is reserved by Extend. The rename is HALF A PAIR: `rename_reserved` goes out with the
-#: schema (via `prepare_schema`, applied by `predict`) and `restore_reserved` comes back with the
-#: vendor's answer, inside `extract` -- the response is the only thing that can undo it. Both
-#: read this one mapping, so the two halves cannot disagree about a name; if you drop the rename
-#: from `prepare_schema`, drop the `restore_reserved` call with it.
+#: Extend reserves `id`. `rename_reserved` (in `prepare_schema`) and `restore_reserved` (in
+#: `extract`) both read this mapping; drop one and drop the other.
 RESERVED = {"id": "id__"}
 
 

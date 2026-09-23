@@ -89,10 +89,8 @@ for module in ("datalab", "reducto", "llamaextract", "azure_cu"):
             f"{module}.Config.{name} should carry its literal default, got {got!r}"
 print("every promoted setting carries its literal default on the Config")
 
-# A RUN DIRECTORY MUST NOT DEPEND ON THE SHELL. `out_name` digests every setting, so a field
-# whose default is read from the environment makes the directory a function of the environment:
-# predict with the variable set, resume without it, and `needs_run` looks somewhere with no
-# records and re-buys the corpus. `endpoint` did exactly that for one commit.
+# `out_name` digests every setting, so a default read from the environment moves the run
+# directory, and a resume without the variable re-buys the corpus.
 import os  # noqa: E402
 
 from omni_extract_bench.harness.registry import out_name  # noqa: E402

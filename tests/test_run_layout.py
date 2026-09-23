@@ -25,7 +25,7 @@ import omni_extract_bench.benchmark as B                                       #
 import omni_extract_bench.harness.document as D
 import omni_extract_bench.harness.registry as V                                  # noqa: E402
 
-_REAL_ADAPTER = V.adapter  # the real lookup, for Config and __name__
+_REAL_ADAPTER = V.adapter
 
 
 def as_adapter(lookup):
@@ -36,8 +36,7 @@ def as_adapter(lookup):
     """
     def wrapped(provider):
         real = _REAL_ADAPTER(provider)
-        # __name__ included: an adapter is a MODULE, and `resolve` reads it to file the run
-        # under the right vendor. A double that omits it is not standing in for an adapter.
+        # __name__ too: `resolve` reads it to file the run under the right vendor.
         return types.SimpleNamespace(__name__=real.__name__, Config=real.Config,
                                      prepare_schema=real.prepare_schema,
                                      extract=lookup(provider))
@@ -371,8 +370,7 @@ declined = B.BenchmarkRun(["datalab"], out=ask, score_workers=1,
     confirm=lambda plan: (shown.append(plan), False)[1])
 report("a declined plan calls no vendor at all", called["n"] == 0, f'{called["n"]} calls')
 report("...and gives back nothing rather than a half summary", declined == {})
-# The callback is handed a rich renderable, not text: the terminal gets colour and column
-# widths a log cannot. Rendered here to read it back.
+# The callback gets a rich renderable, not text; rendered here to read it back.
 def as_text(renderable):
     console = Console(file=io.StringIO(), width=100, no_color=True)
     console.print(renderable)
@@ -409,8 +407,7 @@ def uneven(prov):
 
 
 D.adapter = as_adapter(uneven)
-# `setdefault`, because a benchmark raises two displays -- one for predicting and one for
-# grading -- and it is the predicting one whose per-leg elapsed this is about.
+# `setdefault`: a benchmark raises two displays, and this is about the predicting one.
 _exit, elapsed = Progress.__exit__, {}
 Progress.__exit__ = lambda self, *a: ([elapsed.setdefault(n, s.elapsed)
                                        for n, s in self.stats.items()], _exit(self, *a))[1]

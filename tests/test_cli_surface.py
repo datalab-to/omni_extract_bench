@@ -116,10 +116,7 @@ for _doc in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
     for _n, _raw in enumerate(_doc.read_text().splitlines(), 1):
         _ln = _raw.strip()
         if _buf or re.match(rf"^oeb\s+({'|'.join(VERBS)})\b", _ln):
-            # THE RAW LINE DECIDES WHETHER IT CONTINUES. A backslash with anything after it
-            # escapes that -- a space, not the newline -- so the shell ends the command there
-            # and runs the next line as its own. Stripping first hid a line with 126 spaces
-            # after its backslash: this joined what bash would not, and passed.
+            # The raw line decides: `\ ` escapes the space, not the newline; bash ends there.
             _continues = _raw.endswith("\\")
             if _raw.rstrip().endswith("\\") and not _continues:
                 _dangling.append(f"{_doc.name}:{_n}")

@@ -134,8 +134,6 @@ for _bad in ("hf://models/o/n/m.parquet", "hf://spaces/o/n/m.parquet", "hf://dat
     except ValueError as exc:
         report(f"a malformed address is refused, and named: {_bad}",
                _bad in str(exc) and DEFAULT_MANIFEST in str(exc), str(exc))
-# `Path("hf://...")` is `hf:/...`: a relative file that does not exist. Said at the address,
-# not as "there is no manifest at hf:/datasets/..." after the fact.
 try:
     hf_path(Path(_SUBSET))
     report("an address made a Path is refused", False, "it was accepted")
@@ -187,7 +185,6 @@ try:
     report("an absolute path is used as it is, whatever the root",
            all(d.doc_path.exists() for d in docs), str([str(d.doc_path) for d in docs]))
 
-    # The corpus moves after the manifest is written: relative paths need to be told where.
     tmp = Path(tempfile.mkdtemp())
     byo(tmp, _relative)
     moved = tmp / "moved"
@@ -199,13 +196,8 @@ try:
 finally:
     _bench.fetch = _real_fetch
 
-# COLUMNS is written out rather than read off Doc._fields, so the two are free to drift. What
-# may NOT drift is the direction a corpus on disk feels: a manifest carrying exactly COLUMNS
-# and nothing else has to be enough to read, or the reader has grown a column nobody was told
-# about and the KeyError is back.
 _exact = Path(tempfile.mkdtemp()) / "m.parquet"
-# "{}" is at once a valid doc_id, a usable path and valid JSON, so the row is built from
-# COLUMNS itself: a column added to COLUMNS is covered here without editing this line.
+# "{}" is a valid doc_id, path and JSON, so the row is built from COLUMNS itself.
 _pq.write_table(_pa.Table.from_pylist([{c: "{}" for c in _bench.COLUMNS}]), _exact)
 try:
     _only = _bench.read_manifest(_exact, _exact.parent)
@@ -215,8 +207,6 @@ except Exception as exc:                                                       #
     report("a manifest of exactly COLUMNS is enough to read", False,
            f"{type(exc).__name__}: {exc}")
 
-# A manifest that IS there but is not one: named at the file, not as a KeyError with a column
-# name in it and no file, and not as a bare JSONDecodeError over a corpus of thousands.
 _short = Path(tempfile.mkdtemp()) / "m.parquet"
 _pq.write_table(_pa.Table.from_pylist(
     [{"doc_id": "a", "doc_path": "x.pdf", "gt_path": "x.json", "schema": "{}"}]), _short)
@@ -238,8 +228,6 @@ except ValueError as exc:
     report("...and an unreadable schema names the row it is in",
            "row 0" in str(exc) and "a" in str(exc), str(exc))
 
-# A dataset with no manifest in it is not a corpus, and the corpus is a gigabyte: say so
-# before the download, not after it.
 import huggingface_hub as _hf                                                  # noqa: E402
 
 _real_exists, _real_snapshot = _hf.file_exists, _hf.snapshot_download
@@ -253,7 +241,6 @@ try:
 except ValueError as exc:
     report("a dataset without the manifest is refused, before anything is downloaded",
            _nowhere in str(exc), str(exc))
-# The check asks for the manifest that was addressed, at the revision that was addressed.
 _asked = []
 _hf.file_exists = lambda *a, **k: _asked.append((a, k)) or True
 _hf.snapshot_download = lambda *a, **k: _asked.append((a, k)) or "/cached/corpus"
@@ -264,16 +251,12 @@ try:
                        {"repo_type": "dataset", "revision": "v2"}),
                       (("someone/corpus",), {"repo_type": "dataset", "revision": "v2"})],
            str(_asked))
-    # A hub that will not answer -- offline, with the corpus already in the cache -- is not
-    # an answer of no. The download decides, as it did before there was a check at all.
     _hf.file_exists = lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
     report("...but a hub that cannot be reached does not stop a cached corpus",
            _bench.fetch(hf_path(DEFAULT_MANIFEST)) == Path("/cached/corpus"))
 finally:
     _hf.file_exists, _hf.snapshot_download = _real_exists, _real_snapshot
 
-# A manifest in a dataset resolves against the dataset, wherever in it the manifest sits, and
-# the commit it was read at is what `settings.json` records beside the address.
 _snap = Path(tempfile.mkdtemp()) / "0123abcd"
 (_snap / "manifests").mkdir(parents=True)
 _rows = [{"doc_id": "d0", "suite": "s", "doc_path": "pdfs/d0.pdf", "gt_path": "gold/d0.json",
@@ -308,7 +291,6 @@ except ValueError:
     report("a malformed address is refused when the run is built, before anything is bought",
            True)
 
-# A manifest that is not there is named, whether it is ours or one that was pointed at.
 _gone = Path(tempfile.mkdtemp()) / "nope.parquet"
 try:
     _bench.read_manifest(_gone, _gone.parent)
@@ -317,9 +299,6 @@ except ValueError as exc:
     report("a manifest that does not exist is named in the error",
            str(_gone) in str(exc) and "doc_id" in str(exc), str(exc))
 
-# A directory is named for the provider and its options and never for the corpus, so nothing
-# in the NAME keeps two corpora apart. `settings.json` records which one, and `prepare` reads
-# it back -- otherwise `scores.jsonl` merges both by doc_id and `summary.json` averages them.
 two = Path(tempfile.mkdtemp())
 first = _bench.BenchmarkRun(["datalab"], out=two, manifest=Path("/corpora/a.parquet"))
 first.prepare()
@@ -339,8 +318,6 @@ report("our corpus names itself too, by its address",
 report("...and a subset of it is a different corpus",
        _bench.BenchmarkRun(["datalab"], manifest=_SUBSET).corpus_id == _SUBSET)
 
-# A doc_id IS a filename: `predictions/<doc_id>.json`, and the key a resume reads. Caught at
-# the manifest, where the row can be named, not as a FileNotFoundError in a worker hours in.
 bad = Path(tempfile.mkdtemp()) / "m.parquet"
 _pq.write_table(_pa.Table.from_pylist(
     [{"doc_id": "a/b", "suite": "s", "doc_path": "x.pdf", "gt_path": "x.json",
