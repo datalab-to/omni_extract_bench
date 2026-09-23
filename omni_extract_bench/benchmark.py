@@ -301,9 +301,13 @@ class Run:
                 try:
                     with cf.ProcessPoolExecutor(max_workers=workers or SCORE_WORKERS) as pool:
                         futures = {pool.submit(grade, doc): doc.doc_id for doc in remaining}
-                        for future in cf.as_completed(futures):
-                            graded[futures[future]] = row = future.result()
-                            progress.record(error=row["status"] != "scored")
+                        try:
+                            for future in cf.as_completed(futures):
+                                graded[futures[future]] = row = future.result()
+                                progress.record(error=row["status"] != "scored")
+                        except BaseException:
+                            pool.shutdown(wait=True, cancel_futures=True)
+                            raise
                     remaining = []
                 except BrokenProcessPool:
                     if graded:
