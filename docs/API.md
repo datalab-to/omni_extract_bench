@@ -370,19 +370,24 @@ my-agent = "my_package.oeb_adapter"
 ```
 
 ```bash
-oeb providers                  # lists my-agent
-oeb providers my-agent         # its Config fields and defaults
+oeb providers
+oeb providers my-agent
 oeb benchmark --providers my-agent --out runs/ --limit 1
 ```
 
 In your code, without a package:
 
 ```python
-from omni_extract_bench.harness import registry
+from omni_extract_bench.harness import add_adapter, predict
 import my_adapter
 
-registry.add_adapter("my-agent", my_adapter)
+add_adapter("my-agent", my_adapter)
+predict("my-agent", "invoice.pdf", schema)
 ```
+
+A name that is already taken -- a built-in, or one an installed package declares -- is refused
+unless you pass `replace=True`. A name with `/` is always refused, since it routes to the
+OpenRouter adapter.
 
 
 ## What a benchmark writes

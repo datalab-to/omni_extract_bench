@@ -40,6 +40,9 @@ THE SURFACE
     MissingCredential                likewise: an unset API key
     MissingDependency                likewise: an adapter that could not import its SDK
     PROVIDERS, DEFAULT_TIMEOUT       advisory, for building a loop
+    add_adapter(name, module)        file an adapter defined in code under a provider name;
+                                     a package declares one under the
+                                     `omni_extract_bench.adapters` entry-point group instead
 
 Orchestration is absent on purpose. Which documents, in what order, and how many at once are
 decisions about a corpus, not about a document, and a library that made them would be deciding
@@ -62,7 +65,8 @@ from .errors import (AccountFailure, DialectError, MissingCredential, MissingDep
 # into a run. The scorer never imports this package, so scoring needs none of them.
 try:
     from .document import predict
-    from .registry import DEFAULT_TIMEOUT, PROVIDERS, adapter, resolve, settings_for
+    from .registry import (DEFAULT_TIMEOUT, PROVIDERS, adapter, add_adapter, resolve,
+                           settings_for)
 except ImportError as exc:
     # `exc.name` tells an SDK that is missing or incompatible apart from an import of ours that
     # broke; only the first is fixed by installing the extra.
@@ -75,7 +79,7 @@ except ImportError as exc:
     ) from None
 
 __all__ = [
-    "predict", "adapter", "Adapter",
+    "predict", "adapter", "add_adapter", "Adapter",
     "Extraction", "Cost",
     "VendorError", "VendorTimeout", "DialectError",
     "AccountFailure", "MissingCredential", "MissingDependency",

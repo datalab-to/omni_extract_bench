@@ -88,7 +88,7 @@ def adapter(provider: str):
         except ImportError as exc:
             raise ImportError(f"adapter {provider!r}, declared by package {ep.dist.name!r} as "
                               f"{ep.value!r}, failed to import:\n    {exc}") from exc
-        add_adapter(provider, module)
+        ADAPTERS[provider] = checked(provider, module)
     if provider not in ADAPTERS:
         raise ValueError(f"unknown provider {provider!r}. Known vendors: "
                          f"{', '.join(PROVIDERS)}. Any OpenRouter model id also works, "
@@ -96,13 +96,33 @@ def adapter(provider: str):
     return ADAPTERS[provider]
 
 
-def add_adapter(provider: str, module: ModuleType) -> None:
-    """File `module` under `provider`, once it has the names `contract.Adapter` requires."""
+def checked(provider: str, module: ModuleType) -> ModuleType:
+    """`module`, once it has the names `contract.Adapter` requires."""
     if missing := [n for n in ADAPTER_NAMES if not hasattr(module, n)]:
         raise TypeError(f"adapter {provider!r} ({module.__name__}) is missing "
                         f"{', '.join(missing)}. An adapter module defines "
                         f"{', '.join(ADAPTER_NAMES)}; see harness/contract.py")
-    ADAPTERS[provider] = module
+    return module
+
+
+def add_adapter(provider: str, module: ModuleType, *, replace: bool = False) -> None:
+    """File `module` under `provider`, for an adapter defined in code rather than a package.
+
+    A name already taken -- a built-in, or one an installed package declares -- is refused
+    unless `replace=True`, for the reason `plugins` refuses a clash: a run published under the
+    name would not say which adapter produced it.
+    """
+    if MODEL_SEPARATOR in provider:
+        raise ValueError(f"adapter name {provider!r} contains {MODEL_SEPARATOR!r}, which routes "
+                         f"to the OpenRouter adapter and never reaches this one. Pick a name "
+                         f"without it")
+    if not replace and (provider in ADAPTERS or provider in PLUGINS):
+        raise ValueError(f"adapter name {provider!r} is taken. Pick another, or pass "
+                         f"replace=True to replace it")
+    ADAPTERS[provider] = checked(provider, module)
+    # Note: updated in place rather than rebound, because callers hold the list itself
+    # (`from .harness import PROVIDERS`) and would otherwise keep the old one.
+    PROVIDERS[:] = sorted({*PROVIDERS, provider})
 
 
 def resolve(provider: str) -> str:
