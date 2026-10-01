@@ -375,7 +375,7 @@ oeb providers my-agent
 oeb benchmark --providers my-agent --out runs/ --limit 1
 ```
 
-In your code, without a package:
+Or in your code:
 
 ```python
 from omni_extract_bench.harness import add_adapter, predict
