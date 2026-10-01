@@ -385,10 +385,6 @@ add_adapter("my-agent", my_adapter)
 predict("my-agent", "invoice.pdf", schema)
 ```
 
-A name that is already taken -- a built-in, or one an installed package declares -- is refused
-unless you pass `replace=True`. A name with `/` is always refused, since it routes to the
-OpenRouter adapter.
-
 
 ## What a benchmark writes
 
