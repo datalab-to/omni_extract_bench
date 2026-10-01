@@ -37,14 +37,13 @@ ENTRY_POINT_GROUP = "omni_extract_bench.adapters"
 
 
 def plugins() -> dict[str, metadata.EntryPoint]:
-    """The adapters installed packages declare, by provider name. Reads metadata only."""
     out = {}
     # Note: walked per distribution because `metadata.entry_points` keeps one entry per name,
     # silently dropping a second package that claims it.
     for ep in (ep for d in metadata.distributions() for ep in d.entry_points):
         if ep.group != ENTRY_POINT_GROUP: continue
         if (ep.name in ADAPTERS or MODEL_SEPARATOR in ep.name
-                or ep.name in out and out[ep.name].dist.name != ep.dist.name):
+                or (ep.name in out and out[ep.name].dist.name != ep.dist.name)):
             raise ValueError(f"package {ep.dist.name!r} declares adapter {ep.name!r}, which is "
                              f"taken or contains {MODEL_SEPARATOR!r}. Rename it in its "
                              f"pyproject.toml")
@@ -80,7 +79,7 @@ def adapter(provider: str):
 def add_adapter(provider: str, module: ModuleType, *, replace: bool = False) -> None:
     """File an adapter defined in code; a package declares one under `ENTRY_POINT_GROUP`."""
     taken = provider in ADAPTERS or provider in PLUGINS
-    if MODEL_SEPARATOR in provider or taken and not replace:
+    if MODEL_SEPARATOR in provider or (taken and not replace):
         raise ValueError(f"adapter name {provider!r} is taken or contains {MODEL_SEPARATOR!r}. "
                          f"Pick another, or pass replace=True to replace a taken one")
     if missing := [n for n in ("Config", "prepare_schema", "extract") if not hasattr(module, n)]:
@@ -93,7 +92,9 @@ def add_adapter(provider: str, module: ModuleType, *, replace: bool = False) -> 
 def resolve(provider: str) -> str:
     """This adapter's module name -- what `WORKERS` is keyed by, and what groups the runs of
     one adapter together however many model ids reached it."""
-    return adapter(provider).__name__.rsplit(".", 1)[-1]
+    name = adapter(provider).__name__
+    # Note: only our own modules are shortened; two outside ones may end in the same word.
+    return name.rsplit(".", 1)[-1] if name.startswith(f"{__package__}.providers.") else name
 
 
 def out_name(provider: str, options: dict | None = None) -> str:
