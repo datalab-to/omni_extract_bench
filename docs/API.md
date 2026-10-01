@@ -351,6 +351,53 @@ settings_for("datalab", {"mode": "accurate"})
 # {'mode': 'accurate', 'base_url': 'https://www.datalab.to', 'poll_interval': 5.0}
 ```
 
+### Your own adapter
+
+An adapter is a module with three names:
+
+- `Config`: a frozen dataclass. Its fields are the options `--options` sets, with their defaults;
+- `prepare_schema(schema)`: the JSON Schema translated to whatever your system takes; and
+- `extract(pdf, schema, *, timeout, config)`: runs one document and returns an `Extraction`.
+
+`omni_extract_bench/harness/contract.py` states the full contract.
+
+To run it from the cli, declare it in your package's `pyproject.toml` under the
+`omni_extract_bench.adapters` entry-point group:
+
+```toml
+[project.entry-points."omni_extract_bench.adapters"]
+my-agent = "my_package.oeb_adapter"
+```
+
+Install your package into the same environment as `omni-extract-bench`, then use the name like
+any other provider:
+
+```bash
+oeb providers                  # lists my-agent
+oeb providers my-agent         # its Config fields and defaults
+oeb benchmark --providers my-agent --out runs/ --limit 1
+```
+
+Notes:
+
+- The name is read from package metadata, and the module is imported only when that name is
+  used. A heavy adapter costs nothing to a run that does not use it;
+- `oeb` only sees packages in its own environment. A `uv tool install omni-extract-bench`
+  is a separate environment, so run the `oeb` installed beside your package (e.g. `uv run oeb`);
+- the entry point is written when your package is installed. After adding or renaming one,
+  reinstall your package; and
+- a name that is a built-in provider, contains `/`, or is declared by two packages is refused,
+  naming the package to fix.
+
+In your code, without a package:
+
+```python
+from omni_extract_bench.harness import registry
+import my_adapter
+
+registry.add_adapter("my-agent", my_adapter)
+```
+
 
 ## What a benchmark writes
 

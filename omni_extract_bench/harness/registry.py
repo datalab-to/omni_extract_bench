@@ -4,6 +4,15 @@ An adapter is a MODULE with three names -- `contract.Adapter` states them. `ADAP
 provider name to one, and a model id routes to the single-shot LLM adapter, so a model id
 needs no entry.
 
+AN ADAPTER CAN LIVE IN ANOTHER PACKAGE. An installed distribution declares one under the
+`omni_extract_bench.adapters` entry-point group, naming the module:
+
+    [project.entry-points."omni_extract_bench.adapters"]
+    my-agent = "my_package.oeb_adapter"
+
+Its name is listed from the metadata alone; the module is imported the first time that name
+is asked for, so a heavy agent costs nothing to a run that does not use it.
+
 THE CONFIG IS THE DECLARATION. Its fields are the options: what `--options` may set and what
 `oeb providers` lists. Nothing infers an option from a signature and nothing restates a
 default elsewhere. An environment variable that steered a run without appearing in it is the
@@ -16,6 +25,8 @@ import dataclasses
 import hashlib
 import json
 import re
+from importlib import metadata
+from types import ModuleType
 
 from .providers import (azure_cu, datalab, extend, llamaextract, llm_single_shot, mistral,
                         reducto)
@@ -31,7 +42,36 @@ ADAPTERS = {
     "llamaextract": llamaextract,
     "azure-cu": azure_cu,
 }
-PROVIDERS = sorted(ADAPTERS)
+ENTRY_POINT_GROUP = "omni_extract_bench.adapters"
+ADAPTER_NAMES = ("Config", "prepare_schema", "extract")
+
+
+def plugins() -> dict[str, metadata.EntryPoint]:
+    """The adapters other installed packages declare, by provider name. Reads metadata only."""
+    # Note: walked per distribution rather than through `metadata.entry_points`, which keeps
+    # one entry per name and so would drop the second of two packages claiming it, silently.
+    eps = [ep for d in metadata.distributions() for ep in d.entry_points
+           if ep.group == ENTRY_POINT_GROUP]
+    out = {}
+    for ep in eps:
+        dist = ep.dist.name
+        # Note: a clash is refused rather than resolved, because either winner would publish a
+        # run under a name that does not say which adapter produced it.
+        if ep.name in ADAPTERS or MODEL_SEPARATOR in ep.name:
+            raise ValueError(f"package {dist!r} declares adapter {ep.name!r} under "
+                             f"{ENTRY_POINT_GROUP!r}, which is a built-in provider or contains "
+                             f"{MODEL_SEPARATOR!r}. Rename it in {dist}'s pyproject.toml")
+        # The same distribution can be found twice when its directory is on `sys.path` twice.
+        if ep.name in out and out[ep.name].dist.name != dist:
+            raise ValueError(f"adapter {ep.name!r} is declared twice under "
+                             f"{ENTRY_POINT_GROUP!r}: by {out[ep.name].dist.name!r} and {dist!r}. "
+                             f"Rename one of them")
+        out[ep.name] = ep
+    return out
+
+
+PLUGINS = plugins()
+PROVIDERS = sorted({*ADAPTERS, *PLUGINS})
 
 
 def adapter(provider: str):
@@ -42,11 +82,27 @@ def adapter(provider: str):
     """
     if MODEL_SEPARATOR in provider:
         return llm_single_shot
+    if provider not in ADAPTERS and (ep := PLUGINS.get(provider)):
+        try:
+            module = ep.load()
+        except ImportError as exc:
+            raise ImportError(f"adapter {provider!r}, declared by package {ep.dist.name!r} as "
+                              f"{ep.value!r}, failed to import:\n    {exc}") from exc
+        add_adapter(provider, module)
     if provider not in ADAPTERS:
         raise ValueError(f"unknown provider {provider!r}. Known vendors: "
                          f"{', '.join(PROVIDERS)}. Any OpenRouter model id also works, "
                          f"e.g. openai/gpt-5.6-sol")
     return ADAPTERS[provider]
+
+
+def add_adapter(provider: str, module: ModuleType) -> None:
+    """File `module` under `provider`, once it has the names `contract.Adapter` requires."""
+    if missing := [n for n in ADAPTER_NAMES if not hasattr(module, n)]:
+        raise TypeError(f"adapter {provider!r} ({module.__name__}) is missing "
+                        f"{', '.join(missing)}. An adapter module defines "
+                        f"{', '.join(ADAPTER_NAMES)}; see harness/contract.py")
+    ADAPTERS[provider] = module
 
 
 def resolve(provider: str) -> str:
