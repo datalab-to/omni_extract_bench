@@ -4,15 +4,6 @@ An adapter is a MODULE with three names -- `contract.Adapter` states them. `ADAP
 provider name to one, and a model id routes to the single-shot LLM adapter, so a model id
 needs no entry.
 
-AN ADAPTER CAN LIVE IN ANOTHER PACKAGE. An installed distribution declares one under the
-`omni_extract_bench.adapters` entry-point group, naming the module:
-
-    [project.entry-points."omni_extract_bench.adapters"]
-    my-agent = "my_package.oeb_adapter"
-
-Its name is listed from the metadata alone; the module is imported the first time that name
-is asked for, so a heavy agent costs nothing to a run that does not use it.
-
 THE CONFIG IS THE DECLARATION. Its fields are the options: what `--options` may set and what
 `oeb providers` lists. Nothing infers an option from a signature and nothing restates a
 default elsewhere. An environment variable that steered a run without appearing in it is the
@@ -43,29 +34,20 @@ ADAPTERS = {
     "azure-cu": azure_cu,
 }
 ENTRY_POINT_GROUP = "omni_extract_bench.adapters"
-ADAPTER_NAMES = ("Config", "prepare_schema", "extract")
 
 
 def plugins() -> dict[str, metadata.EntryPoint]:
-    """The adapters other installed packages declare, by provider name. Reads metadata only."""
-    # Note: walked per distribution rather than through `metadata.entry_points`, which keeps
-    # one entry per name and so would drop the second of two packages claiming it, silently.
-    eps = [ep for d in metadata.distributions() for ep in d.entry_points
-           if ep.group == ENTRY_POINT_GROUP]
+    """The adapters installed packages declare, by provider name. Reads metadata only."""
     out = {}
-    for ep in eps:
-        dist = ep.dist.name
-        # Note: a clash is refused rather than resolved, because either winner would publish a
-        # run under a name that does not say which adapter produced it.
-        if ep.name in ADAPTERS or MODEL_SEPARATOR in ep.name:
-            raise ValueError(f"package {dist!r} declares adapter {ep.name!r} under "
-                             f"{ENTRY_POINT_GROUP!r}, which is a built-in provider or contains "
-                             f"{MODEL_SEPARATOR!r}. Rename it in {dist}'s pyproject.toml")
-        # The same distribution can be found twice when its directory is on `sys.path` twice.
-        if ep.name in out and out[ep.name].dist.name != dist:
-            raise ValueError(f"adapter {ep.name!r} is declared twice under "
-                             f"{ENTRY_POINT_GROUP!r}: by {out[ep.name].dist.name!r} and {dist!r}. "
-                             f"Rename one of them")
+    # Note: walked per distribution because `metadata.entry_points` keeps one entry per name,
+    # silently dropping a second package that claims it.
+    for ep in (ep for d in metadata.distributions() for ep in d.entry_points):
+        if ep.group != ENTRY_POINT_GROUP: continue
+        if (ep.name in ADAPTERS or MODEL_SEPARATOR in ep.name
+                or ep.name in out and out[ep.name].dist.name != ep.dist.name):
+            raise ValueError(f"package {ep.dist.name!r} declares adapter {ep.name!r}, which is "
+                             f"taken or contains {MODEL_SEPARATOR!r}. Rename it in its "
+                             f"pyproject.toml")
         out[ep.name] = ep
     return out
 
@@ -84,11 +66,10 @@ def adapter(provider: str):
         return llm_single_shot
     if provider not in ADAPTERS and (ep := PLUGINS.get(provider)):
         try:
-            module = ep.load()
+            add_adapter(provider, ep.load(), replace=True)
         except ImportError as exc:
-            raise ImportError(f"adapter {provider!r}, declared by package {ep.dist.name!r} as "
-                              f"{ep.value!r}, failed to import:\n    {exc}") from exc
-        ADAPTERS[provider] = checked(provider, module)
+            exc.add_note(f"while loading adapter {provider!r} from package {ep.dist.name!r}")
+            raise
     if provider not in ADAPTERS:
         raise ValueError(f"unknown provider {provider!r}. Known vendors: "
                          f"{', '.join(PROVIDERS)}. Any OpenRouter model id also works, "
@@ -96,32 +77,16 @@ def adapter(provider: str):
     return ADAPTERS[provider]
 
 
-def checked(provider: str, module: ModuleType) -> ModuleType:
-    """`module`, once it has the names `contract.Adapter` requires."""
-    if missing := [n for n in ADAPTER_NAMES if not hasattr(module, n)]:
-        raise TypeError(f"adapter {provider!r} ({module.__name__}) is missing "
-                        f"{', '.join(missing)}. An adapter module defines "
-                        f"{', '.join(ADAPTER_NAMES)}; see harness/contract.py")
-    return module
-
-
 def add_adapter(provider: str, module: ModuleType, *, replace: bool = False) -> None:
-    """File `module` under `provider`, for an adapter defined in code rather than a package.
-
-    A name already taken -- a built-in, or one an installed package declares -- is refused
-    unless `replace=True`, for the reason `plugins` refuses a clash: a run published under the
-    name would not say which adapter produced it.
-    """
-    if MODEL_SEPARATOR in provider:
-        raise ValueError(f"adapter name {provider!r} contains {MODEL_SEPARATOR!r}, which routes "
-                         f"to the OpenRouter adapter and never reaches this one. Pick a name "
-                         f"without it")
-    if not replace and (provider in ADAPTERS or provider in PLUGINS):
-        raise ValueError(f"adapter name {provider!r} is taken. Pick another, or pass "
-                         f"replace=True to replace it")
-    ADAPTERS[provider] = checked(provider, module)
-    # Note: updated in place rather than rebound, because callers hold the list itself
-    # (`from .harness import PROVIDERS`) and would otherwise keep the old one.
+    """File an adapter defined in code; a package declares one under `ENTRY_POINT_GROUP`."""
+    taken = provider in ADAPTERS or provider in PLUGINS
+    if MODEL_SEPARATOR in provider or taken and not replace:
+        raise ValueError(f"adapter name {provider!r} is taken or contains {MODEL_SEPARATOR!r}. "
+                         f"Pick another, or pass replace=True to replace a taken one")
+    if missing := [n for n in ("Config", "prepare_schema", "extract") if not hasattr(module, n)]:
+        raise TypeError(f"adapter {provider!r} is missing {', '.join(missing)}; see contract.py")
+    ADAPTERS[provider] = module
+    # Note: updated in place because callers hold the list itself (`from . import PROVIDERS`).
     PROVIDERS[:] = sorted({*PROVIDERS, provider})
 
 
