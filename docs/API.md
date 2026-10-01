@@ -351,6 +351,40 @@ settings_for("datalab", {"mode": "accurate"})
 # {'mode': 'accurate', 'base_url': 'https://www.datalab.to', 'poll_interval': 5.0}
 ```
 
+### Your own adapter
+
+An adapter is a module with three names:
+
+- `Config`: a frozen dataclass. Its fields are the options `--options` sets, with their defaults;
+- `prepare_schema(schema)`: the JSON Schema translated to whatever your system takes; and
+- `extract(pdf, schema, *, timeout, config)`: runs one document and returns an `Extraction` result.
+
+`omni_extract_bench/harness/contract.py` states the full contract.
+
+To run it from the cli, declare it in your package's `pyproject.toml` under the
+`omni_extract_bench.adapters` entry-point group:
+
+```toml
+[project.entry-points."omni_extract_bench.adapters"]
+my-agent = "my_package.oeb_adapter"
+```
+
+```bash
+oeb providers
+oeb providers my-agent
+oeb benchmark --providers my-agent --out runs/ --limit 1
+```
+
+Or in your code:
+
+```python
+from omni_extract_bench.harness import add_adapter, predict
+import my_adapter
+
+add_adapter("my-agent", my_adapter)
+predict("my-agent", "invoice.pdf", schema)
+```
+
 
 ## What a benchmark writes
 

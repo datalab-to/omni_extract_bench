@@ -16,6 +16,8 @@ import dataclasses
 import hashlib
 import json
 import re
+from importlib import metadata
+from types import ModuleType
 
 from .providers import (azure_cu, datalab, extend, llamaextract, llm_single_shot, mistral,
                         reducto)
@@ -31,7 +33,26 @@ ADAPTERS = {
     "llamaextract": llamaextract,
     "azure-cu": azure_cu,
 }
-PROVIDERS = sorted(ADAPTERS)
+ENTRY_POINT_GROUP = "omni_extract_bench.adapters"
+
+
+def plugins() -> dict[str, metadata.EntryPoint]:
+    out = {}
+    # Note: walked per distribution because `metadata.entry_points` keeps one entry per name,
+    # silently dropping a second package that claims it.
+    for ep in (ep for d in metadata.distributions() for ep in d.entry_points):
+        if ep.group != ENTRY_POINT_GROUP: continue
+        if (ep.name in ADAPTERS or MODEL_SEPARATOR in ep.name
+                or (ep.name in out and out[ep.name].dist.name != ep.dist.name)):
+            raise ValueError(f"package {ep.dist.name!r} declares adapter {ep.name!r}, which is "
+                             f"taken or contains {MODEL_SEPARATOR!r}. Rename it in its "
+                             f"pyproject.toml")
+        out[ep.name] = ep
+    return out
+
+
+PLUGINS = plugins()
+PROVIDERS = sorted({*ADAPTERS, *PLUGINS})
 
 
 def adapter(provider: str):
@@ -42,6 +63,12 @@ def adapter(provider: str):
     """
     if MODEL_SEPARATOR in provider:
         return llm_single_shot
+    if provider not in ADAPTERS and (ep := PLUGINS.get(provider)):
+        try:
+            add_adapter(provider, ep.load(), replace=True)
+        except ImportError as exc:
+            exc.add_note(f"while loading adapter {provider!r} from package {ep.dist.name!r}")
+            raise
     if provider not in ADAPTERS:
         raise ValueError(f"unknown provider {provider!r}. Known vendors: "
                          f"{', '.join(PROVIDERS)}. Any OpenRouter model id also works, "
@@ -49,10 +76,25 @@ def adapter(provider: str):
     return ADAPTERS[provider]
 
 
+def add_adapter(provider: str, module: ModuleType, *, replace: bool = False) -> None:
+    """File an adapter defined in code; a package declares one under `ENTRY_POINT_GROUP`."""
+    taken = provider in ADAPTERS or provider in PLUGINS
+    if MODEL_SEPARATOR in provider or (taken and not replace):
+        raise ValueError(f"adapter name {provider!r} is taken or contains {MODEL_SEPARATOR!r}. "
+                         f"Pick another, or pass replace=True to replace a taken one")
+    if missing := [n for n in ("Config", "prepare_schema", "extract") if not hasattr(module, n)]:
+        raise TypeError(f"adapter {provider!r} is missing {', '.join(missing)}; see contract.py")
+    ADAPTERS[provider] = module
+    # Note: updated in place because callers hold the list itself (`from . import PROVIDERS`).
+    PROVIDERS[:] = sorted({*PROVIDERS, provider})
+
+
 def resolve(provider: str) -> str:
     """This adapter's module name -- what `WORKERS` is keyed by, and what groups the runs of
     one adapter together however many model ids reached it."""
-    return adapter(provider).__name__.rsplit(".", 1)[-1]
+    name = adapter(provider).__name__
+    # Note: only our own modules are shortened; two outside ones may end in the same word.
+    return name.rsplit(".", 1)[-1] if name.startswith(f"{__package__}.providers.") else name
 
 
 def out_name(provider: str, options: dict | None = None) -> str:
