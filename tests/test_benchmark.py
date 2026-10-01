@@ -252,6 +252,15 @@ report("...the same seed draws the same documents", ids(sample=3, seed=1) == s)
 report("...and --order and --limit apply to the sample, not the corpus",
        ids(sample=3, seed=1, order="largest", limit=1)
        == [max(s, key=dict(a=3, b=1, c=5, d=2, e=4).get)])
+(_pages / "c.pdf").write_bytes(b"%PDF")
+(_pages / "e.pdf").unlink()
+report("an unreadable or missing PDF counts as 0 pages, and does not stop the run",
+       ids(order="smallest") == list("cebda"), str(ids(order="smallest")))
+try:
+    ids(sample=-1)
+    report("a negative --sample is refused", False, "it was accepted")
+except ValueError as exc:
+    report("a negative --sample is refused, naming the flag", "--sample -1" in str(exc), str(exc))
 
 import huggingface_hub as _hf                                                  # noqa: E402
 
@@ -440,6 +449,7 @@ from omni_extract_bench import benchmark                                   # noq
 for missing, call, wanted in [
     ("huggingface_hub", lambda: benchmark.fetch(benchmark.hf_path(benchmark.DEFAULT_MANIFEST)), "huggingface_hub"),
     ("pyarrow.parquet", lambda: benchmark.read_manifest(TMP / "m.parquet", TMP), "pyarrow"),
+    ("pypdf", lambda: benchmark.read_manifest(_pages / "m.parquet", _pages, order="smallest"), "pypdf"),
 ]:
     with unittest.mock.patch.dict(sys.modules, {missing: None}):
         try:

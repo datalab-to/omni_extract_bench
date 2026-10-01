@@ -171,6 +171,7 @@ def fetch(at: HfPath) -> Path:
 
 def read_manifest(path: Path, root: Path, suites=None, limit: int = 0, order: str = "id",
                   sample: int = 0, seed: int = 0) -> list[Doc]:
+    if sample < 0: raise ValueError(f"--sample {sample}: needs a count of 0 or more")
     try:
         import pyarrow.parquet as pq
     except ImportError:
@@ -215,9 +216,22 @@ def read_manifest(path: Path, root: Path, suites=None, limit: int = 0, order: st
     docs.sort(key=lambda d: (d.suite, d.doc_id))
     if sample: docs = sorted(random.Random(seed).sample(docs, min(sample, len(docs))), key=docs.index)
     if order != "id":
-        from pypdf import PdfReader
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            raise ImportError(
+                "pypdf is needed for --order smallest|largest, and is not installed:\n"
+                "    pip install 'omni-extract-bench[benchmark]'"
+            ) from None
         logging.getLogger("pypdf").setLevel(logging.ERROR)
-        docs.sort(key=lambda d: len(PdfReader(d.doc_path).pages), reverse=order == "largest")
+
+        def pages(d: Doc) -> int:
+            # Note: an unreadable PDF counts as 0 pages rather than stopping the run, so it
+            # fails at the vendor and is recorded per document, as it would be unsorted.
+            try: return len(PdfReader(d.doc_path).pages)
+            except Exception: return 0  # noqa: BLE001
+
+        docs.sort(key=pages, reverse=order == "largest")
     return docs[:limit] if limit else docs
 
 
