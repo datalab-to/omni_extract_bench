@@ -57,6 +57,7 @@ import functools
 import json
 import logging
 import os
+import random
 import threading
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
@@ -168,7 +169,8 @@ def fetch(at: HfPath) -> Path:
     return Path(snapshot_download(at.repo, repo_type="dataset", revision=at.revision))
 
 
-def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[Doc]:
+def read_manifest(path: Path, root: Path, suites=None, limit: int = 0, order: str = "id",
+                  sample: int = 0, seed: int = 0) -> list[Doc]:
     try:
         import pyarrow.parquet as pq
     except ImportError:
@@ -211,6 +213,11 @@ def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[D
                         gt_path=root / row["gt_path"],
                         schema=schema))
     docs.sort(key=lambda d: (d.suite, d.doc_id))
+    if sample: docs = sorted(random.Random(seed).sample(docs, min(sample, len(docs))), key=docs.index)
+    if order != "id":
+        from pypdf import PdfReader
+        logging.getLogger("pypdf").setLevel(logging.ERROR)
+        docs.sort(key=lambda d: len(PdfReader(d.doc_path).pages), reverse=order == "largest")
     return docs[:limit] if limit else docs
 
 
@@ -639,7 +646,8 @@ class BenchmarkRun:
     def __init__(self, providers: list[str], *, out: Path = Path("runs"),
                  data_root: Path | None = None, manifest: str | Path | None = None,
                  suites: list[str] | None = None,
-                 limit: int = 0, timeout: float = 1800.0,
+                 limit: int = 0, order: str = "id", sample: int = 0, seed: int = 0,
+                 timeout: float = 1800.0,
                  predict_workers: dict[str, int] | int | None = None, score_workers: int = 0,
                  verdicts: bool = True, rescore: bool = False, score_only: bool = False,
                  options: dict | None = None):
@@ -656,7 +664,8 @@ class BenchmarkRun:
                              f"disk.")
         self.corpus_id = str(self.manifest)
         self.corpus_commit: str | None = None
-        self.suites, self.limit = suites, limit
+        self.suites, self.limit, self.order = suites, limit, order
+        self.sample, self.seed = sample, seed
         self.timeout, self.score_workers = timeout, score_workers
         self.verdicts, self.rescore, self.score_only = verdicts, rescore, score_only
         self.runs = plan(providers, options, out)
@@ -796,7 +805,8 @@ class BenchmarkRun:
             root = fetch(at)
             path = root / at.path
             self.corpus_commit = root.name
-        docs = read_manifest(path, root, suites=self.suites, limit=self.limit)
+        docs = read_manifest(path, root, suites=self.suites, limit=self.limit,
+                             order=self.order, sample=self.sample, seed=self.seed)
         if not docs:
             raise ValueError("no documents selected: check --suites and --limit")
         return docs

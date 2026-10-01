@@ -214,7 +214,8 @@ def cmd_benchmark(args) -> int:
 
     summary = run(args.providers, out=args.out, data_root=args.data_root,
                   manifest=args.manifest, suites=args.suites,
-                  limit=args.limit, timeout=args.timeout,
+                  limit=args.limit, order=args.order,
+                  sample=args.sample, seed=args.seed, timeout=args.timeout,
                   predict_workers=read_workers(args.predict_workers),
                   score_workers=args.score_workers,
                   verdicts=args.verdicts, rescore=args.rescore,
@@ -270,6 +271,11 @@ def main(argv=None) -> int:
                         "hf://datasets/datalab-to/omni_extract_bench/manifest.parquet")
     b.add_argument("--suites", nargs="+", help="limit to these suites")
     b.add_argument("--limit", type=int, default=0, help="first N documents; for a smoke test")
+    b.add_argument("--order", choices=["id", "smallest", "largest"], default="id",
+                   help="the order --limit takes documents in: by suite and id, or by page count")
+    b.add_argument("--sample", type=int, default=0, metavar="N",
+                   help="N documents drawn at random, before --order and --limit")
+    b.add_argument("--seed", type=int, default=0, help="the seed --sample draws with")
     b.add_argument("--timeout", type=float, default=1800,
                    help="seconds one document may take, the same for every vendor")
     b.add_argument("--predict-workers", metavar="N|NAME=N,...",

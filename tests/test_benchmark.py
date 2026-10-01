@@ -228,6 +228,31 @@ except ValueError as exc:
     report("...and an unreadable schema names the row it is in",
            "row 0" in str(exc) and "a" in str(exc), str(exc))
 
+print("\nWHICH DOCUMENTS --order AND --sample TAKE")
+from pypdf import PdfWriter                                                    # noqa: E402
+
+_pages = Path(tempfile.mkdtemp())
+_rows = []
+for _id, _n in (("a", 3), ("b", 1), ("c", 5), ("d", 2), ("e", 4)):
+    _w = PdfWriter()
+    for _ in range(_n): _w.add_blank_page(72, 72)
+    _w.write(_pages / f"{_id}.pdf")
+    _rows.append({"doc_id": _id, "suite": "s", "doc_path": f"{_id}.pdf", "gt_path": "x.json",
+                  "schema": "{}"})
+_pq.write_table(_pa.Table.from_pylist(_rows), _pages / "m.parquet")
+ids = lambda **kw: [d.doc_id for d in _bench.read_manifest(_pages / "m.parquet", _pages, **kw)]  # noqa: E731
+report("--order id is suite then doc_id", ids() == list("abcde"), str(ids()))
+report("--order smallest is fewest pages first", ids(order="smallest") == list("bdaec"),
+       str(ids(order="smallest")))
+report("--order largest is most pages first", ids(order="largest", limit=2) == list("ce"),
+       str(ids(order="largest", limit=2)))
+report("--sample draws N, kept in id order", (s := ids(sample=3, seed=1)) == sorted(s)
+       and len(s) == 3, str(s))
+report("...the same seed draws the same documents", ids(sample=3, seed=1) == s)
+report("...and --order and --limit apply to the sample, not the corpus",
+       ids(sample=3, seed=1, order="largest", limit=1)
+       == [max(s, key=dict(a=3, b=1, c=5, d=2, e=4).get)])
+
 import huggingface_hub as _hf                                                  # noqa: E402
 
 _real_exists, _real_snapshot = _hf.file_exists, _hf.snapshot_download
