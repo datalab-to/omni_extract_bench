@@ -343,6 +343,20 @@ for pred, gold in DEGEN:
         break
 report("empty and degenerate arrays survive being declared ordered", ok, detail)
 
+print("\nTRUE ORDERS EVERY ARRAY, FALSE NONE")
+ALL_S = {"properties": {"rows": {"type": "array", "items": {"properties": {
+    "x": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}}}}}
+ALL_G = {"rows": [{"x": "a", "tags": ["p", "q"]}, {"x": "b", "tags": []}], "extra": [1, 2]}
+ALL_P = {"rows": [{"x": "b", "tags": []}, {"x": "a", "tags": ["q", "p"]}], "extra": [2, 1]}
+by_name = _score_impl(ALL_P, ALL_G, ALL_S, order_matters=["rows", "rows[*].tags", "extra"])
+every = _score_impl(ALL_P, ALL_G, ALL_S, order_matters=True)
+report("True scores like naming every array, declared or only in a document",
+       every == by_name, f"{every['accuracy']} vs {by_name['accuracy']}")
+report("False scores like naming none",
+       _score_impl(ALL_P, ALL_G, ALL_S, order_matters=False) == _score_impl(ALL_P, ALL_G, ALL_S))
+report("True on a document with no arrays is not an error",
+       _score_impl({"x": 1}, {"x": 1}, {"properties": {"x": {}}}, order_matters=True)["accuracy"] == 1.0)
+
 print(f"\n{'ORDER EDGE CASES HOLD' if not FAILS else 'FAILURES:'}")
 for f in FAILS:
     print(f"   {f}")

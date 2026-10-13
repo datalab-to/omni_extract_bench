@@ -30,7 +30,7 @@ score(
   pred,               # the prediction, a dict
   gt,                 # the ground truth, a dict
   schema,             # the JSON Schema the prediction was generated against
-  order_matters=(),   # arrays where position is part of the answer, e.g. ["steps"]
+  order_matters=(),   # arrays where position is part of the answer, e.g. ["steps"]; True for all
   verdicts=False,     # also return one verdict per address
   absent=states_nothing,  # which values get no address; default: null, "", [], {}
 )

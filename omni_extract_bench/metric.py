@@ -757,7 +757,7 @@ def _has_ref(node: Any) -> bool:
     return False
 
 
-def _resolve_order(order_matters: Iterable[str], schema: Any,
+def _resolve_order(order_matters: bool | Iterable[str], schema: Any,
                    documents: Iterable[Any]) -> frozenset:
     """Turn the caller's array names into the keys the scorer matches against.
 
@@ -771,6 +771,8 @@ def _resolve_order(order_matters: Iterable[str], schema: Any,
     passing the documents both before and after preparation covers a gold row dropped for
     being all-null, which can take the last instance of a nested array with it -- the name is
     still right, and rejecting it would be a false alarm.
+
+    `True` names every array found that way, `False` none.
     """
     if isinstance(order_matters, str):
         raise TypeError(
@@ -791,6 +793,8 @@ def _resolve_order(order_matters: Iterable[str], schema: Any,
             f"order_matters would silently mean the other. This should not be reachable -- "
             f"keys holding a dot or a bracket are quoted to prevent it. Please report it."
         )
+    if isinstance(order_matters, bool):
+        return frozenset(found) if order_matters else frozenset()
 
     out = set()
     for name in order_matters:
@@ -812,7 +816,7 @@ def _resolve_order(order_matters: Iterable[str], schema: Any,
 
 
 def score(pred: Any, gt: Any, schema: Any,
-          order_matters: Iterable[str] = (), verdicts: bool = False,
+          order_matters: bool | Iterable[str] = (), verdicts: bool = False,
           absent: Callable[[Any], bool] = states_nothing) -> dict:
     """Score one prediction against one ground truth.
 
