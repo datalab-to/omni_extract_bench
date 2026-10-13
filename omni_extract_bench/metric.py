@@ -325,9 +325,6 @@ def _schema_nodes(schema: Any, prefix: Address = ()) -> set[Address]:
     offered the slot and the document is silent, filling it in is a fabricated fact. If the
     schema never mentioned the name, it is an invented field. Those are different bugs.
 
-    Containers count too. A scalar written where the schema declares an array sits under a
-    name the schema offered, so it is fabricated, not invented.
-
     Gold's own `null`s cannot answer this. A gold field written `null` and a gold field left
     out entirely mean the same thing (§5), so keying off gold would sort two identical
     documents into different buckets. The schema is the only authority that does not move.
