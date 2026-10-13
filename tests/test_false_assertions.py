@@ -20,7 +20,7 @@ import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench.metric import (                                     # noqa: E402
-    INDEX, KEY, _classify_extra, _schema_leaves, format_node, score, show)
+    INDEX, KEY, _classify_extra, _schema_nodes, format_node, score, show)
 
 def verdicts_of(pred, gt, schema):
     """Per-address verdicts. `score` is the only entry point; the list comes off it."""
@@ -58,10 +58,10 @@ PRED = {"invoice_no": "INV-1",
                   {"sku": "zz"}]}
 
 print("\nWHAT THE SCHEMA OFFERS IS WHAT CAN BE FABRICATED")
-slots = _schema_leaves(SCH)
-report("the schema's leaf slots are found, at every depth",
-       {format_node(k) for k in slots} == {"invoice_no", "total", "discount",
-                                           "lines[*].sku", "lines[*].note"},
+slots = _schema_nodes(SCH)
+report("the schema's slots are found, at every depth, containers included",
+       {format_node(k) for k in slots} == {"invoice_no", "total", "discount", "lines",
+                                           "lines[*]", "lines[*].sku", "lines[*].note"},
        str(sorted(format_node(k) for k in slots)))
 report("an open map offers no slot, so nothing inside it can be fabricated",
        not any(format_node(k).startswith("bag") for k in slots))
@@ -74,6 +74,14 @@ SAME_P = {"lines": [{"sku": "a", "note": "x"}]}
 both = [score(SAME_P, g, SCH)["fabricated"] for g in (NULL_GT, GONE_GT)]
 report("gold `note: null` and gold with no `note` classify identically",
        both == [1, 1], f"got {both}, want [1, 1]")
+
+print("\nA SCALAR WHERE THE SCHEMA DECLARES AN ARRAY IS FABRICATED, NOT INVENTED")
+for gold in ({"total": 1.0}, {"total": 1.0, "lines": [{"sku": "a"}]}):
+    got = {show(v.address): v.verdict
+           for v in verdicts_of({"total": 1.0, "lines": "foo"}, gold, SCH)}
+    report(f"`lines: \"foo\"` against gold {gold} is fabricated",
+           got.get("lines") == "fabricated", f"got {got}")
+note("`lines` is a name the schema offered; only `linez` would be invented")
 
 print("\nTHE THREE KINDS ARE TOLD APART")
 cases = {

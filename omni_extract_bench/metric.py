@@ -318,12 +318,15 @@ def _document_arrays(node: Any, prefix: Address = ()) -> list[Address]:
     return out
 
 
-def _schema_leaves(schema: Any, prefix: Address = ()) -> set[Address]:
-    """Every value the schema asks for, as node keys. The slots on offer.
+def _schema_nodes(schema: Any, prefix: Address = ()) -> set[Address]:
+    """Every name the schema declares, as node keys. The slots on offer.
 
     Needed to tell a value the model made up from one it invented a name for. If the schema
     offered the slot and the document is silent, filling it in is a fabricated fact. If the
     schema never mentioned the name, it is an invented field. Those are different bugs.
+
+    Containers count too. A scalar written where the schema declares an array sits under a
+    name the schema offered, so it is fabricated, not invented.
 
     Gold's own `null`s cannot answer this. A gold field written `null` and a gold field left
     out entirely mean the same thing (§5), so keying off gold would sort two identical
@@ -332,24 +335,22 @@ def _schema_leaves(schema: Any, prefix: Address = ()) -> set[Address]:
     Nothing inside an `additionalProperties` object counts, because that subtree is not
     graded at all -- a slot nobody was asked for cannot be filled in wrongly.
 
-    >>> [format_node(k) for k in sorted(_schema_leaves(
+    >>> [format_node(k) for k in sorted(_schema_nodes(
     ...     {"properties": {"n": {"type": "string"},
     ...                     "rows": {"type": "array",
     ...                              "items": {"properties": {"q": {"type": "number"}}}}}}),
     ...     key=format_node)]
-    ['n', 'rows[*].q']
+    ['n', 'rows', 'rows[*]', 'rows[*].q']
     """
     schema = unwrap_schema(schema) if isinstance(schema, dict) else {}
     if is_open_map(schema):
         return set()
     props, item = schema.get("properties") or {}, schema.get("items")
-    if not props and item is None:
-        return {prefix}
-    out: set[Address] = set()
+    out: set[Address] = {prefix} if prefix else set()
     for key, sub in props.items():
-        out |= _schema_leaves(sub, prefix + ((KEY, key),))
+        out |= _schema_nodes(sub, prefix + ((KEY, key),))
     if item is not None:
-        out |= _schema_leaves(item, prefix + ((INDEX, None),))
+        out |= _schema_nodes(item, prefix + ((INDEX, None),))
     return out
 
 
@@ -853,7 +854,7 @@ def score(pred: Any, gt: Any, schema: Any,
     matched = sum(1 for a in shared if cmp_leaf(pred_leaves[a], gold_leaves[a]) >= 1.0)
     misread = len(shared) - matched
     unfound = len(only_gold)
-    slots = _schema_leaves(schema)
+    slots = _schema_nodes(schema)
     extra_kind = {a: _classify_extra(a, slots) for a in only_pred}
     extra = collections.Counter(extra_kind.values())
     gt_rows = pred_rows = paired = 0
