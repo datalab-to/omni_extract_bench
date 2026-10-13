@@ -220,12 +220,12 @@ consumed = [v for v in probes if canon_key(v) == "" and not states_nothing(v)]
 report(f"none of {len(probes)} probe values is consumed by a fold", not consumed,
        f"these key as the empty string with content on the way in: {consumed}")
 
-structural = [None, "", "   ", "\t\n", [], {}]
-report("structurally empty values still key empty",
-       all(canon_key(v) == "" for v in structural),
-       f"{[(v, canon_key(v)) for v in structural if canon_key(v) != '']}")
-note("`null` and `\"\"` are one thing because a strict dialect must emit the key with null")
-note("where a permissive one omits it -- the harness causes the disagreement (METRIC_SPEC 5).")
+structural = {None: "#NULL", "": "#EMPTY_STRING", "   ": "#EMPTY_STRING",
+              "\t\n": "#EMPTY_STRING"}
+keys = [(v, canon_key(v)) for v in (*structural, [], {})]
+report("each kind of structurally empty value keys as itself",
+       keys == [*structural.items(), ([], "#EMPTY_LIST"), ({}, "#EMPTY_OBJECT")], str(keys))
+note("by default none of them is scored; `score(..., absent=...)` decides (METRIC_SPEC 5).")
 note("`()` and the STRING \"null\" are content a model chose to emit, so they assert.")
 
 import itertools as _it, unicodedata as _ud                             # noqa: E402
@@ -241,8 +241,11 @@ _probes += [c for cp in range(0x2FFF) for c in (chr(cp),)
 _probes += [0, 0.0, False, True, float("inf"), float("nan"), 10 ** 400, "NaN", "Infinity"]
 _eaten = [v for v in _probes if canon_key(v) == "" and not states_nothing(v)]
 _nonstr = [v for v in _probes if not isinstance(canon_key(v), str)]
-report(f"no counterexample among {len(_probes):,} searched values", not _eaten and not _nonstr,
-       f"consumed: {_eaten[:12]}  non-string keys: {_nonstr[:6]}")
+_upper = [v for v in _probes if not states_nothing(v) and str(canon_key(v)) != str(canon_key(v)).lower()]
+report(f"no counterexample among {len(_probes):,} searched values",
+       not _eaten and not _nonstr and not _upper,
+       f"consumed: {_eaten[:12]}  non-string keys: {_nonstr[:6]}  uppercase keys: {_upper[:6]}")
+note("no key has an uppercase letter, so none can collide with `#NULL` and its kin")
 note("this is a search, not a list -- every 1- and 2-char string over the punctuation the")
 note("folds touch, 20k random longer ones, every Unicode codepoint under 0x2FFF in a")
 note("strippable category, and the overflow scalars. Verified separately on all 17.7M")

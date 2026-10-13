@@ -161,6 +161,11 @@ reported in `skipped_open_maps`.
 and so cannot be matched, missed or charged — the leaf rule already does the work a row filter
 would, without a field-name heuristic that §5.2 forbids.
 
+This section is the default. `score(..., absent=...)` replaces the judgement of what states
+nothing; with `absent=lambda v: False`, `null`, `""`, `[]` and `{}` each key as their own kind
+(`#NULL`, `#EMPTY_STRING`, `#EMPTY_LIST`, `#EMPTY_OBJECT`) and must be reproduced. Such scores
+are not comparable to default ones.
+
 Asserted by `tests/test_spec_null_semantics.py`.
 
 ### 5.1 Rendering is folded; content is not

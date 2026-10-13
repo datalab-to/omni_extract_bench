@@ -32,8 +32,13 @@ score(
   schema,             # the JSON Schema the prediction was generated against
   order_matters=(),   # arrays where position is part of the answer, e.g. ["steps"]
   verdicts=False,     # also return one verdict per address
+  absent=states_nothing,  # which values get no address; default: null, "", [], {}
 )
 ```
+
+`absent=lambda v: False` makes `null`, `""`, `[]` and `{}` values the prediction must
+reproduce: gold `null` vs predicted `""` is `misread`, a missing key is `unfound`. Scores under
+different `absent`s are not comparable, since the number of addresses changes.
 
 ```python
 result = score(prediction, ground_truth, schema)
@@ -56,8 +61,8 @@ oeb score --pred pred.json --gt gold.json --schema schema.json
   ...truncated for display
 ```
 
-Every argument is a flag of the same name, underscores as dashes, so `order_matters` is
-`--order-matters`. It goes to stdout, so `oeb score ... | jq .accuracy` is one pipe.
+Every argument except `absent` is a flag of the same name, underscores as dashes, so
+`order_matters` is `--order-matters`. It goes to stdout, so `oeb score ... | jq .accuracy` is one pipe.
 
 The README has a [worked example](../README.md#score) and
 [`docs/METRIC_SPEC.md`](./METRIC_SPEC.md) is the full specification.
