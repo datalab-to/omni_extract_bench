@@ -310,7 +310,9 @@ def owed(run: Run, docs: list[Doc], verdicts: bool = True, rescore: bool = False
 
 def grade(run: Run, docs: list[Doc], verdicts: bool = True, workers: int = 0,
           rescore: bool = False, progress=NULL) -> list[dict]:
-    """Grade the run's predictions, resumable per document, and write one line each."""
+    """Grade the run's predictions, resumable per document: one line each in scores.jsonl, and
+    summary.json over every row the run has, written once grading finishes (an interrupted
+    grading writes none). Returns the rows of `docs`."""
     if not rescore:
         refuse_regrading(run, docs, read_scores(run.out))
     known, wanted = grading_split(run.out, docs, verdicts=verdicts, rescore=rescore)
@@ -358,6 +360,8 @@ def grade(run: Run, docs: list[Doc], verdicts: bool = True, workers: int = 0,
         if len(graded) < len(wanted):
             log.warning("scoring stopped after %d of %d documents; the rest are graded "
                         "on the next run", len(graded), len(wanted))
+    write_json_atomic(run.out / "summary.json", {**head(run), "scorer": SCORER,
+                                                 **summarise(so_far())}, indent=2)
 
     answered = {**known, **graded}
     return [answered[d.doc_id] for d in docs if d.doc_id in answered]
@@ -731,9 +735,6 @@ def grade_all(p: Plan) -> dict[str, dict]:
             mine = grade(run, list(p.docs), verdicts=p.verdicts, workers=p.score_workers,
                          rescore=p.rescore, progress=bars.reporter(run.out.name))
             summary[run.out.name] = s = {**head(run), "scorer": SCORER, **summarise(mine)}
-            write_json_atomic(run.out / "summary.json",
-                              {**head(run), "scorer": SCORER,
-                               **summarise(list(read_scores(run.out).values()))}, indent=2)
             log.info("%s: accuracy %.4f over %d suites, coverage %d/%d", run.out.name,
                      s["accuracy"], len(s["per_suite"]), s["scored"], s["documents"])
     return summary

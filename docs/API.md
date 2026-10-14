@@ -308,6 +308,44 @@ So a Ctrl-C, a crash or a credit ceiling costs you the documents in flight, and 
 Reinvoke the same command to carry on.
 
 
+### A loop of your own
+
+`oeb benchmark` is one loop over documents. To predict elsewhere (on another machine, on a
+scheduler, through a queue) and still get the same run folder, keep the run with the functions
+`oeb benchmark` uses itself. A `benchmark.Run` is an address, as a `Path` is: what the run holds
+is whatever its folder holds when it is read.
+
+```python
+from omni_extract_bench import benchmark
+from omni_extract_bench.harness import predict
+
+p = benchmark.plan(["datalab"], out="runs")
+(run,) = p.runs
+benchmark.prepare(run, p.dataset, p.timeout, manifest=p.manifest)
+for doc in p.docs:
+    if benchmark.needs(run, doc):
+        file = benchmark.document(p, doc)
+        result = predict(run.provider, file, doc.schema, timeout=p.timeout, **run.options)  # wherever
+        benchmark.record(run, doc.doc_id, result)
+benchmark.grade(run, list(p.docs))
+```
+
+- `prepare(run, dataset, timeout, commit=None, manifest="manifest.parquet")` makes the folder
+  and writes `settings.json`;
+- `needs(run, doc)` is True when the run has no readable record of the document. A loop that
+  predicts everything every time can skip it; it is what makes a loop resumable;
+- `document(plan, doc)` is the document's file, downloaded the first time from a HuggingFace
+  dataset;
+- `record(run, doc_id, result)` writes a result from `predict`: its prediction, if the call
+  succeeded, then the record;
+- `recorded(run, doc_id)` reads the document's record, or None; and
+- `grade(run, docs)` grades the documents with no row yet, writes `scores.jsonl` and
+  `summary.json`, and returns the rows of `docs`. A document with no prediction is graded as
+  failed; a run graded by another scorer or against another gold is refused unless
+  `rescore=True`.
+
+The folder is then exactly one `oeb benchmark` writes, so either can resume or grade it.
+
 ## providers
 
 See providers:

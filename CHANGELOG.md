@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.8
 
 Breaking changes to `omni_extract_bench.benchmark`. `score`, `predict` and the command line are
 unchanged unless a line below says otherwise.
@@ -52,3 +52,5 @@ unchanged unless a line below says otherwise.
   `--rescore`; no vendor is called.
 - `--rescore` discards every row, not only the selected documents', so a narrowed rescore
   leaves only what it graded again.
+- `grade(run, docs)` writes summary.json itself, so a loop of your own gets the same folder
+  `oeb benchmark` writes. docs/API.md has "A loop of your own".

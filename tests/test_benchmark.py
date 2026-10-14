@@ -35,7 +35,7 @@ def report(name, cond, detail=""):
 TMP = Path(tempfile.mkdtemp())
 
 print("WHAT A RESUME SKIPS")
-_resume = Run("v", {}, TMP / "resume")
+_resume = Run("datalab", {}, TMP / "resume")
 (_resume.records).mkdir(parents=True)
 for label, exists in (("no record at all", False), ("a record from a previous run", True)):
     doc = Doc(str(abs(hash(label))), "s", TMP / "x.pdf", TMP / "g.json", {})
@@ -72,11 +72,11 @@ for doc_id, (suite, pred) in WRITTEN.items():
     docs.append(Doc(doc_id, suite, root / f"{doc_id}.pdf", root / f"{doc_id}.json", SCH))
 (root / "refused.json").write_text(json.dumps(GOLD))
 docs.append(Doc("refused", "micro1", root / "refused.pdf", root / "refused.json", SCH))
-record(Run("vendor", {}, out), "refused", {"result": None, "error": {
+record(Run("datalab", {}, out), "refused", {"result": None, "error": {
     "type": "VendorError", "status": 400, "transient": False, "message": "schema too deep"}})
 docs.append(Doc("never-ran", "internal", root / "x.pdf", root / "perfect.json", SCH))
 
-rows = grade(Run("vendor", {}, out), docs)
+rows = grade(Run("datalab", {}, out), docs)
 by_id = {r["doc_id"]: r for r in rows}
 report("one row per document, including the one never predicted", len(rows) == 6, str(len(rows)))
 report("a correct prediction scores 1.0", by_id["perfect"]["accuracy"] == 1.0)
@@ -107,7 +107,7 @@ ref_root, ref_out = TMP / "refcorpus", TMP / "refrun"
 ref_root.mkdir()
 (ref_root / "r.json").write_text(json.dumps(REF_GOLD))
 (ref_out / "predictions" / "r.json").write_text(json.dumps(REF_GOLD))
-ref_rows = grade(Run("v", {}, ref_out),
+ref_rows = grade(Run("datalab", {}, ref_out),
     [Doc("r", "extractbench", ref_root / "r.pdf", ref_root / "r.json", REF_SCHEMA)])
 report("a $ref schema scores instead of erroring", ref_rows[0]["status"] == "scored",
        str(ref_rows[0].get("error")))

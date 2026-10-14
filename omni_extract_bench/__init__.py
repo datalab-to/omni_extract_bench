@@ -40,4 +40,4 @@ __all__ = [
     "cmp_leaf",
     "match_rows",
 ]
-__version__ = "0.1.2"
+__version__ = "0.1.8"
