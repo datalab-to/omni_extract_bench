@@ -14,8 +14,9 @@ no vendor call. Concurrency is per adapter, not per run: every run of one adapte
 modes, every OpenRouter model) shares one pool of `workers_for` its adapter.
 
 Resumable and idempotent: a document is predicted again only when it has no record, graded
-again only when it has no row. Nothing notices a changed metric under a resume, which is what
-`--rescore` is for.
+again only when it has no row. A run never mixes scorers or golds: each row says which scoring
+code and which gold graded it, and a run whose rows another scorer graded, or whose documents'
+gold has changed, is refused unless `--rescore`, which grades every document again.
 
 Credentials come from the environment and everything else from `--options`, so
 `run_manifest.settings` is a complete account of what each vendor was asked.
@@ -28,6 +29,8 @@ import collections
 import concurrent.futures as cf
 import io
 import functools
+import hashlib
+import importlib.metadata
 import json
 import logging
 import os
@@ -62,6 +65,37 @@ REPO = "datalab-to/omni_extract_bench"
 MANIFEST = "manifest.parquet"
 HF_PREFIX = "hf://datasets/"
 DEFAULT_DATASET = f"{HF_PREFIX}{REPO}"
+# The code a verdict depends on: a change to any of it is a new scorer.
+SCORING = ("metric.py", "matching.py", "values.py", "recognise.py")
+
+
+def scorer_version() -> str:
+    """The package's version and a digest of its scoring code, stamped on each score row so a run
+    graded by another scorer is known (and refused without --rescore, `refuse_regrading`).
+
+    Note: the version alone is the same across every commit between releases, so it can't say the
+    scoring changed; the digest of the files that decide a verdict can. The version is kept for the
+    reader: which release graded a row.
+    """
+    try:
+        version = importlib.metadata.version("omni-extract-bench")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    h = hashlib.sha256()
+    for name in SCORING:
+        h.update((Path(__file__).parent / name).read_bytes())
+    return f"{version}+{h.hexdigest()[:12]}"
+
+
+SCORER = scorer_version()
+
+
+def scoring(stamp: str | None) -> str | None:
+    """The scoring code a scorer stamp names: its digest, without the version, so a release that
+    changes no scoring file grades as the one before it did."""
+    return None if stamp is None else stamp.rpartition("+")[2]
+
+
 #: Written out rather than read off `Doc`: manifests on disk have this shape, and a field `Doc`
 #: grows later must not invalidate them.
 COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
@@ -277,6 +311,8 @@ def owed(run: Run, docs: list[Doc], verdicts: bool = True, rescore: bool = False
 def grade(run: Run, docs: list[Doc], verdicts: bool = True, workers: int = 0,
           rescore: bool = False, progress=NULL) -> list[dict]:
     """Grade the run's predictions, resumable per document, and write one line each."""
+    if not rescore:
+        refuse_regrading(run, docs, read_scores(run.out))
     known, wanted = grading_split(run.out, docs, verdicts=verdicts, rescore=rescore)
     if len(wanted) < len(docs):
         log.info("%s: %d of %d documents already scored, %d to grade",
@@ -342,7 +378,8 @@ def score_one(doc: Doc, *, run: Run, verdicts: bool = False) -> dict:
     A document fails when its record says the call failed, or when it has no prediction: a
     folder of predictions you bring is your submission, so a missing file counts against
     coverage rather than being left out of it."""
-    row = {"doc_id": doc.doc_id, "suite": doc.suite, "provider": run.provider}
+    row = {"doc_id": doc.doc_id, "suite": doc.suite, "provider": run.provider,
+           "scorer": SCORER, "gold": gold_digest(doc)}
     if failed := (recorded(run, doc.doc_id) or {}).get("error"):
         return {**row, "status": "error", "error": f"{failed['type']}: {failed['message']}"}
     try:
@@ -389,12 +426,37 @@ def read_scores(out: Path, verdicts: bool = False) -> dict[str, dict]:
 def grading_split(out: Path, docs: list[Doc], verdicts: bool = False,
                   rescore: bool = False) -> tuple[dict[str, dict], list[Doc]]:
     """The grades this selection may reuse, and the documents still to grade. One definition, so
-    what `describe` promises and what `Run.score` then does cannot drift."""
-    known = read_scores(out, verdicts=verdicts)
-    if rescore:
-        selected = {d.doc_id for d in docs}
-        known = {k: v for k, v in known.items() if k not in selected}
+    what `describe` promises and what `grade` then does cannot drift. `rescore` reuses none, and
+    drops the rows of documents not selected too, so a run's rows are never two scorers'."""
+    known = {} if rescore else read_scores(out, verdicts=verdicts)
     return known, [d for d in docs if d.doc_id not in known]
+
+
+def gold_digest(doc: Doc) -> str | None:
+    """Which gold a document is graded against: a digest of what grading reads, its id, suite and
+    schema and its gold file; None when the gold can't be read, which its row then says."""
+    try:
+        gold = doc.gt_path.read_bytes()
+    except OSError:
+        return None
+    h = hashlib.sha256(json.dumps([doc.doc_id, doc.suite, doc.schema], sort_keys=True).encode())
+    h.update(gold)
+    return h.hexdigest()[:16]
+
+
+def refuse_regrading(run: Run, docs: list[Doc], rows: dict[str, dict]) -> None:
+    """Refuses a run whose rows were graded by other scoring code (`scoring`), or whose selected
+    documents' gold has changed since their rows: adding to it would mix two gradings in one
+    run, which only `--rescore` replaces, every row at once."""
+    now = scoring(SCORER)
+    why = sorted({f"scorer {r.get('scorer')}" for r in rows.values() if scoring(r.get("scorer")) != now})
+    why += [f"another gold for {d.doc_id}" for d in docs
+            if d.doc_id in rows and (g := gold_digest(d)) is not None and rows[d.doc_id].get("gold") != g]
+    if why:
+        more = f" and {len(why) - 3} more" if len(why) > 3 else ""
+        raise ValueError(f"{run.out} was graded with {', '.join(why[:3])}{more}; this is scorer "
+                         f"{SCORER}. Pass --rescore to grade every document again (no vendor is "
+                         f"called), or use the omni-extract-bench and dataset it was graded with")
 
 
 def write_scores(out: Path, rows: list[dict]) -> None:
@@ -547,6 +609,10 @@ def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path 
             raise ValueError(f"{run.out} is a run on dataset {was}, not {ident}, and a run never "
                              f"mixes datasets; pass another --out, or --dataset {was}")
     docs, root = corpus(dataset, manifest, suites, limit)
+    # Note: refused here, before any call, not after hours of predictions; grade checks again.
+    if not rescore:
+        for run in runs.values():
+            refuse_regrading(run, docs, read_scores(run.out))
     return Plan(tuple(runs.values()), tuple(docs), str(dataset), manifest, root, timeout,
                 predict_workers, score_workers, verdicts, rescore, score_only)
 
@@ -664,10 +730,10 @@ def grade_all(p: Plan) -> dict[str, dict]:
         for run in p.runs:
             mine = grade(run, list(p.docs), verdicts=p.verdicts, workers=p.score_workers,
                          rescore=p.rescore, progress=bars.reporter(run.out.name))
-            summary[run.out.name] = s = {**head(run), **summarise(mine)}
+            summary[run.out.name] = s = {**head(run), "scorer": SCORER, **summarise(mine)}
             write_json_atomic(run.out / "summary.json",
-                              {**head(run), **summarise(list(read_scores(run.out).values()))},
-                              indent=2)
+                              {**head(run), "scorer": SCORER,
+                               **summarise(list(read_scores(run.out).values()))}, indent=2)
             log.info("%s: accuracy %.4f over %d suites, coverage %d/%d", run.out.name,
                      s["accuracy"], len(s["per_suite"]), s["scored"], s["documents"])
     return summary

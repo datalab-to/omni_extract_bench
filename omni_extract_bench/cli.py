@@ -295,9 +295,9 @@ def main(argv=None) -> int:
                         "recorded in the run's settings.json and on every document, and "
                         "digested into the directory name so two of them cannot mix")
     b.add_argument("--rescore", action="store_true",
-                   help="grade every document again, ignoring the scores already on disk. "
-                        "Grading otherwise resumes per document, so reach for this after "
-                        "changing the metric -- nothing else notices that")
+                   help="discard every score on disk and grade the selected documents again; "
+                        "no vendor is called. A run graded by another scorer, or against a "
+                        "gold that has since changed, is refused without it")
     b.add_argument("--score-only", action="store_true",
                    help="score the predictions already on disk; call no vendor")
     b.add_argument("-y", "--yes", action="store_true",

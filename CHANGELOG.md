@@ -44,3 +44,11 @@ unchanged unless a line below says otherwise.
   only when it is predicted, at the commit the manifest was read at. A `--limit 5` run
   downloads five PDFs, not the corpus. A dataset of your own on HuggingFace keeps its gold
   under gold/ for this; a folder on disk needs nothing.
+- A run never mixes scorers or golds. Each row of scores.jsonl carries `scorer` (the release
+  and a digest of the scoring files) and `gold` (a digest of the document's id, suite, schema
+  and gold file), and summary.json carries `scorer`. A run whose rows another scoring code
+  graded, or whose selected documents' gold has changed, is refused by `plan` and by `grade`
+  unless `--rescore`. A run graded before this release has no stamps, so it needs one
+  `--rescore`; no vendor is called.
+- `--rescore` discards every row, not only the selected documents', so a narrowed rescore
+  leaves only what it graded again.

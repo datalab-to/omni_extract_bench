@@ -298,6 +298,11 @@ It's **resumable**, and safe to run twice.
 - A document is predicted again only when it has no record. The record is written last, so
   its presence means the prediction beside it is complete.
 - A document is graded again only when it has no row in `scores.jsonl`.
+- A run never mixes scorers or golds. Each row says which scoring code (`scorer`, the release
+  and a digest of the scoring files) and which gold (`gold`, a digest of the document's id,
+  suite, schema and gold file) graded it. A run whose rows another scorer graded, or whose
+  documents' gold has changed, is refused before any call. `--rescore` discards every row and
+  grades the selected documents again, which calls no vendor.
 
 So a Ctrl-C, a crash or a credit ceiling costs you the documents in flight, and nothing else.
 Reinvoke the same command to carry on.
@@ -529,6 +534,8 @@ One line per document, in document order whatever order the workers finished in.
   "doc_id": "long__dd1155_schedule_continuation_0011",
   "suite": "extractbench",
   "provider": "datalab",
+  "scorer": "0.1.8+3f9a0c2e71b4",
+  "gold": "a41c09e2d5f7b803",
   "status": "scored",
   "accuracy": 0.9555555555555556,
   "precision": 0.9555555555555556,

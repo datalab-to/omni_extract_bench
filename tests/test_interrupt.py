@@ -200,7 +200,8 @@ report("a full run writes every row", lines() == 5, str(lines()))
 B.grade(B.Run("v", {}, narrow), five[:2], workers=1)
 report("a narrowed run keeps the rows it did not select", lines() == 5, str(lines()))
 B.grade(B.Run("v", {}, narrow), five[:2], workers=1, rescore=True)
-report("...and so does a narrowed rescore", lines() == 5, str(lines()))
+report("...but a narrowed rescore keeps only what it graded again, so no row is another "
+       "scorer's", lines() == 2, str(lines()))
 
 back = B.grade(B.Run("v", {}, narrow), five[:2], workers=1)
 report("the return value is this run's selection, not the file",
