@@ -234,7 +234,7 @@ def render(stats: dict[str, Stats]) -> Group:
 
 
 class Reporter:
-    """One provider's handle on the display. This is all a Run ever holds.
+    """One run's handle on the display, which the loop reports that run's documents to.
 
     Four things happen to a provider, and there is a method for each rather than one call
     with flags: it learns its workload, it puts a call in flight, that call comes back, and
@@ -303,7 +303,7 @@ class Progress:
     """The live display. A context manager: it owns the cursor only between enter and exit.
 
         with Progress(["datalab", "reducto"]) as bars:
-            ProviderRun(...).predict(docs, timeout)   # its Runs hold reporters
+            ProviderRun(...).predict(docs, timeout, bars=bars)
 
     Providers are registered UP FRONT and in order, so the lines keep their places and a
     vendor that has not started yet is visibly waiting rather than absent.

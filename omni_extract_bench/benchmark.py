@@ -232,17 +232,11 @@ def needs_run(record_path: Path) -> bool:
 
 
 class Run:
-    """One configuration measured: a provider plus its options, and the counters it fills as it
-    goes. Workers only ever read one, so none of it needs a lock."""
+    """One configuration measured: a provider plus its options, and the directory it writes to.
+    What it has done so far is on disk and in its progress reporter, never on the Run."""
 
-    def __init__(self, label: str, provider: str, options: dict, out: Path, progress=NULL):
-        self.label, self.provider, self.options = label, provider, options
-        self.out, self.progress = out, progress
-        self.todo = self.left = 0
-        self.counts: collections.Counter[str] = collections.Counter()
-        self.spend: list[float] = []
-        self.billed: list[float] = []
-        self.took: list[float] = []
+    def __init__(self, label: str, provider: str, options: dict, out: Path):
+        self.label, self.provider, self.options, self.out = label, provider, options, out
 
     def __repr__(self) -> str:
         return f"Run({self.label})"
@@ -349,46 +343,6 @@ class Run:
         write_json_atomic(self.predictions / f"{doc.doc_id}.json", record["result"])
         write_json_atomic(self.records / f"{doc.doc_id}.json", record)
 
-    def begin(self, docs: list[Doc], workers: int) -> list[Doc]:
-        """Make room, work out what is left to do, and open the progress line for it."""
-        self.predictions.mkdir(parents=True, exist_ok=True)
-        self.records.mkdir(parents=True, exist_ok=True)
-        todo = [doc for doc in docs if self.needs(doc)]
-        self.todo = self.left = len(todo)
-        log.info("%s: %d documents, %d to run", self.label, len(docs), len(todo))
-        self.progress.start(len(todo), workers)
-        if not todo:
-            self.progress.finish()
-        return todo
-
-    def landed(self, status: str, usd, credits, wall_s) -> None:
-        """One document came back, well or badly."""
-        self.counts[status] += 1
-        for bucket, value in ((self.spend, usd), (self.billed, credits), (self.took, wall_s)):
-            if value is not None:
-                bucket.append(value)
-        if status != "skipped":
-            self.progress.record(error=status == "error", usd=usd, credits=credits,
-                                 wall_s=wall_s)
-        self.left -= 1
-        if not self.left:
-            self.progress.finish()
-
-    def report(self) -> None:
-        """This Run's last word, for a log with no bar to look at."""
-        if self.took:
-            log.info("%s: %.1fs per document on average (min %.1f, max %.1f over %d)",
-                     self.label, sum(self.took) / len(self.took), min(self.took),
-                     max(self.took), len(self.took))
-        if self.spend:
-            log.info("%s: $%.2f reported over %d of %d documents", self.label,
-                     sum(self.spend), len(self.spend), self.todo)
-        if self.billed:
-            log.info("%s: %g credits reported over %d of %d documents", self.label,
-                     sum(self.billed), len(self.billed), self.todo)
-        if self.todo and not self.spend and not self.billed:
-            log.info("%s: no per-document cost reported (billed out of band)", self.label)
-
 
 class ProviderRun:
     """Every Run on one adapter, through one pool sized to that service. The cap belongs to the
@@ -407,21 +361,20 @@ class ProviderRun:
         """The adapter and the cap every Run under it shares."""
         return self.adapter
 
-    def _give_up(self, run: Run, exc: Exception, why: str = "") -> tuple:
-        """Stop this vendor, remember why, and report this document as never attempted."""
+    def _give_up(self, run: Run, exc: Exception, why: str = "") -> None:
+        """Stop this vendor and remember why. The document counts as never attempted."""
         with self.halt:
             if not self.mine.is_set():
                 if why:
                     log.error("%s: %s -- %s", run.label, why, exc)
                 self.fatal.append(exc)
                 self.mine.set()
-        return run.label, "skipped", None, None, None
 
-    def _predict_one(self, run: Run, doc: Doc, timeout: float, stopping) -> tuple:
+    def _predict_one(self, run: Run, doc: Doc, timeout: float, stopping, bar) -> None:
         if stopping():
-            return run.label, "skipped", None, None, None
+            return
         try:
-            with run.progress.calling():
+            with bar.calling():
                 record = predict(run.provider, doc.doc_path, doc.schema, timeout=timeout,
                                  **run.options)
             run.store(doc, record)
@@ -432,37 +385,47 @@ class ProviderRun:
         except Exception as exc:          # noqa: BLE001 -- unknown, so assume it is ours
             return self._give_up(run, exc)
         cost = record.get("cost") or {}
-        return (run.label, "error" if record.get("error") else "ok",
-                cost.get("usd"), cost.get("credits"), cost.get("wall_s"))
+        bar.record(error=bool(record.get("error")), usd=cost.get("usd"),
+                   credits=cost.get("credits"), wall_s=cost.get("wall_s"))
 
-    def predict(self, docs: list[Doc], timeout: float,
-                stop: threading.Event | None = None) -> None:
+    def predict(self, docs: list[Doc], timeout: float, stop: threading.Event | None = None,
+                bars: Progress | None = None) -> None:
         """Every document of every Run here, and raise whatever stopped the vendor."""
-        by_label = {run.label: run for run in self.runs}
-        work = [(run, doc) for run in self.runs for doc in run.begin(docs, self.workers)]
+        reporters = {run.label: bars.reporter(run.label) if bars else NULL for run in self.runs}
+        left, work = {}, []
+        for run in self.runs:
+            run.predictions.mkdir(parents=True, exist_ok=True)
+            run.records.mkdir(parents=True, exist_ok=True)
+            todo = [doc for doc in docs if run.needs(doc)]
+            log.info("%s: %d documents, %d to run", run.label, len(docs), len(todo))
+            reporters[run.label].start(len(todo), self.workers)
+            if not todo:
+                reporters[run.label].finish()
+            left[run.label] = len(todo)
+            work += [(run, doc) for doc in todo]
 
         def stopping() -> bool:
             return self.mine.is_set() or (stop is not None and stop.is_set())
 
-
         with cf.ThreadPoolExecutor(max_workers=self.workers) as pool:
-            futures = [pool.submit(self._predict_one, run, doc, timeout, stopping)
-                       for run, doc in work]
+            futures = {pool.submit(self._predict_one, run, doc, timeout, stopping,
+                                   reporters[run.label]): run.label for run, doc in work}
             try:
                 for future in cf.as_completed(futures):
-                    label, *outcome = future.result()
-                    by_label[label].landed(*outcome)
+                    future.result()
+                    # Note: finished when its own last document lands, not when the pool it
+                    # shares drains, so each run is timed for itself.
+                    label = futures[future]
+                    left[label] -= 1
+                    if not left[label]:
+                        reporters[label].finish()
             except KeyboardInterrupt:
                 self.mine.set()
                 for future in futures:
                     future.cancel()
-                log.warning("%s: interrupted -- %s; documents not yet written come back on "
-                            "the next run", self.adapter,
-                            {r.label: dict(r.counts) for r in self.runs})
+                log.warning("%s: interrupted; documents not yet written come back on the next "
+                            "run", self.adapter)
                 raise
-
-        for run in self.runs:
-            run.report()
 
         if self.fatal:
             raise self.fatal[0]
@@ -745,10 +708,8 @@ class BenchmarkRun:
         """Every adapter at once. Predicting is network wait, so they do not slow each other."""
         stop = threading.Event()
         with Progress([r.label for r in self.runs]) as bars:
-            for run in self.runs:
-                run.progress = bars.reporter(run.label)
             with cf.ThreadPoolExecutor(max_workers=len(self.providers)) as pool:
-                futures = {pool.submit(p.predict, docs, self.timeout, stop): p.adapter
+                futures = {pool.submit(p.predict, docs, self.timeout, stop, bars): p.adapter
                            for p in self.providers}
                 try:
                     for future in cf.as_completed(futures):
