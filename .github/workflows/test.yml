@@ -1,0 +1,27 @@
+# Run the tests on every pull request and on every push to main. `release.yml` runs the same
+# steps again before publishing; this one is what tells a reviewer a change is safe to merge.
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      # Same install as `release.yml`: a venv because the runner's Python refuses installs
+      # under PEP 668, and `benchmark` plus `harness` because between them every test runs.
+      - name: Install and test
+        run: |
+          uv venv
+          . .venv/bin/activate
+          uv pip install -e ".[benchmark,harness]" --group test
+          pytest -n auto

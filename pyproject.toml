@@ -39,6 +39,14 @@ benchmark = [
     "pyarrow>=15.0.0",
 ]
 
+# Running the tests: `uv run --group test pytest -n auto`. A group, not an extra, so it never
+# reaches the published package's metadata.
+[dependency-groups]
+test = [
+    "pytest>=8.0",
+    "pytest-xdist>=3.5",
+]
+
 [project.urls]
 Homepage = "https://github.com/datalab-to/omni_extract_bench"
 Datalab = "https://datalab.to"
@@ -69,3 +77,6 @@ include = [
     "/README.md",
     "/LICENSE",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

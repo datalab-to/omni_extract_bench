@@ -46,24 +46,14 @@ jobs:
       # not one to ship. `benchmark` brings pyarrow and `harness` brings httpx; between them
       # every test runs. None of them needs network or credentials.
       # A venv, not `--system`: the runner's Python is Debian's, which refuses installs into
-      # itself under PEP 668 ("externally managed"). Activating it here means the test loop
-      # below runs on the interpreter that has the extras.
+      # itself under PEP 668 ("externally managed"). Activating it here means pytest below
+      # runs on the interpreter that has the extras.
       - name: Install and test
         run: |
           uv venv
           . .venv/bin/activate
-          uv pip install -e ".[benchmark,harness]"
-          failed=""
-          for t in tests/test_*.py; do
-            if ! PYTHONPATH=. python3 "$t" > /tmp/test-out.txt 2>&1; then
-              failed="$failed $(basename "$t")"
-              echo "::group::FAILED $t"; cat /tmp/test-out.txt; echo "::endgroup::"
-            fi
-          done
-          if [ -n "$failed" ]; then
-            echo "::error::tests failed:$failed" >&2
-            exit 1
-          fi
+          uv pip install -e ".[benchmark,harness]" --group test
+          pytest -n auto
 
       - run: uv build
 
