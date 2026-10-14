@@ -2,7 +2,7 @@
 """A RUN IS A PROVIDER PLUS ITS OPTIONS, and each one is stored on its own.
 
 `--options` changes what is measured. When it did not change WHERE the answer was stored,
-`needs_run` found the other configuration's records and skipped every document -- so a run
+`needs` found the other configuration's records and skipped every document -- so a run
 that asked for `mode=fast` reported `balanced` results and never called the vendor at all.
 A silently wrong number, arrived at by a resume doing its job.
 
@@ -225,17 +225,17 @@ report("...while the return value answers what this invocation ran",
 print("\nAND A RUN THAT IS GRADED SURVIVES THE ONE AFTER IT NOT BEING")
 out3 = pathlib.Path(tempfile.mkdtemp())
 B.fetch = lambda *_: out3
-real_score, graded = B.Run.score, {"n": 0}
+real_grade, graded = B.grade, {"n": 0}
 
 
-def interrupted_on_the_second(self, *a, **k):
+def interrupted_on_the_second(*a, **k):
     graded["n"] += 1
     if graded["n"] == 2:
         raise KeyboardInterrupt
-    return real_score(self, *a, **k)
+    return real_grade(*a, **k)
 
 
-B.Run.score = interrupted_on_the_second
+B.grade = interrupted_on_the_second
 try:
     B.run(["datalab"], out=out3, score_workers=1, predict_workers={"*": 1},
           options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
@@ -243,7 +243,7 @@ try:
 except KeyboardInterrupt:
     report("the interrupt reaches the caller", True)
 finally:
-    B.Run.score = real_score
+    B.grade = real_grade
 
 first, second = named("datalab", mode="balanced"), named("datalab", mode="accurate")
 report("the run that finished grading published its row",
@@ -334,12 +334,12 @@ for d in docs[:2]:
 for d in docs:
     (bal.out / "verdicts" / f"{d.doc_id}.jsonl").write_text("")
 report("a run counts what it would still predict, and still grade",
-       bal.outstanding(docs) == (len(docs) - 2, 0), str(bal.outstanding(docs)))
+       B.owed(bal, docs) == (len(docs) - 2, 0), str(B.owed(bal, docs)))
 report("...a run with nothing on disk owes everything",
-       acc.outstanding(docs) == (len(docs), len(docs)), str(acc.outstanding(docs)))
+       B.owed(acc, docs) == (len(docs), len(docs)), str(B.owed(acc, docs)))
 report("--rescore owes every grade again, however many are on disk",
-       bal.outstanding(docs, rescore=True) == (len(docs) - 2, len(docs)),
-       str(bal.outstanding(docs, rescore=True)))
+       B.owed(bal, docs, rescore=True) == (len(docs) - 2, len(docs)),
+       str(B.owed(bal, docs, rescore=True)))
 stated = plan.describe(docs)
 row = next(line for line in stated.splitlines() if named("datalab") in line)
 cells = [c.strip() for c in row.split("\u2502")]

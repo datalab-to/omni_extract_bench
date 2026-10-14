@@ -220,108 +220,20 @@ def write_json_atomic(path: Path, obj, *, indent: int | None = None) -> None:
     os.replace(tmp, path)
 
 
-def needs_run(record_path: Path) -> bool:
-    """True when this document has not been attempted yet."""
-    if not record_path.exists():
-        return True
-    try:
-        json.loads(record_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return True
-    return False
+class Run(NamedTuple):
+    """One configuration and its folder: an address, as a `Path` is. What a run holds is whatever
+    its folder holds when it is read, so it is resumed, graded or shared between processes as it
+    stands. The functions below are the bookkeeping of any loop over its documents:
 
+        prepare(run, corpus, timeout)          # once: the folder, and settings.json
+        if needs(run, doc):                    # no readable record yet
+            record(run, doc.doc_id, harness.predict(...))
+        grade(run, docs)                       # scores.jsonl, one row per document
+    """
 
-class Run:
-    """One configuration measured: a provider plus its options, and the directory it writes to.
-    What it has done so far is on disk and in its progress reporter, never on the Run."""
-
-    def __init__(self, label: str, provider: str, options: dict, out: Path):
-        self.label, self.provider, self.options, self.out = label, provider, options, out
-
-    def __repr__(self) -> str:
-        return f"Run({self.label})"
-
-    def settings(self) -> dict:
-        """The whole resolved configuration, not just what the caller passed."""
-        from .harness.registry import settings_for
-
-        return settings_for(self.provider, self.options)
-
-    def head(self) -> dict:
-        """What every file this Run writes says about itself, before any numbers."""
-        return {"run": self.label, "provider": self.provider, "settings": self.settings()}
-
-    def outstanding(self, docs: list[Doc], verdicts: bool = True,
-                    rescore: bool = False) -> tuple[int, int]:
-        """How many of `docs` this Run would predict, and then grade. The two are independent:
-        every prediction can be on disk with every grade still owed."""
-        to_predict = sum(1 for doc in docs if self.needs(doc))
-        _, wanted = grading_split(self.out, docs, verdicts=verdicts, rescore=rescore)
-        return to_predict, len(wanted)
-
-    def score(self, docs: list[Doc], verdicts: bool = True, workers: int = 0,
-              rescore: bool = False, progress=NULL) -> list[dict]:
-        """Grade this Run's predictions, resumable per document, and write one line each. `self`
-        never reaches the process pool: a Run holding a live reporter cannot be pickled."""
-        known, wanted = grading_split(self.out, docs, verdicts=verdicts, rescore=rescore)
-        if len(wanted) < len(docs):
-            log.info("%s: %d of %d documents already scored, %d to grade",
-                     self.label, len(docs) - len(wanted), len(docs), len(wanted))
-        progress.start(len(wanted))
-
-        grade = functools.partial(score_one, provider=self.provider, out=self.out,
-                                  verdicts=verdicts)
-        graded: dict[str, dict] = {}
-
-        def so_far() -> list[dict]:
-            """Every row known, old and new, in corpus order. Merged over what is on disk, so a
-            `--limit 2` run cannot rewrite the file with two lines."""
-            merged = {**known, **graded}
-            return sorted(merged.values(), key=lambda r: (r.get("suite", ""), r["doc_id"]))
-
-        remaining = wanted
-        try:
-            if remaining and (workers or SCORE_WORKERS) > 1:
-                try:
-                    with cf.ProcessPoolExecutor(max_workers=workers or SCORE_WORKERS) as pool:
-                        futures = {pool.submit(grade, doc): doc.doc_id for doc in remaining}
-                        try:
-                            for future in cf.as_completed(futures):
-                                graded[futures[future]] = row = future.result()
-                                progress.record(error=row["status"] != "scored")
-                        except BaseException:
-                            pool.shutdown(wait=True, cancel_futures=True)
-                            raise
-                    remaining = []
-                except BrokenProcessPool:
-                    if graded:
-                        raise
-                    log.warning("scoring pool stopped before any document was graded, so "
-                                "grading continues in this process. If that was a Ctrl-C, "
-                                "press it again; if it was not, put the call under "
-                                "`if __name__ == \"__main__\":` or pass score_workers=1.")
-            for doc in remaining:
-                graded[doc.doc_id] = row = grade(doc)
-                progress.record(error=row["status"] != "scored")
-        finally:
-            progress.finish()
-            write_scores(self.out, so_far())
-            if len(graded) < len(wanted):
-                log.warning("scoring stopped after %d of %d documents; the rest are graded "
-                            "on the next run", len(graded), len(wanted))
-
-        answered = {**known, **graded}
-        return [answered[d.doc_id] for d in docs if d.doc_id in answered]
-
-    def asked(self) -> list[str]:
-        """Every resolved setting this Run sends the vendor, one string each."""
-        return [f"{k}={v if v != '' else chr(39) * 2}"
-                for k, v in sorted(self.settings().items())]
-
-    def cells(self, work: tuple[int, int] | None = None) -> list[str]:
-        """This Run as table cells: its name, and what it still owes when `work` is known. Cells
-        rather than a padded line, so the column is sized by the data."""
-        return [self.label, *(("", "") if work is None else (str(work[0]), str(work[1])))]
+    provider: str
+    options: dict
+    out: Path
 
     @property
     def predictions(self) -> Path:
@@ -333,15 +245,121 @@ class Run:
         """The schema sent, the cost, the manifest. What an audit reads."""
         return self.out / "records"
 
-    def needs(self, doc: Doc) -> bool:
-        """True when this Run has not attempted this document yet."""
-        return needs_run(self.records / f"{doc.doc_id}.json")
 
-    def store(self, doc: Doc, record: dict) -> None:
-        """Write one answer down. The prediction lands first and the record is the marker
-        `needs` reads, so a kill between them re-runs the document rather than skipping it."""
-        write_json_atomic(self.predictions / f"{doc.doc_id}.json", record["result"])
-        write_json_atomic(self.records / f"{doc.doc_id}.json", record)
+def settings(run: Run) -> dict:
+    """The whole resolved configuration, not just what the caller passed."""
+    from .harness.registry import settings_for
+
+    return settings_for(run.provider, run.options)
+
+
+def head(run: Run) -> dict:
+    """What every file a run writes says about itself, before any numbers."""
+    return {"run": run.out.name, "provider": run.provider, "settings": settings(run)}
+
+
+def prepare(run: Run, corpus: str, timeout: float, commit: str | None = None) -> None:
+    """The run's folder made, and what it asks written to its settings.json before it asks:
+    `summary.json` comes after grading, which an interrupted run never reaches. A folder that
+    holds another corpus is refused: it is named for provider and options, not corpus."""
+    run.predictions.mkdir(parents=True, exist_ok=True)
+    run.records.mkdir(parents=True, exist_ok=True)
+    path = run.out / "settings.json"
+    if path.exists() and (was := json.loads(path.read_text()).get("corpus")) not in (None, corpus):
+        raise ValueError(f"{run.out} holds {run.provider} against {was}, and this run is against "
+                         f"{corpus}. Use a different --out.")
+    write_json_atomic(path, {**head(run), "timeout_s": timeout, "corpus": corpus,
+                             **({"corpus_commit": commit} if commit else {})}, indent=2)
+
+
+def recorded(run: Run, doc_id: str) -> dict | None:
+    """What the run has recorded for the document, or None when nothing (or nothing readable)."""
+    path = run.records / f"{doc_id}.json"
+    try:
+        got = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("%s isn't readable (%s); its document counts as not predicted", path, exc)
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def needs(run: Run, doc: Doc) -> bool:
+    """True when the run has no readable record of the document: it was never attempted."""
+    return recorded(run, doc.doc_id) is None
+
+
+def record(run: Run, doc_id: str, result: dict) -> None:
+    """One answer written down. The prediction lands first and the record is the marker `needs`
+    reads, so a kill between them predicts the document again rather than skipping it."""
+    write_json_atomic(run.predictions / f"{doc_id}.json", result["result"])
+    write_json_atomic(run.records / f"{doc_id}.json", result)
+
+
+def owed(run: Run, docs: list[Doc], verdicts: bool = True, rescore: bool = False) -> tuple[int, int]:
+    """How many of `docs` the run would predict, and then grade. The two are independent: every
+    prediction can be on disk with every grade still owed."""
+    _, wanted = grading_split(run.out, docs, verdicts=verdicts, rescore=rescore)
+    return sum(needs(run, doc) for doc in docs), len(wanted)
+
+
+def grade(run: Run, docs: list[Doc], verdicts: bool = True, workers: int = 0,
+          rescore: bool = False, progress=NULL) -> list[dict]:
+    """Grade the run's predictions, resumable per document, and write one line each."""
+    known, wanted = grading_split(run.out, docs, verdicts=verdicts, rescore=rescore)
+    if len(wanted) < len(docs):
+        log.info("%s: %d of %d documents already scored, %d to grade",
+                 run.out.name, len(docs) - len(wanted), len(docs), len(wanted))
+    progress.start(len(wanted))
+
+    one = functools.partial(score_one, provider=run.provider, out=run.out, verdicts=verdicts)
+    graded: dict[str, dict] = {}
+
+    def so_far() -> list[dict]:
+        """Every row known, old and new, in corpus order. Merged over what is on disk, so a
+        `--limit 2` run cannot rewrite the file with two lines."""
+        merged = {**known, **graded}
+        return sorted(merged.values(), key=lambda r: (r.get("suite", ""), r["doc_id"]))
+
+    remaining = wanted
+    try:
+        if remaining and (workers or SCORE_WORKERS) > 1:
+            try:
+                with cf.ProcessPoolExecutor(max_workers=workers or SCORE_WORKERS) as pool:
+                    futures = {pool.submit(one, doc): doc.doc_id for doc in remaining}
+                    try:
+                        for future in cf.as_completed(futures):
+                            graded[futures[future]] = row = future.result()
+                            progress.record(error=row["status"] != "scored")
+                    except BaseException:
+                        pool.shutdown(wait=True, cancel_futures=True)
+                        raise
+                remaining = []
+            except BrokenProcessPool:
+                if graded:
+                    raise
+                log.warning("scoring pool stopped before any document was graded, so "
+                            "grading continues in this process. If that was a Ctrl-C, "
+                            "press it again; if it was not, put the call under "
+                            "`if __name__ == \"__main__\":` or pass score_workers=1.")
+        for doc in remaining:
+            graded[doc.doc_id] = row = one(doc)
+            progress.record(error=row["status"] != "scored")
+    finally:
+        progress.finish()
+        write_scores(run.out, so_far())
+        if len(graded) < len(wanted):
+            log.warning("scoring stopped after %d of %d documents; the rest are graded "
+                        "on the next run", len(graded), len(wanted))
+
+    answered = {**known, **graded}
+    return [answered[d.doc_id] for d in docs if d.doc_id in answered]
+
+
+def asked(run: Run) -> list[str]:
+    """Every resolved setting the run sends the vendor, one string each."""
+    return [f"{k}={v if v != '' else chr(39) * 2}" for k, v in sorted(settings(run).items())]
 
 
 class ProviderRun:
@@ -366,7 +384,7 @@ class ProviderRun:
         with self.halt:
             if not self.mine.is_set():
                 if why:
-                    log.error("%s: %s -- %s", run.label, why, exc)
+                    log.error("%s: %s -- %s", run.out.name, why, exc)
                 self.fatal.append(exc)
                 self.mine.set()
 
@@ -375,33 +393,33 @@ class ProviderRun:
             return
         try:
             with bar.calling():
-                record = predict(run.provider, doc.doc_path, doc.schema, timeout=timeout,
-                                 **run.options)
-            run.store(doc, record)
+                got = predict(run.provider, doc.doc_path, doc.schema, timeout=timeout,
+                              **run.options)
+            record(run, doc.doc_id, got)
         except (MissingDependency, MissingCredential) as exc:
             return self._give_up(run, exc)
         except AccountFailure as exc:
             return self._give_up(run, exc, "STOPPED, account-level failure")
         except Exception as exc:          # noqa: BLE001 -- unknown, so assume it is ours
             return self._give_up(run, exc)
-        cost = record.get("cost") or {}
-        bar.record(error=bool(record.get("error")), usd=cost.get("usd"),
+        cost = got.get("cost") or {}
+        bar.record(error=bool(got.get("error")), usd=cost.get("usd"),
                    credits=cost.get("credits"), wall_s=cost.get("wall_s"))
 
     def predict(self, docs: list[Doc], timeout: float, stop: threading.Event | None = None,
                 bars: Progress | None = None) -> None:
         """Every document of every Run here, and raise whatever stopped the vendor."""
-        reporters = {run.label: bars.reporter(run.label) if bars else NULL for run in self.runs}
+        reporters = {run.out.name: bars.reporter(run.out.name) if bars else NULL for run in self.runs}
         left, work = {}, []
         for run in self.runs:
             run.predictions.mkdir(parents=True, exist_ok=True)
             run.records.mkdir(parents=True, exist_ok=True)
-            todo = [doc for doc in docs if run.needs(doc)]
-            log.info("%s: %d documents, %d to run", run.label, len(docs), len(todo))
-            reporters[run.label].start(len(todo), self.workers)
+            todo = [doc for doc in docs if needs(run, doc)]
+            log.info("%s: %d documents, %d to run", run.out.name, len(docs), len(todo))
+            reporters[run.out.name].start(len(todo), self.workers)
             if not todo:
-                reporters[run.label].finish()
-            left[run.label] = len(todo)
+                reporters[run.out.name].finish()
+            left[run.out.name] = len(todo)
             work += [(run, doc) for doc in todo]
 
         def stopping() -> bool:
@@ -409,16 +427,16 @@ class ProviderRun:
 
         with cf.ThreadPoolExecutor(max_workers=self.workers) as pool:
             futures = {pool.submit(self._predict_one, run, doc, timeout, stopping,
-                                   reporters[run.label]): run.label for run, doc in work}
+                                   reporters[run.out.name]): run.out.name for run, doc in work}
             try:
                 for future in cf.as_completed(futures):
                     future.result()
                     # Note: finished when its own last document lands, not when the pool it
                     # shares drains, so each run is timed for itself.
-                    label = futures[future]
-                    left[label] -= 1
-                    if not left[label]:
-                        reporters[label].finish()
+                    name = futures[future]
+                    left[name] -= 1
+                    if not left[name]:
+                        reporters[name].finish()
             except KeyboardInterrupt:
                 self.mine.set()
                 for future in futures:
@@ -560,7 +578,7 @@ def workers_for(providers, requested: dict[str, int] | int | None) -> int:
 
 def plan(providers: list[str], options: dict | None = None,
          out: Path = Path("runs")) -> list[Run]:
-    """A `Run` per configuration measured, deduplicated by label. `--options` may give one
+    """A `Run` per configuration measured, deduplicated by folder. `--options` may give one
     provider a LIST, and each entry is a Run of its own."""
     from .harness.registry import out_name
 
@@ -577,8 +595,8 @@ def plan(providers: list[str], options: dict | None = None,
             raise ValueError(f"--options gives {provider!r} an empty list, so it would not "
                              f"run at all. Give it options, or leave it out.")
         for one in (asked if isinstance(asked, list) else [asked]):
-            label = out_name(provider, one)
-            runs.setdefault(label, Run(label, provider, one or {}, out / label))
+            name = out_name(provider, one)
+            runs.setdefault(name, Run(provider, one or {}, out / name))
     return list(runs.values())
 
 
@@ -660,7 +678,7 @@ class BenchmarkRun:
         """The whole plan as one renderable; with `docs`, what each Run still owes. `describe`
         renders it as text for a log, the command line prints it in colour."""
         work = None if docs is None else {
-            r.label: r.outstanding(docs, verdicts=self.verdicts, rescore=self.rescore)
+            r.out.name: owed(r, docs, verdicts=self.verdicts, rescore=self.rescore)
             for r in self.runs}
 
         # A table, so a cell too wide for the terminal wraps rather than being cut.
@@ -673,10 +691,11 @@ class BenchmarkRun:
         table.add_column("grade", justify="right", no_wrap=True)
         for provider in self.providers:
             for n, run in enumerate(provider.runs):
-                label, to_predict, to_grade = run.cells((work or {}).get(run.label))
+                got = (work or {}).get(run.out.name)
+                to_predict, to_grade = ("", "") if got is None else map(str, got)
                 table.add_row(Text(provider.heading() if n == 0 else "", style="bold"),
                               Text(str(provider.workers) if n == 0 else ""),
-                              Text(label), settings_cell(run.asked()),
+                              Text(run.out.name), settings_cell(asked(run)),
                               Text(to_predict, style="" if to_predict in ("", "0") else "bold"),
                               Text(to_grade, style="" if to_grade in ("", "0") else "bold"),
                               end_section=n == len(provider.runs) - 1)
@@ -689,25 +708,13 @@ class BenchmarkRun:
         return "\n".join(line.rstrip() for line in console.file.getvalue().splitlines())
 
     def prepare(self) -> None:
-        """Each Run's directory, and what it asked, written before it asks -- `summary.json` comes
-        after grading, which an interrupted run never reaches."""
         for run in self.runs:
-            run.out.mkdir(parents=True, exist_ok=True)
-            settings = run.out / "settings.json"
-            if settings.exists():
-                # Named for provider and options, not corpus: two corpora would share one.
-                was = json.loads(settings.read_text()).get("corpus")
-                if was and was != self.corpus_id:
-                    raise ValueError(f"{run.out} holds {run.provider} against {was}, and this "
-                                     f"run is against {self.corpus_id}. Use a different --out.")
-            commit = {"corpus_commit": self.corpus_commit} if self.corpus_commit else {}
-            write_json_atomic(settings, {**run.head(), "timeout_s": self.timeout,
-                                         "corpus": self.corpus_id, **commit}, indent=2)
+            prepare(run, self.corpus_id, self.timeout, self.corpus_commit)
 
     def predict(self, docs: list[Doc]) -> None:
         """Every adapter at once. Predicting is network wait, so they do not slow each other."""
         stop = threading.Event()
-        with Progress([r.label for r in self.runs]) as bars:
+        with Progress([r.out.name for r in self.runs]) as bars:
             with cf.ThreadPoolExecutor(max_workers=len(self.providers)) as pool:
                 futures = {pool.submit(p.predict, docs, self.timeout, stop, bars): p.adapter
                            for p in self.providers}
@@ -732,17 +739,17 @@ class BenchmarkRun:
         the end of a run that spends hours at the start of it.
         """
         summary = {}
-        with Progress([r.label for r in self.runs]) as bars:
+        with Progress([r.out.name for r in self.runs]) as bars:
             for run in self.runs:
-                mine = run.score(docs, verdicts=self.verdicts, workers=self.score_workers,
-                                 rescore=self.rescore, progress=bars.reporter(run.label))
-                summary[run.label] = {**run.head(), **summarise(mine)}
+                mine = grade(run, docs, verdicts=self.verdicts, workers=self.score_workers,
+                             rescore=self.rescore, progress=bars.reporter(run.out.name))
+                summary[run.out.name] = {**head(run), **summarise(mine)}
                 write_json_atomic(run.out / "summary.json",
-                                  {**run.head(),
+                                  {**head(run),
                                    **summarise(list(read_scores(run.out).values()))}, indent=2)
-                s = summary[run.label]
+                s = summary[run.out.name]
                 log.info("%s: accuracy %.4f over %d suites, coverage %d/%d",
-                         run.label, s["accuracy"], len(s["per_suite"]), s["scored"],
+                         run.out.name, s["accuracy"], len(s["per_suite"]), s["scored"],
                          s["documents"])
         return summary
 

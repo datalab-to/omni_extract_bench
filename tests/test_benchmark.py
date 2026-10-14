@@ -21,7 +21,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 from omni_extract_bench import score                            # noqa: E402
 from omni_extract_bench.benchmark import (                        # noqa: E402
-    Doc, Run, needs_run, summarise)
+    Doc, Run, grade, needs, summarise)
 
 FAILS = []
 
@@ -35,16 +35,18 @@ def report(name, cond, detail=""):
 TMP = Path(tempfile.mkdtemp())
 
 print("WHAT A RESUME SKIPS")
+_resume = Run("v", {}, TMP / "resume")
+(_resume.records).mkdir(parents=True)
 for label, exists in (("no record at all", False), ("a record from a previous run", True)):
-    path = TMP / f"{abs(hash(label))}.json"
+    doc = Doc(str(abs(hash(label))), "s", TMP / "x.pdf", TMP / "g.json", {})
     if exists:
-        path.write_text(json.dumps({"result": {"a": 1}, "error": None}))
-    report(f"re-attempt {label}: {not exists}", needs_run(path) is (not exists))
-_failed = TMP / "failed.json"
-_failed.write_text(json.dumps({"result": {"__error__": "x"},
-                               "error": {"type": "VendorError", "transient": True}}))
+        (_resume.records / f"{doc.doc_id}.json").write_text(
+            json.dumps({"result": {"a": 1}, "error": None}))
+    report(f"re-attempt {label}: {not exists}", needs(_resume, doc) is (not exists))
+(_resume.records / "failed.json").write_text(json.dumps(
+    {"result": {"__error__": "x"}, "error": {"type": "VendorError", "transient": True}}))
 report("a recorded failure is not re-attempted either, transient or not",
-       needs_run(_failed) is False)
+       needs(_resume, Doc("failed", "s", TMP / "x.pdf", TMP / "g.json", {})) is False)
 
 print("\nEVERY DOCUMENT COMES BACK, FAILURES INCLUDED")
 root, out = TMP / "corpus", TMP / "run"
@@ -70,7 +72,7 @@ for doc_id, (suite, pred) in WRITTEN.items():
     docs.append(Doc(doc_id, suite, root / f"{doc_id}.pdf", root / f"{doc_id}.json", SCH))
 docs.append(Doc("never-ran", "internal", root / "x.pdf", root / "perfect.json", SCH))
 
-rows = Run("vendor", "vendor", {}, out).score(docs)
+rows = grade(Run("vendor", {}, out), docs)
 by_id = {r["doc_id"]: r for r in rows}
 report("one row per document, including the one never predicted", len(rows) == 6, str(len(rows)))
 report("a correct prediction scores 1.0", by_id["perfect"]["accuracy"] == 1.0)
@@ -97,7 +99,7 @@ ref_root, ref_out = TMP / "refcorpus", TMP / "refrun"
 ref_root.mkdir()
 (ref_root / "r.json").write_text(json.dumps(REF_GOLD))
 (ref_out / "predictions" / "r.json").write_text(json.dumps(REF_GOLD))
-ref_rows = Run("v", "v", {}, ref_out).score(
+ref_rows = grade(Run("v", {}, ref_out),
     [Doc("r", "extractbench", ref_root / "r.pdf", ref_root / "r.json", REF_SCHEMA)])
 report("a $ref schema scores instead of erroring", ref_rows[0]["status"] == "scored",
        str(ref_rows[0].get("error")))
@@ -393,7 +395,7 @@ _vendor.adapter = lambda provider: (_ for _ in ()).throw(
     MissingDependency("the datalab adapter could not import what it needs"))
 try:
     _bench.ProviderRun("datalab",
-                       [_bench.Run("datalab", "datalab", {}, _out)], 3
+                       [_bench.Run("datalab", {}, _out)], 3
                        ).predict(_docs, timeout=30)
     report("a missing SDK stops the run", False, "it returned normally")
 except MissingDependency:
@@ -405,7 +407,7 @@ report("nothing is written for it",
        and not list((_out / "records").glob("*.json")),
        "a prediction was stored, so a resume would skip it forever")
 report("...so every document stays resumable",
-       all(needs_run(_out / "records" / f"{d.doc_id}.json") for d in _docs))
+       all(needs(_bench.Run("datalab", {}, _out), d) for d in _docs))
 
 print("\nA MISSING EXTRA SAYS WHAT TO INSTALL")
 import unittest.mock                                                       # noqa: E402
