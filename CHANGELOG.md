@@ -13,3 +13,9 @@ unchanged unless a line below says otherwise.
   `recorded(run, doc_id)` reads a record, and `prepare(run, corpus, timeout)` makes the folder
   and writes settings.json.
 - `needs_run(path)` is gone; use `needs(run, doc)` or `recorded(run, doc_id)`.
+- A failed call writes no prediction. `predict`'s `record["result"]` is `None` when
+  `record["error"]` is set, and predictions/ holds only answers; the error is in records/.
+  Grading reads a failure from the record. A run folder from before still grades the same,
+  because its records already carry the error. A folder of your own predictions that marks a
+  failure with `{"__error__": ...}` should leave that file out instead: a missing prediction is
+  graded as failed.

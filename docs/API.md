@@ -93,7 +93,7 @@ You get back the answer and the evidence for it.
 
 ```python
 record = predict("datalab", "invoice.pdf", schema, mode="accurate")
-record["result"]         # the extraction, shaped like your schema
+record["result"]         # the extraction, shaped like your schema; None when the call failed
 record["raw"]            # the vendor's response, as received
 record["cost"]           # what the vendor said this cost, plus wall_s and attempts
 record["error"]          # None, or what went wrong
@@ -130,7 +130,8 @@ MissingDependency    # an adapter whose SDK isn't installed
 AccountFailure       # the account can't pay
 ```
 
-Everything else comes back in `record["error"]` with the prediction beside it.
+Everything else comes back in `record["error"]` (type, HTTP status, whether it's transient, and
+the message), with `record["result"]` set to `None`.
 
 
 ## benchmark
@@ -465,7 +466,10 @@ suite as well.
 ### predictions/&lt;doc_id&gt;.json
 
 The bare extraction, shaped like the schema. This is what scoring reads, and it's the same
-thing `predict` returns as `record["result"]`.
+thing `predict` returns as `record["result"]`. Only answers are written here: a failed call has
+no prediction file, and its error is in its record. A document with no prediction is graded as
+failed (`"status": "error"`), whether the call failed or the file is missing from a folder you
+brought, so it lowers coverage instead of being left out of it.
 
 ### records/&lt;doc_id&gt;.json
 

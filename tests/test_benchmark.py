@@ -21,7 +21,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 from omni_extract_bench import score                            # noqa: E402
 from omni_extract_bench.benchmark import (                        # noqa: E402
-    Doc, Run, grade, needs, summarise)
+    Doc, Run, grade, needs, record, summarise)
 
 FAILS = []
 
@@ -44,13 +44,14 @@ for label, exists in (("no record at all", False), ("a record from a previous ru
             json.dumps({"result": {"a": 1}, "error": None}))
     report(f"re-attempt {label}: {not exists}", needs(_resume, doc) is (not exists))
 (_resume.records / "failed.json").write_text(json.dumps(
-    {"result": {"__error__": "x"}, "error": {"type": "VendorError", "transient": True}}))
+    {"result": None, "error": {"type": "VendorError", "transient": True}}))
 report("a recorded failure is not re-attempted either, transient or not",
        needs(_resume, Doc("failed", "s", TMP / "x.pdf", TMP / "g.json", {})) is False)
 
 print("\nEVERY DOCUMENT COMES BACK, FAILURES INCLUDED")
 root, out = TMP / "corpus", TMP / "run"
 (out / "predictions").mkdir(parents=True)
+(out / "records").mkdir()
 root.mkdir()
 SCH = {"type": "object", "properties": {
     "id": {"type": "string"},
@@ -61,7 +62,6 @@ WRITTEN = {
     "perfect":     ("micro1",   GOLD),
     "one-misread": ("micro1",   {"id": "A-1", "rows": [{"sku": "X", "qty": 1},
                                                        {"sku": "Z", "qty": 2}]}),
-    "refused":     ("micro1",   {"__error__": "HTTP 400: schema too deep"}),
     "nothing":     ("internal", {}),
     "good":        ("internal", GOLD),
 }
@@ -70,6 +70,10 @@ for doc_id, (suite, pred) in WRITTEN.items():
     (root / f"{doc_id}.json").write_text(json.dumps(GOLD))
     (out / "predictions" / f"{doc_id}.json").write_text(json.dumps(pred))
     docs.append(Doc(doc_id, suite, root / f"{doc_id}.pdf", root / f"{doc_id}.json", SCH))
+(root / "refused.json").write_text(json.dumps(GOLD))
+docs.append(Doc("refused", "micro1", root / "refused.pdf", root / "refused.json", SCH))
+record(Run("vendor", {}, out), "refused", {"result": None, "error": {
+    "type": "VendorError", "status": 400, "transient": False, "message": "schema too deep"}})
 docs.append(Doc("never-ran", "internal", root / "x.pdf", root / "perfect.json", SCH))
 
 rows = grade(Run("vendor", {}, out), docs)
@@ -82,6 +86,10 @@ for doc_id in ("refused", "nothing", "never-ran"):
     row = by_id[doc_id]
     report(f"{doc_id}: status=error with NULL metrics, and a reason",
            row["status"] == "error" and "accuracy" not in row and row.get("error"), str(row))
+report("a failed call writes no prediction: predictions/ holds only answers",
+       not (out / "predictions" / "refused.json").exists())
+report("...and its row carries the record's error",
+       by_id["refused"]["error"] == "VendorError: schema too deep", str(by_id["refused"]))
 report("scores.jsonl has a line per document",
        sum(1 for _ in (out / "scores.jsonl").open()) == 6)
 

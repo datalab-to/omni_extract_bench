@@ -106,10 +106,9 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
         if usd is not None:
             got = got._replace(cost=Cost(usd=usd, source=field))
     if error is not None:
-        got = Extraction(result={"__error__": f"{type(error).__name__}: {error}"[:600]},
-                         raw=error.body, cost=Cost())
+        got = Extraction(result={}, raw=error.body, cost=Cost())
     return {
-        "result": got.result,
+        "result": None if error is not None else got.result,
         "raw": got.raw,
         "error": None if error is None else {
             "type": type(error).__name__,

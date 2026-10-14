@@ -291,9 +291,11 @@ def needs(run: Run, doc: Doc) -> bool:
 
 
 def record(run: Run, doc_id: str, result: dict) -> None:
-    """One answer written down. The prediction lands first and the record is the marker `needs`
-    reads, so a kill between them predicts the document again rather than skipping it."""
-    write_json_atomic(run.predictions / f"{doc_id}.json", result["result"])
+    """One answer written down: its prediction, if it has one, then the record. predictions/ holds
+    only answers; a failure is described in the record alone. The record is the marker `needs`
+    reads, so a kill between the two predicts the document again rather than skipping it."""
+    if result["error"] is None:
+        write_json_atomic(run.predictions / f"{doc_id}.json", result["result"])
     write_json_atomic(run.records / f"{doc_id}.json", result)
 
 
@@ -313,7 +315,7 @@ def grade(run: Run, docs: list[Doc], verdicts: bool = True, workers: int = 0,
                  run.out.name, len(docs) - len(wanted), len(docs), len(wanted))
     progress.start(len(wanted))
 
-    one = functools.partial(score_one, provider=run.provider, out=run.out, verdicts=verdicts)
+    one = functools.partial(score_one, run=run, verdicts=verdicts)
     graded: dict[str, dict] = {}
 
     def so_far() -> list[dict]:
@@ -452,23 +454,28 @@ class ProviderRun:
 SCORE_WORKERS = min(8, os.cpu_count() or 1)
 
 
-def score_one(doc: Doc, *, provider: str, out: Path, verdicts: bool = False) -> dict:
+def score_one(doc: Doc, *, run: Run, verdicts: bool = False) -> dict:
     """Grade one prediction on disk and return its row. Module-level and picklable for the
-    process pool, and it never raises: one bad document is an error row."""
-    row = {"doc_id": doc.doc_id, "suite": doc.suite, "provider": provider}
-    path = out / "predictions" / f"{doc.doc_id}.json"
+    process pool, and it never raises: one bad document is an error row.
+
+    A document fails when its record says the call failed, or when it has no prediction: a
+    folder of predictions you bring is your submission, so a missing file counts against
+    coverage rather than being left out of it."""
+    row = {"doc_id": doc.doc_id, "suite": doc.suite, "provider": run.provider}
+    if failed := (recorded(run, doc.doc_id) or {}).get("error"):
+        return {**row, "status": "error", "error": f"{failed['type']}: {failed['message']}"}
     try:
-        pred = json.loads(path.read_text())
+        pred = json.loads((run.predictions / f"{doc.doc_id}.json").read_text())
     except (OSError, json.JSONDecodeError):
         return {**row, "status": "error", "error": "no prediction on disk"}
-    if not (isinstance(pred, dict) and pred and "__error__" not in pred):
-        reason = (pred or {}).get("__error__") if isinstance(pred, dict) else "not an object"
-        return {**row, "status": "error", "error": str(reason or "empty prediction")}
+    if not (isinstance(pred, dict) and pred):
+        return {**row, "status": "error",
+                "error": "empty prediction" if pred == {} else "not an object"}
     try:
         result = score(pred, json.loads(doc.gt_path.read_text()), doc.schema, verdicts=verdicts)
         if verdicts:
-            (out / "verdicts").mkdir(parents=True, exist_ok=True)
-            (out / "verdicts" / f"{doc.doc_id}.jsonl").write_text(
+            (run.out / "verdicts").mkdir(parents=True, exist_ok=True)
+            (run.out / "verdicts" / f"{doc.doc_id}.jsonl").write_text(
                 "\n".join(json.dumps(v._asdict(), default=str)
                           for v in result.pop("verdicts")))
     except Exception as exc:                            # noqa: BLE001 -- the message is the row
