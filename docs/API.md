@@ -273,7 +273,9 @@ oeb benchmark --providers datalab \
   --manifest manifests/sample40-predictive-across-vendors-2026-09-22.parquet
 ```
 
-*Any HuggingFace dataset*, pinned to a revision with `@`. For example,
+*Any HuggingFace dataset*, pinned to a revision with `@`. Its manifest and its `gold/` folder
+are downloaded up front; each PDF is downloaded only when it is predicted, so keep the gold
+under `gold/`. For example,
 
 ```bash
 oeb benchmark --providers datalab --dataset hf://datasets/someone/their-corpus@v2

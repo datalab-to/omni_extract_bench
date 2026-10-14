@@ -105,6 +105,9 @@ def fetch(dataset: str | Path, manifest: str = MANIFEST) -> Path:
     """The dataset as a folder on disk: a folder as given, or a HuggingFace dataset's snapshot,
     named for its commit. A snapshot lands in the HuggingFace cache, shared between every
     checkout and every working directory, so the second folder you run from resolves it free.
+
+    Note: a snapshot holds the manifest and gold/ only, which are small; each document is
+    fetched when it is predicted (`document`), so a `--limit 5` run downloads five.
     """
     if (at := hf_dataset(dataset)) is None:
         return Path(dataset).expanduser()
@@ -130,8 +133,9 @@ def fetch(dataset: str | Path, manifest: str = MANIFEST) -> Path:
             f"holds one or more manifests, each following the same structure as ours at "
             f"https://huggingface.co/datasets/{REPO}. Name another with --manifest, or point "
             f"--dataset at a folder of your own.")
-    log.info("fetching %s into the huggingface cache", dataset)
-    return Path(snapshot_download(repo, repo_type="dataset", revision=revision))
+    log.info("fetching %s's %s and gold into the huggingface cache", dataset, manifest)
+    return Path(snapshot_download(repo, repo_type="dataset", revision=revision,
+                                  allow_patterns=[manifest, "gold/*"]))
 
 
 def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[Doc]:
@@ -479,14 +483,27 @@ def configurations(providers: list[str], options: dict | None = None) -> list[tu
 
 
 def corpus(dataset: str | Path, manifest: str = MANIFEST, suites: list[str] | None = None,
-           limit: int = 0) -> tuple[list[Doc], str | None]:
-    """The documents selected, and the commit of the dataset they came from (None on disk).
-    Paths in the manifest resolve against the dataset's folder, wherever the manifest is in it."""
+           limit: int = 0) -> tuple[list[Doc], Path]:
+    """The documents selected, and the dataset's folder on disk. Paths in the manifest resolve
+    against that folder, wherever the manifest is in it."""
     root = fetch(dataset, manifest)
     docs = read_manifest(root / manifest, root, suites=suites, limit=limit)
     if not docs:
         raise ValueError("no documents selected: check --suites and --limit")
-    return docs, None if hf_dataset(dataset) is None else root.name
+    return docs, root
+
+
+def document(p: Plan, doc: Doc) -> Path:
+    """A document's file, fetched from HuggingFace the first time for an `hf://` dataset.
+
+    Note: fetched at the commit the manifest was read at, not at the branch's head, so a commit
+    pushed mid-run cannot pair one commit's document with another's gold."""
+    if doc.doc_path.exists() or (at := hf_dataset(p.dataset)) is None:
+        return doc.doc_path
+    from huggingface_hub import hf_hub_download
+
+    return Path(hf_hub_download(at[0], str(doc.doc_path.relative_to(p.root)),
+                                repo_type="dataset", revision=p.root.name))
 
 
 class Plan(NamedTuple):
@@ -497,7 +514,7 @@ class Plan(NamedTuple):
     docs: tuple[Doc, ...]
     dataset: str
     manifest: str
-    commit: str | None
+    root: Path                             # the dataset's folder on disk, `fetch`
     timeout: float
     workers: dict[str, int] | int | None   # documents in flight per adapter, `workers_for`
     score_workers: int
@@ -529,8 +546,8 @@ def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path 
         if path.exists() and (was := json.loads(path.read_text()).get("dataset")) not in (None, ident):
             raise ValueError(f"{run.out} is a run on dataset {was}, not {ident}, and a run never "
                              f"mixes datasets; pass another --out, or --dataset {was}")
-    docs, commit = corpus(dataset, manifest, suites, limit)
-    return Plan(tuple(runs.values()), tuple(docs), str(dataset), manifest, commit, timeout,
+    docs, root = corpus(dataset, manifest, suites, limit)
+    return Plan(tuple(runs.values()), tuple(docs), str(dataset), manifest, root, timeout,
                 predict_workers, score_workers, verdicts, rescore, score_only)
 
 
@@ -545,7 +562,8 @@ def predict_all(p: Plan) -> None:
     stop = threading.Event()
     by: dict[str, list[Run]] = {}
     for run in p.runs:
-        prepare(run, p.dataset, p.timeout, p.commit, p.manifest)
+        prepare(run, p.dataset, p.timeout, None if hf_dataset(p.dataset) is None else p.root.name,
+                p.manifest)
         by.setdefault(resolve(run.provider), []).append(run)
 
     def drain(adapter: str, runs: list[Run], bars: Progress) -> None:
@@ -567,9 +585,16 @@ def predict_all(p: Plan) -> None:
             if stop.is_set() or halt.is_set():
                 return
             try:
+                file = document(p, d)
+            except Exception as exc:  # noqa: BLE001
+                # Note: a document whose file can't be had isn't the vendor's failure: nothing
+                # is recorded, so it is neither graded as the vendor's nor kept from a resume.
+                log.warning("%s: no file for %s: %s", r.out.name, d.doc_id, str(exc)[:200])
+                bar[r.out.name].record(error=True)
+                return
+            try:
                 with bar[r.out.name].calling():
-                    got = predict(r.provider, d.doc_path, d.schema, timeout=p.timeout,
-                                  **r.options)
+                    got = predict(r.provider, file, d.schema, timeout=p.timeout, **r.options)
                 record(r, d.doc_id, got)
             except BaseException:
                 # Note: set here, by the worker that failed, not when the main thread gets to

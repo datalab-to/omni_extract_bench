@@ -40,3 +40,7 @@ unchanged unless a line below says otherwise.
 - settings.json records `dataset` (without its revision), `commit` and `manifest` in place of
   `corpus` and `corpus_commit`. A run folder is refused only for another dataset, not for
   another manifest of the same one.
+- A HuggingFace dataset is fetched lazily: the manifest and gold/ up front, each document's PDF
+  only when it is predicted, at the commit the manifest was read at. A `--limit 5` run
+  downloads five PDFs, not the corpus. A dataset of your own on HuggingFace keeps its gold
+  under gold/ for this; a folder on disk needs nothing.

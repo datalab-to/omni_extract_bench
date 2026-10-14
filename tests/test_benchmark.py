@@ -230,6 +230,7 @@ except ValueError as exc:
 import huggingface_hub as _hf                                                  # noqa: E402
 
 _real_exists, _real_snapshot = _hf.file_exists, _hf.snapshot_download
+_real_download = _hf.hf_hub_download
 _hf.file_exists = lambda *a, **k: False
 _hf.snapshot_download = lambda *a, **k: (_ for _ in ()).throw(
     AssertionError("a gigabyte was downloaded before the manifest was asked for"))
@@ -248,7 +249,9 @@ try:
     report("the check and the download both ask for the addressed file and revision",
            _asked == [(("someone/corpus", "manifests/nope.parquet"),
                        {"repo_type": "dataset", "revision": "v2"}),
-                      (("someone/corpus",), {"repo_type": "dataset", "revision": "v2"})],
+                      (("someone/corpus",), {"repo_type": "dataset", "revision": "v2",
+                                             "allow_patterns": ["manifests/nope.parquet",
+                                                                "gold/*"]})],
            str(_asked))
     _hf.file_exists = lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
     report("...but a hub that cannot be reached does not stop a cached corpus",
@@ -267,8 +270,22 @@ try:
                        manifest="manifests/sub.parquet")
     report("a manifest below a dataset's root reads paths from the dataset's root",
            _sub.docs[0].doc_path == _snap / "pdfs" / "d0.pdf", str(_sub.docs[0].doc_path))
-    report("...and the commit it was read at is kept", _sub.commit == "0123abcd")
-    _bench.prepare(_sub.runs[0], _sub.dataset, _sub.timeout, _sub.commit, _sub.manifest)
+    report("...and the commit it was read at is kept", _sub.root.name == "0123abcd")
+    _bench.prepare(_sub.runs[0], _sub.dataset, _sub.timeout, _sub.root.name, _sub.manifest)
+    _got = []
+    _hf.hf_hub_download = lambda *a, **k: _got.append((a, k)) or str(_snap / "pdfs" / "d0.pdf")
+    try:
+        report("a document is fetched by its path in the dataset, at the commit read",
+               _bench.document(_sub, _sub.docs[0]) == _snap / "pdfs" / "d0.pdf"
+               and _got == [(("o/n", "pdfs/d0.pdf"),
+                             {"repo_type": "dataset", "revision": "0123abcd"})], str(_got))
+        (_snap / "pdfs").mkdir()
+        (_snap / "pdfs" / "d0.pdf").write_bytes(b"%PDF")
+        _got.clear()
+        _bench.document(_sub, _sub.docs[0])
+        report("...and only the first time", _got == [], str(_got))
+    finally:
+        _hf.hf_hub_download = _real_download
     _written = json.loads((_sub.runs[0].out / "settings.json").read_text())
     report("...and settings.json records it beside the dataset and manifest",
            _written["dataset"] == "hf://datasets/o/n" and _written["commit"] == "0123abcd"
@@ -382,7 +399,7 @@ _vendor.adapter = lambda provider: (_ for _ in ()).throw(
 try:
     _bench.predict_all(_bench.Plan(
         runs=(_bench.Run("datalab", {}, _out),), docs=tuple(_docs), dataset=str(TMP),
-        manifest="manifest.parquet", commit=None, timeout=30, workers=3, score_workers=1,
+        manifest="manifest.parquet", root=TMP, timeout=30, workers=3, score_workers=1,
         verdicts=True, rescore=False, score_only=False))
     report("a missing SDK stops the run", False, "it returned normally")
 except MissingDependency:
