@@ -224,8 +224,10 @@ B.write_json_atomic = lambda path, obj, **kw: (
     real_write_json(path, obj, **kw) if path.name == "settings.json"
     else (_ for _ in ()).throw(OSError("No space left on device")))
 try:
-    B.predict_all(B.Plan((B.Run("datalab", {}, disk / "x"),), tuple(twenty), "test", None, 5,
-                         4, 1, True, False, False))
+    B.predict_all(B.Plan(runs=(B.Run("datalab", {}, disk / "x"),), docs=tuple(twenty),
+                         dataset=str(disk), manifest="manifest.parquet", commit=None, timeout=5,
+                         workers=4, score_workers=1, verdicts=True, rescore=False,
+                         score_only=False))
     report("a failed write stops the vendor", False, "it returned normally")
 except OSError:
     report("a failed write stops the vendor", True)

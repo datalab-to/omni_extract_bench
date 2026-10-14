@@ -29,3 +29,14 @@ unchanged unless a line below says otherwise.
 - `run(...)` takes no `confirm`; the command line asks before it calls `execute`.
 - A folder holding another corpus is refused by `plan`, before anything is read.
 - `--score-only` writes no settings.json: it asks nothing.
+- `--dataset` and `--manifest` replace `--manifest <file>` and `--data-root`. The dataset is a
+  folder or `hf://datasets/<org>/<name>[@<revision>]` (default: ours), and `--manifest` names a
+  parquet inside it (default: `manifest.parquet`); paths in it resolve against the dataset's
+  folder. So `--manifest hf://datasets/datalab-to/omni_extract_bench/manifests/sample40.parquet`
+  is `--manifest manifests/sample40.parquet`, and `--manifest my/corpus/manifest.parquet` is
+  `--dataset my/corpus`. A manifest kept outside its corpus moves into it. In Python, `plan`
+  takes `dataset` and `manifest`, `hf_path` is `hf_dataset`, and `fetch(dataset, manifest)`
+  takes the dataset.
+- settings.json records `dataset` (without its revision), `commit` and `manifest` in place of
+  `corpus` and `corpus_commit`. A run folder is refused only for another dataset, not for
+  another manifest of the same one.

@@ -212,7 +212,8 @@ def confirm_plan(plan) -> bool:
 def cmd_benchmark(args) -> int:
     from . import benchmark
 
-    p = benchmark.plan(args.providers, out=args.out, data_root=args.data_root,
+    p = benchmark.plan(args.providers, out=args.out,
+                       dataset=args.dataset or benchmark.DEFAULT_DATASET,
                        manifest=args.manifest, suites=args.suites,
                        limit=args.limit, timeout=args.timeout,
                        predict_workers=read_workers(args.predict_workers),
@@ -258,19 +259,16 @@ def main(argv=None) -> int:
                         "openai/gpt-5.6-sol. `oeb providers` lists them")
     b.add_argument("--out", type=pathlib.Path, default=pathlib.Path("runs"),
                    help="where predictions, scores and the summary go. Default: runs/")
-    b.add_argument("--data-root", type=pathlib.Path,
-                   help="what a relative path in a manifest on disk resolves against. "
-                        "Default: the manifest's own directory. Not with an hf:// manifest, "
-                        "whose paths are its dataset's")
     # Note: a str, not a Path, because a Path folds the '//' out of an hf:// address.
-    b.add_argument("--manifest",
-                   help="the documents to run: a parquet on disk, or one in a HuggingFace "
-                        "dataset as hf://datasets/<org>/<name>[@<revision>]/<path>, which is "
-                        "fetched into the HuggingFace cache. Columns: doc_id, suite, doc_path, "
-                        "gt_path, and a schema column holding JSON. An absolute doc_path is "
-                        "used as it is; a relative one resolves against --data-root, or the "
-                        "dataset's root. Default: ours, "
-                        "hf://datasets/datalab-to/omni_extract_bench/manifest.parquet")
+    b.add_argument("--dataset", default=None,
+                   help="the dataset: a folder on disk, or hf://datasets/<org>/<name>[@<revision>], "
+                        "which is fetched into the HuggingFace cache. Default: ours, "
+                        "hf://datasets/datalab-to/omni_extract_bench")
+    b.add_argument("--manifest", default="manifest.parquet",
+                   help="which documents of the dataset to run: a parquet inside it, e.g. "
+                        "manifests/sample40-predictive-across-vendors-2026-09-22.parquet. Columns: "
+                        "doc_id, suite, doc_path, gt_path, and a schema column holding JSON; "
+                        "paths resolve against the dataset's folder. Default: manifest.parquet")
     b.add_argument("--suites", nargs="+", help="limit to these suites")
     b.add_argument("--limit", type=int, default=0, help="first N documents; for a smoke test")
     b.add_argument("--timeout", type=float, default=1800,

@@ -117,35 +117,27 @@ report("benchmark-only annotations are not gradable slots either way",
 report("the caller's schema is not mutated by preparing it",
        "$defs" in REF_SCHEMA and "$ref" in json.dumps(REF_SCHEMA))
 
-print("\nWHERE A MANIFEST IS: ON DISK, OR IN A HUGGINGFACE DATASET")
-from omni_extract_bench.benchmark import (                                     # noqa: E402
-    DEFAULT_MANIFEST, HfPath, hf_path)
+print("\nWHERE A DATASET IS: ON DISK, OR ON HUGGINGFACE")
+from omni_extract_bench.benchmark import DEFAULT_DATASET, dataset_id, hf_dataset  # noqa: E402
 
-_SUBSET = "hf://datasets/datalab-to/omni_extract_bench/manifests/sample40.parquet"
+_SUBSET = "manifests/sample40.parquet"
 report("ours is an address like any other",
-       hf_path(DEFAULT_MANIFEST)
-       == HfPath("datalab-to/omni_extract_bench", None, "manifest.parquet"))
-report("a manifest below the root keeps its whole path",
-       hf_path(_SUBSET) == HfPath("datalab-to/omni_extract_bench", None,
-                                  "manifests/sample40.parquet"))
-report("@revision pins the dataset",
-       hf_path("hf://datasets/o/n@v1.2/m.parquet") == HfPath("o/n", "v1.2", "m.parquet"))
-for _addr in (DEFAULT_MANIFEST, _SUBSET, "hf://datasets/o/n@abc123/a/b.parquet"):
-    report(f"an address prints back as written: {_addr}", str(hf_path(_addr)) == _addr)
-for _local in ("manifest.parquet", "runs/../m.parquet", "/abs/m.parquet",
-               Path("rel/m.parquet"), Path("/abs/m.parquet")):
-    report(f"a path on disk is not an address: {_local!r}", hf_path(_local) is None)
-for _bad in ("hf://models/o/n/m.parquet", "hf://spaces/o/n/m.parquet", "hf://datasets/o",
-             "hf://datasets/o/n", "hf://datasets/o/n/", "hf://datasets//n/m.parquet",
-             "hf://datasets/o/n@/m.parquet"):
+       hf_dataset(DEFAULT_DATASET) == ("datalab-to/omni_extract_bench", None))
+report("@revision pins the dataset", hf_dataset("hf://datasets/o/n@v1.2") == ("o/n", "v1.2"))
+report("a dataset is itself whatever its revision",
+       dataset_id("hf://datasets/o/n@v1.2") == dataset_id("hf://datasets/o/n") == "hf://datasets/o/n")
+for _local in ("corpus", "runs/../corpus", "/abs/corpus", Path("rel/corpus"), Path("/abs/c")):
+    report(f"a path on disk is not an address: {_local!r}", hf_dataset(_local) is None)
+for _bad in ("hf://models/o/n", "hf://spaces/o/n", "hf://datasets/o", "hf://datasets/o/",
+             "hf://datasets//n", "hf://datasets/o/n@", "hf://datasets/o/n/manifest.parquet"):
     try:
-        hf_path(_bad)
+        hf_dataset(_bad)
         report(f"a malformed address is refused: {_bad}", False, "it was accepted")
     except ValueError as exc:
         report(f"a malformed address is refused, and named: {_bad}",
-               _bad in str(exc) and DEFAULT_MANIFEST in str(exc), str(exc))
+               _bad in str(exc) and DEFAULT_DATASET in str(exc), str(exc))
 try:
-    hf_path(Path(_SUBSET))
+    hf_dataset(Path(DEFAULT_DATASET))
     report("an address made a Path is refused", False, "it was accepted")
 except ValueError as exc:
     report("an address made a Path is refused, with the fix", "as a str" in str(exc), str(exc))
@@ -159,7 +151,8 @@ BYO_SCHEMA = {"type": "object", "properties": {"a": {"type": "string"}}}
 
 
 def byo(tmp, how):
-    """Two documents and a manifest, with doc_path/gt_path written however `how` says."""
+    """A dataset folder: two documents and a manifest, with doc_path/gt_path written however
+    `how` says."""
     corpus = tmp / "corpus"
     (corpus / "pdfs").mkdir(parents=True)
     rows = []
@@ -170,21 +163,20 @@ def byo(tmp, how):
         gt.write_text(json.dumps({"a": "x"}))
         rows.append({"doc_id": f"d{i}", "suite": "mine", "doc_path": how(pdf, corpus),
                      "gt_path": how(gt, corpus), "schema": json.dumps(BYO_SCHEMA)})
-    path = corpus / "manifest.parquet"
-    _pq.write_table(_pa.Table.from_pylist(rows), path)
-    return path
+    _pq.write_table(_pa.Table.from_pylist(rows), corpus / "manifest.parquet")
+    return corpus
 
 
 _relative = lambda p, root: str(p.relative_to(root))                           # noqa: E731
 _absolute = lambda p, root: str(p)                                             # noqa: E731
 
-# A manifest of your own must need no HuggingFace access at all, so `fetch` may not run.
-_real_fetch = _bench.fetch
-_bench.fetch = lambda *_: (_ for _ in ()).throw(AssertionError("fetch ran"))
-try:
+# A dataset of your own must need no HuggingFace access at all, so the hub is made unimportable.
+import unittest.mock as _mock                                                  # noqa: E402
+
+with _mock.patch.dict(sys.modules, {"huggingface_hub": None}):
     tmp = Path(tempfile.mkdtemp())
     docs, _ = _bench.corpus(byo(tmp, _relative))
-    report("a relative path resolves against the manifest's own directory",
+    report("a relative path resolves against the dataset's folder",
            len(docs) == 2 and all(d.doc_path.exists() and d.gt_path.exists() for d in docs),
            str([str(d.doc_path) for d in docs]))
     report("...and the schema comes through parsed, per document",
@@ -196,14 +188,12 @@ try:
            all(d.doc_path.exists() for d in docs), str([str(d.doc_path) for d in docs]))
 
     tmp = Path(tempfile.mkdtemp())
-    byo(tmp, _relative)
-    moved = tmp / "moved"
-    (tmp / "corpus").rename(moved)
-    docs, _ = _bench.corpus(moved / "manifest.parquet", data_root=moved)
-    report("...and --data-root overrides what it is relative to",
-           all(d.doc_path.exists() for d in docs))
-finally:
-    _bench.fetch = _real_fetch
+    _two = byo(tmp, _relative)
+    (_two / "manifests").mkdir()
+    (_two / "manifest.parquet").rename(_two / "manifests" / "sub.parquet")
+    docs, _ = _bench.corpus(_two, "manifests/sub.parquet")
+    report("...and a manifest below it still resolves against the dataset's folder",
+           len(docs) == 2 and all(d.doc_path.exists() for d in docs))
 
 _exact = Path(tempfile.mkdtemp()) / "m.parquet"
 # "{}" is a valid doc_id, path and JSON, so the row is built from COLUMNS itself.
@@ -243,18 +233,18 @@ _real_exists, _real_snapshot = _hf.file_exists, _hf.snapshot_download
 _hf.file_exists = lambda *a, **k: False
 _hf.snapshot_download = lambda *a, **k: (_ for _ in ()).throw(
     AssertionError("a gigabyte was downloaded before the manifest was asked for"))
-_nowhere = "hf://datasets/someone/corpus@v2/manifests/nope.parquet"
+_nowhere = "hf://datasets/someone/corpus@v2"
 try:
-    _bench.fetch(hf_path(_nowhere))
+    _bench.fetch(_nowhere, "manifests/nope.parquet")
     report("a dataset without the manifest is refused", False, "it was accepted")
 except ValueError as exc:
     report("a dataset without the manifest is refused, before anything is downloaded",
-           _nowhere in str(exc), str(exc))
+           _nowhere in str(exc) and "manifests/nope.parquet" in str(exc), str(exc))
 _asked = []
 _hf.file_exists = lambda *a, **k: _asked.append((a, k)) or True
 _hf.snapshot_download = lambda *a, **k: _asked.append((a, k)) or "/cached/corpus"
 try:
-    _bench.fetch(hf_path(_nowhere))
+    _bench.fetch(_nowhere, "manifests/nope.parquet")
     report("the check and the download both ask for the addressed file and revision",
            _asked == [(("someone/corpus", "manifests/nope.parquet"),
                        {"repo_type": "dataset", "revision": "v2"}),
@@ -262,7 +252,7 @@ try:
            str(_asked))
     _hf.file_exists = lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
     report("...but a hub that cannot be reached does not stop a cached corpus",
-           _bench.fetch(hf_path(DEFAULT_MANIFEST)) == Path("/cached/corpus"))
+           _bench.fetch(DEFAULT_DATASET) == Path("/cached/corpus"))
 finally:
     _hf.file_exists, _hf.snapshot_download = _real_exists, _real_snapshot
 
@@ -273,26 +263,20 @@ _rows = [{"doc_id": "d0", "suite": "s", "doc_path": "pdfs/d0.pdf", "gt_path": "g
 _pq.write_table(_pa.Table.from_pylist(_rows), _snap / "manifests" / "sub.parquet")
 _real_fetch, _bench.fetch = _bench.fetch, lambda *_: _snap
 try:
-    _sub = _bench.plan(["datalab"], out=Path(tempfile.mkdtemp()),
-                       manifest="hf://datasets/o/n/manifests/sub.parquet")
+    _sub = _bench.plan(["datalab"], out=Path(tempfile.mkdtemp()), dataset="hf://datasets/o/n",
+                       manifest="manifests/sub.parquet")
     report("a manifest below a dataset's root reads paths from the dataset's root",
            _sub.docs[0].doc_path == _snap / "pdfs" / "d0.pdf", str(_sub.docs[0].doc_path))
     report("...and the commit it was read at is kept", _sub.commit == "0123abcd")
-    _bench.prepare(_sub.runs[0], _sub.corpus, _sub.timeout, _sub.commit)
+    _bench.prepare(_sub.runs[0], _sub.dataset, _sub.timeout, _sub.commit, _sub.manifest)
     _written = json.loads((_sub.runs[0].out / "settings.json").read_text())
-    report("...and settings.json records it beside the address",
-           _written["corpus"] == "hf://datasets/o/n/manifests/sub.parquet"
-           and _written["corpus_commit"] == "0123abcd", str(_written))
+    report("...and settings.json records it beside the dataset and manifest",
+           _written["dataset"] == "hf://datasets/o/n" and _written["commit"] == "0123abcd"
+           and _written["manifest"] == "manifests/sub.parquet", str(_written))
 finally:
     _bench.fetch = _real_fetch
 try:
-    _bench.plan(["datalab"], manifest=_SUBSET, data_root=Path("/elsewhere"))
-    report("--data-root with a manifest in a dataset is refused", False, "it was accepted")
-except ValueError as exc:
-    report("--data-root with a manifest in a dataset is refused, naming both",
-           "/elsewhere" in str(exc) and _SUBSET in str(exc), str(exc))
-try:
-    _bench.plan(["datalab"], manifest="hf://datasets/o/n")
+    _bench.plan(["datalab"], dataset="hf://datasets/o")
     report("a malformed address is refused when the plan is built", False, "it was accepted")
 except ValueError:
     report("a malformed address is refused when the plan is built, before anything is bought",
@@ -308,18 +292,19 @@ except ValueError as exc:
 
 two = Path(tempfile.mkdtemp())
 _a, _b = byo(Path(tempfile.mkdtemp()), _relative), byo(Path(tempfile.mkdtemp()), _relative)
-first = _bench.plan(["datalab"], out=two, manifest=_a)
-_bench.prepare(first.runs[0], first.corpus, first.timeout)
-report("settings.json records which corpus the run measured",
-       json.loads((first.runs[0].out / "settings.json").read_text())["corpus"] == str(_a))
+first = _bench.plan(["datalab"], out=two, dataset=_a)
+_bench.prepare(first.runs[0], first.dataset, first.timeout)
+report("settings.json records which dataset the run measured",
+       json.loads((first.runs[0].out / "settings.json").read_text())["dataset"]
+       == str(_a.resolve()))
 try:
-    _bench.plan(["datalab"], out=two, manifest=_b)
-    report("a second corpus in the same directory is refused", False, "it was accepted")
+    _bench.plan(["datalab"], out=two, dataset=_b)
+    report("a second dataset in the same directory is refused", False, "it was accepted")
 except ValueError as exc:
-    report("a second corpus in the same directory is refused, before anything is read",
-           str(_a) in str(exc) and str(_b) in str(exc), str(exc))
-_bench.plan(["datalab"], out=two, manifest=_a)
-report("...and the same corpus again is not", True)
+    report("a second dataset in the same directory is refused, before anything is read",
+           str(_a.resolve()) in str(exc) and str(_b.resolve()) in str(exc), str(exc))
+_bench.plan(["datalab"], out=two, dataset=_a)
+report("...and the same dataset again is not", True)
 
 bad = Path(tempfile.mkdtemp()) / "m.parquet"
 _pq.write_table(_pa.Table.from_pylist(
@@ -395,8 +380,10 @@ _saved = _vendor.adapter
 _vendor.adapter = lambda provider: (_ for _ in ()).throw(
     MissingDependency("the datalab adapter could not import what it needs"))
 try:
-    _bench.predict_all(_bench.Plan((_bench.Run("datalab", {}, _out),), tuple(_docs), "test",
-                                   None, 30, 3, 1, True, False, False))
+    _bench.predict_all(_bench.Plan(
+        runs=(_bench.Run("datalab", {}, _out),), docs=tuple(_docs), dataset=str(TMP),
+        manifest="manifest.parquet", commit=None, timeout=30, workers=3, score_workers=1,
+        verdicts=True, rescore=False, score_only=False))
     report("a missing SDK stops the run", False, "it returned normally")
 except MissingDependency:
     report("a missing SDK stops the run", True)
@@ -415,7 +402,7 @@ import unittest.mock                                                       # noq
 from omni_extract_bench import benchmark                                   # noqa: E402
 
 for missing, call, wanted in [
-    ("huggingface_hub", lambda: benchmark.fetch(benchmark.hf_path(benchmark.DEFAULT_MANIFEST)), "huggingface_hub"),
+    ("huggingface_hub", lambda: benchmark.fetch(benchmark.DEFAULT_DATASET), "huggingface_hub"),
     ("pyarrow.parquet", lambda: benchmark.read_manifest(TMP / "m.parquet", TMP), "pyarrow"),
 ]:
     with unittest.mock.patch.dict(sys.modules, {missing: None}):

@@ -152,8 +152,8 @@ from omni_extract_bench import benchmark
 p = benchmark.plan(
   providers,              # e.g. ["datalab"]
   out="runs",             # where runs go
-  data_root=None,         # what a manifest on disk's relative paths resolve against
-  manifest=None,          # a path, or hf://datasets/<org>/<name>[@rev]/<path>. Default: ours
+  dataset=DEFAULT_DATASET,  # a folder, or hf://datasets/<org>/<name>[@rev]. Default: ours
+  manifest="manifest.parquet",  # which documents: a parquet inside the dataset
   suites=None,            # limit to these suites
   limit=0,                # first N documents
   timeout=1800.0,
@@ -194,7 +194,8 @@ oeb benchmark --out runs/ --limit 1 --providers datalab reducto
 benchmark
 out         runs
 runs        2 over 2 adapters
-corpus      huggingface datalab-to/omni_extract_bench
+dataset     hf://datasets/datalab-to/omni_extract_bench
+manifest    manifest.parquet
 documents   1 document selected
 timeout     1800s per document
 score only  false
@@ -248,9 +249,10 @@ oeb benchmark \
 
 That's 4 runs.
 
-### Choosing the documents: `--manifest`
+### Choosing the documents: `--dataset` and `--manifest`
 
-A manifest is a parquet file with one row per document with columns:
+A dataset is a folder holding one or more manifests and the files they point at. A manifest is
+a parquet file with one row per document, with columns:
 
 - `doc_id`
 - `suite`
@@ -258,29 +260,34 @@ A manifest is a parquet file with one row per document with columns:
 - `gt_path`
 - `schema`
 
+`doc_path` and `gt_path` are relative to the dataset's folder, wherever the manifest is in it.
 It is the same shape as [ours](https://huggingface.co/datasets/datalab-to/omni_extract_bench).
 
-With no `--manifest`, a run uses ours: `hf://datasets/datalab-to/omni_extract_bench/manifest.parquet`. Otherwise you can pass:
+With no `--dataset`, a run uses ours, `hf://datasets/datalab-to/omni_extract_bench`, and with no
+`--manifest`, the dataset's `manifest.parquet`. Otherwise you can pass:
 
 *A subset of ours.* Our dataset holds more than one manifest; this one is 40 documents. For example,
 
 ```bash
 oeb benchmark --providers datalab \
-  --manifest hf://datasets/datalab-to/omni_extract_bench/manifests/sample40-predictive-across-vendors-2026-09-22.parquet
+  --manifest manifests/sample40-predictive-across-vendors-2026-09-22.parquet
 ```
 
-*A manifest in any HuggingFace dataset*. For example,
+*Any HuggingFace dataset*, pinned to a revision with `@`. For example,
 
 ```bash
-oeb benchmark --providers datalab --manifest hf://datasets/someone/their-corpus@v2/manifest.parquet
+oeb benchmark --providers datalab --dataset hf://datasets/someone/their-corpus@v2
 ```
 
-*A manifest on disk.* Nothing is downloaded, and its relative paths resolve against its own
-directory, or `--data-root`. For example:
+*A folder on disk.* Nothing is downloaded. For example:
 
 ```bash
-oeb benchmark --providers datalab --manifest my/corpus/manifest.parquet
+oeb benchmark --providers datalab --dataset my/corpus
 ```
+
+A run folder holds one dataset: pointing it at another is refused before anything is read.
+Two manifests of the same dataset may share a run folder, since they are the same documents
+and gold.
 
 ### Resuming
 
@@ -424,8 +431,10 @@ says what it is.
     "base_url": "https://www.datalab.to",
     "poll_interval": 5.0
   },
-  "timeout_s": 1800.0,
-  "corpus": "huggingface datalab-to/omni_extract_bench"
+  "dataset": "hf://datasets/datalab-to/omni_extract_bench",
+  "commit": "8d3f0c1a...",
+  "manifest": "manifest.parquet",
+  "timeout_s": 1800.0
 }
 ```
 
