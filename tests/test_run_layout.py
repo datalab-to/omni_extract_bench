@@ -8,6 +8,7 @@ A silently wrong number, arrived at by a resume doing its job.
 
 Run: python3 tests/test_run_layout.py
 """
+import contextlib
 import dataclasses
 import io
 import json
@@ -256,12 +257,12 @@ print("\nA RUN IS A PROVIDER PLUS ITS OPTIONS, AND THE CAP IS STILL THE VENDOR'S
 for bad in ({"datalb": {"mode": "accurate"}},
             {"reducto": {"agentic_table_mode": "default"}}):
     try:
-        B.plan(["datalab"], bad)
+        B.configurations(["datalab"], bad)
         report(f"--options {list(bad)[0]!r} is refused", False, "it was accepted")
     except ValueError as exc:
         report(f"--options {list(bad)[0]!r} is refused", "silently ignored" in str(exc))
 try:
-    B.plan(["datalab"], {"datalab": []})
+    B.configurations(["datalab"], {"datalab": []})
     report("an empty option list is refused", False, "it was accepted")
 except ValueError as exc:
     report("an empty option list is refused", "would not run at all" in str(exc))
@@ -307,19 +308,21 @@ report("...and the whole cap is in use, not half of it each",
        f'{WORKERS["datalab"] // 2}')
 
 print("\nAND SAYS WHAT A RESUME WOULD COST, BEFORE IT COSTS IT")
-from omni_extract_bench.benchmark import BenchmarkRun                          # noqa: E402
+from omni_extract_bench.harness.registry import resolve                        # noqa: E402
 from rich.console import Console                                               # noqa: E402
 
 seen_dir = pathlib.Path(tempfile.mkdtemp())
-plan = BenchmarkRun(["datalab"], out=seen_dir,
-                    options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
-report("the plan is available before anything is fetched or called",
-       len(plan.runs) == 2 and len(plan.providers) == 1
-       and plan.providers[0].adapter == "datalab", repr(plan))
+plan = B.plan(["datalab"], out=seen_dir,
+              options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+plan = plan._replace(docs=tuple(docs))
+report("the plan is made before anything is called",
+       len(plan.runs) == 2 and {resolve(r.provider) for r in plan.runs} == {"datalab"},
+       repr(plan.runs))
 report("...and two model ids land under one adapter, on one budget",
-       len(BenchmarkRun(["openai/gpt-5.6-sol", "anthropic/claude-opus-5"]).providers) == 1)
-report("a bad option is refused by the constructor, before any download",
-       _refused(lambda: BenchmarkRun(["datalab"], options={"datalb": {"mode": "fast"}})))
+       len({resolve(r.provider)
+            for r in B.plan(["openai/gpt-5.6-sol", "anthropic/claude-opus-5"]).runs}) == 1)
+report("a bad option is refused when the plan is made",
+       _refused(lambda: B.plan(["datalab"], options={"datalb": {"mode": "fast"}})))
 
 bal, acc = plan.runs
 bal.records.mkdir(parents=True, exist_ok=True)
@@ -340,7 +343,7 @@ report("...a run with nothing on disk owes everything",
 report("--rescore owes every grade again, however many are on disk",
        B.owed(bal, docs, rescore=True) == (len(docs) - 2, len(docs)),
        str(B.owed(bal, docs, rescore=True)))
-stated = plan.describe(docs)
+stated = B.describe(plan)
 row = next(line for line in stated.splitlines() if named("datalab") in line)
 cells = [c.strip() for c in row.split("\u2502")]
 report("the plan states it per run, once the corpus is known",
@@ -365,11 +368,18 @@ def counting_adapter(prov):
 
 
 D.adapter = as_adapter(counting_adapter)
-declined = B.BenchmarkRun(["datalab"], out=ask, score_workers=1,
-                          predict_workers={"*": 1}).execute(
-    confirm=lambda plan: (shown.append(plan), False)[1])
+from omni_extract_bench import cli                                            # noqa: E402
+
+_ask = ["benchmark", "--providers", "datalab", "--out", str(ask), "--score-workers", "1",
+        "--predict-workers", "1"]
+_real_confirm = cli.confirm_plan
+cli.confirm_plan = lambda view: (shown.append(view), False)[1]
+try:
+    declined = cli.main(_ask)
+finally:
+    cli.confirm_plan = _real_confirm
 report("a declined plan calls no vendor at all", called["n"] == 0, f'{called["n"]} calls')
-report("...and gives back nothing rather than a half summary", declined == {})
+report("...and exits 1, with nothing to print", declined == 1)
 # The callback gets a rich renderable, not text; rendered here to read it back.
 def as_text(renderable):
     console = Console(file=io.StringIO(), width=100, no_color=True)
@@ -383,10 +393,14 @@ report("...having shown what it would have done",
 report("...and wrote no summary.json", not list(ask.glob("*/summary.json")))
 
 called["n"] = 0
-accepted = B.BenchmarkRun(["datalab"], out=ask, score_workers=1,
-                          predict_workers={"*": 1}).execute(confirm=lambda plan: True)
-report("an approved plan runs", called["n"] == len(B.read_manifest()) and len(accepted) == 1,
-       f'{called["n"]} calls, {len(accepted)} rows')
+cli.confirm_plan = lambda view: True
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        accepted = cli.main(_ask)
+finally:
+    cli.confirm_plan = _real_confirm
+report("an approved plan runs", called["n"] == len(B.read_manifest()) and accepted == 0,
+       f'{called["n"]} calls, exit {accepted}')
 
 print("\nEACH RUN IS TIMED FOR ITSELF, NOT FOR THE QUEUE IT SHARES")
 from omni_extract_bench.progress import Progress                               # noqa: E402

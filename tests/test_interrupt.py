@@ -2,8 +2,8 @@
 """Ctrl-C stops the run, and leaves it resumable.
 
 THE SUBTLETY THAT MAKES THIS WORTH A TEST. Python delivers a KeyboardInterrupt to the MAIN
-thread. Providers run concurrently, so `ProviderRun.predict` is in a worker -- where a
-`except KeyboardInterrupt` can never fire. The handler has to be in `run`, on the main thread,
+thread. Adapters run concurrently, so each adapter's `drain` is in a worker -- where a
+`except KeyboardInterrupt` can never fire. The handler has to be in `predict_all`, on the main thread,
 and it has to set a flag every provider shares; otherwise the interrupt escapes into
 `ThreadPoolExecutor.__exit__`, which waits for every provider to work through the whole corpus.
 Measured on a toy two-level pool that is 8.1s against 0.0s, and on the real corpus it is hours:
@@ -43,27 +43,7 @@ def report(name, cond, detail=""):
         FAILS.append(name)
 
 
-print("\nA STOP ALREADY SET MEANS NOTHING IS CALLED")
 out = pathlib.Path(tempfile.mkdtemp())
-docs = []
-for i in range(5):
-    gt = out / f"g{i}.json"; gt.write_text("{}")
-    pdf = out / f"p{i}.pdf"; pdf.write_bytes(b"%PDF")
-    docs.append(B.Doc(f"d{i}", "s", pdf, gt, {"type": "object"}))
-
-called = []
-_real_predict = B.predict
-B.predict = lambda *a, **k: called.append(1) or {"result": {"a": 1}, "cost": {}}
-try:
-    already = threading.Event()
-    already.set()
-    B.ProviderRun("datalab", [B.Run("datalab", {}, out)], 2)\
-     .predict(docs, timeout=5, stop=already)
-finally:
-    B.predict = _real_predict
-report("no vendor call is made", called == [], f"{len(called)} calls")
-report("...and nothing is written, so every document stays resumable",
-       not list((out / "records").glob("*.json")))
 
 print("\nAND A REAL SIGINT STOPS A RUN, ON A DOCUMENT BOUNDARY")
 script = out / "run_it.py"
@@ -241,10 +221,11 @@ D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o: (
     paid.update([prov]), Extraction(result={"a": "x"}, cost=Cost(usd=0.1)))[1])
 real_write_json = B.write_json_atomic
 B.write_json_atomic = lambda path, obj, **kw: (
-    (_ for _ in ()).throw(OSError("No space left on device")))
+    real_write_json(path, obj, **kw) if path.name == "settings.json"
+    else (_ for _ in ()).throw(OSError("No space left on device")))
 try:
-    B.ProviderRun("datalab", [B.Run("datalab", {}, disk / "x")], 4)\
-     .predict(twenty, timeout=5)
+    B.predict_all(B.Plan((B.Run("datalab", {}, disk / "x"),), tuple(twenty), "test", None, 5,
+                         4, 1, True, False, False))
     report("a failed write stops the vendor", False, "it returned normally")
 except OSError:
     report("a failed write stops the vendor", True)

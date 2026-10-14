@@ -210,20 +210,23 @@ def confirm_plan(plan) -> bool:
 
 
 def cmd_benchmark(args) -> int:
-    from .benchmark import run
+    from . import benchmark
 
-    summary = run(args.providers, out=args.out, data_root=args.data_root,
-                  manifest=args.manifest, suites=args.suites,
-                  limit=args.limit, timeout=args.timeout,
-                  predict_workers=read_workers(args.predict_workers),
-                  score_workers=args.score_workers,
-                  verdicts=args.verdicts, rescore=args.rescore,
-                  score_only=args.score_only,
-                  options=read_options(args.options),
-                  confirm=None if args.yes else confirm_plan)
-    if not summary:
-        return 1              # declined, so nothing to print
-    json.dump(summary, sys.stdout, indent=2)
+    p = benchmark.plan(args.providers, out=args.out, data_root=args.data_root,
+                       manifest=args.manifest, suites=args.suites,
+                       limit=args.limit, timeout=args.timeout,
+                       predict_workers=read_workers(args.predict_workers),
+                       score_workers=args.score_workers,
+                       verdicts=args.verdicts, rescore=args.rescore,
+                       score_only=args.score_only,
+                       options=read_options(args.options))
+    if args.yes:
+        for line in benchmark.describe(p).splitlines():
+            logging.getLogger(__package__).info("%s", line)
+    elif not confirm_plan(benchmark.plan_view(p)):
+        logging.getLogger(__package__).warning("nothing run")
+        return 1
+    json.dump(benchmark.execute(p), sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0
 

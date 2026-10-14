@@ -147,9 +147,9 @@ uv pip install 'omni-extract-bench[benchmark]'
 Use in your own code.
 
 ```python
-from omni_extract_bench.benchmark import BenchmarkRun
+from omni_extract_bench import benchmark
 
-BenchmarkRun(
+p = benchmark.plan(
   providers,              # e.g. ["datalab"]
   out="runs",             # where runs go
   data_root=None,         # what a manifest on disk's relative paths resolve against
@@ -164,23 +164,23 @@ BenchmarkRun(
   score_only=False,       # score the predictions; call no vendor
   options=None,           # per-provider settings: {"datalab": {"mode": "accurate"}}
 )
-```
-
-```python
-summary = BenchmarkRun(["datalab", "reducto"], limit=5).execute()
+print(benchmark.describe(p))   # what it would do, with no vendor call
+summary = benchmark.execute(p)
 summary["datalab-f46415c9"]["accuracy"] # e.g. 0.9145
 ```
 
-### Three levels of abstraction
+`benchmark.run(providers, **kwargs)` does the three in one call.
+
+### Two levels of data
 
 ```python
-BenchmarkRun   # every Run, grouped by adapter, predicted then graded
-ProviderRun    # every Run using a provider, through one pool sized to that service
-Run            # a provider plus its options
+Plan   # the invocation: every Run, and the documents they cover
+Run    # one configuration: a provider plus its options, and the directory it writes to
 ```
 
 - A `Run` is a provider plus its options. For example, `datalab` at `mode=accurate`. It has its own self-contained directory of results.
-- A `ProviderRun` is every Run for one provider sharing one pool of threads. The cap belongs to the provider.
+- Concurrency is per adapter, not per run: every run of one adapter (two datalab modes, every OpenRouter model) shares one pool. The cap belongs to the provider.
+- `execute(plan)` is `predict_all(plan)`, then `grade_all(plan)`.
 
 
 

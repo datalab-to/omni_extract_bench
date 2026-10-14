@@ -303,7 +303,7 @@ class Progress:
     """The live display. A context manager: it owns the cursor only between enter and exit.
 
         with Progress(["datalab", "reducto"]) as bars:
-            ProviderRun(...).predict(docs, timeout, bars=bars)
+            reporter = bars.reporter("datalab")   # one per run, which the loop reports to
 
     Providers are registered UP FRONT and in order, so the lines keep their places and a
     vendor that has not started yet is visibly waiting rather than absent.

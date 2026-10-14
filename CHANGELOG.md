@@ -19,3 +19,13 @@ unchanged unless a line below says otherwise.
   because its records already carry the error. A folder of your own predictions that marks a
   failure with `{"__error__": ...}` should leave that file out instead: a missing prediction is
   graded as failed.
+- `BenchmarkRun` and `ProviderRun` are gone. `BenchmarkRun(providers, **kw).execute()` is
+  `execute(plan(providers, **kw))`, or `run(providers, **kw)`; `plan` takes the same keyword
+  arguments `BenchmarkRun` did and returns a `Plan` (a NamedTuple). `.describe()` is
+  `describe(plan)`, `.corpus()` is `corpus(manifest, ...)`, `.predict(docs)` is
+  `predict_all(plan)` and `.score(docs)` is `grade_all(plan)`. The old `plan(providers,
+  options)`, which returned runs, is `configurations(providers, options)`, which returns
+  (provider, options) pairs.
+- `run(...)` takes no `confirm`; the command line asks before it calls `execute`.
+- A folder holding another corpus is refused by `plan`, before anything is read.
+- `--score-only` writes no settings.json: it asks nothing.

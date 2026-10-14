@@ -183,7 +183,7 @@ _real_fetch = _bench.fetch
 _bench.fetch = lambda *_: (_ for _ in ()).throw(AssertionError("fetch ran"))
 try:
     tmp = Path(tempfile.mkdtemp())
-    docs = _bench.BenchmarkRun(["datalab"], manifest=byo(tmp, _relative)).corpus()
+    docs, _ = _bench.corpus(byo(tmp, _relative))
     report("a relative path resolves against the manifest's own directory",
            len(docs) == 2 and all(d.doc_path.exists() and d.gt_path.exists() for d in docs),
            str([str(d.doc_path) for d in docs]))
@@ -191,7 +191,7 @@ try:
            docs[0].schema == BYO_SCHEMA and docs[0].suite == "mine")
 
     tmp = Path(tempfile.mkdtemp())
-    docs = _bench.BenchmarkRun(["datalab"], manifest=byo(tmp, _absolute)).corpus()
+    docs, _ = _bench.corpus(byo(tmp, _absolute))
     report("an absolute path is used as it is, whatever the root",
            all(d.doc_path.exists() for d in docs), str([str(d.doc_path) for d in docs]))
 
@@ -199,8 +199,7 @@ try:
     byo(tmp, _relative)
     moved = tmp / "moved"
     (tmp / "corpus").rename(moved)
-    docs = _bench.BenchmarkRun(["datalab"], manifest=moved / "manifest.parquet",
-                               data_root=moved).corpus()
+    docs, _ = _bench.corpus(moved / "manifest.parquet", data_root=moved)
     report("...and --data-root overrides what it is relative to",
            all(d.doc_path.exists() for d in docs))
 finally:
@@ -274,14 +273,12 @@ _rows = [{"doc_id": "d0", "suite": "s", "doc_path": "pdfs/d0.pdf", "gt_path": "g
 _pq.write_table(_pa.Table.from_pylist(_rows), _snap / "manifests" / "sub.parquet")
 _real_fetch, _bench.fetch = _bench.fetch, lambda *_: _snap
 try:
-    _sub = _bench.BenchmarkRun(
-        ["datalab"], out=Path(tempfile.mkdtemp()),
-        manifest="hf://datasets/o/n/manifests/sub.parquet")
-    _docs = _sub.corpus()
+    _sub = _bench.plan(["datalab"], out=Path(tempfile.mkdtemp()),
+                       manifest="hf://datasets/o/n/manifests/sub.parquet")
     report("a manifest below a dataset's root reads paths from the dataset's root",
-           _docs[0].doc_path == _snap / "pdfs" / "d0.pdf", str(_docs[0].doc_path))
-    report("...and the commit it was read at is kept", _sub.corpus_commit == "0123abcd")
-    _sub.prepare()
+           _sub.docs[0].doc_path == _snap / "pdfs" / "d0.pdf", str(_sub.docs[0].doc_path))
+    report("...and the commit it was read at is kept", _sub.commit == "0123abcd")
+    _bench.prepare(_sub.runs[0], _sub.corpus, _sub.timeout, _sub.commit)
     _written = json.loads((_sub.runs[0].out / "settings.json").read_text())
     report("...and settings.json records it beside the address",
            _written["corpus"] == "hf://datasets/o/n/manifests/sub.parquet"
@@ -289,16 +286,16 @@ try:
 finally:
     _bench.fetch = _real_fetch
 try:
-    _bench.BenchmarkRun(["datalab"], manifest=_SUBSET, data_root=Path("/elsewhere"))
+    _bench.plan(["datalab"], manifest=_SUBSET, data_root=Path("/elsewhere"))
     report("--data-root with a manifest in a dataset is refused", False, "it was accepted")
 except ValueError as exc:
     report("--data-root with a manifest in a dataset is refused, naming both",
            "/elsewhere" in str(exc) and _SUBSET in str(exc), str(exc))
 try:
-    _bench.BenchmarkRun(["datalab"], manifest="hf://datasets/o/n")
-    report("a malformed address is refused when the run is built", False, "it was accepted")
+    _bench.plan(["datalab"], manifest="hf://datasets/o/n")
+    report("a malformed address is refused when the plan is built", False, "it was accepted")
 except ValueError:
-    report("a malformed address is refused when the run is built, before anything is bought",
+    report("a malformed address is refused when the plan is built, before anything is bought",
            True)
 
 _gone = Path(tempfile.mkdtemp()) / "nope.parquet"
@@ -310,23 +307,19 @@ except ValueError as exc:
            str(_gone) in str(exc) and "doc_id" in str(exc), str(exc))
 
 two = Path(tempfile.mkdtemp())
-first = _bench.BenchmarkRun(["datalab"], out=two, manifest=Path("/corpora/a.parquet"))
-first.prepare()
+_a, _b = byo(Path(tempfile.mkdtemp()), _relative), byo(Path(tempfile.mkdtemp()), _relative)
+first = _bench.plan(["datalab"], out=two, manifest=_a)
+_bench.prepare(first.runs[0], first.corpus, first.timeout)
 report("settings.json records which corpus the run measured",
-       json.loads((first.runs[0].out / "settings.json").read_text())["corpus"]
-       == "/corpora/a.parquet")
+       json.loads((first.runs[0].out / "settings.json").read_text())["corpus"] == str(_a))
 try:
-    _bench.BenchmarkRun(["datalab"], out=two, manifest=Path("/corpora/b.parquet")).prepare()
+    _bench.plan(["datalab"], out=two, manifest=_b)
     report("a second corpus in the same directory is refused", False, "it was accepted")
 except ValueError as exc:
-    report("a second corpus in the same directory is refused",
-           "a.parquet" in str(exc) and "b.parquet" in str(exc), str(exc))
-first.prepare()
+    report("a second corpus in the same directory is refused, before anything is read",
+           str(_a) in str(exc) and str(_b) in str(exc), str(exc))
+_bench.plan(["datalab"], out=two, manifest=_a)
 report("...and the same corpus again is not", True)
-report("our corpus names itself too, by its address",
-       _bench.BenchmarkRun(["datalab"]).corpus_id == DEFAULT_MANIFEST)
-report("...and a subset of it is a different corpus",
-       _bench.BenchmarkRun(["datalab"], manifest=_SUBSET).corpus_id == _SUBSET)
 
 bad = Path(tempfile.mkdtemp()) / "m.parquet"
 _pq.write_table(_pa.Table.from_pylist(
@@ -402,9 +395,8 @@ _saved = _vendor.adapter
 _vendor.adapter = lambda provider: (_ for _ in ()).throw(
     MissingDependency("the datalab adapter could not import what it needs"))
 try:
-    _bench.ProviderRun("datalab",
-                       [_bench.Run("datalab", {}, _out)], 3
-                       ).predict(_docs, timeout=30)
+    _bench.predict_all(_bench.Plan((_bench.Run("datalab", {}, _out),), tuple(_docs), "test",
+                                   None, 30, 3, 1, True, False, False))
     report("a missing SDK stops the run", False, "it returned normally")
 except MissingDependency:
     report("a missing SDK stops the run", True)
