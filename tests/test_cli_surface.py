@@ -36,7 +36,7 @@ from omni_extract_bench import cli  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 HANDLERS = tuple(sorted(n for n in dir(cli) if n.startswith("cmd_")))
-VERBS = ("score", "benchmark", "providers", "predict")
+VERBS = ("score", "benchmark", "grade", "providers", "predict")
 FAILS = []
 
 
@@ -83,6 +83,7 @@ INVOCATIONS = {
     "score": (["score", "--gt", "g.json", "--pred", "p.json",
                "--schema", "s.json"], "cmd_score"),
     "benchmark": (["benchmark", "--providers", "datalab"], "cmd_benchmark"),
+    "grade": (["grade", "mine/"], "cmd_grade"),
     "providers": (["providers"], "cmd_providers"),
     "predict": (["predict", "--provider", "datalab", "--doc", "d.pdf",
                  "--schema", "s.json"], "cmd_predict"),

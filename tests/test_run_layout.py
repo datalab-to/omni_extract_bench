@@ -448,11 +448,11 @@ report("...while each still runs its own model, into its own directory",
        len([d for d in models.iterdir() if d.is_dir()]) == len(ids),
        str(sorted(d.name for d in models.iterdir() if d.is_dir())))
 report("a name people type still sets the cap",
-       B.workers_for(["openai/gpt-5.6-sol"], {"openai/gpt-5.6-sol": 2}) == 2)
+       B._workers_for(["openai/gpt-5.6-sol"], {"openai/gpt-5.6-sol": 2}) == 2)
 report("...and where several names in one group disagree, the smallest wins",
-       B.workers_for(ids, {"openai/gpt-5.6-sol": 2, "anthropic/claude-opus-5": 20}) == 2)
+       B._workers_for(ids, {"openai/gpt-5.6-sol": 2, "anthropic/claude-opus-5": 20}) == 2)
 report("...falling back to the adapter's own limit when nobody says",
-       B.workers_for(ids, None) == WORKERS["llm_single_shot"])
+       B._workers_for(ids, None) == WORKERS["llm_single_shot"])
 
 print("\nAN ACCOUNT FAILURE IS ABOUT THE ACCOUNT, SO IT STOPS EVERY RUN OF THAT VENDOR")
 acct = pathlib.Path(tempfile.mkdtemp())

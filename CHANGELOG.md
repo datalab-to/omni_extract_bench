@@ -47,6 +47,9 @@ unchanged unless a line below says otherwise.
   always one grading's, never a mix of two scorers or golds. An interrupted grading writes
   nothing. Each line of scores.jsonl, and summary.json, carries `scorer` (the release and a digest
   of the scoring files). `--rescore` is gone: every grading is one.
+- `oeb grade <folder>` grades a folder of your own predictions (`--dataset`, `--manifest`, `--suites`),
+  as `opb grade` does: a document left out of it fails.
+- `workers_for` is private.
 - `grade(run, docs)` writes summary.json itself, so a loop of your own gets the same folder
   `oeb benchmark` writes, and returns the summary of `docs`' lines, as omni-parse-bench's
   `grade` returns a summary. docs/API.md has "A loop of your own".

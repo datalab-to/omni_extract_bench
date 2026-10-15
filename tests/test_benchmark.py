@@ -468,6 +468,25 @@ _docs[0].gt_path.write_text(json.dumps({"a": "y"}))
 report("so a changed gold reaches the next grading",
        graded(_run, _docs, workers=1)[0]["accuracy"] == 0.0)
 
+print("\nA FOLDER OF YOUR OWN, FROM THE COMMAND LINE")
+import contextlib as _contextlib                                                # noqa: E402
+import io as _io                                                                # noqa: E402
+
+from omni_extract_bench import cli as _cli                                      # noqa: E402
+
+_ds = byo(Path(tempfile.mkdtemp()), _relative)
+_mine = Path(tempfile.mkdtemp()) / "mine"
+(_mine / "predictions").mkdir(parents=True)
+(_mine / "predictions" / "d0.json").write_text(json.dumps({"a": "x"}))
+with _contextlib.redirect_stdout(_io.StringIO()) as _o:
+    _rc = _cli.main(["grade", str(_mine), "--dataset", str(_ds), "--score-workers", "1"])
+_s = json.loads(_o.getvalue())
+report("oeb grade grades a folder of your own: the document left out fails, nothing is pending",
+       _rc == 0 and (_s["documents"], _s["scored"], _s["pending"]) == (2, 1, 0), str(_s))
+with _contextlib.redirect_stdout(_io.StringIO()) as _o:
+    _cli.main(["grade", str(_mine), "--dataset", str(_ds), "--score-workers", "1", "--suites", "nope"])
+report("...and --suites grades only those suites", json.loads(_o.getvalue())["documents"] == 0)
+
 print("\nA MISSING EXTRA SAYS WHAT TO INSTALL")
 import unittest.mock                                                       # noqa: E402
 

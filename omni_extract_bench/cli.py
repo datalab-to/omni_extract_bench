@@ -2,6 +2,7 @@
 
     oeb score      --pred p.json --gt g.json --schema s.json [--verdicts]
     oeb benchmark  --providers datalab reducto --out runs/
+    oeb grade      mine/ [--dataset ...] [--manifest ...] [--suites ...]
     oeb predict    --provider datalab --doc x.pdf --schema s.json
     oeb providers [datalab]
 
@@ -232,6 +233,26 @@ def cmd_benchmark(args) -> int:
     return 0
 
 
+def cmd_grade(args) -> int:
+    """Grade a folder of predictions/<doc_id>.json, whatever made them, and print its summary. A
+    document with no prediction fails: the folder is your submission, so a document left out is one
+    your system didn't answer. `--suites` grades part of the dataset on purpose."""
+    from . import benchmark, data
+
+    out = pathlib.Path(args.run)
+    if not (out / "predictions").is_dir():
+        raise SystemExit(f"oeb grade: {out} has no predictions/ folder; it holds predictions/<doc_id>.json, "
+                         "one per document you predicted")
+    said = out / "settings.json"
+    provider = (json.loads(said.read_text()).get("provider") if said.exists() else None) or out.name
+    _, docs = data.read_manifest(args.dataset or data.DEFAULT_DATASET, args.manifest)
+    summary = benchmark.grade(benchmark.Run(provider, {}, out), list(data.select(docs, args.suites)),
+                              verdicts=args.verdicts, workers=args.score_workers)
+    json.dump(summary, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="oeb",
                                  description="Score one document-extraction prediction.")
@@ -303,6 +324,21 @@ def main(argv=None) -> int:
                    help="do not show the plan and wait for approval before spending. A run "
                         "with no terminal to ask -- a pipe, a cron job -- never waits anyway")
     b.set_defaults(fn=cmd_benchmark)
+
+    g = sub.add_parser("grade", help="grade a folder of predictions/<doc_id>.json: yours, or a run's")
+    g.add_argument("run", help="the folder holding predictions/")
+    g.add_argument("--dataset", default=None,
+                   help="the dataset: a folder on disk, or hf://datasets/<org>/<name>[@<revision>]. "
+                        "Default: ours")
+    g.add_argument("--manifest", default="manifest.parquet",
+                   help="which documents of the dataset: a parquet inside it. Default: manifest.parquet")
+    g.add_argument("--suites", nargs="+",
+                   help="grade only these suites; otherwise every document, and one with no prediction fails")
+    g.add_argument("--score-workers", type=int, default=0, metavar="N",
+                   help="processes used to grade. Default: one per core, capped at 8; 1 grades in this process")
+    g.add_argument("--no-verdicts", dest="verdicts", action="store_false",
+                   help="skip the per-address verdicts")
+    g.set_defaults(fn=cmd_grade)
 
     d = sub.add_parser("predict", help="run one document through one vendor")
     d.add_argument("--provider", required=True,

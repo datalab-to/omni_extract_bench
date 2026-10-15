@@ -11,7 +11,7 @@ Two levels of data, each a NamedTuple, and functions over them:
 
 `execute(plan)` is `predict_all`, then `grade_all`. `describe(plan)` says what it would do, with
 no vendor call. Concurrency is per adapter, not per run: every run of one adapter (two datalab
-modes, every OpenRouter model) shares one pool of `workers_for` its adapter.
+modes, every OpenRouter model) shares one pool of `_workers_for` its adapter.
 
 Resumable: a document is predicted again only when it has no record. Grading is fresh every time:
 every document is graded again, which calls no vendor, and scores.jsonl and summary.json are written
@@ -332,7 +332,7 @@ WORKERS = {
 DEFAULT_WORKERS = 5
 
 
-def workers_for(providers, requested: dict[str, int] | int | None) -> int:
+def _workers_for(providers, requested: dict[str, int] | int | None) -> int:
     """How many documents to have in flight at one vendor."""
     from .harness.registry import resolve
 
@@ -372,7 +372,7 @@ class Plan(NamedTuple):
     dataset: str
     manifest: str
     timeout: float
-    workers: dict[str, int] | int | None   # documents in flight per adapter, `workers_for`
+    workers: dict[str, int] | int | None   # documents in flight per adapter, `_workers_for`
     score_workers: int
     verdicts: bool
     score_only: bool
@@ -411,7 +411,7 @@ def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path 
 
 def predict_all(p: Plan) -> None:
     """Predict every document each run has no record of. Every run of one adapter drains through
-    that adapter's one pool (`workers_for`), the adapters go at once, and a live table shows each
+    that adapter's one pool (`_workers_for`), the adapters go at once, and a live table shows each
     run. Predicting is network wait, so the adapters do not slow each other."""
     from .harness.registry import resolve
 
@@ -425,7 +425,7 @@ def predict_all(p: Plan) -> None:
 
     def drain(adapter: str, runs: list[Run], bars: Progress) -> None:
         """Every document of every run of one adapter, through its one pool."""
-        workers = workers_for([r.provider for r in runs], p.workers)
+        workers = _workers_for([r.provider for r in runs], p.workers)
         bar = {r.out.name: bars.reporter(r.out.name) for r in runs}
         left, work = {}, []
         for r in runs:
@@ -585,7 +585,7 @@ def _plan_view(p: Plan) -> Group:
     table.add_column("predict", justify="right", no_wrap=True)
     table.add_column("grade", justify="right", no_wrap=True)
     for adapter, runs in by.items():
-        workers = workers_for([r.provider for r in runs], p.workers)
+        workers = _workers_for([r.provider for r in runs], p.workers)
         for n, run in enumerate(runs):
             to_predict, to_grade = owed(p, run)
             to_predict = 0 if p.score_only else to_predict

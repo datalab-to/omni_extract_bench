@@ -373,6 +373,23 @@ benchmark.grade(run, list(every))
 
 The folder is then exactly one `oeb benchmark` writes, so either can resume or grade it.
 
+### Grading your own predictions
+
+Write each document's extraction to `predictions/<doc_id>.json`, and grade the folder:
+
+```bash
+oeb grade mine/
+oeb grade mine/ --dataset my/corpus --manifest manifests/sub.parquet
+oeb grade mine/ --suites extractbench
+```
+
+The first grades against our dataset; the second against a dataset of your own, and one manifest in
+it; the third grades only one suite.
+
+The folder is your submission, so a document with no prediction fails: a document left out is one
+your system didn't answer. To grade part of the dataset, pass `--suites`. The folder gets
+`scores.jsonl` and `summary.json`, as a run's does, and the summary is printed.
+
 ## providers
 
 See providers:
