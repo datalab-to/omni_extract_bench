@@ -115,6 +115,9 @@ import shutil as _shutil                                                       #
 brought = TMP / "brought"
 _shutil.copytree(out / "predictions", brought / "predictions")
 _theirs = {r["doc_id"]: r for r in graded(Run("datalab", {}, brought), docs)}
+_mine = graded(Run("my-own-model", {}, brought), docs)
+report("a folder of your own may name a provider there is no adapter for",
+       len(_mine) == len(_theirs) and json.loads((brought / "summary.json").read_text())["settings"] == {})
 report("a folder you bring keeps no records, so a document missing from it is failed, not pending",
        _theirs["never-ran"]["status"] == "error" and len(_theirs) == 6, str(_theirs.get("never-ran")))
 

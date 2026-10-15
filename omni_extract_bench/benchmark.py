@@ -127,8 +127,13 @@ def _settings(run: Run) -> dict:
 
 
 def _head(run: Run) -> dict:
-    """What every file a run writes says about itself, before any numbers."""
-    return {"run": run.out.name, "provider": run.provider, "settings": _settings(run)}
+    """What every file a run writes says about itself, before any numbers. A folder of your own
+    predictions may name a provider omni-extract-bench has no adapter for: its settings are then {}."""
+    try:
+        settings = _settings(run)
+    except ValueError:
+        settings = {}
+    return {"run": run.out.name, "provider": run.provider, "settings": settings}
 
 
 def prepare(run: Run, dataset: str, timeout: float, manifest: str = data.MANIFEST) -> None:
