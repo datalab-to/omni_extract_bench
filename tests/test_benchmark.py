@@ -426,8 +426,9 @@ for d in _mix.docs:
     (_run.predictions / f"{d.doc_id}.json").write_text(json.dumps({"a": "x"}))
 _docs = list(_mix.docs)
 _rows = graded(_run, _docs, workers=1)
-report("every row says which scorer and which gold graded it",
+report("every row says which prediction, which gold and which scorer it graded",
        all(r["scorer"] == _bench.SCORER and r["gold"] == _bench.gold_digest(d)
+           and r["prediction"] == _bench.prediction_digest(_run.out, d.doc_id)
            for r, d in zip(_rows, _docs, strict=True)), str(_rows))
 _scores = _run.out / "scores.jsonl"
 
@@ -437,38 +438,41 @@ def _restamp(**stamp):
     _scores.write_text("".join(json.dumps({**r, **stamp}) + "\n" for r in rows))
 
 
-def _refused_with(call, *words):
+def _regraded(**kw):
+    """The documents grading scores again, of `_docs`."""
+    seen = []
+    real = _bench.score_one
+    _bench.score_one = lambda doc, **k: seen.append(doc.doc_id) or real(doc, **k)
     try:
-        call()
-        return False
-    except ValueError as exc:
-        return all(w in str(exc) for w in words)
+        grade(_run, _docs, workers=1, **kw)
+    finally:
+        _bench.score_one = real
+    return seen
 
 
 _version, _, _digest = _bench.SCORER.rpartition("+")
 _restamp(scorer=f"0.0.1+{_digest}")
-report("another release with the same scoring code is the same scorer",
-       len(graded(_run, _docs, workers=1)) == 2)
+report("another release with the same scoring code is the same scorer: nothing is graded again",
+       _regraded() == [], "")
 _restamp(scorer="0.0.1+000000000000")
-report("another scorer's rows are refused, naming it and the fix",
-       _refused_with(lambda: grade(_run, _docs, workers=1), "0.0.1+000000000000", "--rescore"))
-report("...and refused when planning, before any call",
-       _refused_with(lambda: _bench.plan(["datalab"], out=_mix_out, dataset=_mix_set),
-                     "--rescore"))
-_bench.plan(["datalab"], out=_mix_out, dataset=_mix_set, rescore=True)
-report("...but not with --rescore, which grades every document again",
-       all(r["scorer"] == _bench.SCORER for r in graded(_run, _docs, workers=1, rescore=True)))
+report("another scorer's rows are graded again, with no vendor call",
+       _regraded() == [d.doc_id for d in _docs]
+       and all(r["scorer"] == _bench.SCORER for r in graded(_run, _docs, workers=1)))
+_bench.plan(["datalab"], out=_mix_out, dataset=_mix_set)
+report("...and planning over them is not refused", True)
+report("--rescore grades every document again, current or not",
+       _regraded(rescore=True) == [d.doc_id for d in _docs])
 _rows = [json.loads(x) for x in _scores.read_text().splitlines()]
-_scores.write_text("".join(json.dumps({k: v for k, v in r.items() if k not in ("scorer", "gold")})
+_scores.write_text("".join(json.dumps({k: v for k, v in r.items() if k not in ("scorer", "gold", "prediction")})
                            + "\n" for r in _rows))
-report("rows from before the stamps are refused too",
-       _refused_with(lambda: grade(_run, _docs, workers=1), "--rescore"))
-grade(_run, _docs, workers=1, rescore=True)
+report("rows from before the stamps are graded again", _regraded() == [d.doc_id for d in _docs])
 _docs[0].gt_path.write_text(json.dumps({"a": "y"}))
-report("a document whose gold changed since its row is refused, naming it",
-       _refused_with(lambda: grade(_run, _docs, workers=1), _docs[0].doc_id, "--rescore"))
-report("...and --rescore grades it against the new gold",
-       graded(_run, _docs, workers=1, rescore=True)[0]["gold"] == _bench.gold_digest(_docs[0]))
+report("a document whose gold changed since its row is graded again, and only it",
+       _regraded() == [_docs[0].doc_id]
+       and graded(_run, _docs, workers=1)[0]["gold"] == _bench.gold_digest(_docs[0]))
+(_run.predictions / f"{_docs[1].doc_id}.json").write_text(json.dumps({"a": "z"}))
+report("a document whose prediction changed is graded again, and only it",
+       _regraded() == [_docs[1].doc_id])
 
 print("\nA MISSING EXTRA SAYS WHAT TO INSTALL")
 import unittest.mock                                                       # noqa: E402
