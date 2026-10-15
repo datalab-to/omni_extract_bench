@@ -43,14 +43,11 @@ unchanged unless a line below says otherwise.
 - A HuggingFace dataset is downloaded whole, at one revision, into the HuggingFace cache, so its
   documents and gold are always one commit's (fetching only what a run needs is an optimization
   for later).
-- A run never mixes scorers or golds. Each line of scores.jsonl carries `scorer` (the release
-  and a digest of the scoring files), `gold` (a digest of the document's id, suite, schema and
-  gold file) and `prediction` (a digest of its prediction file), and summary.json carries
-  `scorer`. A line whose prediction, gold or scorer has changed is graded again, which calls no
-  vendor; nothing is refused. A run graded before this release has no stamps, so it is graded
-  again once.
-- `--rescore` grades every selected document again and drops every other line, so a narrowed
-  rescore leaves only what it graded again.
+- Grading is fresh every time: every selected document is graded again, which calls no vendor,
+  and scores.jsonl and summary.json are written whole when it finishes, so a run's scores are
+  always one grading's, never a mix of two scorers or golds. An interrupted grading writes
+  nothing. Each line of scores.jsonl, and summary.json, carries `scorer` (the release and a digest
+  of the scoring files). `--rescore` is gone: every grading is one.
 - `grade(run, docs)` writes summary.json itself, so a loop of your own gets the same folder
   `oeb benchmark` writes, and returns the summary of `docs`' lines, as omni-parse-bench's
   `grade` returns a summary. docs/API.md has "A loop of your own".

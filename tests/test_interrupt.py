@@ -188,7 +188,7 @@ report("...and no run published a summary from a half-run corpus",
 report("...while its predictions are on disk for --score-only",
        len(list((acct / out_name("reducto") / "predictions").glob("*.json"))) == 6)
 
-print("\nA NARROWED RUN DOES NOT TRUNCATE THE SCORES FILE")
+print("\nA GRADING WRITES WHAT IT GRADED, WHOLE")
 narrow = pathlib.Path(tempfile.mkdtemp())
 (narrow / "predictions").mkdir()
 five = []
@@ -200,15 +200,9 @@ for i in range(5):
 B.grade(B.Run("datalab", {}, narrow), five, workers=1)
 lines = lambda: len((narrow / "scores.jsonl").read_text().strip().splitlines())   # noqa: E731
 report("a full run writes every row", lines() == 5, str(lines()))
-B.grade(B.Run("datalab", {}, narrow), five[:2], workers=1)
-report("a narrowed run keeps the rows it did not select", lines() == 5, str(lines()))
-B.grade(B.Run("datalab", {}, narrow), five[:2], workers=1, rescore=True)
-report("...but a narrowed rescore keeps only what it graded again, so no row is another "
-       "scorer's", lines() == 2, str(lines()))
-
 back = B.grade(B.Run("datalab", {}, narrow), five[:2], workers=1)
-report("the return value is this run's selection, not the file: it counts what was asked for",
-       back["documents"] == 2, str(back["documents"]))
+report("a narrowed grading's files are that grading's: the two it graded", lines() == 2, str(lines()))
+report("...and so is its summary", back["documents"] == 2, str(back["documents"]))
 
 print("\nA FULL DISK STOPS THE VENDOR INSTEAD OF BUYING THE REST")
 disk = pathlib.Path(tempfile.mkdtemp())
@@ -228,7 +222,7 @@ B.write_json_atomic = lambda path, obj, **kw: (
 try:
     B.predict_all(B.Plan(runs=(B.Run("datalab", {}, disk / "x"),), docs=tuple(twenty),
                          dataset=str(disk), manifest="manifest.parquet", root=disk, timeout=5,
-                         workers=4, score_workers=1, verdicts=True, rescore=False,
+                         workers=4, score_workers=1, verdicts=True,
                          score_only=False))
     report("a failed write stops the vendor", False, "it returned normally")
 except OSError:
@@ -311,8 +305,8 @@ except subprocess.TimeoutExpired:
 sj = work2 / "scores.jsonl"
 kept = [json.loads(l) for l in sj.read_text().splitlines() if l.strip()] if sj.exists() else []
 report("scoring stops promptly", stopped < 10, f"{stopped:.1f}s after the signal")
-report("what was graded is written, not discarded", 0 < len(kept) < 60,
-       f"{len(kept)} of 60 rows -- 0 means the work was thrown away")
+report("an interrupted grading writes nothing: the next one starts over, fresh", kept == [],
+       f"{len(kept)} of 60 rows")
 report("every kept row is a finished score, never a partial one",
        all(r.get("status") == "scored" and "accuracy" in r for r in kept))
 report("the file is still in document order",
@@ -333,29 +327,20 @@ graded = []
 real_score_one = B.score_one
 B.score_one = lambda doc, **k: graded.append(doc.doc_id) or real_score_one(doc, **k)
 try:
-    # Explicit, because the last two checks are about rows that have no verdicts.
     B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=False)
     report("a first pass grades everything", len(graded) == 6, str(len(graded)))
 
-    graded.clear(); summary = B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=False)
-    report("a second pass grades nothing", graded == [], str(graded))
-    report("...and still counts every row", summary["documents"] == 6, str(summary["documents"]))
-
-    graded.clear()
-    B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=False, rescore=True)
-    report("rescore=True grades everything again", len(graded) == 6, str(len(graded)))
-
-    graded.clear(); B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=True)
-    report("asking for verdicts re-grades rows that have none", len(graded) == 6, str(len(graded)))
-    graded.clear(); B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=True)
-    report("...and those rows are reusable once they do", graded == [], str(graded))
+    graded.clear(); summary = B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=True)
+    report("a second pass grades everything again: grading is fresh", len(graded) == 6, str(len(graded)))
+    report("...and counts every row", summary["documents"] == 6, str(summary["documents"]))
 
     sj = fresh / "scores.jsonl"
     lines = sj.read_text().splitlines()
     lines[2] = "{ this is not json"
     sj.write_text("\n".join(lines) + "\n")
     graded.clear(); B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=True)
-    report("an unreadable row costs one document, not the file", len(graded) == 1, str(graded))
+    report("an unreadable line is written over by the next grading",
+           len(graded) == 6 and len(B.read_scores(fresh)) == 6, str(graded))
 finally:
     B.score_one = real_score_one
 

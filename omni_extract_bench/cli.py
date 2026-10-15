@@ -218,7 +218,7 @@ def cmd_benchmark(args) -> int:
                        limit=args.limit, timeout=args.timeout,
                        predict_workers=read_workers(args.predict_workers),
                        score_workers=args.score_workers,
-                       verdicts=args.verdicts, rescore=args.rescore,
+                       verdicts=args.verdicts,
                        score_only=args.score_only,
                        options=read_options(args.options))
     if args.yes:
@@ -294,10 +294,6 @@ def main(argv=None) -> int:
                         '{"mode": "accurate"}]}\' compares its tiers in one run. Each is '
                         "recorded in the run's settings.json and on every document, and "
                         "digested into the directory name so two of them cannot mix")
-    b.add_argument("--rescore", action="store_true",
-                   help="discard every score on disk and grade the selected documents again; "
-                        "no vendor is called. A line whose prediction, gold or scorer has "
-                        "changed is graded again without it")
     b.add_argument("--score-only", action="store_true",
                    help="score the predictions already on disk; call no vendor")
     b.add_argument("-y", "--yes", action="store_true",

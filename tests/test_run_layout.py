@@ -218,11 +218,9 @@ narrow = B.run(["datalab"], out=out2, score_workers=1, predict_workers={"*": 1},
                options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
 DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs))
 kept = json.loads((out2 / named("datalab") / "summary.json").read_text())
-report("a narrowed resume leaves the directory's own summary whole",
-       kept["documents"] == len(docs), f'{kept["documents"]} of {len(docs)}')
-report("...while the return value answers what this invocation ran",
-       narrow[named("datalab")]["documents"] == 1,
-       str(narrow[named("datalab")]["documents"]))
+report("a narrowed run's summary is that grading's, of what it ran",
+       kept["documents"] == 1 and narrow[named("datalab")]["documents"] == 1,
+       f'{kept["documents"]}, {narrow[named("datalab")]["documents"]}')
 
 print("\nAND A RUN THAT IS GRADED SURVIVES THE ONE AFTER IT NOT BEING")
 out3 = pathlib.Path(tempfile.mkdtemp())
@@ -331,25 +329,21 @@ for d in docs[:2]:
     B.write_json_atomic(bal.records / f"{d.doc_id}.json", {"done": True})
 (bal.out).mkdir(parents=True, exist_ok=True)
 (bal.out / "scores.jsonl").write_text(
-    "".join(json.dumps({"doc_id": d.doc_id, "suite": "s", "status": "scored", "scorer": B.SCORER,
-                        "gold": B.gold_digest(d), "prediction": B.prediction_digest(bal.out, d.doc_id)})
+    "".join(json.dumps({"doc_id": d.doc_id, "suite": "s", "status": "scored", "scorer": B.SCORER})
             + "\n" for d in docs))
 # A graded document is a row AND its verdicts, because that is what grading writes by default.
 (bal.out / "verdicts").mkdir(parents=True, exist_ok=True)
 for d in docs:
     (bal.out / "verdicts" / f"{d.doc_id}.jsonl").write_text("")
-report("a run counts what it would still predict, and still grade",
-       B.owed(bal, docs) == (len(docs) - 2, 0), str(B.owed(bal, docs)))
+report("a run counts what it would still predict, and grades every document: grading is fresh",
+       B.owed(bal, docs) == (len(docs) - 2, len(docs)), str(B.owed(bal, docs)))
 report("...a run with nothing on disk owes everything",
        B.owed(acc, docs) == (len(docs), len(docs)), str(B.owed(acc, docs)))
-report("--rescore owes every grade again, however many are on disk",
-       B.owed(bal, docs, rescore=True) == (len(docs) - 2, len(docs)),
-       str(B.owed(bal, docs, rescore=True)))
 stated = B.describe(plan)
 row = next(line for line in stated.splitlines() if named("datalab") in line)
 cells = [c.strip() for c in row.split("\u2502")]
 report("the plan states it per run, once the corpus is known",
-       cells[-3:-1] == [str(len(docs) - 2), "0"], row)
+       cells[-3:-1] == [str(len(docs) - 2), str(len(docs))], row)
 report("...and nothing is cut off, whatever the widest cell is",
        "\u2026" not in stated, stated)
 

@@ -160,7 +160,6 @@ p = benchmark.plan(
   predict_workers=None,   # documents in flight per vendor
   score_workers=0,        # processes used to score
   verdicts=True,          # write verdicts; False to skip them
-  rescore=False,          # score every document again
   score_only=False,       # score the predictions; call no vendor
   options=None,           # per-provider settings: {"datalab": {"mode": "accurate"}}
 )
@@ -311,15 +310,14 @@ It's **resumable**, and safe to run twice.
 
 - A document is predicted again only when it has no record. The record is written last, so
   its presence means the prediction beside it is complete.
-- A document is graded again only when its line in `scores.jsonl` is missing or stale. Each line
-  says which prediction (`prediction`, a digest of its file), which gold (`gold`, a digest of the
-  document's id, suite, schema and gold file) and which scoring code (`scorer`, the release and a
-  digest of the scoring files) it graded. A line whose prediction, gold or scorer has changed is
-  graded again, which calls no vendor, so a finished grading's lines are one scorer's against one
-  gold. `--rescore` grades the selected documents again anyway, and drops every other line.
+- Grading is fresh every time: every selected document is graded again, which calls no vendor,
+  and `scores.jsonl` and `summary.json` are written whole when it finishes. So a run's scores are
+  always one grading's, and a gold correction or a new scorer reaches a run on its next grading.
+  An interrupted grading writes nothing; the last finished grading's files stand. Each line says
+  which scoring code (`scorer`, the release and a digest of the scoring files) graded it.
 
 So a Ctrl-C, a crash or a credit ceiling costs you the documents in flight, and nothing else.
-Reinvoke the same command to carry on.
+Reinvoke the same command to carry on: it predicts what is left, then grades everything.
 
 
 ### A loop of your own
@@ -350,9 +348,9 @@ benchmark.grade(run, list(p.docs))
 - `record(run, doc_id, result)` writes a result from `predict`: its prediction, if the call
   succeeded, then the record;
 - `recorded(run, doc_id)` reads the document's record, or None; and
-- `grade(run, docs)` grades the documents whose line is missing or stale, writes `scores.jsonl`
-  and `summary.json`, and returns the summary of `docs`' lines (`read_scores(run.out)` gives the
-  lines). A document with no prediction is graded as failed.
+- `grade(run, docs)` grades every document of `docs`, fresh, writes `scores.jsonl` and
+  `summary.json` whole, and returns the summary (`read_scores(run.out)` gives the lines). A
+  document with no prediction is graded as failed.
 
 The folder is then exactly one `oeb benchmark` writes, so either can resume or grade it.
 
@@ -584,8 +582,6 @@ One line per document, in document order whatever order the workers finished in.
   "suite": "extractbench",
   "provider": "datalab",
   "scorer": "0.1.8+3f9a0c2e71b4",
-  "gold": "a41c09e2d5f7b803",
-  "prediction": "5d0e72c9a1b34f60",
   "status": "scored",
   "accuracy": 0.9555555555555556,
   "precision": 0.9555555555555556,

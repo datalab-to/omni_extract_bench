@@ -411,7 +411,7 @@ try:
     _bench.predict_all(_bench.Plan(
         runs=(_bench.Run("datalab", {}, _out),), docs=tuple(_docs), dataset=str(TMP),
         manifest="manifest.parquet", root=TMP, timeout=30, workers=3, score_workers=1,
-        verdicts=True, rescore=False, score_only=False))
+        verdicts=True, score_only=False))
     report("a missing SDK stops the run", False, "it returned normally")
 except MissingDependency:
     report("a missing SDK stops the run", True)
@@ -434,16 +434,7 @@ for d in _mix.docs:
     (_run.predictions / f"{d.doc_id}.json").write_text(json.dumps({"a": "x"}))
 _docs = list(_mix.docs)
 _rows = graded(_run, _docs, workers=1)
-report("every row says which prediction, which gold and which scorer it graded",
-       all(r["scorer"] == _bench.SCORER and r["gold"] == _bench.gold_digest(d)
-           and r["prediction"] == _bench.prediction_digest(_run.out, d.doc_id)
-           for r, d in zip(_rows, _docs, strict=True)), str(_rows))
-_scores = _run.out / "scores.jsonl"
-
-
-def _restamp(**stamp):
-    rows = [json.loads(x) for x in _scores.read_text().splitlines()]
-    _scores.write_text("".join(json.dumps({**r, **stamp}) + "\n" for r in rows))
+report("every line says which scorer graded it", all(r["scorer"] == _bench.SCORER for r in _rows), str(_rows))
 
 
 def _regraded(**kw):
@@ -458,29 +449,11 @@ def _regraded(**kw):
     return seen
 
 
-_version, _, _digest = _bench.SCORER.rpartition("+")
-_restamp(scorer=f"0.0.1+{_digest}")
-report("another release with the same scoring code is the same scorer: nothing is graded again",
-       _regraded() == [], "")
-_restamp(scorer="0.0.1+000000000000")
-report("another scorer's rows are graded again, with no vendor call",
-       _regraded() == [d.doc_id for d in _docs]
-       and all(r["scorer"] == _bench.SCORER for r in graded(_run, _docs, workers=1)))
-_bench.plan(["datalab"], out=_mix_out, dataset=_mix_set)
-report("...and planning over them is not refused", True)
-report("--rescore grades every document again, current or not",
-       _regraded(rescore=True) == [d.doc_id for d in _docs])
-_rows = [json.loads(x) for x in _scores.read_text().splitlines()]
-_scores.write_text("".join(json.dumps({k: v for k, v in r.items() if k not in ("scorer", "gold", "prediction")})
-                           + "\n" for r in _rows))
-report("rows from before the stamps are graded again", _regraded() == [d.doc_id for d in _docs])
+report("every grading grades every document again, with no vendor call: grading is fresh",
+       _regraded() == [d.doc_id for d in _docs] and _regraded() == [d.doc_id for d in _docs])
 _docs[0].gt_path.write_text(json.dumps({"a": "y"}))
-report("a document whose gold changed since its row is graded again, and only it",
-       _regraded() == [_docs[0].doc_id]
-       and graded(_run, _docs, workers=1)[0]["gold"] == _bench.gold_digest(_docs[0]))
-(_run.predictions / f"{_docs[1].doc_id}.json").write_text(json.dumps({"a": "z"}))
-report("a document whose prediction changed is graded again, and only it",
-       _regraded() == [_docs[1].doc_id])
+report("so a changed gold reaches the next grading",
+       graded(_run, _docs, workers=1)[0]["accuracy"] == 0.0)
 
 print("\nA MISSING EXTRA SAYS WHAT TO INSTALL")
 import unittest.mock                                                       # noqa: E402

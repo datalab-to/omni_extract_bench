@@ -13,11 +13,10 @@ Two levels of data, each a NamedTuple, and functions over them:
 no vendor call. Concurrency is per adapter, not per run: every run of one adapter (two datalab
 modes, every OpenRouter model) shares one pool of `workers_for` its adapter.
 
-Resumable and idempotent: a document is predicted again only when it has no record, graded
-again only when its line is missing or stale: each line says which prediction, which gold and which
-scoring code it graded, and a line whose prediction, gold or scorer has changed is graded again
-(`current`), which calls no vendor. So a finished grading's lines are one scorer's against one gold.
-`--rescore` grades every document again anyway.
+Resumable: a document is predicted again only when it has no record. Grading is fresh every time:
+every document is graded again, which calls no vendor, and scores.jsonl and summary.json are written
+whole when it finishes, so a run's scores are always one grading's. Reusing lines a grading already
+wrote is an optimization for later.
 
 Credentials come from the environment and everything else from `--options`, so
 `run_manifest.settings` is a complete account of what each vendor was asked.
@@ -66,8 +65,8 @@ SCORING = ("scorer.py", "matching.py", "values.py", "recognise.py")
 
 
 def scorer_version() -> str:
-    """The package's version and a digest of its scoring code, stamped on each score row so a run
-    graded by another scorer is known, and graded again (`current`).
+    """The package's version and a digest of its scoring code, stamped on each score line: which scorer
+    graded it.
 
     Note: the version alone is the same across every commit between releases, so it can't say the
     scoring changed; the digest of the files that decide a verdict can. The version is kept for the
@@ -84,14 +83,6 @@ def scorer_version() -> str:
 
 
 SCORER = scorer_version()
-
-
-def scoring(stamp: str | None) -> str | None:
-    """The scoring code a scorer stamp names: its digest, without the version, so a release that
-    changes no scoring file grades as the one before it did."""
-    return None if stamp is None else stamp.rpartition("+")[2]
-
-
 
 
 def write_json_atomic(path: Path, obj, *, indent: int | None = None) -> None:
@@ -177,35 +168,21 @@ def record(run: Run, doc_id: str, result: dict) -> None:
     write_json_atomic(run.records / f"{doc_id}.json", result)
 
 
-def owed(run: Run, docs: list[data.Doc], verdicts: bool = True, rescore: bool = False) -> tuple[int, int]:
-    """How many of `docs` the run would predict, and then grade. The two are independent: every
-    prediction can be on disk with every grade still owed."""
-    _, wanted = grading_split(run.out, docs, verdicts=verdicts, rescore=rescore)
-    return sum(needs(run, doc) for doc in docs), len(wanted)
+def owed(run: Run, docs: list[data.Doc]) -> tuple[int, int]:
+    """How many of `docs` the run would predict, and then grade: every one, since grading is fresh."""
+    return sum(needs(run, doc) for doc in docs), len(docs)
 
 
 def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, workers: int = 0,
-          rescore: bool = False, progress=NULL) -> dict:
-    """Grade the run's predictions, resumable per document: one line each in scores.jsonl, and
-    summary.json over every line the run has, written once grading finishes (an interrupted
-    grading writes none). Returns the summary of `docs`' lines, as omni-parse-bench's `grade`
-    returns a summary; the lines themselves are `read_scores(run.out)`."""
-    known, wanted = grading_split(run.out, docs, verdicts=verdicts, rescore=rescore)
-    if len(wanted) < len(docs):
-        log.info("%s: %d of %d documents already scored, %d to grade",
-                 run.out.name, len(docs) - len(wanted), len(docs), len(wanted))
-    progress.start(len(wanted))
-
+          progress=NULL) -> dict:
+    """Grade every document of `docs`, fresh, and write scores.jsonl (one line each, in their order) and
+    summary.json whole once grading finishes: they are always one grading's, of `docs`. An interrupted
+    grading writes nothing, so the last finished one's files stand. Returns the summary, as
+    omni-parse-bench's `grade` does; the lines themselves are `read_scores(run.out)`."""
+    progress.start(len(docs))
     one = functools.partial(score_one, run=run, verdicts=verdicts)
     graded: dict[str, dict] = {}
-
-    def so_far() -> list[dict]:
-        """Every row known, old and new, in corpus order. Merged over what is on disk, so a
-        `--limit 2` run cannot rewrite the file with two lines."""
-        merged = {**known, **graded}
-        return sorted(merged.values(), key=lambda r: (r.get("suite", ""), r["doc_id"]))
-
-    remaining = wanted
+    remaining = list(docs)
     try:
         if remaining and (workers or SCORE_WORKERS) > 1:
             try:
@@ -231,16 +208,11 @@ def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, workers: int = 
             progress.record(error=row["status"] != "scored")
     finally:
         progress.finish()
-        write_scores(run.out, so_far())
-        if len(graded) < len(wanted):
-            log.warning("scoring stopped after %d of %d documents; the rest are graded "
-                        "on the next run", len(graded), len(wanted))
-    write_json_atomic(run.out / "summary.json", {**head(run), "scorer": SCORER,
-                                                 **scorer.summarize(so_far())}, indent=2)
-    # Note: the return answers what this invocation asked for, `docs`; summary.json, every line.
-    answered = {**known, **graded}
-    return {**head(run), "scorer": SCORER,
-            **scorer.summarize([answered[d.doc_id] for d in docs if d.doc_id in answered])}
+    lines = [graded[d.doc_id] for d in docs]
+    write_scores(run.out, lines)
+    summary = {**head(run), "scorer": SCORER, **scorer.summarize(lines)}
+    write_json_atomic(run.out / "summary.json", summary, indent=2)
+    return summary
 
 
 def asked(run: Run) -> list[str]:
@@ -259,7 +231,7 @@ def score_one(doc: data.Doc, *, run: Run, verdicts: bool = False) -> dict:
     folder of predictions you bring is your submission, so a missing file counts against
     coverage rather than being left out of it."""
     row = {"doc_id": doc.doc_id, "suite": doc.suite, "provider": run.provider,
-           "scorer": SCORER, "gold": gold_digest(doc), "prediction": prediction_digest(run.out, doc.doc_id)}
+           "scorer": SCORER}
     if failed := (recorded(run, doc.doc_id) or {}).get("error"):
         return {**row, "status": "error", "error": f"{failed['type']}: {failed['message']}"}
     try:
@@ -281,8 +253,8 @@ def score_one(doc: data.Doc, *, run: Run, verdicts: bool = False) -> dict:
     return {**row, "status": "scored", **result}
 
 
-def read_scores(out: Path, verdicts: bool = False) -> dict[str, dict]:
-    """Scores already on disk for this provider, keyed by document."""
+def read_scores(out: Path) -> dict[str, dict]:
+    """A run's score lines on disk (scores.jsonl), by document."""
     rows: dict[str, dict] = {}
     path = out / "scores.jsonl"
     try:
@@ -297,52 +269,8 @@ def read_scores(out: Path, verdicts: bool = False) -> dict[str, dict]:
             doc_id = row["doc_id"]
         except (json.JSONDecodeError, KeyError, TypeError):
             continue
-        if verdicts and not (out / "verdicts" / f"{doc_id}.jsonl").exists():
-            continue
         rows[doc_id] = row
     return rows
-
-
-def grading_split(out: Path, docs: list[data.Doc], verdicts: bool = False,
-                  rescore: bool = False) -> tuple[dict[str, dict], list[data.Doc]]:
-    """The lines this grading may keep, and the documents still to grade. One definition, so
-    what `describe` promises and what `grade` then does cannot drift. A selected document's line is
-    kept while it is `current`; a line of a document not selected is kept while its scorer is this
-    one, so a run's lines are never two scorers'. `rescore` keeps none."""
-    if rescore:
-        return {}, list(docs)
-    now, by = scoring(SCORER), {d.doc_id: d for d in docs}
-    known = {i: r for i, r in read_scores(out, verdicts=verdicts).items()
-             if (current(out, r, by[i]) if i in by else scoring(r.get("scorer")) == now)}
-    return known, [d for d in docs if d.doc_id not in known]
-
-
-def current(out: Path, line: dict, doc: data.Doc) -> bool:
-    """Whether a document's line still stands: it graded the prediction on disk now
-    (`prediction_digest`), against the document's gold as it is (`gold_digest`), with this scoring
-    code (`scoring`). Otherwise the document is graded again, which calls no vendor."""
-    return (scoring(line.get("scorer")) == scoring(SCORER) and line.get("gold") == gold_digest(doc)
-            and line.get("prediction") == prediction_digest(out, doc.doc_id))
-
-
-def prediction_digest(out: Path, doc_id: str) -> str | None:
-    """Which prediction a line grades: a digest of its file in `out/predictions`, None when it has none."""
-    try:
-        return hashlib.sha256((out / "predictions" / f"{doc_id}.json").read_bytes()).hexdigest()[:16]
-    except OSError:
-        return None
-
-
-def gold_digest(doc: data.Doc) -> str | None:
-    """Which gold a document is graded against: a digest of what grading reads, its id, suite and
-    schema and its gold file; None when the gold can't be read, which its row then says."""
-    try:
-        gold = doc.gt_path.read_bytes()
-    except OSError:
-        return None
-    h = hashlib.sha256(json.dumps([doc.doc_id, doc.suite, doc.schema], sort_keys=True).encode())
-    h.update(gold)
-    return h.hexdigest()[:16]
 
 
 def write_scores(out: Path, rows: list[dict]) -> None:
@@ -413,14 +341,13 @@ class Plan(NamedTuple):
     workers: dict[str, int] | int | None   # documents in flight per adapter, `workers_for`
     score_workers: int
     verdicts: bool
-    rescore: bool
     score_only: bool
 
 
 def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path = data.DEFAULT_DATASET,
          manifest: str = data.MANIFEST, suites: list[str] | None = None, limit: int = 0,
          timeout: float = 1800.0, predict_workers: dict[str, int] | int | None = None,
-         score_workers: int = 0, verdicts: bool = True, rescore: bool = False,
+         score_workers: int = 0, verdicts: bool = True,
          score_only: bool = False, options: dict | None = None) -> Plan:
     """Every run this invocation makes and the documents it covers, checked before any call: a
     bad provider, option or `--out` fails here. Runs are deduplicated by folder."""
@@ -444,7 +371,7 @@ def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path 
     if not (docs := data.select(every, suites, limit)):
         raise ValueError("no documents selected: check --suites and --limit")
     return Plan(tuple(runs.values()), tuple(docs), str(dataset), manifest, root, timeout,
-                predict_workers, score_workers, verdicts, rescore, score_only)
+                predict_workers, score_workers, verdicts, score_only)
 
 
 def predict_all(p: Plan) -> None:
@@ -557,7 +484,7 @@ def grade_all(p: Plan) -> dict[str, dict]:
     with Progress([r.out.name for r in p.runs]) as bars:
         for run in p.runs:
             summary[run.out.name] = s = grade(run, list(p.docs), verdicts=p.verdicts,
-                                              workers=p.score_workers, rescore=p.rescore,
+                                              workers=p.score_workers,
                                               progress=bars.reporter(run.out.name))
             log.info("%s: accuracy %.4f over %d suites, coverage %d/%d", run.out.name,
                      s["accuracy"], len(s["per_suite"]), s["scored"], s["documents"])
@@ -600,7 +527,7 @@ def facts(p: Plan) -> Table:
     table.add_row("documents", f"{plural(len(p.docs), 'document')} selected")
     table.add_row("timeout", f"{p.timeout:.0f}s per document")
     # Shown even when false: `score only  false` is what says this will spend money.
-    for name, on in (("score only", p.score_only), ("rescoring", p.rescore)):
+    for name, on in (("score only", p.score_only),):
         table.add_row(name, Text(str(on).lower(), style="bold" if on else "dim"))
     return table
 
@@ -624,8 +551,7 @@ def plan_view(p: Plan) -> Group:
     for adapter, runs in by.items():
         workers = workers_for([r.provider for r in runs], p.workers)
         for n, run in enumerate(runs):
-            to_predict, to_grade = owed(run, list(p.docs), verdicts=p.verdicts,
-                                        rescore=p.rescore)
+            to_predict, to_grade = owed(run, list(p.docs))
             to_predict = 0 if p.score_only else to_predict
             table.add_row(Text(adapter if n == 0 else "", style="bold"),
                           Text(str(workers) if n == 0 else ""),
