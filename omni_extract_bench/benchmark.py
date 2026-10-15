@@ -157,9 +157,13 @@ def recorded(run: Run, doc_id: str) -> dict | None:
     return got if isinstance(got, dict) else None
 
 
-def needs(run: Run, doc: data.Doc) -> bool:
-    """True when the run has no readable record of the document: it was never attempted."""
-    return recorded(run, doc.doc_id) is None
+def needs(run: Run, doc: data.Doc, retry_failed: bool = False) -> bool:
+    """True when the run has no readable record of the document (it was never attempted), or, with
+    `retry_failed`, when its record is a failure that may not recur (`error["transient"]`: a timeout,
+    an outage, a 429 or 5xx). A failure that is an answer (a 400, a refusal) is never retried."""
+    if (got := recorded(run, doc.doc_id)) is None:
+        return True
+    return retry_failed and bool((got.get("error") or {}).get("transient"))
 
 
 def record(run: Run, doc_id: str, result: dict) -> None:
@@ -175,7 +179,7 @@ def owed(p: Plan, run: Run) -> tuple[int, int]:
     """How many documents the run would predict, and then grade, by the rules `predict_all` and
     `grade_all` follow: it predicts the plan's documents it has no record of, and grades every
     document of the manifest that will have been attempted (the rest are pending)."""
-    coming = set() if p.score_only else {d.doc_id for d in p.docs if needs(run, d)}
+    coming = set() if p.score_only else {d.doc_id for d in p.docs if needs(run, d, p.retry_failed)}
     _, every = data.read_manifest(p.dataset, p.manifest)
     keeps = not p.score_only or run.records.is_dir()
     to_grade = sum(not keeps or d.doc_id in coming or recorded(run, d.doc_id) is not None
@@ -369,13 +373,14 @@ class Plan(NamedTuple):
     score_workers: int
     verdicts: bool
     score_only: bool
+    retry_failed: bool = False             # predict again documents whose recorded failure was transient
 
 
 def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path = data.DEFAULT_DATASET,
          manifest: str = data.MANIFEST, suites: list[str] | None = None, limit: int = 0,
-         timeout: float = 1800.0, predict_workers: dict[str, int] | int | None = None,
+         timeout: float = 1800.0, workers: dict[str, int] | int | None = None,
          score_workers: int = 0, verdicts: bool = True,
-         score_only: bool = False, options: dict | None = None) -> Plan:
+         score_only: bool = False, retry_failed: bool = False, options: dict | None = None) -> Plan:
     """Every run this invocation makes and the documents it covers, checked before any call: a
     bad provider, option or `--out` fails here. Runs are deduplicated by folder."""
     from .harness.registry import out_name, resolve
@@ -398,7 +403,7 @@ def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path 
     if not (docs := data.select(every, suites, limit)):
         raise ValueError("no documents selected: check --suites and --limit")
     return Plan(tuple(runs.values()), tuple(docs), str(dataset), manifest, timeout,
-                predict_workers, score_workers, verdicts, score_only)
+                workers, score_workers, verdicts, score_only, retry_failed)
 
 
 def predict_all(p: Plan) -> None:
@@ -421,7 +426,7 @@ def predict_all(p: Plan) -> None:
         bar = {r.out.name: bars.reporter(r.out.name) for r in runs}
         left, work = {}, []
         for r in runs:
-            todo = [d for d in p.docs if needs(r, d)]
+            todo = [d for d in p.docs if needs(r, d, p.retry_failed)]
             log.info("%s: %d documents, %d to run", r.out.name, len(p.docs), len(todo))
             bar[r.out.name].start(len(todo), workers)
             if not todo:
@@ -595,12 +600,3 @@ def describe(p: Plan) -> str:
     console = Console(file=io.StringIO(), width=PLAN_WIDTH, no_color=True, highlight=False)
     console.print(plan_view(p))
     return "\n".join(line.rstrip() for line in console.file.getvalue().splitlines())
-
-
-def run(providers: list[str], **kwargs) -> dict:
-    """Plan, log the plan, predict, grade. Keyword arguments are `plan`'s, and no argparse, so it
-    stays callable from a notebook, and it never reads stdin."""
-    p = plan(providers, **kwargs)
-    for line in describe(p).splitlines():
-        log.info("%s", line)
-    return execute(p)

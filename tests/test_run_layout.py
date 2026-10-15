@@ -162,13 +162,13 @@ D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, config: (
     called.append(config.mode),
     Extraction(result={"a": config.mode}, cost=Cost(usd=0.1)))[1])
 
-B.run(["datalab"], out=out, score_workers=1, predict_workers={"*": 1})
+B.execute(B.plan(["datalab"], out=out, score_workers=1, workers={"*": 1}))
 report("the stock run calls the vendor at its stock setting", called == ["balanced"] * 3,
        str(called))
 
 called.clear()
-B.run(["datalab"], out=out, score_workers=1, predict_workers={"*": 1},
-      options={"datalab": {"mode": "fast"}})
+B.execute(B.plan(["datalab"], out=out, score_workers=1, workers={"*": 1},
+      options={"datalab": {"mode": "fast"}}))
 report("the steered run calls the vendor again, at the asked-for setting",
        called == ["fast"] * 3, f"{called} -- empty means it reused the stock records")
 steered_dir = named("datalab", mode="fast")
@@ -190,8 +190,8 @@ report("...and the record states what it was sent",
 print("\nA VENDOR'S OWN TIERS, COMPARED IN ONE INVOCATION")
 out2 = pathlib.Path(tempfile.mkdtemp())
 DS.download_dataset = lambda *_: out2
-summary = B.run(["datalab"], out=out2, score_workers=1, predict_workers={"*": 1},
-                options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+summary = B.execute(B.plan(["datalab"], out=out2, score_workers=1, workers={"*": 1},
+                options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
 report("each configuration is its own row in the summary",
        sorted(summary) == sorted([named("datalab", mode="balanced"),
                                   named("datalab", mode="accurate")]),
@@ -214,8 +214,8 @@ report("and there is no table across them to go stale",
        not (out2 / "summary.json").exists())
 
 DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs[:1]))
-narrow = B.run(["datalab"], out=out2, score_workers=1, predict_workers={"*": 1},
-               options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+narrow = B.execute(B.plan(["datalab"], out=out2, score_workers=1, workers={"*": 1},
+               options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
 DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs))
 kept = json.loads((out2 / named("datalab") / "summary.json").read_text())
 report("a narrowed run's summary is that grading's, of what it ran",
@@ -237,8 +237,8 @@ def interrupted_on_the_second(*a, **k):
 
 B.grade = interrupted_on_the_second
 try:
-    B.run(["datalab"], out=out3, score_workers=1, predict_workers={"*": 1},
-          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+    B.execute(B.plan(["datalab"], out=out3, score_workers=1, workers={"*": 1},
+          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
     report("the interrupt reaches the caller", False, "it was swallowed")
 except KeyboardInterrupt:
     report("the interrupt reaches the caller", True)
@@ -296,8 +296,8 @@ def counting(prov):
 
 
 D.adapter = as_adapter(counting)
-B.run(["datalab"], out=wide, score_workers=1,
-      options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+B.execute(B.plan(["datalab"], out=wide, score_workers=1,
+      options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
 report("two runs of one vendor share its concurrency cap, not double it",
        live["peak"] <= WORKERS["datalab"],
        f'peak {live["peak"]} in flight against a cap of {WORKERS["datalab"]}')
@@ -367,7 +367,7 @@ D.adapter = as_adapter(counting_adapter)
 from omni_extract_bench import cli                                            # noqa: E402
 
 _ask = ["benchmark", "--providers", "datalab", "--out", str(ask), "--score-workers", "1",
-        "--predict-workers", "1"]
+        "--workers", "1"]
 _real_confirm = cli.confirm_plan
 cli.confirm_plan = lambda view: (shown.append(view), False)[1]
 try:
@@ -422,8 +422,8 @@ _exit, elapsed = Progress.__exit__, {}
 Progress.__exit__ = lambda self, *a: ([elapsed.setdefault(n, s.elapsed)
                                        for n, s in self.stats.items()], _exit(self, *a))[1]
 try:
-    B.run(["datalab"], out=timed, score_workers=1,
-          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+    B.execute(B.plan(["datalab"], out=timed, score_workers=1,
+          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
 finally:
     Progress.__exit__ = _exit
 quick, slow = named("datalab", mode="balanced"), named("datalab", mode="accurate")
@@ -439,7 +439,7 @@ DS.download_dataset = lambda *_: models
 live["n"] = live["peak"] = 0
 D.adapter = as_adapter(counting)
 ids = ["openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash"]
-B.run(ids, out=models, score_workers=1)
+B.execute(B.plan(ids, out=models, score_workers=1))
 report("three model ids share one budget, not one each",
        live["peak"] <= WORKERS["llm_single_shot"],
        f'peak {live["peak"]} against a cap of {WORKERS["llm_single_shot"]}; '
@@ -470,8 +470,8 @@ def broke(prov):
 
 D.adapter = as_adapter(broke)
 try:
-    B.run(["datalab"], out=acct, score_workers=1,
-          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+    B.execute(B.plan(["datalab"], out=acct, score_workers=1,
+          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
     report("the account failure reaches the caller", False, "it was swallowed")
 except AccountFailure:
     report("the account failure reaches the caller", True)

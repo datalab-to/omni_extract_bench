@@ -6,7 +6,7 @@ The poll loops raised `VendorError` on any non-200, so one 429 on one poll escap
 UPLOAD. The job already running at the vendor was abandoned and a second one submitted, for
 $1.55 on datalab, silently, because the retry returns a perfectly good answer.
 
-It is not rare: a 259-second document polls ~51 times, and at `--predict-workers 25` that is
+It is not rare: a 259-second document polls ~51 times, and at `--workers 25` that is
 five requests a second for hours. Raising concurrency makes it likelier, not rarer.
 
 Run: python3 tests/test_poll_retry.py

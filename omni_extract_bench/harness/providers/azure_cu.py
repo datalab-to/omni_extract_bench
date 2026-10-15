@@ -165,7 +165,7 @@ def _ensure_analyzer(client, analyzer: str, fields: dict, config: Config, budget
     analyzer EXISTS, not that it is READY -- so a thread that lost the race would skip the
     readiness wait below and analyse against an analyzer still provisioning. Checking the cache
     without holding anything is what let several threads reach the PUT at once, and widening
-    `--predict-workers` makes that likelier rather than rarer.
+    `--workers` makes that likelier rather than rarer.
 
     Threads that block here are waiting for something they need anyway, and the wait is bounded
     by the holding document's own budget.

@@ -147,10 +147,10 @@ def read_options(value: str | None, *, per_provider: bool = True) -> dict:
 
 
 def read_workers(value: str | None) -> dict[str, int]:
-    """`--predict-workers` as `{provider: count}`, `"*"` being a bare number meaning all.
+    """`--workers` as `{provider: count}`, `"*"` being a bare number meaning all.
 
-        --predict-workers 25                     -> {"*": 25}
-        --predict-workers reducto=25,datalab=40  -> {"reducto": 25, "datalab": 40}
+        --workers 25                     -> {"*": 25}
+        --workers reducto=25,datalab=40  -> {"reducto": 25, "datalab": 40}
 
     Per provider rather than one global number, because the right value is a fact about the
     vendor: these are documents in flight at it, and a run naming several vendors has no one
@@ -164,16 +164,16 @@ def read_workers(value: str | None) -> dict[str, int]:
     for part in value.split(","):
         name, sep, count = part.partition("=")
         if not sep:
-            raise ValueError(f"--predict-workers: {part.strip()!r} is neither a number nor "
+            raise ValueError(f"--workers: {part.strip()!r} is neither a number nor "
                              f"NAME=COUNT, e.g. '25' or 'reducto=25,datalab=40'")
         out[name.strip()] = _count(count, part)
     return out
 
 
 def _count(text: str, shown: str) -> int:
-    """One `--predict-workers` count: a whole number of documents, so at least one."""
+    """One `--workers` count: a whole number of documents, so at least one."""
     if not text.strip().isdigit() or int(text) < 1:
-        raise ValueError(f"--predict-workers: {shown.strip()!r} needs a count of 1 or more")
+        raise ValueError(f"--workers: {shown.strip()!r} needs a count of 1 or more")
     return int(text)
 
 
@@ -216,10 +216,10 @@ def cmd_benchmark(args) -> int:
                        dataset=args.dataset or data.DEFAULT_DATASET,
                        manifest=args.manifest, suites=args.suites,
                        limit=args.limit, timeout=args.timeout,
-                       predict_workers=read_workers(args.predict_workers),
+                       workers=read_workers(args.workers),
                        score_workers=args.score_workers,
                        verdicts=args.verdicts,
-                       score_only=args.score_only,
+                       score_only=args.score_only, retry_failed=args.retry_failed,
                        options=read_options(args.options))
     if args.yes:
         for line in benchmark.describe(p).splitlines():
@@ -273,7 +273,7 @@ def main(argv=None) -> int:
     b.add_argument("--limit", type=int, default=0, help="first N documents; for a smoke test")
     b.add_argument("--timeout", type=float, default=1800,
                    help="seconds one document may take, the same for every vendor")
-    b.add_argument("--predict-workers", metavar="N|NAME=N,...",
+    b.add_argument("--workers", metavar="N|NAME=N,...",
                    help="documents in flight at one vendor -- one number for every provider, "
                         "or per provider: 'reducto=25,datalab=40'. Model ids share one "
                         "budget, being one OpenRouter key. Default: the harness's per-vendor "
@@ -294,6 +294,9 @@ def main(argv=None) -> int:
                         '{"mode": "accurate"}]}\' compares its tiers in one run. Each is '
                         "recorded in the run's settings.json and on every document, and "
                         "digested into the directory name so two of them cannot mix")
+    b.add_argument("--retry-failed", action="store_true",
+                   help="predict again documents whose recorded failure may not recur: a timeout, an "
+                        "outage, a 429 or 5xx. A 400 or a refusal is an answer, and is not retried")
     b.add_argument("--score-only", action="store_true",
                    help="score the predictions already on disk; call no vendor")
     b.add_argument("-y", "--yes", action="store_true",

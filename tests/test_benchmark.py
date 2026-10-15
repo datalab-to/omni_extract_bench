@@ -61,6 +61,12 @@ for label, exists in (("no record at all", False), ("a record from a previous ru
     {"result": None, "error": {"type": "VendorError", "transient": True}}))
 report("a recorded failure is not re-attempted either, transient or not",
        needs(_resume, Doc("failed", "s", TMP / "x.pdf", TMP / "g.json", {})) is False)
+report("...unless retry_failed asks for one whose failure may not recur",
+       needs(_resume, Doc("failed", "s", TMP / "x.pdf", TMP / "g.json", {}), retry_failed=True) is True)
+(_resume.records / "refused.json").write_text(json.dumps(
+    {"result": None, "error": {"type": "VendorError", "status": 400, "transient": False}}))
+report("...and never one that was an answer, a 400",
+       needs(_resume, Doc("refused", "s", TMP / "x.pdf", TMP / "g.json", {}), retry_failed=True) is False)
 
 print("\nEVERY DOCUMENT COMES BACK, FAILURES INCLUDED")
 root, out = TMP / "corpus", TMP / "run"

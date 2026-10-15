@@ -90,7 +90,7 @@ DS.download_dataset = lambda *_: out
 DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs))
 D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o:
     time.sleep(0.4) or Extraction(result={{"a": "x"}}, cost=Cost(usd=0.5)))
-B.run(["datalab", "reducto"], out=out, score_workers=1, predict_workers={{"*": 2}})
+B.execute(B.plan(["datalab", "reducto"], out=out, score_workers=1, workers={{"*": 2}}))
 ''')
 work = pathlib.Path(tempfile.mkdtemp())
 proc = subprocess.Popen([sys.executable, str(script), str(work)],
@@ -174,7 +174,7 @@ D.adapter = as_adapter(broke_adapter)
 DS.download_dataset = lambda *_: acct
 DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(pair))
 try:
-    B.run(["datalab", "reducto"], out=acct, score_workers=1, predict_workers={"*": 1})
+    B.execute(B.plan(["datalab", "reducto"], out=acct, score_workers=1, workers={"*": 1}))
     report("an account failure stops the run rather than publishing", False,
            "run() returned a summary")
 except AccountFailure:

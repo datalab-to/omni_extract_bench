@@ -18,6 +18,7 @@ file and its gold are without the dataset beside it. The functions over a datase
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import logging
 from collections.abc import Sequence
@@ -99,6 +100,7 @@ def download_dataset(dataset: str | Path) -> Path:
     return Path(snapshot_download(repo, repo_type="dataset", revision=revision))
 
 
+@functools.cache
 def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, tuple[Doc, ...]]:
     """The dataset's folder (`download_dataset`) and every document its manifest `manifest` (a path in
     the dataset) names, checked, in (suite, doc_id) order, each with its file and gold as full paths.
