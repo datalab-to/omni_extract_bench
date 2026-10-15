@@ -58,7 +58,7 @@ class Doc:
         return self.doc_id
 
 
-def hf_dataset(dataset: str | Path) -> tuple[str, str | None] | None:
+def _hf_dataset(dataset: str | Path) -> tuple[str, str | None] | None:
     """The repo and revision `dataset` addresses, or `None` when it is a folder on disk."""
     form = f"hf://datasets/<org>/<name>[@<revision>], e.g. {DEFAULT_DATASET}"
     s = str(dataset)
@@ -77,7 +77,7 @@ def hf_dataset(dataset: str | Path) -> tuple[str, str | None] | None:
 def dataset_id(dataset: str | Path) -> str:
     """What a run's dataset is, whatever its revision: the repo of an `hf://` dataset, or a
     folder's path."""
-    if (at := hf_dataset(dataset)) is not None:
+    if (at := _hf_dataset(dataset)) is not None:
         return f"{HF_PREFIX}{at[0]}"
     return str(Path(dataset).expanduser().resolve())
 
@@ -91,7 +91,7 @@ def download_dataset(dataset: str | Path) -> Path:
     each document when it is first predicted would let a `--limit 5` run download five; that is an
     optimization for later.
     """
-    if (at := hf_dataset(dataset)) is None:
+    if (at := _hf_dataset(dataset)) is None:
         return Path(dataset).expanduser()
     repo, revision = at
     from huggingface_hub import snapshot_download
@@ -161,7 +161,7 @@ def _on_hub(dataset: str | Path, manifest: str) -> None:
 
     Note: a hub that will not answer (offline, cached) is not a no: the download runs, and
     `read_manifest` reports a manifest that really is missing."""
-    if (at := hf_dataset(dataset)) is None:
+    if (at := _hf_dataset(dataset)) is None:
         return
     repo, revision = at
     try:

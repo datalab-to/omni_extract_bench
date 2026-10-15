@@ -224,7 +224,7 @@ def cmd_benchmark(args) -> int:
     if args.yes:
         for line in benchmark.describe(p).splitlines():
             logging.getLogger(__package__).info("%s", line)
-    elif not confirm_plan(benchmark.plan_view(p)):
+    elif not confirm_plan(benchmark._plan_view(p)):
         logging.getLogger(__package__).warning("nothing run")
         return 1
     json.dump(benchmark.execute(p), sys.stdout, indent=2)

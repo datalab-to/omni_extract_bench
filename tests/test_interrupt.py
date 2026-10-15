@@ -215,8 +215,8 @@ for i in range(20):
 paid = collections.Counter()
 D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o: (
     paid.update([prov]), Extraction(result={"a": "x"}, cost=Cost(usd=0.1)))[1])
-real_write_json = B.write_json_atomic
-B.write_json_atomic = lambda path, obj, **kw: (
+real_write_json = B._write_json_atomic
+B._write_json_atomic = lambda path, obj, **kw: (
     real_write_json(path, obj, **kw) if path.name == "settings.json"
     else (_ for _ in ()).throw(OSError("No space left on device")))
 try:
@@ -228,7 +228,7 @@ try:
 except OSError:
     report("a failed write stops the vendor", True)
 finally:
-    B.write_json_atomic = real_write_json
+    B._write_json_atomic = real_write_json
     D.adapter = saved_adapter
 report("...after a couple of documents, not all twenty", paid["datalab"] <= 8,
        f"{paid['datalab']} of 20 paid for with nothing stored")
@@ -256,7 +256,7 @@ try:
     B.grade(B.Run("datalab", {}, vd), some, workers=1, verdicts=True)
 finally:
     pathlib.Path.write_text = real_write
-got = list(B.read_scores(vd).values())
+got = B.read_scores(B.Run("datalab", {}, vd))
 report("the other four documents survive", sum(r["status"] == "scored" for r in got) == 4,
        str([r["status"] for r in got]))
 report("the failing one is a row, not an escape",
@@ -324,8 +324,8 @@ for i in range(6):
     small.append(DS.Doc(f"d{i}", "s", fresh / "x.pdf", g, schema))
 
 graded = []
-real_score_one = B.score_one
-B.score_one = lambda doc, **k: graded.append(doc.doc_id) or real_score_one(doc, **k)
+real_score_one = B._score_one
+B._score_one = lambda doc, **k: graded.append(doc.doc_id) or real_score_one(doc, **k)
 try:
     B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=False)
     report("a first pass grades everything", len(graded) == 6, str(len(graded)))
@@ -340,9 +340,9 @@ try:
     sj.write_text("\n".join(lines) + "\n")
     graded.clear(); B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=True)
     report("an unreadable line is written over by the next grading",
-           len(graded) == 6 and len(B.read_scores(fresh)) == 6, str(graded))
+           len(graded) == 6 and len(B.read_scores(B.Run("datalab", {}, fresh))) == 6, str(graded))
 finally:
-    B.score_one = real_score_one
+    B._score_one = real_score_one
 
 print("\nAND THE SCORES FILE IS WRITTEN ATOMICALLY")
 report("no .partial survives a write", not list(fresh.glob("*.partial*")))

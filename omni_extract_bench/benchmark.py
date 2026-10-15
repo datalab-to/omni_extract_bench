@@ -56,7 +56,7 @@ log = logging.getLogger(__name__)
 PLAN_WIDTH = 120
 
 
-def plural(n: int, word: str) -> str:
+def _plural(n: int, word: str) -> str:
     """`1 document`, `2 documents`. A plan that says "1 documents" reads as a bug."""
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
@@ -87,7 +87,7 @@ def scorer_version() -> str:
 SCORER = scorer_version()
 
 
-def write_json_atomic(path: Path, obj, *, indent: int | None = None) -> None:
+def _write_json_atomic(path: Path, obj, *, indent: int | None = None) -> None:
     tmp = path.with_name(f".{path.name}.partial")
     tmp.write_text(json.dumps(obj, default=str, indent=indent))
     os.replace(tmp, path)
@@ -119,16 +119,16 @@ class Run(NamedTuple):
         return self.out / "records"
 
 
-def settings(run: Run) -> dict:
+def _settings(run: Run) -> dict:
     """The whole resolved configuration, not just what the caller passed."""
     from .harness.registry import settings_for
 
     return settings_for(run.provider, run.options)
 
 
-def head(run: Run) -> dict:
+def _head(run: Run) -> dict:
     """What every file a run writes says about itself, before any numbers."""
-    return {"run": run.out.name, "provider": run.provider, "settings": settings(run)}
+    return {"run": run.out.name, "provider": run.provider, "settings": _settings(run)}
 
 
 def prepare(run: Run, dataset: str, timeout: float, manifest: str = data.MANIFEST) -> None:
@@ -136,11 +136,11 @@ def prepare(run: Run, dataset: str, timeout: float, manifest: str = data.MANIFES
     provider, settings, dataset (and the commit of a HuggingFace one, the downloaded folder's name),
     manifest and the timeout per document. `summary.json` comes after grading, which an interrupted
     run never reaches."""
-    commit = data.download_dataset(dataset).name if data.hf_dataset(dataset) is not None else None
+    commit = data.download_dataset(dataset).name if data._hf_dataset(dataset) is not None else None
     run.predictions.mkdir(parents=True, exist_ok=True)
     run.records.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(run.out / "settings.json", {
-        **head(run), "dataset": data.dataset_id(dataset), **({"commit": commit} if commit else {}),
+    _write_json_atomic(run.out / "settings.json", {
+        **_head(run), "dataset": data.dataset_id(dataset), **({"commit": commit} if commit else {}),
         "manifest": manifest, "timeout_s": timeout}, indent=2)
 
 
@@ -171,8 +171,8 @@ def record(run: Run, doc_id: str, result: dict) -> None:
     only answers; a failure is described in the record alone. The record is the marker `needs`
     reads, so a kill between the two predicts the document again rather than skipping it."""
     if result["error"] is None:
-        write_json_atomic(run.predictions / f"{doc_id}.json", result["result"])
-    write_json_atomic(run.records / f"{doc_id}.json", result)
+        _write_json_atomic(run.predictions / f"{doc_id}.json", result["result"])
+    _write_json_atomic(run.records / f"{doc_id}.json", result)
 
 
 def owed(p: Plan, run: Run) -> tuple[int, int]:
@@ -205,7 +205,7 @@ def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, workers: int = 
     attempted = [d for d in docs if not keeps or recorded(run, d.doc_id) is not None
                  or predicted(run, d.doc_id) is not None]
     progress.start(len(attempted))
-    one = functools.partial(score_one, run=run, verdicts=verdicts)
+    one = functools.partial(_score_one, run=run, verdicts=verdicts)
     graded: dict[str, dict] = {}
     remaining = list(attempted)
     try:
@@ -234,21 +234,21 @@ def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, workers: int = 
     finally:
         progress.finish()
     lines = [graded[d.doc_id] for d in attempted]
-    write_scores(run.out, lines)
-    summary = {**head(run), "scorer": SCORER, **scorer.summarize(lines), "pending": len(docs) - len(lines)}
-    write_json_atomic(run.out / "summary.json", summary, indent=2)
+    _write_scores(run.out, lines)
+    summary = {**_head(run), "scorer": SCORER, **scorer.summarize(lines), "pending": len(docs) - len(lines)}
+    _write_json_atomic(run.out / "summary.json", summary, indent=2)
     return summary
 
 
-def asked(run: Run) -> list[str]:
+def _asked(run: Run) -> list[str]:
     """Every resolved setting the run sends the vendor, one string each."""
-    return [f"{k}={v if v != '' else chr(39) * 2}" for k, v in sorted(settings(run).items())]
+    return [f"{k}={v if v != '' else chr(39) * 2}" for k, v in sorted(_settings(run).items())]
 
 
 SCORE_WORKERS = min(8, os.cpu_count() or 1)
 
 
-def score_one(doc: data.Doc, *, run: Run, verdicts: bool = False) -> dict:
+def _score_one(doc: data.Doc, *, run: Run, verdicts: bool = False) -> dict:
     """Grade one prediction on disk and return its row. Module-level and picklable for the
     process pool, and it never raises: one bad document is an error row.
 
@@ -285,27 +285,25 @@ def predicted(run: Run, doc_id: str) -> dict | None:
     return got if isinstance(got, dict) else None
 
 
-def read_scores(out: Path) -> dict[str, dict]:
-    """A run's score lines on disk (scores.jsonl), by document."""
-    rows: dict[str, dict] = {}
-    path = out / "scores.jsonl"
+def read_scores(run: Run) -> list[dict]:
+    """The run's score lines (scores.jsonl), in file order: one per graded document. A line that
+    doesn't parse is left out."""
     try:
-        lines = path.read_text().splitlines()
+        text = (run.out / "scores.jsonl").read_text()
     except OSError:
-        return rows
-    for line in lines:
+        return []
+    out = []
+    for line in text.splitlines():
         if not line.strip():
             continue
         try:
-            row = json.loads(line)
-            doc_id = row["doc_id"]
-        except (json.JSONDecodeError, KeyError, TypeError):
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
             continue
-        rows[doc_id] = row
-    return rows
+    return out
 
 
-def write_scores(out: Path, rows: list[dict]) -> None:
+def _write_scores(out: Path, rows: list[dict]) -> None:
     """One line per document, written wherever scoring stops. Atomic because it is read back: a
     truncated file would silently lose everything past the cut."""
     path = out / "scores.jsonl"
@@ -531,7 +529,7 @@ def execute(p: Plan) -> dict[str, dict]:
     return grade_all(p)
 
 
-def settings_cell(asked: list[str]) -> Group:
+def _settings_cell(asked: list[str]) -> Group:
     """One setting per line, ruled off from the next. A `Rule` sizes itself to the cell, whose
     width nothing here knows in advance."""
     if not asked:
@@ -544,7 +542,7 @@ def settings_cell(asked: list[str]) -> Group:
     return Group(*rows)
 
 
-def facts(p: Plan) -> Table:
+def _facts(p: Plan) -> Table:
     """What this invocation is, one labelled row each. A row rather than another clause in a
     sentence, so a new flag cannot lengthen a line that already ran to three of them."""
     from .harness.registry import resolve
@@ -554,10 +552,10 @@ def facts(p: Plan) -> Table:
     table.add_column("", overflow="fold")
     table.add_row("out", str(p.runs[0].out.parent) if p.runs else "")
     table.add_row("runs", f"{len(p.runs)} over "
-                          f"{plural(len({resolve(r.provider) for r in p.runs}), 'adapter')}")
+                          f"{_plural(len({resolve(r.provider) for r in p.runs}), 'adapter')}")
     table.add_row("dataset", p.dataset)
     table.add_row("manifest", p.manifest)
-    table.add_row("documents", f"{plural(len(p.docs), 'document')} selected")
+    table.add_row("documents", f"{_plural(len(p.docs), 'document')} selected")
     table.add_row("timeout", f"{p.timeout:.0f}s per document")
     # Shown even when false: `score only  false` is what says this will spend money.
     for name, on in (("score only", p.score_only),):
@@ -565,7 +563,7 @@ def facts(p: Plan) -> Table:
     return table
 
 
-def plan_view(p: Plan) -> Group:
+def _plan_view(p: Plan) -> Group:
     """The whole plan as one renderable: each run, its settings, and what it still owes.
     `describe` renders it as text for a log, the command line prints it in colour."""
     from .harness.registry import resolve
@@ -588,15 +586,15 @@ def plan_view(p: Plan) -> Group:
             to_predict = 0 if p.score_only else to_predict
             table.add_row(Text(adapter if n == 0 else "", style="bold"),
                           Text(str(workers) if n == 0 else ""),
-                          Text(run.out.name), settings_cell(asked(run)),
+                          Text(run.out.name), _settings_cell(_asked(run)),
                           Text(str(to_predict), style="bold" if to_predict else ""),
                           Text(str(to_grade), style="bold" if to_grade else ""),
                           end_section=n == len(runs) - 1)
-    return Group(Text("benchmark", style="bold"), facts(p), Text(""), table)
+    return Group(Text("benchmark", style="bold"), _facts(p), Text(""), table)
 
 
 def describe(p: Plan) -> str:
-    """`plan_view` as plain text, for a log that has no colour and no width to ask about."""
+    """`_plan_view` as plain text, for a log that has no colour and no width to ask about."""
     console = Console(file=io.StringIO(), width=PLAN_WIDTH, no_color=True, highlight=False)
-    console.print(plan_view(p))
+    console.print(_plan_view(p))
     return "\n".join(line.rstrip() for line in console.file.getvalue().splitlines())

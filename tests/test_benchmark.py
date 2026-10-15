@@ -30,14 +30,11 @@ FAILS = []
 
 def graded(run, docs, **kw):
     """`grade`, then the lines of `docs` it wrote, in their order: grade returns the summary."""
-    grade(run, docs, **kw)
-    got = _bench_lines(run.out)
-    return [got[d.doc_id] for d in docs if d.doc_id in got]
-
-
-def _bench_lines(out):
     from omni_extract_bench.benchmark import read_scores
-    return read_scores(out)
+
+    grade(run, docs, **kw)
+    got = {x["doc_id"]: x for x in read_scores(run)}
+    return [got[d.doc_id] for d in docs if d.doc_id in got]
 
 
 def report(name, cond, detail=""):
@@ -146,7 +143,7 @@ report("the caller's schema is not mutated by preparing it",
        "$defs" in REF_SCHEMA and "$ref" in json.dumps(REF_SCHEMA))
 
 print("\nWHERE A DATASET IS: ON DISK, OR ON HUGGINGFACE")
-from omni_extract_bench.data import DEFAULT_DATASET, dataset_id, hf_dataset  # noqa: E402
+from omni_extract_bench.data import DEFAULT_DATASET, _hf_dataset as hf_dataset, dataset_id  # noqa: E402
 
 _SUBSET = "manifests/sample40.parquet"
 report("ours is an address like any other",
@@ -453,12 +450,12 @@ report("every line says which scorer graded it", all(r["scorer"] == _bench.SCORE
 def _regraded(**kw):
     """The documents grading scores again, of `_docs`."""
     seen = []
-    real = _bench.score_one
-    _bench.score_one = lambda doc, **k: seen.append(doc.doc_id) or real(doc, **k)
+    real = _bench._score_one
+    _bench._score_one = lambda doc, **k: seen.append(doc.doc_id) or real(doc, **k)
     try:
         grade(_run, _docs, workers=1, **kw)
     finally:
-        _bench.score_one = real
+        _bench._score_one = real
     return seen
 
 
