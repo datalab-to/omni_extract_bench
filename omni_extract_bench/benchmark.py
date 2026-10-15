@@ -177,14 +177,25 @@ def owed(run: Run, docs: list[data.Doc]) -> tuple[int, int]:
 
 def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, workers: int = 0,
           progress=NULL) -> dict:
-    """Grade every document of `docs`, fresh, and write scores.jsonl (one line each, in their order) and
-    summary.json whole once grading finishes: they are always one grading's, of `docs`. An interrupted
-    grading writes nothing, so the last finished one's files stand. Returns the summary, as
-    omni-parse-bench's `grade` does; the lines themselves are `read_scores(run.out)`."""
-    progress.start(len(docs))
+    """Grade every document of `docs` (usually the whole manifest, as `grade_all` passes it), fresh, and
+    write scores.jsonl (one line each, in their order) and summary.json whole once grading finishes:
+    they are always one grading's, of `docs`. An interrupted grading writes nothing, so the last
+    finished one's files stand. Returns the summary, as omni-parse-bench's `grade` does; the lines
+    themselves are `read_scores(run)`.
+
+    A document is scored when it has a prediction, and failed (an error line, counted against
+    coverage) when its record says the call failed or it has no prediction. It is pending (no line,
+    counted in the summary's `pending`) when it was never attempted: the run keeps records, as a run
+    our loop predicts does, and has neither a record nor a prediction for it. A folder of
+    predictions you bring keeps no records, so a document missing from it is failed: it is your
+    submission."""
+    keeps = run.records.is_dir()
+    attempted = [d for d in docs if not keeps or recorded(run, d.doc_id) is not None
+                 or predicted(run, d.doc_id) is not None]
+    progress.start(len(attempted))
     one = functools.partial(score_one, run=run, verdicts=verdicts)
     graded: dict[str, dict] = {}
-    remaining = list(docs)
+    remaining = list(attempted)
     try:
         if remaining and (workers or SCORE_WORKERS) > 1:
             try:
@@ -210,9 +221,9 @@ def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, workers: int = 
             progress.record(error=row["status"] != "scored")
     finally:
         progress.finish()
-    lines = [graded[d.doc_id] for d in docs]
+    lines = [graded[d.doc_id] for d in attempted]
     write_scores(run.out, lines)
-    summary = {**head(run), "scorer": SCORER, **scorer.summarize(lines)}
+    summary = {**head(run), "scorer": SCORER, **scorer.summarize(lines), "pending": len(docs) - len(lines)}
     write_json_atomic(run.out / "summary.json", summary, indent=2)
     return summary
 
@@ -236,13 +247,10 @@ def score_one(doc: data.Doc, *, run: Run, verdicts: bool = False) -> dict:
            "scorer": SCORER}
     if failed := (recorded(run, doc.doc_id) or {}).get("error"):
         return {**row, "status": "error", "error": f"{failed['type']}: {failed['message']}"}
-    try:
-        pred = json.loads((run.predictions / f"{doc.doc_id}.json").read_text())
-    except (OSError, json.JSONDecodeError):
-        return {**row, "status": "error", "error": "no prediction on disk"}
-    if not (isinstance(pred, dict) and pred):
-        return {**row, "status": "error",
-                "error": "empty prediction" if pred == {} else "not an object"}
+    if (pred := predicted(run, doc.doc_id)) is None:
+        return {**row, "status": "error", "error": "no prediction on disk, or not an object"}
+    if not pred:
+        return {**row, "status": "error", "error": "empty prediction"}
     try:
         result = scorer.score(pred, scorer.gold(doc), doc.schema, verdicts=verdicts)
         if verdicts:
@@ -253,6 +261,16 @@ def score_one(doc: data.Doc, *, run: Run, verdicts: bool = False) -> dict:
     except Exception as exc:                            # noqa: BLE001 -- the message is the row
         return {**row, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
     return {**row, "status": "scored", **result}
+
+
+def predicted(run: Run, doc_id: str) -> dict | None:
+    """The document's prediction (`predictions/`), the extracted JSON object; None when it has none,
+    or none readable as an object."""
+    try:
+        got = json.loads((run.predictions / f"{doc_id}.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return got if isinstance(got, dict) else None
 
 
 def read_scores(out: Path) -> dict[str, dict]:
@@ -473,8 +491,9 @@ def predict_all(p: Plan) -> None:
 
 def grade_all(p: Plan) -> dict[str, dict]:
     """Grade every run, serially, and publish each as soon as it is graded. Serial because
-    grading saturates every core. Returns each run's summary over the selected documents
-    (`grade`'s), by run name; its summary.json covers every document it has a line for.
+    grading saturates every core. Each run is graded over the whole manifest, whatever `--suites`
+    and `--limit` chose to predict, so a smaller invocation never shrinks a run's scores: a document
+    not predicted yet is pending. Returns each run's summary, by run name.
 
     A SECOND PHASE, NOT A SECOND DISPLAY. Grading starts once every vendor has answered, so
     it gets a table of its own in the same shape -- with no cost and nothing in flight,
@@ -483,9 +502,10 @@ def grade_all(p: Plan) -> dict[str, dict]:
     the end of a run that spends hours at the start of it.
     """
     summary = {}
+    _, every = data.read_manifest(p.dataset, p.manifest)
     with Progress([r.out.name for r in p.runs]) as bars:
         for run in p.runs:
-            summary[run.out.name] = s = grade(run, list(p.docs), verdicts=p.verdicts,
+            summary[run.out.name] = s = grade(run, list(every), verdicts=p.verdicts,
                                               workers=p.score_workers,
                                               progress=bars.reporter(run.out.name))
             log.info("%s: accuracy %.4f over %d suites, coverage %d/%d", run.out.name,

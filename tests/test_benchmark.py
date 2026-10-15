@@ -90,13 +90,15 @@ record(Run("datalab", {}, out), "refused", {"result": None, "error": {
     "type": "VendorError", "status": 400, "transient": False, "message": "schema too deep"}})
 docs.append(Doc("never-ran", "internal", root / "x.pdf", root / "perfect.json", SCH))
 
+summary_of_run = grade(Run("datalab", {}, out), docs)
 rows = graded(Run("datalab", {}, out), docs)
 by_id = {r["doc_id"]: r for r in rows}
-report("one row per document, including the one never predicted", len(rows) == 6, str(len(rows)))
+report("one row per attempted document: the one never attempted is pending, not a row",
+       len(rows) == 5 and "never-ran" not in by_id and summary_of_run["pending"] == 1, str(len(rows)))
 report("a correct prediction scores 1.0", by_id["perfect"]["accuracy"] == 1.0)
 report("a misread row is charged, not fatal", by_id["one-misread"]["accuracy"] == 0.8,
        str(by_id["one-misread"]["accuracy"]))
-for doc_id in ("refused", "nothing", "never-ran"):
+for doc_id in ("refused", "nothing"):
     row = by_id[doc_id]
     report(f"{doc_id}: status=error with NULL metrics, and a reason",
            row["status"] == "error" and "accuracy" not in row and row.get("error"), str(row))
@@ -104,8 +106,14 @@ report("a failed call writes no prediction: predictions/ holds only answers",
        not (out / "predictions" / "refused.json").exists())
 report("...and its row carries the record's error",
        by_id["refused"]["error"] == "VendorError: schema too deep", str(by_id["refused"]))
-report("scores.jsonl has a line per document",
-       sum(1 for _ in (out / "scores.jsonl").open()) == 6)
+report("scores.jsonl has a line per attempted document",
+       sum(1 for _ in (out / "scores.jsonl").open()) == 5)
+import shutil as _shutil                                                       # noqa: E402
+brought = TMP / "brought"
+_shutil.copytree(out / "predictions", brought / "predictions")
+_theirs = {r["doc_id"]: r for r in graded(Run("datalab", {}, brought), docs)}
+report("a folder you bring keeps no records, so a document missing from it is failed, not pending",
+       _theirs["never-ran"]["status"] == "error" and len(_theirs) == 6, str(_theirs.get("never-ran")))
 
 print("\nA SCHEMA THE SCORER CAN READ")
 REF_SCHEMA = {
