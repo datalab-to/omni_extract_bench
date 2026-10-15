@@ -815,7 +815,7 @@ def _resolve_order(order_matters: bool | Iterable[str], schema: Any,
     return frozenset(out)
 
 
-def score(pred: Any, gt: Any, schema: Any,
+def score(pred: Any, gold: Any, schema: Any,
           order_matters: bool | Iterable[str] = (), verdicts: bool = False,
           absent: Callable[[Any], bool] = states_nothing) -> dict:
     """Score one prediction against one ground truth.
@@ -824,9 +824,9 @@ def score(pred: Any, gt: Any, schema: Any,
     default drops `null`, `""`, `[]` and `{}`; `lambda v: False` makes each one a value the
     prediction must reproduce. Scores under different `absent`s are not comparable.
     """
-    if gt is not None and not isinstance(gt, dict):
+    if gold is not None and not isinstance(gold, dict):
         raise TypeError(
-            f"ground truth must be a JSON object, got {type(gt).__name__}. A schema whose root "
+            f"ground truth must be a JSON object, got {type(gold).__name__}. A schema whose root "
             f"is an array cannot be sent to the vendors this benchmark measures -- OpenAI's "
             f"structured outputs rejects one outright -- so a document shaped like this was "
             f"never asked for. Wrap it in an object, on both sides."
@@ -848,12 +848,12 @@ def score(pred: Any, gt: Any, schema: Any,
             "ref would be graded, while the same object written inline is skipped -- so this "
             "schema cannot be scored consistently. Flatten the recursion first."
         )
-    raw_gt, pred_raw = gt or {}, pred or {}
-    gt = prep_ground_truth(raw_gt)
+    raw_gt, pred_raw = gold or {}, pred or {}
+    gold = prep_ground_truth(raw_gt)
     pred = prep_prediction(pred_raw)
-    ordered = _resolve_order(order_matters, schema, (raw_gt, pred_raw, gt, pred))
+    ordered = _resolve_order(order_matters, schema, (raw_gt, pred_raw, gold, pred))
     found_open: list[Address] = []
-    gold_leaves = flatten(gt, schema, skipped=found_open, absent=absent)
+    gold_leaves = flatten(gold, schema, skipped=found_open, absent=absent)
     pred_leaves, inexact = align(
         gold_leaves, flatten(pred, schema, skipped=found_open, absent=absent), ordered)
     skipped = sorted(set(found_open), key=_reading_order)
