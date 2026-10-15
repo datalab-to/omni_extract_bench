@@ -28,7 +28,7 @@ from omni_extract_bench import score
 
 score(
   pred,               # the prediction, a dict
-  gt,                 # the ground truth, a dict
+  gold,               # the ground truth, a dict
   schema,             # the JSON Schema the prediction was generated against
   order_matters=(),   # arrays where position is part of the answer, e.g. ["steps"]; True for all
   verdicts=False,     # also return one verdict per address
@@ -162,10 +162,11 @@ p = benchmark.plan(
   suites=None,            # limit to these suites
   limit=0,                # first N documents
   timeout=1800.0,
-  workers=None,   # documents in flight per vendor
+  workers=None,           # documents in flight per vendor
   score_workers=0,        # processes used to score
   verdicts=True,          # write verdicts; False to skip them
   score_only=False,       # score the predictions; call no vendor
+  retry_failed=False,     # predict again documents whose failure may not recur
   options=None,           # per-provider settings: {"datalab": {"mode": "accurate"}}
 )
 print(benchmark.describe(p))   # what it would do, with no vendor call
@@ -173,17 +174,19 @@ summary = benchmark.execute(p)
 summary["datalab-f46415c9"]["headline"] # the mean accuracy, e.g. 0.9145
 ```
 
-`benchmark.run(providers, **kwargs)` does the three in one call.
-
 ### The functions, by what they work on
 
 | | reading data (`data`) | predicting (`harness`, `benchmark`) | scoring (`scorer`, `benchmark`) |
 | --- | --- | --- | --- |
-| one document | `doc.doc_path`, `doc.gt_path` | `harness.predict` | `scorer.gold(doc)`, `score` |
+| one document | `doc.doc_path`, `doc.gt_path` | `harness.predict` | `scorer.gold(doc)`, `scorer.score` |
 | a dataset | `download_dataset`, `read_manifest`, `select`, `dataset_id` | | `scorer.summarize(lines)` |
-| one run | | `prepare`, `needs`, `record`, `recorded` | `grade(run, docs)` |
-| a plan | | `plan`, `predict_all` | `grade_all` |
+| one run | | `prepare`, `needs`, `record`, `recorded`, `predicted` | `grade(run, docs)`, `read_scores(run)` |
+| a plan | | `plan`, `predict_all`, `owed(plan, run)` | `grade_all` |
 | both | | `execute`; `describe` | |
+
+`scorer` is the package's one scorer, `omni_extract_bench.scorers.field_matching` (each scorer
+is a package owning its gold shape); `score` and `summarize` are also exported from the package
+top.
 
 The same names, in the same modules, as omni-parse-bench's (whose rows are pages, not documents).
 `data.read_manifest(dataset, manifest)` gives the dataset's folder and every document, each with
@@ -315,11 +318,17 @@ It's **resumable**, and safe to run twice.
 
 - A document is predicted again only when it has no record. The record is written last, so
   its presence means the prediction beside it is complete.
-- Grading is fresh every time: every selected document is graded again, which calls no vendor,
-  and `scores.jsonl` and `summary.json` are written whole when it finishes. So a run's scores are
-  always one grading's, and a gold correction or a new scorer reaches a run on its next grading.
-  An interrupted grading writes nothing; the last finished grading's files stand. Each line says
+- `--retry-failed` predicts again documents whose recorded failure may not recur: a timeout, an
+  outage, a 429 or 5xx. A 400 or a refusal is an answer, and is not retried.
+- Grading is fresh every time: every document of the manifest is graded again, which calls no
+  vendor, and `scores.jsonl` and `summary.json` are written whole when it finishes. So a run's
+  scores are always one grading's, a gold correction or a new scorer reaches a run on its next
+  grading, and `--suites` and `--limit` narrow what is predicted, never what is scored. An
+  interrupted grading writes nothing; the last finished grading's files stand. Each line says
   which scoring code (`scorer`, the release and a digest of the scoring files) graded it.
+- A document is pending, not failed, when it was never attempted: no line, counted in the
+  summary's `pending`. A recorded failure is failed. A folder of predictions you bring keeps no
+  records, so a document missing from it is failed: it is your submission.
 
 So a Ctrl-C, a crash or a credit ceiling costs you the documents in flight, and nothing else.
 Reinvoke the same command to carry on: it predicts what is left, then grades everything.
@@ -333,29 +342,34 @@ scheduler, through a queue) and still get the same run folder, keep the run with
 is whatever its folder holds when it is read.
 
 ```python
-from omni_extract_bench import benchmark
+from omni_extract_bench import benchmark, data
 from omni_extract_bench.harness import predict
 
 p = benchmark.plan(["datalab"], out="runs")
 (run,) = p.runs
-benchmark.prepare(run, p.dataset, p.timeout, manifest=p.manifest)
+benchmark.prepare(run, p.dataset, p.timeout, p.manifest)
 for doc in p.docs:
     if benchmark.needs(run, doc):
         result = predict(run.provider, doc.doc_path, doc.schema, timeout=p.timeout, **run.options)  # wherever
         benchmark.record(run, doc.doc_id, result)
-benchmark.grade(run, list(p.docs))
+_, every = data.read_manifest(p.dataset, p.manifest)
+benchmark.grade(run, list(every))
 ```
 
-- `prepare(run, dataset, timeout, commit=None, manifest="manifest.parquet")` makes the folder
-  and writes `settings.json`;
-- `needs(run, doc)` is True when the run has no readable record of the document. A loop that
+- `prepare(run, dataset, timeout, manifest="manifest.parquet")` makes the folder and writes
+  `settings.json`, with the commit of a HuggingFace dataset;
+- `needs(run, doc, retry_failed=False)` is True when the run has no readable record of the
+  document, or, with `retry_failed`, when its recorded failure may not recur. A loop that
   predicts everything every time can skip it; it is what makes a loop resumable;
 - `record(run, doc_id, result)` writes a result from `predict`: its prediction, if the call
   succeeded, then the record;
-- `recorded(run, doc_id)` reads the document's record, or None; and
-- `grade(run, docs)` grades every document of `docs`, fresh, writes `scores.jsonl` and
-  `summary.json` whole, and returns the summary (`read_scores(run.out)` gives the lines). A
-  document with no prediction is graded as failed.
+- `recorded(run, doc_id)` reads the document's record, or None;
+- `predicted(run, doc_id)` reads the document's prediction, or None: what grading reads; and
+- `grade(run, docs)` grades every document of `docs` (pass the whole manifest, so a smaller loop
+  never shrinks a run's scores), fresh, writes `scores.jsonl` and `summary.json` whole, and
+  returns the summary (`read_scores(run)` gives the lines). A document never attempted is
+  pending; a recorded failure, or a missing prediction in a folder that keeps no records, is
+  failed.
 
 The folder is then exactly one `oeb benchmark` writes, so either can resume or grade it.
 
@@ -512,6 +526,7 @@ finishes.
   "documents": 6,
   "scored": 6,
   "coverage": 1.0,
+  "pending": 0,
   "accuracy": 0.8076406248606786,
   "precision": 0.8101146573593331,
   "recall": 0.9539514921288181,

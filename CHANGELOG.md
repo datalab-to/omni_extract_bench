@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.8
+## 1.0.0 (unreleased)
 
 Breaking changes to `omni_extract_bench.benchmark`. `score`, `predict` and the command line are
 unchanged unless a line below says otherwise.
@@ -9,8 +9,8 @@ unchanged unless a line below says otherwise.
   `label`; a run's name is `run.out.name`.
 - `Run`'s methods are functions over it: `run.needs(doc)` is `needs(run, doc)`,
   `run.store(doc, result)` is `record(run, doc.doc_id, result)`, `run.score(docs, ...)` is
-  `grade(run, docs, ...)`, and `run.outstanding(docs)` is `owed(run, docs)`. New:
-  `recorded(run, doc_id)` reads a record, and `prepare(run, corpus, timeout)` makes the folder
+  `grade(run, docs, ...)`, and `run.outstanding(docs)` is `owed(plan, run)`. New:
+  `recorded(run, doc_id)` reads a record, and `prepare(run, dataset, timeout)` makes the folder
   and writes settings.json.
 - `needs_run(path)` is gone; use `needs(run, doc)` or `recorded(run, doc_id)`.
 - A failed call writes no prediction. `predict`'s `record["result"]` is `None` when
@@ -20,13 +20,13 @@ unchanged unless a line below says otherwise.
   failure with `{"__error__": ...}` should leave that file out instead: a missing prediction is
   graded as failed.
 - `BenchmarkRun` and `ProviderRun` are gone. `BenchmarkRun(providers, **kw).execute()` is
-  `execute(plan(providers, **kw))`, or `run(providers, **kw)`; `plan` takes the same keyword
+  `execute(plan(providers, **kw))`; `plan` takes the same keyword
   arguments `BenchmarkRun` did and returns a `Plan` (a NamedTuple). `.describe()` is
   `describe(plan)`, `.corpus()` is `corpus(manifest, ...)`, `.predict(docs)` is
   `predict_all(plan)` and `.score(docs)` is `grade_all(plan)`. The old `plan(providers,
   options)`, which returned runs, is `configurations(providers, options)`, which returns
   (provider, options) pairs.
-- `run(...)` takes no `confirm`; the command line asks before it calls `execute`.
+- `run(...)` is gone: it was `execute(plan(...))`. The command line asks before it calls `execute`.
 - A folder holding another corpus is refused by `plan`, before anything is read.
 - `--score-only` writes no settings.json: it asks nothing.
 - `--dataset` and `--manifest` replace `--manifest <file>` and `--data-root`. The dataset is a
@@ -35,8 +35,7 @@ unchanged unless a line below says otherwise.
   folder. So `--manifest hf://datasets/datalab-to/omni_extract_bench/manifests/sample40.parquet`
   is `--manifest manifests/sample40.parquet`, and `--manifest my/corpus/manifest.parquet` is
   `--dataset my/corpus`. A manifest kept outside its corpus moves into it. In Python, `plan`
-  takes `dataset` and `manifest`, `hf_path` is `hf_dataset`, and `fetch(dataset, manifest)`
-  takes the dataset.
+  takes `dataset` and `manifest`, and `fetch` and `hf_path` are gone (`data.download_dataset`).
 - settings.json records `dataset` (without its revision), `commit` and `manifest` in place of
   `corpus` and `corpus_commit`. A run folder is refused only for another dataset, not for
   another manifest of the same one.
@@ -52,9 +51,26 @@ unchanged unless a line below says otherwise.
   `oeb benchmark` writes, and returns the summary of `docs`' lines, as omni-parse-bench's
   `grade` returns a summary. docs/API.md has "A loop of your own".
 - One module layout, the same as omni-parse-bench's: `data` (`Doc`, `download_dataset`,
-  `read_manifest`, `select`, `dataset_id`), `scorer` (was `metric`: `score`, `gold`,
-  `summarize`), `benchmark` (the loop) and `harness`. A `Doc`'s `doc_path` and `gt_path` are full
+  `read_manifest`, `select`, `dataset_id`), `scorers/field_matching` (was `metric.py`,
+  `matching.py`, `values.py` and `recognise.py`: `score`, `gold`, `summarize`; each scorer is a
+  package owning its gold shape), `benchmark` (the loop) and `harness`. A `Doc`'s `doc_path` and `gt_path` are full
   local paths, and `Doc.id` is its `doc_id`, the name every benchmark's rows share.
   The old names (`benchmark.Doc`, `fetch`, `read_manifest`, `corpus`, `document`, `hf_dataset`,
   `dataset_id`, `summarise`, and the module `metric`) are gone.
 - summary.json, and each of its suites, carries a `headline`: the mean accuracy.
+- `score(pred, gold, schema, ...)`: the ground truth argument is `gold`, not `gt`.
+- A document never attempted (no prediction and no record, in a run that keeps records) is
+  pending: no line, counted in summary.json's `pending`. A recorded failure is failed, and so is
+  a document missing from a folder you bring, which keeps no records.
+- `grade_all` grades every run over the whole manifest, so `--suites` and `--limit` narrow what
+  is predicted, never what is scored.
+- `owed(plan, run)` takes the plan first, and `prepare(run, dataset, timeout, manifest)` works out
+  a HuggingFace dataset's commit itself; `Plan.root` is gone. `predicted(run, doc_id)` reads a
+  prediction.
+- `plan(workers=...)` and `--workers` replace `predict_workers` and `--predict-workers`.
+- `retry_failed` (and `--retry-failed`) predicts again documents whose recorded failure may not
+  recur (`error.transient`).
+- `data.read_manifest` is read once per process.
+- Internal now: `data._hf_dataset`, and benchmark's `_plural`, `_write_json_atomic`, `_settings`,
+  `_head`, `_asked`, `_score_one`, `_write_scores`, `_settings_cell`, `_facts` and `_plan_view`.
+  `read_scores(run)` returns a run's score lines, a list in file order.
