@@ -207,10 +207,8 @@ report("...but a narrowed rescore keeps only what it graded again, so no row is 
        "scorer's", lines() == 2, str(lines()))
 
 back = B.grade(B.Run("datalab", {}, narrow), five[:2], workers=1)
-report("the return value is this run's selection, not the file",
-       [r["doc_id"] for r in back] == ["d0", "d1"], str([r["doc_id"] for r in back]))
-report("...so the summary counts what was asked for",
-       scorer.summarize(back)["documents"] == 2, str(scorer.summarize(back)["documents"]))
+report("the return value is this run's selection, not the file: it counts what was asked for",
+       back["documents"] == 2, str(back["documents"]))
 
 print("\nA FULL DISK STOPS THE VENDOR INSTEAD OF BUYING THE REST")
 disk = pathlib.Path(tempfile.mkdtemp())
@@ -261,9 +259,10 @@ def failing_write(self, *a, **k):
 
 pathlib.Path.write_text = failing_write
 try:
-    got = B.grade(B.Run("datalab", {}, vd), some, workers=1, verdicts=True)
+    B.grade(B.Run("datalab", {}, vd), some, workers=1, verdicts=True)
 finally:
     pathlib.Path.write_text = real_write
+got = list(B.read_scores(vd).values())
 report("the other four documents survive", sum(r["status"] == "scored" for r in got) == 4,
        str([r["status"] for r in got]))
 report("the failing one is a row, not an escape",
@@ -338,9 +337,9 @@ try:
     B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=False)
     report("a first pass grades everything", len(graded) == 6, str(len(graded)))
 
-    graded.clear(); rows = B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=False)
+    graded.clear(); summary = B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=False)
     report("a second pass grades nothing", graded == [], str(graded))
-    report("...and still returns every row", len(rows) == 6, str(len(rows)))
+    report("...and still counts every row", summary["documents"] == 6, str(summary["documents"]))
 
     graded.clear()
     B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=False, rescore=True)

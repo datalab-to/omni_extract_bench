@@ -108,7 +108,7 @@ class Run(NamedTuple):
         prepare(run, corpus, timeout)          # once: the folder, and settings.json
         if needs(run, doc):                    # no readable record yet
             record(run, doc.doc_id, harness.predict(...))
-        grade(run, docs)                       # scores.jsonl, one row per document
+        grade(run, docs)                       # scores.jsonl and summary.json; the summary
     """
 
     provider: str
@@ -185,10 +185,11 @@ def owed(run: Run, docs: list[data.Doc], verdicts: bool = True, rescore: bool = 
 
 
 def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, workers: int = 0,
-          rescore: bool = False, progress=NULL) -> list[dict]:
+          rescore: bool = False, progress=NULL) -> dict:
     """Grade the run's predictions, resumable per document: one line each in scores.jsonl, and
-    summary.json over every row the run has, written once grading finishes (an interrupted
-    grading writes none). Returns the rows of `docs`."""
+    summary.json over every line the run has, written once grading finishes (an interrupted
+    grading writes none). Returns the summary of `docs`' lines, as omni-parse-bench's `grade`
+    returns a summary; the lines themselves are `read_scores(run.out)`."""
     if not rescore:
         refuse_regrading(run, docs, read_scores(run.out))
     known, wanted = grading_split(run.out, docs, verdicts=verdicts, rescore=rescore)
@@ -238,9 +239,10 @@ def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, workers: int = 
                         "on the next run", len(graded), len(wanted))
     write_json_atomic(run.out / "summary.json", {**head(run), "scorer": SCORER,
                                                  **scorer.summarize(so_far())}, indent=2)
-
+    # Note: the return answers what this invocation asked for, `docs`; summary.json, every line.
     answered = {**known, **graded}
-    return [answered[d.doc_id] for d in docs if d.doc_id in answered]
+    return {**head(run), "scorer": SCORER,
+            **scorer.summarize([answered[d.doc_id] for d in docs if d.doc_id in answered])}
 
 
 def asked(run: Run) -> list[str]:
@@ -542,8 +544,8 @@ def predict_all(p: Plan) -> None:
 
 def grade_all(p: Plan) -> dict[str, dict]:
     """Grade every run, serially, and publish each as soon as it is graded. Serial because
-    grading saturates every core. Returns each run's summary over the selected documents, by
-    run name; its summary.json covers every document it has a row for.
+    grading saturates every core. Returns each run's summary over the selected documents
+    (`grade`'s), by run name; its summary.json covers every document it has a line for.
 
     A SECOND PHASE, NOT A SECOND DISPLAY. Grading starts once every vendor has answered, so
     it gets a table of its own in the same shape -- with no cost and nothing in flight,
@@ -554,9 +556,9 @@ def grade_all(p: Plan) -> dict[str, dict]:
     summary = {}
     with Progress([r.out.name for r in p.runs]) as bars:
         for run in p.runs:
-            mine = grade(run, list(p.docs), verdicts=p.verdicts, workers=p.score_workers,
-                         rescore=p.rescore, progress=bars.reporter(run.out.name))
-            summary[run.out.name] = s = {**head(run), "scorer": SCORER, **scorer.summarize(mine)}
+            summary[run.out.name] = s = grade(run, list(p.docs), verdicts=p.verdicts,
+                                              workers=p.score_workers, rescore=p.rescore,
+                                              progress=bars.reporter(run.out.name))
             log.info("%s: accuracy %.4f over %d suites, coverage %d/%d", run.out.name,
                      s["accuracy"], len(s["per_suite"]), s["scored"], s["documents"])
     return summary
