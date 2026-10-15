@@ -166,10 +166,27 @@ p = benchmark.plan(
 )
 print(benchmark.describe(p))   # what it would do, with no vendor call
 summary = benchmark.execute(p)
-summary["datalab-f46415c9"]["accuracy"] # e.g. 0.9145
+summary["datalab-f46415c9"]["headline"] # the mean accuracy, e.g. 0.9145
 ```
 
 `benchmark.run(providers, **kwargs)` does the three in one call.
+
+### The functions, by what they work on
+
+| | reading data (`data`) | predicting (`harness`, `benchmark`) | scoring (`scorer`, `benchmark`) |
+| --- | --- | --- | --- |
+| one document | `doc.doc_path`, `doc.gt_path` | `harness.predict` | `scorer.gold(doc)`, `score` |
+| a dataset | `download_dataset`, `read_manifest`, `select`, `dataset_id` | | `scorer.summarize(lines)` |
+| one run | | `prepare`, `needs`, `record`, `recorded` | `grade(run, docs)` |
+| a plan | | `plan`, `predict_all` | `grade_all` |
+| both | | `execute`; `describe` | |
+
+The same names, in the same modules, as omni-parse-bench's (whose rows are pages, not documents).
+`data.read_manifest(dataset, manifest)` gives the dataset's folder and every document, each with
+its file and gold as full local paths; `data.select(docs, suites, limit)` picks the ones to run.
+`benchmark.Doc`, `fetch`, `read_manifest`, `corpus`, `document`, `summarise`, and the module
+`metric` (now `scorer`) are the old names: they still work, with a DeprecationWarning, and will be
+removed in a later release.
 
 ### Two levels of data
 
@@ -273,9 +290,9 @@ oeb benchmark --providers datalab \
   --manifest manifests/sample40-predictive-across-vendors-2026-09-22.parquet
 ```
 
-*Any HuggingFace dataset*, pinned to a revision with `@`. Its manifest and its `gold/` folder
-are downloaded up front; each PDF is downloaded only when it is predicted, so keep the gold
-under `gold/`. For example,
+*Any HuggingFace dataset*, pinned to a revision with `@`. It is downloaded whole, at that
+revision, into the HuggingFace cache (ours is 0.9 GB), so its documents and gold are always one
+commit's, and a second run downloads nothing. For example,
 
 ```bash
 oeb benchmark --providers datalab --dataset hf://datasets/someone/their-corpus@v2
@@ -297,12 +314,12 @@ It's **resumable**, and safe to run twice.
 
 - A document is predicted again only when it has no record. The record is written last, so
   its presence means the prediction beside it is complete.
-- A document is graded again only when it has no row in `scores.jsonl`.
-- A run never mixes scorers or golds. Each row says which scoring code (`scorer`, the release
-  and a digest of the scoring files) and which gold (`gold`, a digest of the document's id,
-  suite, schema and gold file) graded it. A run whose rows another scorer graded, or whose
-  documents' gold has changed, is refused before any call. `--rescore` discards every row and
-  grades the selected documents again, which calls no vendor.
+- A document is graded again only when its line in `scores.jsonl` is missing or stale. Each line
+  says which prediction (`prediction`, a digest of its file), which gold (`gold`, a digest of the
+  document's id, suite, schema and gold file) and which scoring code (`scorer`, the release and a
+  digest of the scoring files) it graded. A line whose prediction, gold or scorer has changed is
+  graded again, which calls no vendor, so a finished grading's lines are one scorer's against one
+  gold. `--rescore` grades the selected documents again anyway, and drops every other line.
 
 So a Ctrl-C, a crash or a credit ceiling costs you the documents in flight, and nothing else.
 Reinvoke the same command to carry on.
@@ -324,8 +341,7 @@ p = benchmark.plan(["datalab"], out="runs")
 benchmark.prepare(run, p.dataset, p.timeout, manifest=p.manifest)
 for doc in p.docs:
     if benchmark.needs(run, doc):
-        file = benchmark.document(p, doc)
-        result = predict(run.provider, file, doc.schema, timeout=p.timeout, **run.options)  # wherever
+        result = predict(run.provider, doc.doc_path, doc.schema, timeout=p.timeout, **run.options)  # wherever
         benchmark.record(run, doc.doc_id, result)
 benchmark.grade(run, list(p.docs))
 ```
@@ -334,15 +350,12 @@ benchmark.grade(run, list(p.docs))
   and writes `settings.json`;
 - `needs(run, doc)` is True when the run has no readable record of the document. A loop that
   predicts everything every time can skip it; it is what makes a loop resumable;
-- `document(plan, doc)` is the document's file, downloaded the first time from a HuggingFace
-  dataset;
 - `record(run, doc_id, result)` writes a result from `predict`: its prediction, if the call
   succeeded, then the record;
 - `recorded(run, doc_id)` reads the document's record, or None; and
-- `grade(run, docs)` grades the documents with no row yet, writes `scores.jsonl` and
-  `summary.json`, and returns the rows of `docs`. A document with no prediction is graded as
-  failed; a run graded by another scorer or against another gold is refused unless
-  `rescore=True`.
+- `grade(run, docs)` grades the documents whose line is missing or stale, writes `scores.jsonl`
+  and `summary.json`, and returns the summary of `docs`' lines (`read_scores(run.out)` gives the
+  lines). A document with no prediction is graded as failed.
 
 The folder is then exactly one `oeb benchmark` writes, so either can resume or grade it.
 
@@ -495,6 +508,7 @@ finishes.
   "run": "datalab-f46415c9",
   "provider": "datalab",
   "settings": {"mode": "balanced", "base_url": "https://www.datalab.to", "poll_interval": 5.0},
+  "headline": 0.8076406248606786,
   "documents": 6,
   "scored": 6,
   "coverage": 1.0,
@@ -513,8 +527,8 @@ finishes.
 }
 ```
 
-The run and each suite are the same shape, so whatever you read at the top you can read per
-suite as well.
+`headline` is the mean accuracy, the one number to compare runs by. The run and each suite are the
+same shape, so whatever you read at the top you can read per suite as well.
 
 
 ### predictions/&lt;doc_id&gt;.json
@@ -574,6 +588,7 @@ One line per document, in document order whatever order the workers finished in.
   "provider": "datalab",
   "scorer": "0.1.8+3f9a0c2e71b4",
   "gold": "a41c09e2d5f7b803",
+  "prediction": "5d0e72c9a1b34f60",
   "status": "scored",
   "accuracy": 0.9555555555555556,
   "precision": 0.9555555555555556,

@@ -40,17 +40,25 @@ unchanged unless a line below says otherwise.
 - settings.json records `dataset` (without its revision), `commit` and `manifest` in place of
   `corpus` and `corpus_commit`. A run folder is refused only for another dataset, not for
   another manifest of the same one.
-- A HuggingFace dataset is fetched lazily: the manifest and gold/ up front, each document's PDF
-  only when it is predicted, at the commit the manifest was read at. A `--limit 5` run
-  downloads five PDFs, not the corpus. A dataset of your own on HuggingFace keeps its gold
-  under gold/ for this; a folder on disk needs nothing.
-- A run never mixes scorers or golds. Each row of scores.jsonl carries `scorer` (the release
-  and a digest of the scoring files) and `gold` (a digest of the document's id, suite, schema
-  and gold file), and summary.json carries `scorer`. A run whose rows another scoring code
-  graded, or whose selected documents' gold has changed, is refused by `plan` and by `grade`
-  unless `--rescore`. A run graded before this release has no stamps, so it needs one
-  `--rescore`; no vendor is called.
-- `--rescore` discards every row, not only the selected documents', so a narrowed rescore
-  leaves only what it graded again.
+- A HuggingFace dataset is downloaded whole, at one revision, into the HuggingFace cache, so its
+  documents and gold are always one commit's (fetching only what a run needs is an optimization
+  for later).
+- A run never mixes scorers or golds. Each line of scores.jsonl carries `scorer` (the release
+  and a digest of the scoring files), `gold` (a digest of the document's id, suite, schema and
+  gold file) and `prediction` (a digest of its prediction file), and summary.json carries
+  `scorer`. A line whose prediction, gold or scorer has changed is graded again, which calls no
+  vendor; nothing is refused. A run graded before this release has no stamps, so it is graded
+  again once.
+- `--rescore` grades every selected document again and drops every other line, so a narrowed
+  rescore leaves only what it graded again.
 - `grade(run, docs)` writes summary.json itself, so a loop of your own gets the same folder
-  `oeb benchmark` writes. docs/API.md has "A loop of your own".
+  `oeb benchmark` writes, and returns the summary of `docs`' lines, as omni-parse-bench's
+  `grade` returns a summary. docs/API.md has "A loop of your own".
+- One module layout, the same as omni-parse-bench's: `data` (`Doc`, `download_dataset`,
+  `read_manifest`, `select`, `dataset_id`), `scorer` (was `metric`: `score`, `gold`,
+  `summarize`), `benchmark` (the loop) and `harness`. A `Doc`'s `doc_path` and `gt_path` are full
+  local paths, and `Doc.id` is its `doc_id`, the name every benchmark's rows share.
+  `benchmark.Doc`, `fetch`, `read_manifest`, `corpus`, `document`, `hf_dataset`, `dataset_id`,
+  `summarise` and the module `metric` still work, with a DeprecationWarning, and will be removed
+  in a later release.
+- summary.json, and each of its suites, carries a `headline`: the mean accuracy.
