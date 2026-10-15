@@ -21,7 +21,8 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 from omni_extract_bench import score                            # noqa: E402
 from omni_extract_bench.benchmark import (                        # noqa: E402
-    Run, grade, needs, record, summarise)
+    Run, grade, needs, record)
+from omni_extract_bench.scorer import summarize as summarise      # noqa: E402
 from omni_extract_bench.data import Doc                            # noqa: E402
 
 FAILS = []

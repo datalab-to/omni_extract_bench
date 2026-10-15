@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Property-based tests for the metric spec (METRIC_SPEC.md P1..P23), against `metric.py`.
+"""Property-based tests for the metric spec (METRIC_SPEC.md P1..P23), against `scorer.py`.
 
 Generative, not example-based: random nested documents are built and perturbed, so the
 properties are checked over a space of shapes rather than a handful of cases I happened to
 think of. Deterministic seeds — a failure is always reproducible.
 
-This file was written against the paired walker that `metric.py` replaced, and was pointed at
-`metric.py` when that walker was deleted. Worth knowing, because the spec's property table had
+This file was written against the paired walker that `scorer.py` replaced, and was pointed at
+`scorer.py` when that walker was deleted. Worth knowing, because the spec's property table had
 until then been asserted only against an implementation the benchmark no longer ran: the
 properties passed unchanged, but they had never been checked against the scorer that produces
 the published numbers.
@@ -23,7 +23,7 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench import matching as OM         # noqa: E402
 from tests.approximate import approximate                  # noqa: E402
-from omni_extract_bench.metric import score as _grade   # noqa: E402
+from omni_extract_bench.scorer import score as _grade   # noqa: E402
 from omni_extract_bench.values import canon_key, cmp_leaf   # noqa: E402
 
 

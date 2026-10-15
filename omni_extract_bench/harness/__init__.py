@@ -1,6 +1,6 @@
 """Everything that is not the scorer: producing predictions.
 
-The package above this one is the metric. `metric.py` reaches exactly `matching`, `prepare`,
+The package above this one is the metric. `scorer.py` reaches exactly `matching`, `prepare`,
 `recognise` and `values` -- `tests/test_score_standalone.py` fails if that ever widens --
 so a score cannot come to depend on a transport, a vendor dialect, or an envelope convention.
 

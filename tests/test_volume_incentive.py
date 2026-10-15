@@ -27,7 +27,7 @@ import random
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.metric import score                                 # noqa: E402
+from omni_extract_bench.scorer import score                                 # noqa: E402
 
 FAILS = []
 

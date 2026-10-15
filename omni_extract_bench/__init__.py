@@ -30,11 +30,12 @@ that only scores never installs a vendor SDK.
 """
 
 from .matching import match_rows
-from .metric import Verdict, score
+from .scorer import Verdict, score, summarize
 from .values import canon_key, cmp_leaf
 
 __all__ = [
     "score",
+    "summarize",
     "Verdict",
     "canon_key",
     "cmp_leaf",

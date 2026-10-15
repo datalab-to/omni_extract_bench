@@ -2,9 +2,9 @@
 import os as _os
 import sys
 sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.metric import score
+from omni_extract_bench.scorer import score
 
-from omni_extract_bench.metric import score as _score_impl          # noqa: E402
+from omni_extract_bench.scorer import score as _score_impl          # noqa: E402
 
 
 def _schema_from(doc):

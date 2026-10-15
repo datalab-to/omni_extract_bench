@@ -150,7 +150,7 @@ for f in FAILS:
     print(f"   {f}")
 
 print("\nA VERDICT CARRIES BOTH FORMS, AND `None` MEANS ONE THING")
-from omni_extract_bench.metric import score, show, Verdict            # noqa: E402
+from omni_extract_bench.scorer import score, show, Verdict            # noqa: E402
 
 def verdicts_of(pred, gt, schema):
     """Per-address verdicts. `score` is the only entry point; the list comes off it."""

@@ -30,7 +30,7 @@ from __future__ import annotations
 import copy
 
 # Re-exported, so adapters resolve refs exactly as the scorer does.
-from ..metric import resolve_refs  # noqa: F401
+from ..scorer import resolve_refs  # noqa: F401
 
 MAX_REF_DEPTH = 200
 

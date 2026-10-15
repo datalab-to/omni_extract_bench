@@ -25,7 +25,6 @@ Credentials come from the environment and everything else from `--options`, so
 """
 from __future__ import annotations
 
-import collections
 import concurrent.futures as cf
 import io
 import functools
@@ -40,7 +39,7 @@ from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from . import data, score
+from . import data, score, scorer
 from rich import box
 from rich.console import Console, Group
 from rich.rule import Rule
@@ -63,7 +62,7 @@ def plural(n: int, word: str) -> str:
 
 
 # The code a verdict depends on: a change to any of it is a new scorer.
-SCORING = ("metric.py", "matching.py", "values.py", "recognise.py")
+SCORING = ("scorer.py", "matching.py", "values.py", "recognise.py")
 
 
 def scorer_version() -> str:
@@ -238,7 +237,7 @@ def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, workers: int = 
             log.warning("scoring stopped after %d of %d documents; the rest are graded "
                         "on the next run", len(graded), len(wanted))
     write_json_atomic(run.out / "summary.json", {**head(run), "scorer": SCORER,
-                                                 **summarise(so_far())}, indent=2)
+                                                 **scorer.summarize(so_far())}, indent=2)
 
     answered = {**known, **graded}
     return [answered[d.doc_id] for d in docs if d.doc_id in answered]
@@ -271,7 +270,7 @@ def score_one(doc: data.Doc, *, run: Run, verdicts: bool = False) -> dict:
         return {**row, "status": "error",
                 "error": "empty prediction" if pred == {} else "not an object"}
     try:
-        result = score(pred, json.loads(doc.gt_path.read_text()), doc.schema, verdicts=verdicts)
+        result = score(pred, scorer.gold(doc), doc.schema, verdicts=verdicts)
         if verdicts:
             (run.out / "verdicts").mkdir(parents=True, exist_ok=True)
             (run.out / "verdicts" / f"{doc.doc_id}.jsonl").write_text(
@@ -347,36 +346,6 @@ def write_scores(out: Path, rows: list[dict]) -> None:
     tmp = path.with_name(f".{path.name}.partial")
     tmp.write_text("".join(json.dumps(row, default=str) + "\n" for row in rows))
     os.replace(tmp, path)
-
-
-ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
-
-
-def over(rows: list[dict]) -> dict:
-    """How a set of documents went: coverage, the three metrics, and where the errors were."""
-    scored = [r for r in rows if r["status"] == "scored"]
-
-    def mean(of) -> float:
-        return sum(of(r) for r in scored) / len(scored) if scored else 0.0
-
-    return {
-        "documents": len(rows),
-        "scored": len(scored),
-        "coverage": len(scored) / len(rows) if rows else 0.0,
-        "accuracy": mean(lambda r: r["accuracy"]),
-        "precision": mean(lambda r: r["precision"]),
-        "recall": mean(lambda r: r["recall"]),
-        **{f"{e}_rate": mean(lambda r, e=e: r[e] / r["total"] if r["total"] else 0.0)
-           for e in ERRORS},
-    }
-
-
-def summarise(rows: list[dict]) -> dict:
-    """The run, and then each suite, in the same shape."""
-    by_suite: dict[str, list[dict]] = collections.defaultdict(list)
-    for row in rows:
-        by_suite[row["suite"]].append(row)
-    return {**over(rows), "per_suite": {s: over(v) for s, v in sorted(by_suite.items())}}
 
 
 #: Documents in flight per adapter, keyed by adapter module so every OpenRouter model shares
@@ -587,7 +556,7 @@ def grade_all(p: Plan) -> dict[str, dict]:
         for run in p.runs:
             mine = grade(run, list(p.docs), verdicts=p.verdicts, workers=p.score_workers,
                          rescore=p.rescore, progress=bars.reporter(run.out.name))
-            summary[run.out.name] = s = {**head(run), "scorer": SCORER, **summarise(mine)}
+            summary[run.out.name] = s = {**head(run), "scorer": SCORER, **scorer.summarize(mine)}
             log.info("%s: accuracy %.4f over %d suites, coverage %d/%d", run.out.name,
                      s["accuracy"], len(s["per_suite"]), s["scored"], s["documents"])
     return summary
@@ -684,12 +653,14 @@ def run(providers: list[str], **kwargs) -> dict:
 # Note: the names that moved to `data`, kept for one release. Each warns, naming its replacement.
 MOVED = {name: f"data.{name}" for name in
          ("Doc", "COLUMNS", "REPO", "MANIFEST", "HF_PREFIX", "DEFAULT_DATASET", "hf_dataset", "dataset_id")}
+MOVED |= {"summarise": "scorer.summarize", "over": "scorer._over", "ERRORS": "scorer.ERRORS"}
 
 
 def __getattr__(name: str) -> Any:
     if name not in MOVED: raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     _deprecated(f"benchmark.{name}", MOVED[name])
-    return getattr(data, name)
+    module, _, attr = MOVED[name].partition(".")
+    return getattr(data if module == "data" else scorer, attr)
 
 
 def fetch(dataset: str | Path, manifest: str = data.MANIFEST) -> Path:

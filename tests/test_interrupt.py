@@ -31,6 +31,7 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
+from omni_extract_bench import scorer                                          # noqa: E402
 import omni_extract_bench.data as DS
 from omni_extract_bench.harness.registry import out_name  # noqa: E402
 
@@ -209,7 +210,7 @@ back = B.grade(B.Run("datalab", {}, narrow), five[:2], workers=1)
 report("the return value is this run's selection, not the file",
        [r["doc_id"] for r in back] == ["d0", "d1"], str([r["doc_id"] for r in back]))
 report("...so the summary counts what was asked for",
-       B.summarise(back)["documents"] == 2, str(B.summarise(back)["documents"]))
+       scorer.summarize(back)["documents"] == 2, str(scorer.summarize(back)["documents"]))
 
 print("\nA FULL DISK STOPS THE VENDOR INSTEAD OF BUYING THE REST")
 disk = pathlib.Path(tempfile.mkdtemp())

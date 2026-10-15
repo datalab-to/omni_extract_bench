@@ -34,7 +34,7 @@ def read_json(path: str):
 
 
 def cmd_score(args) -> int:
-    from .metric import score
+    from .scorer import score
 
     result = score(read_json(args.pred), read_json(args.gt), read_json(args.schema),
                    order_matters=args.order_matters or (), verdicts=args.verdicts)

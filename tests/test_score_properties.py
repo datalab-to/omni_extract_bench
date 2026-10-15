@@ -22,11 +22,11 @@ import tracemalloc
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from tests.approximate import approximate                  # noqa: E402
 from omni_extract_bench.values import cmp_leaf, canon_key                         # noqa: E402
-from omni_extract_bench.metric import (                          # noqa: E402
+from omni_extract_bench.scorer import (                          # noqa: E402
     node_key, format_node, _find_arrays, KEY, INDEX,
     score, flatten, align)
 
-from omni_extract_bench.metric import score as _score_impl          # noqa: E402
+from omni_extract_bench.scorer import score as _score_impl          # noqa: E402
 
 
 def _schema_from(doc):
@@ -351,7 +351,7 @@ report("one wrong cell in a three-deep array costs one cell, not a whole sub-arr
        r["total"] == 9 and r["matched"] == 7,
        f"denominator {r['total']} (want 8 gold + 1 spurious = 9), matched {r['matched']} (want 7)")
 
-from omni_extract_bench.metric import _extract_rows_at, _worth_if_paired  # noqa: E402
+from omni_extract_bench.scorer import _extract_rows_at, _worth_if_paired  # noqa: E402
 
 
 def true_max_matched(a, b):
@@ -394,7 +394,7 @@ for s_ in range(120):
 report("the pairing weight never claims more matches than a pairing can deliver", ok, detail)
 
 print("\nA NESTED ARRAY'S ORDER CANNOT CHANGE THE OUTER PAIRING")
-from omni_extract_bench.metric import _extract_rows_at, _worth_if_paired   # noqa: E402
+from omni_extract_bench.scorer import _extract_rows_at, _worth_if_paired   # noqa: E402
 
 
 def row_weight(row_p, row_g):
@@ -518,7 +518,7 @@ report("declaring an array ordered leaves identity at 1.0 over generated documen
            if flatten(d)))
 
 print("\nTHE PRICE PROMISED IS THE SCORE DELIVERED")
-from omni_extract_bench.metric import _best_pairing, _extract_rows_at, align, INDEX   # noqa: E402
+from omni_extract_bench.scorer import _best_pairing, _extract_rows_at, align, INDEX   # noqa: E402
 
 
 def price_vs_delivery(gold, pred):
