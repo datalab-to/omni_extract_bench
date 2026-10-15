@@ -7,7 +7,7 @@ before trusting a number. An example that no longer matches the code is worse th
 documents behaviour the scorer does not have.
 
 Nothing was running them. `scorer.py`'s 19 doctests only executed under
-`python -m omni_extract_bench.scorer`, which CI does not do, and `values.py`'s were not executed
+`python -m omni_extract_bench.scorers.field_matching`, which CI does not do, and `values.py`'s were not executed
 at all -- so `canon_trace`'s example sat stale, still describing periods as always removed after
 the rule had grown a decimal-point exception.
 

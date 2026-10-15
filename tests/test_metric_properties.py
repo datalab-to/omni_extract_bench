@@ -21,10 +21,10 @@ import copy, json, os, random, sys
 
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench import matching as OM         # noqa: E402
+from omni_extract_bench.scorers.field_matching import matching as OM         # noqa: E402
 from tests.approximate import approximate                  # noqa: E402
-from omni_extract_bench.scorer import score as _grade   # noqa: E402
-from omni_extract_bench.values import canon_key, cmp_leaf   # noqa: E402
+from omni_extract_bench.scorers.field_matching import score as _grade   # noqa: E402
+from omni_extract_bench.scorers.field_matching.values import canon_key, cmp_leaf   # noqa: E402
 
 
 def _schema_from(doc):

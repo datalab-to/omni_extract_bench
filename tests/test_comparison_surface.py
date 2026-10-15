@@ -16,7 +16,7 @@ import os as _os
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.values import canon_key, cmp_leaf                  # noqa: E402
+from omni_extract_bench.scorers.field_matching.values import canon_key, cmp_leaf                  # noqa: E402
 
 FAILS = []
 
@@ -150,12 +150,12 @@ for f in FAILS:
     print(f"   {f}")
 
 print("\nA VERDICT CARRIES BOTH FORMS, AND `None` MEANS ONE THING")
-from omni_extract_bench.scorer import score, show, Verdict            # noqa: E402
+from omni_extract_bench.scorers.field_matching import score, show, Verdict            # noqa: E402
 
 def verdicts_of(pred, gt, schema):
     """Per-address verdicts. `score` is the only entry point; the list comes off it."""
     return score(pred, gt, schema, verdicts=True)["verdicts"]
-from omni_extract_bench.values import states_nothing, canon_trace, canon_key    # noqa: E402
+from omni_extract_bench.scorers.field_matching.values import states_nothing, canon_trace, canon_key    # noqa: E402
 
 _SCH = {"type": "object", "properties": {
     "a": {"type": "string"}, "b": {"type": "string"}, "c": {"type": "string"},
@@ -226,7 +226,7 @@ report("canon_trace agrees with the Verdict on every raw value it carries",
 
 
 print("\nA NUMBER TOO ABSURD TO BE PRINTED IS COMPARED AS TEXT")
-from omni_extract_bench.recognise import _asdecimal, _fraction_places   # noqa: E402
+from omni_extract_bench.scorers.field_matching.recognise import _asdecimal, _fraction_places   # noqa: E402
 from decimal import Decimal                                             # noqa: E402
 
 for _v in ("1.0e1000000000", "-1.0e1000000000", "1e400", "nan", "inf", "-inf", "NaN"):

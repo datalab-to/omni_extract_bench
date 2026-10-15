@@ -38,7 +38,8 @@ from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import NamedTuple
 
-from . import data, score, scorer
+from . import data
+from .scorers import field_matching as scorer
 from rich import box
 from rich.console import Console, Group
 from rich.rule import Rule
@@ -61,7 +62,8 @@ def plural(n: int, word: str) -> str:
 
 
 # The code a verdict depends on: a change to any of it is a new scorer.
-SCORING = ("scorer.py", "matching.py", "values.py", "recognise.py")
+SCORING = ("scorers/field_matching/__init__.py", "scorers/field_matching/matching.py",
+           "scorers/field_matching/values.py", "scorers/field_matching/recognise.py")
 
 
 def scorer_version() -> str:
@@ -242,7 +244,7 @@ def score_one(doc: data.Doc, *, run: Run, verdicts: bool = False) -> dict:
         return {**row, "status": "error",
                 "error": "empty prediction" if pred == {} else "not an object"}
     try:
-        result = score(pred, scorer.gold(doc), doc.schema, verdicts=verdicts)
+        result = scorer.score(pred, scorer.gold(doc), doc.schema, verdicts=verdicts)
         if verdicts:
             (run.out / "verdicts").mkdir(parents=True, exist_ok=True)
             (run.out / "verdicts" / f"{doc.doc_id}.jsonl").write_text(

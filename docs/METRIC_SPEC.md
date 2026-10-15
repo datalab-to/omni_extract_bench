@@ -25,7 +25,7 @@ out which predicted row goes with which gold row; renumber, and scoring is set a
 ## 2. Comparing one value
 
 Deterministic and type-directed. No model participates. `canon_key` in
-`omni_extract_bench/values.py` is the single comparison rule, used by leaf scoring and row
+`omni_extract_bench/scorers/field_matching/values.py` is the single comparison rule, used by leaf scoring and row
 pairing alike, so the two cannot disagree.
 
 | gold type | rule |

@@ -29,9 +29,9 @@ predictions with the vendor adapters in this repository, see `omni_extract_bench
 that only scores never installs a vendor SDK.
 """
 
-from .matching import match_rows
-from .scorer import Verdict, score, summarize
-from .values import canon_key, cmp_leaf
+from .scorers.field_matching import Verdict, score, summarize
+from .scorers.field_matching.matching import match_rows
+from .scorers.field_matching.values import canon_key, cmp_leaf
 
 __all__ = [
     "score",

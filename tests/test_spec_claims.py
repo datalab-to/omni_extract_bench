@@ -13,8 +13,8 @@ import os as _os
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench import matching as OM                              # noqa: E402
-from omni_extract_bench.scorer import score                                 # noqa: E402
+from omni_extract_bench.scorers.field_matching import matching as OM                              # noqa: E402
+from omni_extract_bench.scorers.field_matching import score                                 # noqa: E402
 
 def verdicts_of(pred, gt, schema):
     """Per-address verdicts. `score` is the only entry point; the list comes off it."""

@@ -19,7 +19,7 @@ import os as _os
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.scorer import (                                     # noqa: E402
+from omni_extract_bench.scorers.field_matching import (                                     # noqa: E402
     INDEX, KEY, _classify_extra, _schema_nodes, format_node, score, show)
 
 def verdicts_of(pred, gt, schema):

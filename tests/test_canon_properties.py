@@ -50,7 +50,7 @@ import random
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.values import canon_key                        # noqa: E402
+from omni_extract_bench.scorers.field_matching.values import canon_key                        # noqa: E402
 
 FAILS = []
 
@@ -207,7 +207,7 @@ report("a number keys the same alone as it does with a unit attached",
 note("commas are untouched by that rule: they strip alone and embedded, as they always did.")
 
 print("\nP1b  A FOLD MAY TRIM A VALUE, NEVER CONSUME IT")
-from omni_extract_bench.values import states_nothing                    # noqa: E402
+from omni_extract_bench.scorers.field_matching.values import states_nothing                    # noqa: E402
 
 PUNCT = "-.,/()[]{}\"'`~!@#$%^&*_+=|\\:;?<> \t"
 probes = [
@@ -268,7 +268,7 @@ note("parse gets the full string treatment. `2025-01-2025` is milled to '2025012
 note("is also what the unrelated string `20250120 25` becomes -- see KNOWN_COLLISIONS.")
 
 print("\nP5  THE PIPELINE IS ENUMERABLE, AND SAYS WHY")
-from omni_extract_bench.values import FOLDS, canon_trace                # noqa: E402
+from omni_extract_bench.scorers.field_matching.values import FOLDS, canon_trace                # noqa: E402
 _names = [f.name for f in FOLDS]
 report("`accents` runs before `typography`",
        _names.index("accents") < _names.index("typography"),

@@ -2,9 +2,9 @@
 import os as _os
 import sys
 sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.scorer import score
+from omni_extract_bench.scorers.field_matching import score
 
-from omni_extract_bench.scorer import score as _score_impl          # noqa: E402
+from omni_extract_bench.scorers.field_matching import score as _score_impl          # noqa: E402
 
 
 def _schema_from(doc):
@@ -162,7 +162,7 @@ def verdicts(pred, gold, absent=lambda v: False):
             for v in _score_impl(pred, gold, A_S, verdicts=True, absent=absent)["verdicts"]}
 
 
-from omni_extract_bench.scorer import show as _show                     # noqa: E402
+from omni_extract_bench.scorers.field_matching import show as _show                     # noqa: E402
 
 field_cases = [  # (key, gold, pred, want)
     ("b", None, None, {"b": "matched"}),

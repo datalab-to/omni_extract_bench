@@ -31,7 +31,7 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
-from omni_extract_bench import scorer                                          # noqa: E402
+from omni_extract_bench.scorers import field_matching as scorer                # noqa: E402
 import omni_extract_bench.data as DS
 from omni_extract_bench.harness.registry import out_name  # noqa: E402
 
