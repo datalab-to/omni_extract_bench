@@ -58,7 +58,6 @@ unchanged unless a line below says otherwise.
   `read_manifest`, `select`, `dataset_id`), `scorer` (was `metric`: `score`, `gold`,
   `summarize`), `benchmark` (the loop) and `harness`. A `Doc`'s `doc_path` and `gt_path` are full
   local paths, and `Doc.id` is its `doc_id`, the name every benchmark's rows share.
-  `benchmark.Doc`, `fetch`, `read_manifest`, `corpus`, `document`, `hf_dataset`, `dataset_id`,
-  `summarise` and the module `metric` still work, with a DeprecationWarning, and will be removed
-  in a later release.
+  The old names (`benchmark.Doc`, `fetch`, `read_manifest`, `corpus`, `document`, `hf_dataset`,
+  `dataset_id`, `summarise`, and the module `metric`) are gone.
 - summary.json, and each of its suites, carries a `headline`: the mean accuracy.

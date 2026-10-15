@@ -22,7 +22,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 from omni_extract_bench import score                            # noqa: E402
 from omni_extract_bench.benchmark import (                        # noqa: E402
     Run, grade, needs, record)
-from omni_extract_bench.scorer import summarize as summarise      # noqa: E402
+from omni_extract_bench.scorer import summarize                   # noqa: E402
 from omni_extract_bench.data import Doc                            # noqa: E402
 
 FAILS = []
@@ -312,7 +312,7 @@ except ValueError:
 
 _gone = Path(tempfile.mkdtemp()) / "nope.parquet"
 try:
-    _bench.read_manifest(_gone, _gone.parent)
+    DS.read_manifest(_gone.parent, _gone.name)
     report("a manifest that does not exist is refused", False, "it was accepted")
 except ValueError as exc:
     report("a manifest that does not exist is named in the error",
@@ -339,7 +339,7 @@ _pq.write_table(_pa.Table.from_pylist(
     [{"doc_id": "a/b", "suite": "s", "doc_path": "x.pdf", "gt_path": "x.json",
       "schema": "{}"}]), bad)
 try:
-    _bench.read_manifest(bad, bad.parent)
+    DS.read_manifest(bad.parent, bad.name)
     report("a doc_id that is not a filename is refused", False, "it was accepted")
 except ValueError as exc:
     report("a doc_id that is not a filename is refused",
@@ -359,14 +359,14 @@ def scored(suite, matched, total, **rest):
 
 
 lopsided = [scored("s", 9, 10), scored("s", 500, 1000)]
-o = summarise(lopsided)
+o = summarize(lopsided)
 report("a small document is worth as much as a huge one",
        abs(o["accuracy"] - 0.7) < 1e-9, f'{o["accuracy"]} -- a ratio of sums gives 0.504')
 
 print("\nAND NO CORPUS NUMBER IS PICKED FOR YOU")
 skew = ([scored("big", 9, 10) for _ in range(90)]
         + [scored("small", 1, 10) for _ in range(10)])
-s = summarise(skew)
+s = summarize(skew)
 report("the top-level figure follows the large suite", abs(s["accuracy"] - 0.82) < 1e-9,
        f'{s["accuracy"]}')
 unified = sum(x["accuracy"] for x in s["per_suite"].values()) / len(s["per_suite"])
@@ -376,7 +376,7 @@ report("every suite carries the whole block, so that works for any of them",
        set(s["per_suite"]["big"]) == set(s) - {"per_suite"}, str(sorted(s["per_suite"]["big"])))
 
 print("\nWHERE IT WENT WRONG, NOT ONLY HOW MUCH")
-kinds = summarise([scored("s", 5, 10, misread=0, unfound=5),
+kinds = summarize([scored("s", 5, 10, misread=0, unfound=5),
                    scored("s", 5, 10, misread=0, fabricated=5)])
 report("the error rates are means of per-document rates",
        (kinds["unfound_rate"], kinds["fabricated_rate"]) == (0.25, 0.25), str(kinds))
@@ -386,14 +386,14 @@ report("...and the ones that did not happen read zero",
 print("\nA FAILURE COSTS COVERAGE, NOT A FALSE PRECISION")
 half = ([scored("s", 10, 10) for _ in range(5)]
         + [{"suite": "s", "status": "error", "error": "timeout"} for _ in range(5)])
-h = summarise(half)
+h = summarize(half)
 report("a failed document does not drag precision down to nothing", h["precision"] == 1.0)
 report("...it shows up as coverage", h["coverage"] == 0.5)
 report("...and the flat mean over every document is still one multiplication away",
        abs(h["accuracy"] * h["coverage"] - 0.5) < 1e-9)
 report("an empty run does not divide by zero",
-       summarise([])["accuracy"] == 0.0 and summarise([])["coverage"] == 0.0
-       and summarise([])["unfound_rate"] == 0.0)
+       summarize([])["accuracy"] == 0.0 and summarize([])["coverage"] == 0.0
+       and summarize([])["unfound_rate"] == 0.0)
 
 print("\nA MISSING SDK STOPS THE PROVIDER AND STORES NOTHING")
 from omni_extract_bench import benchmark as _bench                         # noqa: E402
@@ -488,8 +488,8 @@ import unittest.mock                                                       # noq
 from omni_extract_bench import benchmark                                   # noqa: E402
 
 for missing, call, wanted in [
-    ("huggingface_hub", lambda: benchmark.fetch(benchmark.DEFAULT_DATASET), "huggingface_hub"),
-    ("pyarrow.parquet", lambda: benchmark.read_manifest(TMP / "m.parquet", TMP), "pyarrow"),
+    ("huggingface_hub", lambda: DS.read_manifest(DS.DEFAULT_DATASET), "huggingface_hub"),
+    ("pyarrow.parquet", lambda: DS.read_manifest(TMP, "m.parquet"), "pyarrow"),
 ]:
     with unittest.mock.patch.dict(sys.modules, {missing: None}):
         try:

@@ -123,7 +123,7 @@ report("...and through a union branch",
 print("\nTHERE IS EXACTLY ONE GRADER")
 graders = sorted(p.relative_to(PKG).as_posix() for p in PKG.rglob("*.py")
                  if "grad" in p.stem.lower() or "scor" in p.stem.lower())
-report("one module is named for scoring, scorer.py (and its deprecated alias, metric.py)",
+report("one module is named for scoring, scorer.py",
        graders == ["scorer.py"], f"found {graders}")
 defines = sorted(p.relative_to(PKG).as_posix() for p in PKG.rglob("*.py")
                  if p.name != "scorer.py" and "\ndef score(" in p.read_text())

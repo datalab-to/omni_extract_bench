@@ -184,9 +184,6 @@ summary["datalab-f46415c9"]["headline"] # the mean accuracy, e.g. 0.9145
 The same names, in the same modules, as omni-parse-bench's (whose rows are pages, not documents).
 `data.read_manifest(dataset, manifest)` gives the dataset's folder and every document, each with
 its file and gold as full local paths; `data.select(docs, suites, limit)` picks the ones to run.
-`benchmark.Doc`, `fetch`, `read_manifest`, `corpus`, `document`, `summarise`, and the module
-`metric` (now `scorer`) are the old names: they still work, with a DeprecationWarning, and will be
-removed in a later release.
 
 ### Two levels of data
 

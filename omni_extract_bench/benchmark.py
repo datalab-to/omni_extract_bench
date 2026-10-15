@@ -35,10 +35,9 @@ import json
 import logging
 import os
 import threading
-import warnings
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 from . import data, score, scorer
 from rich import box
@@ -651,52 +650,3 @@ def run(providers: list[str], **kwargs) -> dict:
     for line in describe(p).splitlines():
         log.info("%s", line)
     return execute(p)
-
-
-# Note: the names that moved to `data`, kept for one release. Each warns, naming its replacement.
-MOVED = {name: f"data.{name}" for name in
-         ("Doc", "COLUMNS", "REPO", "MANIFEST", "HF_PREFIX", "DEFAULT_DATASET", "hf_dataset", "dataset_id")}
-MOVED |= {"summarise": "scorer.summarize", "over": "scorer._over", "ERRORS": "scorer.ERRORS"}
-
-
-def __getattr__(name: str) -> Any:
-    if name not in MOVED: raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    _deprecated(f"benchmark.{name}", MOVED[name])
-    module, _, attr = MOVED[name].partition(".")
-    return getattr(data if module == "data" else scorer, attr)
-
-
-def fetch(dataset: str | Path, manifest: str = data.MANIFEST) -> Path:
-    """Deprecated: `data.download_dataset(dataset)`."""
-    _deprecated("benchmark.fetch(dataset, manifest)", "data.download_dataset(dataset)")
-    data._on_hub(dataset, manifest)
-    return data.download_dataset(dataset)
-
-
-def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[data.Doc]:
-    """Deprecated: `data.select(data.read_manifest(dataset, manifest)[1], suites, limit)`."""
-    _deprecated("benchmark.read_manifest(path, root, ...)",
-                "data.select(data.read_manifest(dataset, manifest)[1], suites, limit)")
-    rel = Path(path).relative_to(root) if Path(path).is_absolute() == Path(root).is_absolute() else Path(path)
-    return list(data.select(data.read_manifest(root, str(rel))[1], suites, limit))
-
-
-def corpus(dataset: str | Path, manifest: str = data.MANIFEST, suites: list[str] | None = None,
-           limit: int = 0) -> tuple[list[data.Doc], Path]:
-    """Deprecated: `data.read_manifest(dataset, manifest)`, then `data.select`."""
-    _deprecated("benchmark.corpus(...)", "data.read_manifest(dataset, manifest), then data.select")
-    root, every = data.read_manifest(dataset, manifest)
-    if not (docs := data.select(every, suites, limit)):
-        raise ValueError("no documents selected: check --suites and --limit")
-    return list(docs), root
-
-
-def document(p: Plan, doc: data.Doc) -> Path:
-    """Deprecated: `doc.doc_path`, a full local path once `data.read_manifest` has read it."""
-    _deprecated("benchmark.document(plan, doc)", "doc.doc_path")
-    return Path(doc.doc_path)
-
-
-def _deprecated(old: str, new: str) -> None:
-    warnings.warn(f"{old} is deprecated: use {new}. The old name will be removed in a later release.",
-                  DeprecationWarning, stacklevel=3)
