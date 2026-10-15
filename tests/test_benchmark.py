@@ -221,6 +221,14 @@ except Exception as exc:                                                       #
     report("a manifest of exactly COLUMNS is enough to read", False,
            f"{type(exc).__name__}: {exc}")
 
+_extra = Path(tempfile.mkdtemp()) / "m.parquet"
+_pq.write_table(_pa.Table.from_pylist([{**{c: "{}" for c in DS.COLUMNS}, "language": "tha"}]), _extra)
+_, (_one,) = DS.read_manifest(_extra.parent, _extra.name)
+report("a column of the dataset's own is carried on the document, not refused",
+       dict(_one.extra) == {"language": "tha"}, str(dict(_one.extra)))
+import pickle as _pickle                                                       # noqa: E402
+report("...and it pickles, as grading's process pool needs", _pickle.loads(_pickle.dumps(_one)) == _one)
+
 _short = Path(tempfile.mkdtemp()) / "m.parquet"
 _pq.write_table(_pa.Table.from_pylist(
     [{"doc_id": "a", "doc_path": "x.pdf", "gt_path": "x.json", "schema": "{}"}]), _short)

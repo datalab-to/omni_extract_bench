@@ -17,11 +17,12 @@ file and its gold are without the dataset beside it. The functions over a datase
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -34,14 +35,21 @@ DEFAULT_DATASET = f"{HF_PREFIX}{REPO}"
 COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
 
 
-class Doc(NamedTuple):
-    """One benchmark element: a manifest row, its paths full local paths."""
+@dataclasses.dataclass(frozen=True)
+class Doc:
+    """One benchmark element: a manifest row, its paths full local paths.
+
+    `extra` holds the row's other columns: omni-extract-bench reads none of them, so a dataset can
+    carry columns of its own (a language, a tag, another gold) for scorers of its own. Treat it as
+    read-only. A frozen dataclass rather than a NamedTuple so each document gets its own `extra`;
+    a copy with a field changed is `dataclasses.replace(doc, ...)`."""
 
     doc_id: str
     suite: str
     doc_path: Path
     gt_path: Path
     schema: dict
+    extra: dict[str, Any] = dataclasses.field(default_factory=dict)   # the manifest's other columns
 
     @property
     def id(self) -> str:
@@ -93,7 +101,8 @@ def download_dataset(dataset: str | Path) -> Path:
 
 def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, tuple[Doc, ...]]:
     """The dataset's folder (`download_dataset`) and every document its manifest `manifest` (a path in
-    the dataset) names, checked, in (suite, doc_id) order, each with its file and gold as full paths."""
+    the dataset) names, checked, in (suite, doc_id) order, each with its file and gold as full paths.
+    Its columns must include `COLUMNS`; any other column is carried on each document's `extra`."""
     try:
         import pyarrow.parquet as pq
     except ImportError:
@@ -132,7 +141,8 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
             raise ValueError(f"{path}: row {n} ({doc_id}) has a schema column that is not "
                              f"JSON: {exc}") from None
         docs.append(Doc(doc_id=doc_id, suite=row["suite"], doc_path=root / row["doc_path"],
-                        gt_path=root / row["gt_path"], schema=schema))
+                        gt_path=root / row["gt_path"], schema=schema,
+                        extra={k: v for k, v in row.items() if k not in COLUMNS}))
     docs.sort(key=lambda d: (d.suite, d.doc_id))
     return root, tuple(docs)
 
