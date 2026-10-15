@@ -221,7 +221,7 @@ B.write_json_atomic = lambda path, obj, **kw: (
     else (_ for _ in ()).throw(OSError("No space left on device")))
 try:
     B.predict_all(B.Plan(runs=(B.Run("datalab", {}, disk / "x"),), docs=tuple(twenty),
-                         dataset=str(disk), manifest="manifest.parquet", root=disk, timeout=5,
+                         dataset=str(disk), manifest="manifest.parquet", timeout=5,
                          workers=4, score_workers=1, verdicts=True,
                          score_only=False))
     report("a failed write stops the vendor", False, "it returned normally")

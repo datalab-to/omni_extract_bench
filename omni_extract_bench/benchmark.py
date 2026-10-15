@@ -98,7 +98,7 @@ class Run(NamedTuple):
     its folder holds when it is read, so it is resumed, graded or shared between processes as it
     stands. The functions below are the bookkeeping of any loop over its documents:
 
-        prepare(run, corpus, timeout)          # once: the folder, and settings.json
+        prepare(run, dataset, timeout)         # once: the folder, and settings.json
         if needs(run, doc):                    # no readable record yet
             record(run, doc.doc_id, harness.predict(...))
         grade(run, docs)                       # scores.jsonl and summary.json; the summary
@@ -131,11 +131,12 @@ def head(run: Run) -> dict:
     return {"run": run.out.name, "provider": run.provider, "settings": settings(run)}
 
 
-def prepare(run: Run, dataset: str, timeout: float, commit: str | None = None,
-            manifest: str = data.MANIFEST) -> None:
+def prepare(run: Run, dataset: str, timeout: float, manifest: str = data.MANIFEST) -> None:
     """The run's folder made, and what it asks written to its settings.json before it asks:
-    provider, settings, dataset (and the commit of a HuggingFace one), manifest and the timeout
-    per document. `summary.json` comes after grading, which an interrupted run never reaches."""
+    provider, settings, dataset (and the commit of a HuggingFace one, the downloaded folder's name),
+    manifest and the timeout per document. `summary.json` comes after grading, which an interrupted
+    run never reaches."""
+    commit = data.download_dataset(dataset).name if data.hf_dataset(dataset) is not None else None
     run.predictions.mkdir(parents=True, exist_ok=True)
     run.records.mkdir(parents=True, exist_ok=True)
     write_json_atomic(run.out / "settings.json", {
@@ -170,9 +171,16 @@ def record(run: Run, doc_id: str, result: dict) -> None:
     write_json_atomic(run.records / f"{doc_id}.json", result)
 
 
-def owed(run: Run, docs: list[data.Doc]) -> tuple[int, int]:
-    """How many of `docs` the run would predict, and then grade: every one, since grading is fresh."""
-    return sum(needs(run, doc) for doc in docs), len(docs)
+def owed(p: Plan, run: Run) -> tuple[int, int]:
+    """How many documents the run would predict, and then grade, by the rules `predict_all` and
+    `grade_all` follow: it predicts the plan's documents it has no record of, and grades every
+    document of the manifest that will have been attempted (the rest are pending)."""
+    coming = set() if p.score_only else {d.doc_id for d in p.docs if needs(run, d)}
+    _, every = data.read_manifest(p.dataset, p.manifest)
+    keeps = not p.score_only or run.records.is_dir()
+    to_grade = sum(not keeps or d.doc_id in coming or recorded(run, d.doc_id) is not None
+                   or predicted(run, d.doc_id) is not None for d in every)
+    return len(coming), to_grade
 
 
 def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, workers: int = 0,
@@ -356,7 +364,6 @@ class Plan(NamedTuple):
     docs: tuple[data.Doc, ...]
     dataset: str
     manifest: str
-    root: Path                             # the dataset's folder on disk, `fetch`
     timeout: float
     workers: dict[str, int] | int | None   # documents in flight per adapter, `workers_for`
     score_workers: int
@@ -387,10 +394,10 @@ def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path 
         if path.exists() and (was := json.loads(path.read_text()).get("dataset")) not in (None, ident):
             raise ValueError(f"{run.out} is a run on dataset {was}, not {ident}, and a run never "
                              f"mixes datasets; pass another --out, or --dataset {was}")
-    root, every = data.read_manifest(dataset, manifest)
+    _, every = data.read_manifest(dataset, manifest)
     if not (docs := data.select(every, suites, limit)):
         raise ValueError("no documents selected: check --suites and --limit")
-    return Plan(tuple(runs.values()), tuple(docs), str(dataset), manifest, root, timeout,
+    return Plan(tuple(runs.values()), tuple(docs), str(dataset), manifest, timeout,
                 predict_workers, score_workers, verdicts, score_only)
 
 
@@ -405,8 +412,7 @@ def predict_all(p: Plan) -> None:
     stop = threading.Event()
     by: dict[str, list[Run]] = {}
     for run in p.runs:
-        prepare(run, p.dataset, p.timeout, None if data.hf_dataset(p.dataset) is None else p.root.name,
-                p.manifest)
+        prepare(run, p.dataset, p.timeout, p.manifest)
         by.setdefault(resolve(run.provider), []).append(run)
 
     def drain(adapter: str, runs: list[Run], bars: Progress) -> None:
@@ -573,7 +579,7 @@ def plan_view(p: Plan) -> Group:
     for adapter, runs in by.items():
         workers = workers_for([r.provider for r in runs], p.workers)
         for n, run in enumerate(runs):
-            to_predict, to_grade = owed(run, list(p.docs))
+            to_predict, to_grade = owed(p, run)
             to_predict = 0 if p.score_only else to_predict
             table.add_row(Text(adapter if n == 0 else "", style="bold"),
                           Text(str(workers) if n == 0 else ""),

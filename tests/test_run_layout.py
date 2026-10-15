@@ -336,9 +336,9 @@ for d in docs[:2]:
 for d in docs:
     (bal.out / "verdicts" / f"{d.doc_id}.jsonl").write_text("")
 report("a run counts what it would still predict, and grades every document: grading is fresh",
-       B.owed(bal, docs) == (len(docs) - 2, len(docs)), str(B.owed(bal, docs)))
+       B.owed(plan, bal) == (len(docs) - 2, len(docs)), str(B.owed(plan, bal)))
 report("...a run with nothing on disk owes everything",
-       B.owed(acc, docs) == (len(docs), len(docs)), str(B.owed(acc, docs)))
+       B.owed(plan, acc) == (len(docs), len(docs)), str(B.owed(plan, acc)))
 stated = B.describe(plan)
 row = next(line for line in stated.splitlines() if named("datalab") in line)
 cells = [c.strip() for c in row.split("\u2502")]

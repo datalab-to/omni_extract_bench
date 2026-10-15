@@ -303,8 +303,7 @@ try:
                        manifest="manifests/sub.parquet")
     report("a manifest below a dataset's root reads paths from the dataset's root",
            _sub.docs[0].doc_path == _snap / "pdfs" / "d0.pdf", str(_sub.docs[0].doc_path))
-    report("...and the commit it was read at is kept", _sub.root.name == "0123abcd")
-    _bench.prepare(_sub.runs[0], _sub.dataset, _sub.timeout, _sub.root.name, _sub.manifest)
+    _bench.prepare(_sub.runs[0], _sub.dataset, _sub.timeout, _sub.manifest)
     _written = json.loads((_sub.runs[0].out / "settings.json").read_text())
     report("...and settings.json records it beside the dataset and manifest",
            _written["dataset"] == "hf://datasets/o/n" and _written["commit"] == "0123abcd"
@@ -418,7 +417,7 @@ _vendor.adapter = lambda provider: (_ for _ in ()).throw(
 try:
     _bench.predict_all(_bench.Plan(
         runs=(_bench.Run("datalab", {}, _out),), docs=tuple(_docs), dataset=str(TMP),
-        manifest="manifest.parquet", root=TMP, timeout=30, workers=3, score_workers=1,
+        manifest="manifest.parquet", timeout=30, workers=3, score_workers=1,
         verdicts=True, score_only=False))
     report("a missing SDK stops the run", False, "it returned normally")
 except MissingDependency:
