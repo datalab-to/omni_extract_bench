@@ -242,6 +242,10 @@ def canon_key(v):
     everything else some fold emptied. Structurally empty JSON is absence; anything a model
     chose to write asserts, or `()` in every unreadable field would be free. Values the folds
     would empty fall back to themselves with whitespace removed.
+
+    By default structurally empty values are never scored, so never keyed. A caller passing
+    `score(..., absent=...)` can keep them; each kind then keys as itself (`#NULL`,
+    `#EMPTY_STRING`, `#EMPTY_LIST`, `#EMPTY_OBJECT`), distinct from every value and each other.
     """
     return _canon_key_guarded(v)
 
@@ -249,10 +253,12 @@ def canon_key(v):
 def _canon_key_guarded(v, trace=None):
     """`canon_key`, with an optional recorder. ONE implementation, so a trace can never
     describe a comparison the scorer did not make."""
-    if v is None or v == [] or v == {} or (isinstance(v, str) and not v.strip()):
+    if states_nothing(v):
         if trace is not None:
             trace["route"] = "absent"
-        return ""
+        # Note: uppercase, because every other key is lowercased, so no value can collide.
+        return ("#NULL" if v is None else "#EMPTY_STRING" if isinstance(v, str)
+                else "#EMPTY_LIST" if isinstance(v, list) else "#EMPTY_OBJECT")
     k = _canon_key_unguarded(v, trace)
     if k == "":
         restored = re.sub(r"\s+", "", str(v).strip().lower())
@@ -322,7 +328,8 @@ def states_nothing(value) -> bool:
 
     Applied to both documents, so a vendor's house style cannot move its score.
 
-    >>> [states_nothing(v) for v in (None, "", "   ", 0, False, "n/a", "0")]
-    [True, True, True, False, False, False, False]
+    >>> [states_nothing(v) for v in (None, "", "   ", [], {}, 0, False, "n/a", "0")]
+    [True, True, True, True, True, False, False, False, False]
     """
-    return value is None or (isinstance(value, str) and not value.strip())
+    return (value is None or value == [] or value == {}
+            or (isinstance(value, str) and not value.strip()))

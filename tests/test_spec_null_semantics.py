@@ -147,4 +147,54 @@ for name, passed in es_checks:
 if not all(c[1] for c in es_checks):
     sys.exit(1)
 
+print("\nabsent= REPLACES THE JUDGEMENT; lambda v: False MAKES EVERY EMPTY A VALUE")
+A_S = {"type": "object", "properties": {
+    "b": {"type": ["string", "null"]},
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "meta": {"type": "object", "properties": {"c": {"type": "number"}}},
+    "rows": {"type": "array", "items": {"type": "object", "properties": {"x": {"type": "string"}}}},
+    "m": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}}}}
+MISSING = object()
+
+
+def verdicts(pred, gold, absent=lambda v: False):
+    return {_show(v.address): v.verdict
+            for v in _score_impl(pred, gold, A_S, verdicts=True, absent=absent)["verdicts"]}
+
+
+from omni_extract_bench.scorer import show as _show                     # noqa: E402
+
+field_cases = [  # (key, gold, pred, want)
+    ("b", None, None, {"b": "matched"}),
+    ("b", None, "", {"b": "misread"}),
+    ("b", None, MISSING, {"b": "unfound"}),
+    ("b", "", "  ", {"b": "matched"}),
+    ("b", MISSING, None, {"b": "fabricated"}),
+    ("tags", [], [], {"tags": "matched"}),
+    ("tags", [], {}, {"tags": "misread"}),
+    ("tags", [], None, {"tags": "misread"}),
+    ("tags", [], MISSING, {"tags": "unfound"}),
+    ("tags", [], ["a"], {"tags": "unfound", "tags[0]": "fabricated"}),
+    ("tags", MISSING, [], {"tags": "fabricated"}),
+    ("meta", {}, {"c": 1}, {"meta": "unfound", "meta.c": "fabricated"}),
+]
+absent_checks = []
+for key, g, p, want in field_cases:
+    got = verdicts({} if p is MISSING else {key: p}, {} if g is MISSING else {key: g})
+    absent_checks.append((f"{key}: gold {'missing' if g is MISSING else repr(g)}, "
+                          f"pred {'missing' if p is MISSING else repr(p)} -> {want}", got == want))
+for name, g, p in (("an empty object inside an array pairs like any value",
+                    {"rows": [{}, {"x": "a"}]}, {"rows": [{"x": "a"}, {}]}),
+                   ("an empty list inside an array pairs like any value",
+                    {"m": [[], [1]]}, {"m": [[1], []]})):
+    r = _score_impl(p, g, A_S, absent=lambda v: False)
+    absent_checks.append((name, r["accuracy"] == 1.0 and r["total"] == 2))
+only_null = verdicts({"b": ""}, {"b": None}, absent=lambda v: v is None)
+absent_checks.append(("absent=lambda v: v is None scores '' but not null",
+                      only_null == {"b": "fabricated"}))
+for name, passed in absent_checks:
+    print(f"  {'PASS' if passed else 'FAIL'}  {name}")
+if not all(c[1] for c in absent_checks):
+    sys.exit(1)
+
 sys.exit(0 if ok else 1)

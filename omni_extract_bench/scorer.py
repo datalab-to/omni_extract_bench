@@ -32,7 +32,7 @@ __all__ = ["score", "gold", "summarize", "Verdict",
            "node_key", "show", "format_node", "KEY", "INDEX"]
 
 import collections
-from collections.abc import Hashable, Iterable
+from collections.abc import Callable, Hashable, Iterable
 from typing import Any, Literal, NamedTuple
 
 from . import matching as OM
@@ -235,14 +235,16 @@ def _reading_order(address: Address) -> tuple:
 
 
 def flatten(node: Any, schema: Any = None, prefix: Address = (),
-            skipped: list[Address] | None = None) -> Leaves:
+            skipped: list[Address] | None = None,
+            absent: Callable[[Any], bool] = states_nothing) -> Leaves:
     """Give every value in one document an address.
 
     Only one document. This never looks at the other one.
 
     A value that states nothing gets no address, so it counts neither for nor against anyone.
     `null` and `""` both qualify, and for the same reason -- see `values.states_nothing`,
-    which is where that judgement lives so both documents and both scorers share it.
+    which is where that judgement lives so both documents and both scorers share it. `absent`
+    replaces that judgement; an empty `[]` or `{}` is asked about like any other value.
 
     An `additionalProperties` object is skipped entirely, and its address is added to
     `skipped`. Those objects ask the model to invent the key names by reading headings off
@@ -261,15 +263,15 @@ def flatten(node: Any, schema: Any = None, prefix: Address = (),
             skipped.append(prefix)
         return {}
     out: Leaves = {}
-    if isinstance(node, dict):
+    if isinstance(node, dict) and node:
         props = schema.get("properties") or {}
         for key, value in node.items():
-            out.update(flatten(value, props.get(key), prefix + ((KEY, key),), skipped))
-    elif isinstance(node, list):
+            out.update(flatten(value, props.get(key), prefix + ((KEY, key),), skipped, absent))
+    elif isinstance(node, list) and node:
         item = schema.get("items")
         for i, value in enumerate(node):
-            out.update(flatten(value, item, prefix + ((INDEX, i),), skipped))
-    elif not states_nothing(node):
+            out.update(flatten(value, item, prefix + ((INDEX, i),), skipped, absent))
+    elif prefix and not absent(node):  # the document itself is never a value
         out[prefix] = node
     return out
 
@@ -318,8 +320,8 @@ def _document_arrays(node: Any, prefix: Address = ()) -> list[Address]:
     return out
 
 
-def _schema_leaves(schema: Any, prefix: Address = ()) -> set[Address]:
-    """Every value the schema asks for, as node keys. The slots on offer.
+def _schema_nodes(schema: Any, prefix: Address = ()) -> set[Address]:
+    """Every name the schema declares, as node keys. The slots on offer.
 
     Needed to tell a value the model made up from one it invented a name for. If the schema
     offered the slot and the document is silent, filling it in is a fabricated fact. If the
@@ -332,24 +334,22 @@ def _schema_leaves(schema: Any, prefix: Address = ()) -> set[Address]:
     Nothing inside an `additionalProperties` object counts, because that subtree is not
     graded at all -- a slot nobody was asked for cannot be filled in wrongly.
 
-    >>> [format_node(k) for k in sorted(_schema_leaves(
+    >>> [format_node(k) for k in sorted(_schema_nodes(
     ...     {"properties": {"n": {"type": "string"},
     ...                     "rows": {"type": "array",
     ...                              "items": {"properties": {"q": {"type": "number"}}}}}}),
     ...     key=format_node)]
-    ['n', 'rows[*].q']
+    ['n', 'rows', 'rows[*]', 'rows[*].q']
     """
     schema = unwrap_schema(schema) if isinstance(schema, dict) else {}
     if is_open_map(schema):
         return set()
     props, item = schema.get("properties") or {}, schema.get("items")
-    if not props and item is None:
-        return {prefix}
-    out: set[Address] = set()
+    out: set[Address] = {prefix} if prefix else set()
     for key, sub in props.items():
-        out |= _schema_leaves(sub, prefix + ((KEY, key),))
+        out |= _schema_nodes(sub, prefix + ((KEY, key),))
     if item is not None:
-        out |= _schema_leaves(item, prefix + ((INDEX, None),))
+        out |= _schema_nodes(item, prefix + ((INDEX, None),))
     return out
 
 
@@ -757,7 +757,7 @@ def _has_ref(node: Any) -> bool:
     return False
 
 
-def _resolve_order(order_matters: Iterable[str], schema: Any,
+def _resolve_order(order_matters: bool | Iterable[str], schema: Any,
                    documents: Iterable[Any]) -> frozenset:
     """Turn the caller's array names into the keys the scorer matches against.
 
@@ -771,6 +771,8 @@ def _resolve_order(order_matters: Iterable[str], schema: Any,
     passing the documents both before and after preparation covers a gold row dropped for
     being all-null, which can take the last instance of a nested array with it -- the name is
     still right, and rejecting it would be a false alarm.
+
+    `True` names every array found that way, `False` none.
     """
     if isinstance(order_matters, str):
         raise TypeError(
@@ -791,6 +793,8 @@ def _resolve_order(order_matters: Iterable[str], schema: Any,
             f"order_matters would silently mean the other. This should not be reachable -- "
             f"keys holding a dot or a bracket are quoted to prevent it. Please report it."
         )
+    if isinstance(order_matters, bool):
+        return frozenset(found) if order_matters else frozenset()
 
     out = set()
     for name in order_matters:
@@ -812,8 +816,14 @@ def _resolve_order(order_matters: Iterable[str], schema: Any,
 
 
 def score(pred: Any, gt: Any, schema: Any,
-          order_matters: Iterable[str] = (), verdicts: bool = False) -> dict:
-    """Score one prediction against one ground truth."""
+          order_matters: bool | Iterable[str] = (), verdicts: bool = False,
+          absent: Callable[[Any], bool] = states_nothing) -> dict:
+    """Score one prediction against one ground truth.
+
+    `absent` decides which values state nothing, and so get no address on either side. The
+    default drops `null`, `""`, `[]` and `{}`; `lambda v: False` makes each one a value the
+    prediction must reproduce. Scores under different `absent`s are not comparable.
+    """
     if gt is not None and not isinstance(gt, dict):
         raise TypeError(
             f"ground truth must be a JSON object, got {type(gt).__name__}. A schema whose root "
@@ -843,8 +853,9 @@ def score(pred: Any, gt: Any, schema: Any,
     pred = prep_prediction(pred_raw)
     ordered = _resolve_order(order_matters, schema, (raw_gt, pred_raw, gt, pred))
     found_open: list[Address] = []
-    gold_leaves = flatten(gt, schema, skipped=found_open)
-    pred_leaves, inexact = align(gold_leaves, flatten(pred, schema, skipped=found_open), ordered)
+    gold_leaves = flatten(gt, schema, skipped=found_open, absent=absent)
+    pred_leaves, inexact = align(
+        gold_leaves, flatten(pred, schema, skipped=found_open, absent=absent), ordered)
     skipped = sorted(set(found_open), key=_reading_order)
     shared = set(gold_leaves) & set(pred_leaves)
     only_gold = set(gold_leaves) - shared
@@ -853,7 +864,7 @@ def score(pred: Any, gt: Any, schema: Any,
     matched = sum(1 for a in shared if cmp_leaf(pred_leaves[a], gold_leaves[a]) >= 1.0)
     misread = len(shared) - matched
     unfound = len(only_gold)
-    slots = _schema_leaves(schema)
+    slots = _schema_nodes(schema)
     extra_kind = {a: _classify_extra(a, slots) for a in only_pred}
     extra = collections.Counter(extra_kind.values())
     gt_rows = pred_rows = paired = 0

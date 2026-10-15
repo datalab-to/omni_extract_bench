@@ -26,7 +26,9 @@ def report(name, cond, detail=""):
         FAILS.append(name)
 
 
-def retry(limit=60, seconds=30.0):
+def retry(limit=60, seconds=0.0):
+    # Note: an empty budget caps every backoff sleep at zero. These checks are about whether
+    # to poll again, which the budget does not decide; a real one made this file sleep ~46s.
     return PollRetry(Budget(seconds), limit=limit)
 
 
@@ -48,6 +50,30 @@ r.again(429); r.again(429)
 r.ok()
 report("a successful poll resets the count", [r.again(429) for _ in range(3)] == [True] * 3,
        "otherwise a long job accumulates unrelated blips and gives up on a healthy vendor")
+
+print("\nTHE BACKOFF DOUBLES, CAPS AT 30s, AND STARTS OVER AFTER A GOOD POLL")
+from omni_extract_bench.harness import budget as _budget                     # noqa: E402
+
+waits, _sleep = [], _budget.time.sleep
+_budget.time.sleep = waits.append  # record the waits instead of sleeping them
+try:
+    r = retry(seconds=3600.0)
+    for _ in range(7):
+        r.again(429)
+    report("waits are 2, 4, 8, 16, then 30 from there on",
+           waits == [2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 30.0], f"got {waits}")
+    del waits[:]
+    r.ok()
+    r.again(429)
+    report("a successful poll starts the backoff over at 2s", waits == [2.0], f"got {waits}")
+    del waits[:]
+    r = retry(seconds=5.0)
+    for _ in range(3):
+        r.again(429)
+    report("a wait is cut to what is left of the budget",
+           waits[:2] == [2.0, 4.0] and 4.9 < waits[2] <= 5.0, f"got {waits}")
+finally:
+    _budget.time.sleep = _sleep
 
 print("\nIT NEVER WAITS PAST THE DOCUMENT'S DEADLINE")
 import time                                                                    # noqa: E402
