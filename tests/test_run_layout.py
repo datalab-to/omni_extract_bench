@@ -23,6 +23,7 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
+import omni_extract_bench.data as DS
 import omni_extract_bench.harness.document as D
 import omni_extract_bench.harness.registry as V                                  # noqa: E402
 
@@ -152,10 +153,10 @@ docs = []
 for i in range(3):
     g = out / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     pdf = out / f"p{i}.pdf"; pdf.write_bytes(b"%PDF")
-    docs.append(B.Doc(f"d{i}", "s", pdf, g,
+    docs.append(DS.Doc(f"d{i}", "s", pdf, g,
                       {"type": "object", "properties": {"a": {"type": "string"}}}))
-B.fetch = lambda *_: out
-B.read_manifest = lambda *a, **k: docs
+DS.download_dataset = lambda *_: out
+DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs))
 called = []
 D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, config: (
     called.append(config.mode),
@@ -188,7 +189,7 @@ report("...and the record states what it was sent",
 
 print("\nA VENDOR'S OWN TIERS, COMPARED IN ONE INVOCATION")
 out2 = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda *_: out2
+DS.download_dataset = lambda *_: out2
 summary = B.run(["datalab"], out=out2, score_workers=1, predict_workers={"*": 1},
                 options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
 report("each configuration is its own row in the summary",
@@ -212,10 +213,10 @@ for one in summary.values():
 report("and there is no table across them to go stale",
        not (out2 / "summary.json").exists())
 
-B.read_manifest = lambda *a, **k: docs[:1]
+DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs[:1]))
 narrow = B.run(["datalab"], out=out2, score_workers=1, predict_workers={"*": 1},
                options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
-B.read_manifest = lambda *a, **k: docs
+DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs))
 kept = json.loads((out2 / named("datalab") / "summary.json").read_text())
 report("a narrowed resume leaves the directory's own summary whole",
        kept["documents"] == len(docs), f'{kept["documents"]} of {len(docs)}')
@@ -225,7 +226,7 @@ report("...while the return value answers what this invocation ran",
 
 print("\nAND A RUN THAT IS GRADED SURVIVES THE ONE AFTER IT NOT BEING")
 out3 = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda *_: out3
+DS.download_dataset = lambda *_: out3
 real_grade, graded = B.grade, {"n": 0}
 
 
@@ -276,10 +277,10 @@ many = []
 for i in range(20):
     g = wide / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     pdf = wide / f"p{i}.pdf"; pdf.write_bytes(b"%PDF")
-    many.append(B.Doc(f"d{i}", "s", pdf, g,
+    many.append(DS.Doc(f"d{i}", "s", pdf, g,
                       {"type": "object", "properties": {"a": {"type": "string"}}}))
-B.fetch = lambda *_: wide
-B.read_manifest = lambda *a, **k: many
+DS.download_dataset = lambda *_: wide
+DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(many))
 live = {"n": 0, "peak": 0}
 guard = _threading.Lock()
 
@@ -353,7 +354,7 @@ report("...and nothing is cut off, whatever the widest cell is",
 
 print("\nAND ASKS BEFORE IT SPENDS")
 ask = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda *_: ask
+DS.download_dataset = lambda *_: ask
 D.adapter = as_adapter(counting)
 shown, called = [], {"n": 0}
 
@@ -399,14 +400,14 @@ try:
         accepted = cli.main(_ask)
 finally:
     cli.confirm_plan = _real_confirm
-report("an approved plan runs", called["n"] == len(B.read_manifest()) and accepted == 0,
+report("an approved plan runs", called["n"] == len(DS.read_manifest()[1]) and accepted == 0,
        f'{called["n"]} calls, exit {accepted}')
 
 print("\nEACH RUN IS TIMED FOR ITSELF, NOT FOR THE QUEUE IT SHARES")
 from omni_extract_bench.progress import Progress                               # noqa: E402
 
 timed = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda *_: timed
+DS.download_dataset = lambda *_: timed
 landed = {}
 _t0 = _time.monotonic()
 
@@ -439,7 +440,7 @@ report("...and it matches when its last document actually landed",
 
 print("\nAND THE CAP BELONGS TO THE SERVICE, NOT TO THE NAME YOU TYPED")
 models = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda *_: models
+DS.download_dataset = lambda *_: models
 live["n"] = live["peak"] = 0
 D.adapter = as_adapter(counting)
 ids = ["openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash"]
@@ -460,7 +461,7 @@ report("...falling back to the adapter's own limit when nobody says",
 
 print("\nAN ACCOUNT FAILURE IS ABOUT THE ACCOUNT, SO IT STOPS EVERY RUN OF THAT VENDOR")
 acct = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda *_: acct
+DS.download_dataset = lambda *_: acct
 tried = []
 
 

@@ -21,7 +21,8 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 from omni_extract_bench import score                            # noqa: E402
 from omni_extract_bench.benchmark import (                        # noqa: E402
-    Doc, Run, grade, needs, record, summarise)
+    Run, grade, needs, record, summarise)
+from omni_extract_bench.data import Doc                            # noqa: E402
 
 FAILS = []
 
@@ -118,7 +119,7 @@ report("the caller's schema is not mutated by preparing it",
        "$defs" in REF_SCHEMA and "$ref" in json.dumps(REF_SCHEMA))
 
 print("\nWHERE A DATASET IS: ON DISK, OR ON HUGGINGFACE")
-from omni_extract_bench.benchmark import DEFAULT_DATASET, dataset_id, hf_dataset  # noqa: E402
+from omni_extract_bench.data import DEFAULT_DATASET, dataset_id, hf_dataset  # noqa: E402
 
 _SUBSET = "manifests/sample40.parquet"
 report("ours is an address like any other",
@@ -144,6 +145,7 @@ except ValueError as exc:
 
 print("\nA MANIFEST OF YOUR OWN, INSTEAD OF OURS")
 import omni_extract_bench.benchmark as _bench                                  # noqa: E402
+import omni_extract_bench.data as DS                                           # noqa: E402
 import pyarrow as _pa                                                          # noqa: E402
 import pyarrow.parquet as _pq                                                  # noqa: E402
 
@@ -175,7 +177,7 @@ import unittest.mock as _mock                                                  #
 
 with _mock.patch.dict(sys.modules, {"huggingface_hub": None}):
     tmp = Path(tempfile.mkdtemp())
-    docs, _ = _bench.corpus(byo(tmp, _relative))
+    _, docs = DS.read_manifest(byo(tmp, _relative))
     report("a relative path resolves against the dataset's folder",
            len(docs) == 2 and all(d.doc_path.exists() and d.gt_path.exists() for d in docs),
            str([str(d.doc_path) for d in docs]))
@@ -183,7 +185,7 @@ with _mock.patch.dict(sys.modules, {"huggingface_hub": None}):
            docs[0].schema == BYO_SCHEMA and docs[0].suite == "mine")
 
     tmp = Path(tempfile.mkdtemp())
-    docs, _ = _bench.corpus(byo(tmp, _absolute))
+    _, docs = DS.read_manifest(byo(tmp, _absolute))
     report("an absolute path is used as it is, whatever the root",
            all(d.doc_path.exists() for d in docs), str([str(d.doc_path) for d in docs]))
 
@@ -191,15 +193,15 @@ with _mock.patch.dict(sys.modules, {"huggingface_hub": None}):
     _two = byo(tmp, _relative)
     (_two / "manifests").mkdir()
     (_two / "manifest.parquet").rename(_two / "manifests" / "sub.parquet")
-    docs, _ = _bench.corpus(_two, "manifests/sub.parquet")
+    _, docs = DS.read_manifest(_two, "manifests/sub.parquet")
     report("...and a manifest below it still resolves against the dataset's folder",
            len(docs) == 2 and all(d.doc_path.exists() for d in docs))
 
 _exact = Path(tempfile.mkdtemp()) / "m.parquet"
 # "{}" is a valid doc_id, path and JSON, so the row is built from COLUMNS itself.
-_pq.write_table(_pa.Table.from_pylist([{c: "{}" for c in _bench.COLUMNS}]), _exact)
+_pq.write_table(_pa.Table.from_pylist([{c: "{}" for c in DS.COLUMNS}]), _exact)
 try:
-    _only = _bench.read_manifest(_exact, _exact.parent)
+    _, _only = DS.read_manifest(_exact.parent, _exact.name)
     report("a manifest of exactly COLUMNS is enough to read",
            len(_only) == 1 and _only[0].schema == {})
 except Exception as exc:                                                       # noqa: BLE001
@@ -210,7 +212,7 @@ _short = Path(tempfile.mkdtemp()) / "m.parquet"
 _pq.write_table(_pa.Table.from_pylist(
     [{"doc_id": "a", "doc_path": "x.pdf", "gt_path": "x.json", "schema": "{}"}]), _short)
 try:
-    _bench.read_manifest(_short, _short.parent)
+    DS.read_manifest(_short.parent, _short.name)
     report("a manifest missing a column is refused", False, "it was accepted")
 except ValueError as exc:
     report("a manifest missing a column names the column and the file",
@@ -221,7 +223,7 @@ _pq.write_table(_pa.Table.from_pylist(
     [{"doc_id": "a", "suite": "s", "doc_path": "x.pdf", "gt_path": "x.json",
       "schema": "{not json"}]), _bad_schema)
 try:
-    _bench.read_manifest(_bad_schema, _bad_schema.parent)
+    DS.read_manifest(_bad_schema.parent, _bad_schema.name)
     report("a schema column that is not JSON is refused", False, "it was accepted")
 except ValueError as exc:
     report("...and an unreadable schema names the row it is in",
@@ -230,13 +232,12 @@ except ValueError as exc:
 import huggingface_hub as _hf                                                  # noqa: E402
 
 _real_exists, _real_snapshot = _hf.file_exists, _hf.snapshot_download
-_real_download = _hf.hf_hub_download
 _hf.file_exists = lambda *a, **k: False
 _hf.snapshot_download = lambda *a, **k: (_ for _ in ()).throw(
     AssertionError("a gigabyte was downloaded before the manifest was asked for"))
 _nowhere = "hf://datasets/someone/corpus@v2"
 try:
-    _bench.fetch(_nowhere, "manifests/nope.parquet")
+    DS.read_manifest(_nowhere, "manifests/nope.parquet")
     report("a dataset without the manifest is refused", False, "it was accepted")
 except ValueError as exc:
     report("a dataset without the manifest is refused, before anything is downloaded",
@@ -245,17 +246,19 @@ _asked = []
 _hf.file_exists = lambda *a, **k: _asked.append((a, k)) or True
 _hf.snapshot_download = lambda *a, **k: _asked.append((a, k)) or "/cached/corpus"
 try:
-    _bench.fetch(_nowhere, "manifests/nope.parquet")
-    report("the check and the download both ask for the addressed file and revision",
+    try:
+        DS.read_manifest(_nowhere, "manifests/nope.parquet")
+    except ValueError:
+        pass                     # Note: /cached/corpus holds no manifest; only what was asked counts.
+    report("the check asks for the manifest, and the download for the whole dataset, at the revision",
            _asked == [(("someone/corpus", "manifests/nope.parquet"),
                        {"repo_type": "dataset", "revision": "v2"}),
-                      (("someone/corpus",), {"repo_type": "dataset", "revision": "v2",
-                                             "allow_patterns": ["manifests/nope.parquet",
-                                                                "gold/*"]})],
+                      (("someone/corpus",), {"repo_type": "dataset", "revision": "v2"})],
            str(_asked))
     _hf.file_exists = lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
+    DS._on_hub(DEFAULT_DATASET, DS.MANIFEST)
     report("...but a hub that cannot be reached does not stop a cached corpus",
-           _bench.fetch(DEFAULT_DATASET) == Path("/cached/corpus"))
+           DS.download_dataset(DEFAULT_DATASET) == Path("/cached/corpus"))
 finally:
     _hf.file_exists, _hf.snapshot_download = _real_exists, _real_snapshot
 
@@ -264,7 +267,8 @@ _snap = Path(tempfile.mkdtemp()) / "0123abcd"
 _rows = [{"doc_id": "d0", "suite": "s", "doc_path": "pdfs/d0.pdf", "gt_path": "gold/d0.json",
           "schema": json.dumps(BYO_SCHEMA)}]
 _pq.write_table(_pa.Table.from_pylist(_rows), _snap / "manifests" / "sub.parquet")
-_real_fetch, _bench.fetch = _bench.fetch, lambda *_: _snap
+_real_fetch, DS.download_dataset = DS.download_dataset, lambda *_: _snap
+_real_hub, DS._on_hub = DS._on_hub, lambda *_: None
 try:
     _sub = _bench.plan(["datalab"], out=Path(tempfile.mkdtemp()), dataset="hf://datasets/o/n",
                        manifest="manifests/sub.parquet")
@@ -272,26 +276,12 @@ try:
            _sub.docs[0].doc_path == _snap / "pdfs" / "d0.pdf", str(_sub.docs[0].doc_path))
     report("...and the commit it was read at is kept", _sub.root.name == "0123abcd")
     _bench.prepare(_sub.runs[0], _sub.dataset, _sub.timeout, _sub.root.name, _sub.manifest)
-    _got = []
-    _hf.hf_hub_download = lambda *a, **k: _got.append((a, k)) or str(_snap / "pdfs" / "d0.pdf")
-    try:
-        report("a document is fetched by its path in the dataset, at the commit read",
-               _bench.document(_sub, _sub.docs[0]) == _snap / "pdfs" / "d0.pdf"
-               and _got == [(("o/n", "pdfs/d0.pdf"),
-                             {"repo_type": "dataset", "revision": "0123abcd"})], str(_got))
-        (_snap / "pdfs").mkdir()
-        (_snap / "pdfs" / "d0.pdf").write_bytes(b"%PDF")
-        _got.clear()
-        _bench.document(_sub, _sub.docs[0])
-        report("...and only the first time", _got == [], str(_got))
-    finally:
-        _hf.hf_hub_download = _real_download
     _written = json.loads((_sub.runs[0].out / "settings.json").read_text())
     report("...and settings.json records it beside the dataset and manifest",
            _written["dataset"] == "hf://datasets/o/n" and _written["commit"] == "0123abcd"
            and _written["manifest"] == "manifests/sub.parquet", str(_written))
 finally:
-    _bench.fetch = _real_fetch
+    DS.download_dataset, DS._on_hub = _real_fetch, _real_hub
 try:
     _bench.plan(["datalab"], dataset="hf://datasets/o")
     report("a malformed address is refused when the plan is built", False, "it was accepted")

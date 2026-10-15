@@ -35,11 +35,12 @@ import json
 import logging
 import os
 import threading
+import warnings
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
-from . import score
+from . import data, score
 from rich import box
 from rich.console import Console, Group
 from rich.rule import Rule
@@ -61,10 +62,6 @@ def plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
-REPO = "datalab-to/omni_extract_bench"
-MANIFEST = "manifest.parquet"
-HF_PREFIX = "hf://datasets/"
-DEFAULT_DATASET = f"{HF_PREFIX}{REPO}"
 # The code a verdict depends on: a change to any of it is a new scorer.
 SCORING = ("metric.py", "matching.py", "values.py", "recognise.py")
 
@@ -96,126 +93,6 @@ def scoring(stamp: str | None) -> str | None:
     return None if stamp is None else stamp.rpartition("+")[2]
 
 
-#: Written out rather than read off `Doc`: manifests on disk have this shape, and a field `Doc`
-#: grows later must not invalidate them.
-COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
-
-
-class Doc(NamedTuple):
-    """One benchmark element."""
-
-    doc_id: str
-    suite: str
-    doc_path: Path
-    gt_path: Path
-    schema: dict
-
-
-def hf_dataset(dataset: str | Path) -> tuple[str, str | None] | None:
-    """The repo and revision `dataset` addresses, or `None` when it is a folder on disk."""
-    form = f"hf://datasets/<org>/<name>[@<revision>], e.g. {DEFAULT_DATASET}"
-    s = str(dataset)
-    if isinstance(dataset, Path) and s.startswith("hf:"):
-        raise ValueError(f"the dataset {s!r} was made a Path, which folds the '//' out of an "
-                         f"address. Pass it as a str: {form}")
-    if not s.startswith("hf://"):
-        return None
-    org, _, name = s.removeprefix(HF_PREFIX).partition("/")
-    name, at, revision = name.partition("@")
-    if not s.startswith(HF_PREFIX) or not org or not name or "/" in name or (at and not revision):
-        raise ValueError(f"{s!r} does not name a HuggingFace dataset. Write it as {form}")
-    return f"{org}/{name}", revision or None
-
-
-def dataset_id(dataset: str | Path) -> str:
-    """What a run's dataset is, whatever its revision: the repo of an `hf://` dataset, or a
-    folder's path."""
-    if (at := hf_dataset(dataset)) is not None:
-        return f"{HF_PREFIX}{at[0]}"
-    return str(Path(dataset).expanduser().resolve())
-
-
-def fetch(dataset: str | Path, manifest: str = MANIFEST) -> Path:
-    """The dataset as a folder on disk: a folder as given, or a HuggingFace dataset's snapshot,
-    named for its commit. A snapshot lands in the HuggingFace cache, shared between every
-    checkout and every working directory, so the second folder you run from resolves it free.
-
-    Note: a snapshot holds the manifest and gold/ only, which are small; each document is
-    fetched when it is predicted (`document`), so a `--limit 5` run downloads five.
-    """
-    if (at := hf_dataset(dataset)) is None:
-        return Path(dataset).expanduser()
-    repo, revision = at
-    try:
-        from huggingface_hub import file_exists, snapshot_download
-    except ImportError:
-        raise ImportError(
-            "huggingface_hub is needed to fetch the benchmark corpus, and is not installed:\n"
-            "    pip install 'omni-extract-bench[benchmark]'\n"
-            "The scorer itself needs none of it -- `score` and `oeb score` work without."
-        ) from None
-
-    # Asked before a download of gigabytes. A hub that will not answer (offline, cached) is not
-    # a no: the download runs, and `read_manifest` reports a manifest that really is missing.
-    try:
-        missing = not file_exists(repo, manifest, repo_type="dataset", revision=revision)
-    except OSError:
-        missing = False
-    if missing:
-        raise ValueError(
-            f"there is no {manifest} in {dataset}, so there is nothing to benchmark. A dataset "
-            f"holds one or more manifests, each following the same structure as ours at "
-            f"https://huggingface.co/datasets/{REPO}. Name another with --manifest, or point "
-            f"--dataset at a folder of your own.")
-    log.info("fetching %s's %s and gold into the huggingface cache", dataset, manifest)
-    return Path(snapshot_download(repo, repo_type="dataset", revision=revision,
-                                  allow_patterns=[manifest, "gold/*"]))
-
-
-def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[Doc]:
-    try:
-        import pyarrow.parquet as pq
-    except ImportError:
-        raise ImportError(
-            "pyarrow is needed to read the benchmark manifest, and is not installed:\n"
-            "    pip install 'omni-extract-bench[benchmark]'"
-        ) from None
-    if not path.exists():
-        raise ValueError(
-            f"there is no manifest at {path}. It is a parquet file with one row per "
-            f"document, as {', '.join(COLUMNS)}; ours is at "
-            f"https://huggingface.co/datasets/{REPO}, and a corpus of your own follows the "
-            f"same convention."
-        )
-    table = pq.read_table(path)
-    absent = [c for c in COLUMNS if c not in table.column_names]
-    if absent:
-        has = ", ".join(table.column_names) or "no columns"
-        raise ValueError(f"{path} has no {', '.join(absent)} column"
-                         f"{'s' if len(absent) > 1 else ''}. A manifest names one document "
-                         f"per row, as {', '.join(COLUMNS)}; this one has {has}.")
-    docs = []
-    for n, row in enumerate(table.to_pylist()):
-        if suites and row["suite"] not in suites:
-            continue
-        # A doc_id is a filename (`predictions/<doc_id>.json`); caught here, the row can be named.
-        doc_id = row["doc_id"]
-        if not doc_id or doc_id in (".", "..") or Path(doc_id).name != doc_id:
-            raise ValueError(f"{path}: row {n} has doc_id {doc_id!r}, which is not a filename. "
-                             f"It names this document's prediction, its record and its row in "
-                             f"scores.jsonl, so it has to be one path component.")
-        try:
-            schema = json.loads(row["schema"])
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise ValueError(f"{path}: row {n} ({doc_id}) has a schema column that is not "
-                             f"JSON: {exc}") from None
-        docs.append(Doc(doc_id=doc_id,
-                        suite=row["suite"],
-                        doc_path=root / row["doc_path"],
-                        gt_path=root / row["gt_path"],
-                        schema=schema))
-    docs.sort(key=lambda d: (d.suite, d.doc_id))
-    return docs[:limit] if limit else docs
 
 
 def write_json_atomic(path: Path, obj, *, indent: int | None = None) -> None:
@@ -263,14 +140,14 @@ def head(run: Run) -> dict:
 
 
 def prepare(run: Run, dataset: str, timeout: float, commit: str | None = None,
-            manifest: str = MANIFEST) -> None:
+            manifest: str = data.MANIFEST) -> None:
     """The run's folder made, and what it asks written to its settings.json before it asks:
     provider, settings, dataset (and the commit of a HuggingFace one), manifest and the timeout
     per document. `summary.json` comes after grading, which an interrupted run never reaches."""
     run.predictions.mkdir(parents=True, exist_ok=True)
     run.records.mkdir(parents=True, exist_ok=True)
     write_json_atomic(run.out / "settings.json", {
-        **head(run), "dataset": dataset_id(dataset), **({"commit": commit} if commit else {}),
+        **head(run), "dataset": data.dataset_id(dataset), **({"commit": commit} if commit else {}),
         "manifest": manifest, "timeout_s": timeout}, indent=2)
 
 
@@ -287,7 +164,7 @@ def recorded(run: Run, doc_id: str) -> dict | None:
     return got if isinstance(got, dict) else None
 
 
-def needs(run: Run, doc: Doc) -> bool:
+def needs(run: Run, doc: data.Doc) -> bool:
     """True when the run has no readable record of the document: it was never attempted."""
     return recorded(run, doc.doc_id) is None
 
@@ -301,14 +178,14 @@ def record(run: Run, doc_id: str, result: dict) -> None:
     write_json_atomic(run.records / f"{doc_id}.json", result)
 
 
-def owed(run: Run, docs: list[Doc], verdicts: bool = True, rescore: bool = False) -> tuple[int, int]:
+def owed(run: Run, docs: list[data.Doc], verdicts: bool = True, rescore: bool = False) -> tuple[int, int]:
     """How many of `docs` the run would predict, and then grade. The two are independent: every
     prediction can be on disk with every grade still owed."""
     _, wanted = grading_split(run.out, docs, verdicts=verdicts, rescore=rescore)
     return sum(needs(run, doc) for doc in docs), len(wanted)
 
 
-def grade(run: Run, docs: list[Doc], verdicts: bool = True, workers: int = 0,
+def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, workers: int = 0,
           rescore: bool = False, progress=NULL) -> list[dict]:
     """Grade the run's predictions, resumable per document: one line each in scores.jsonl, and
     summary.json over every row the run has, written once grading finishes (an interrupted
@@ -375,7 +252,7 @@ def asked(run: Run) -> list[str]:
 SCORE_WORKERS = min(8, os.cpu_count() or 1)
 
 
-def score_one(doc: Doc, *, run: Run, verdicts: bool = False) -> dict:
+def score_one(doc: data.Doc, *, run: Run, verdicts: bool = False) -> dict:
     """Grade one prediction on disk and return its row. Module-level and picklable for the
     process pool, and it never raises: one bad document is an error row.
 
@@ -427,8 +304,8 @@ def read_scores(out: Path, verdicts: bool = False) -> dict[str, dict]:
     return rows
 
 
-def grading_split(out: Path, docs: list[Doc], verdicts: bool = False,
-                  rescore: bool = False) -> tuple[dict[str, dict], list[Doc]]:
+def grading_split(out: Path, docs: list[data.Doc], verdicts: bool = False,
+                  rescore: bool = False) -> tuple[dict[str, dict], list[data.Doc]]:
     """The grades this selection may reuse, and the documents still to grade. One definition, so
     what `describe` promises and what `grade` then does cannot drift. `rescore` reuses none, and
     drops the rows of documents not selected too, so a run's rows are never two scorers'."""
@@ -436,7 +313,7 @@ def grading_split(out: Path, docs: list[Doc], verdicts: bool = False,
     return known, [d for d in docs if d.doc_id not in known]
 
 
-def gold_digest(doc: Doc) -> str | None:
+def gold_digest(doc: data.Doc) -> str | None:
     """Which gold a document is graded against: a digest of what grading reads, its id, suite and
     schema and its gold file; None when the gold can't be read, which its row then says."""
     try:
@@ -448,7 +325,7 @@ def gold_digest(doc: Doc) -> str | None:
     return h.hexdigest()[:16]
 
 
-def refuse_regrading(run: Run, docs: list[Doc], rows: dict[str, dict]) -> None:
+def refuse_regrading(run: Run, docs: list[data.Doc], rows: dict[str, dict]) -> None:
     """Refuses a run whose rows were graded by other scoring code (`scoring`), or whose selected
     documents' gold has changed since their rows: adding to it would mix two gradings in one
     run, which only `--rescore` replaces, every row at once."""
@@ -548,36 +425,12 @@ def configurations(providers: list[str], options: dict | None = None) -> list[tu
     return out
 
 
-def corpus(dataset: str | Path, manifest: str = MANIFEST, suites: list[str] | None = None,
-           limit: int = 0) -> tuple[list[Doc], Path]:
-    """The documents selected, and the dataset's folder on disk. Paths in the manifest resolve
-    against that folder, wherever the manifest is in it."""
-    root = fetch(dataset, manifest)
-    docs = read_manifest(root / manifest, root, suites=suites, limit=limit)
-    if not docs:
-        raise ValueError("no documents selected: check --suites and --limit")
-    return docs, root
-
-
-def document(p: Plan, doc: Doc) -> Path:
-    """A document's file, fetched from HuggingFace the first time for an `hf://` dataset.
-
-    Note: fetched at the commit the manifest was read at, not at the branch's head, so a commit
-    pushed mid-run cannot pair one commit's document with another's gold."""
-    if doc.doc_path.exists() or (at := hf_dataset(p.dataset)) is None:
-        return doc.doc_path
-    from huggingface_hub import hf_hub_download
-
-    return Path(hf_hub_download(at[0], str(doc.doc_path.relative_to(p.root)),
-                                repo_type="dataset", revision=p.root.name))
-
-
 class Plan(NamedTuple):
     """One invocation: every run, the documents they cover, and how. `plan(...)` builds it, and
     `describe(p)` says what `execute(p)` would do, with no vendor call."""
 
     runs: tuple[Run, ...]
-    docs: tuple[Doc, ...]
+    docs: tuple[data.Doc, ...]
     dataset: str
     manifest: str
     root: Path                             # the dataset's folder on disk, `fetch`
@@ -589,8 +442,8 @@ class Plan(NamedTuple):
     score_only: bool
 
 
-def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path = DEFAULT_DATASET,
-         manifest: str = MANIFEST, suites: list[str] | None = None, limit: int = 0,
+def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path = data.DEFAULT_DATASET,
+         manifest: str = data.MANIFEST, suites: list[str] | None = None, limit: int = 0,
          timeout: float = 1800.0, predict_workers: dict[str, int] | int | None = None,
          score_workers: int = 0, verdicts: bool = True, rescore: bool = False,
          score_only: bool = False, options: dict | None = None) -> Plan:
@@ -604,7 +457,7 @@ def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path 
     for provider, options_ in configurations(providers, options):
         name = out_name(provider, options_)
         runs.setdefault(name, Run(provider, options_, Path(out) / name))
-    ident = dataset_id(dataset)
+    ident = data.dataset_id(dataset)
     for run in runs.values():
         # Note: a folder is named for provider and options, not dataset, so two datasets would
         # share one. Two manifests of one dataset may: they are the same documents and gold.
@@ -612,7 +465,9 @@ def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path 
         if path.exists() and (was := json.loads(path.read_text()).get("dataset")) not in (None, ident):
             raise ValueError(f"{run.out} is a run on dataset {was}, not {ident}, and a run never "
                              f"mixes datasets; pass another --out, or --dataset {was}")
-    docs, root = corpus(dataset, manifest, suites, limit)
+    root, every = data.read_manifest(dataset, manifest)
+    if not (docs := data.select(every, suites, limit)):
+        raise ValueError("no documents selected: check --suites and --limit")
     # Note: refused here, before any call, not after hours of predictions; grade checks again.
     if not rescore:
         for run in runs.values():
@@ -632,7 +487,7 @@ def predict_all(p: Plan) -> None:
     stop = threading.Event()
     by: dict[str, list[Run]] = {}
     for run in p.runs:
-        prepare(run, p.dataset, p.timeout, None if hf_dataset(p.dataset) is None else p.root.name,
+        prepare(run, p.dataset, p.timeout, None if data.hf_dataset(p.dataset) is None else p.root.name,
                 p.manifest)
         by.setdefault(resolve(run.provider), []).append(run)
 
@@ -651,15 +506,13 @@ def predict_all(p: Plan) -> None:
             work += [(r, d) for d in todo]
         halt = threading.Event()
 
-        def one(r: Run, d: Doc) -> None:
+        def one(r: Run, d: data.Doc) -> None:
             if stop.is_set() or halt.is_set():
                 return
-            try:
-                file = document(p, d)
-            except Exception as exc:  # noqa: BLE001
-                # Note: a document whose file can't be had isn't the vendor's failure: nothing
-                # is recorded, so it is neither graded as the vendor's nor kept from a resume.
-                log.warning("%s: no file for %s: %s", r.out.name, d.doc_id, str(exc)[:200])
+            if not (file := Path(d.doc_path)).exists():
+                # Note: a document whose file is missing isn't the vendor's failure: nothing is
+                # recorded, so it is neither graded as the vendor's nor kept from a resume.
+                log.warning("%s: no file for %s at %s", r.out.name, d.doc_id, file)
                 bar[r.out.name].record(error=True)
                 return
             try:
@@ -826,3 +679,50 @@ def run(providers: list[str], **kwargs) -> dict:
     for line in describe(p).splitlines():
         log.info("%s", line)
     return execute(p)
+
+
+# Note: the names that moved to `data`, kept for one release. Each warns, naming its replacement.
+MOVED = {name: f"data.{name}" for name in
+         ("Doc", "COLUMNS", "REPO", "MANIFEST", "HF_PREFIX", "DEFAULT_DATASET", "hf_dataset", "dataset_id")}
+
+
+def __getattr__(name: str) -> Any:
+    if name not in MOVED: raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    _deprecated(f"benchmark.{name}", MOVED[name])
+    return getattr(data, name)
+
+
+def fetch(dataset: str | Path, manifest: str = data.MANIFEST) -> Path:
+    """Deprecated: `data.download_dataset(dataset)`."""
+    _deprecated("benchmark.fetch(dataset, manifest)", "data.download_dataset(dataset)")
+    data._on_hub(dataset, manifest)
+    return data.download_dataset(dataset)
+
+
+def read_manifest(path: Path, root: Path, suites=None, limit: int = 0) -> list[data.Doc]:
+    """Deprecated: `data.select(data.read_manifest(dataset, manifest)[1], suites, limit)`."""
+    _deprecated("benchmark.read_manifest(path, root, ...)",
+                "data.select(data.read_manifest(dataset, manifest)[1], suites, limit)")
+    rel = Path(path).relative_to(root) if Path(path).is_absolute() == Path(root).is_absolute() else Path(path)
+    return list(data.select(data.read_manifest(root, str(rel))[1], suites, limit))
+
+
+def corpus(dataset: str | Path, manifest: str = data.MANIFEST, suites: list[str] | None = None,
+           limit: int = 0) -> tuple[list[data.Doc], Path]:
+    """Deprecated: `data.read_manifest(dataset, manifest)`, then `data.select`."""
+    _deprecated("benchmark.corpus(...)", "data.read_manifest(dataset, manifest), then data.select")
+    root, every = data.read_manifest(dataset, manifest)
+    if not (docs := data.select(every, suites, limit)):
+        raise ValueError("no documents selected: check --suites and --limit")
+    return list(docs), root
+
+
+def document(p: Plan, doc: data.Doc) -> Path:
+    """Deprecated: `doc.doc_path`, a full local path once `data.read_manifest` has read it."""
+    _deprecated("benchmark.document(plan, doc)", "doc.doc_path")
+    return Path(doc.doc_path)
+
+
+def _deprecated(old: str, new: str) -> None:
+    warnings.warn(f"{old} is deprecated: use {new}. The old name will be removed in a later release.",
+                  DeprecationWarning, stacklevel=3)

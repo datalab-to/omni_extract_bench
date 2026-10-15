@@ -210,10 +210,10 @@ def confirm_plan(plan) -> bool:
 
 
 def cmd_benchmark(args) -> int:
-    from . import benchmark
+    from . import benchmark, data
 
     p = benchmark.plan(args.providers, out=args.out,
-                       dataset=args.dataset or benchmark.DEFAULT_DATASET,
+                       dataset=args.dataset or data.DEFAULT_DATASET,
                        manifest=args.manifest, suites=args.suites,
                        limit=args.limit, timeout=args.timeout,
                        predict_workers=read_workers(args.predict_workers),

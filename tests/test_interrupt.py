@@ -31,6 +31,7 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
+import omni_extract_bench.data as DS
 from omni_extract_bench.harness.registry import out_name  # noqa: E402
 
 FAILS = []
@@ -52,6 +53,7 @@ import sys, json, pathlib, signal, time, types
 signal.signal(signal.SIGINT, signal.default_int_handler)
 sys.path.insert(0, {str(ROOT)!r})
 import omni_extract_bench.benchmark as B
+import omni_extract_bench.data as DS
 import omni_extract_bench.harness.document as D
 import omni_extract_bench.harness.registry as V
 
@@ -81,10 +83,10 @@ docs = []
 for i in range(40):
     g = out / f"g{{i}}.json"; g.write_text(json.dumps({{"a": "x"}}))
     p = out / f"p{{i}}.pdf"; p.write_bytes(b"%PDF")
-    docs.append(B.Doc(f"d{{i:02d}}", "s", p, g, {{"type": "object",
+    docs.append(DS.Doc(f"d{{i:02d}}", "s", p, g, {{"type": "object",
                 "properties": {{"a": {{"type": "string"}}}}}}))
-B.fetch = lambda *_: out
-B.read_manifest = lambda *a, **k: docs
+DS.download_dataset = lambda *_: out
+DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs))
 D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o:
     time.sleep(0.4) or Extraction(result={{"a": "x"}}, cost=Cost(usd=0.5)))
 B.run(["datalab", "reducto"], out=out, score_workers=1, predict_workers={{"*": 2}})
@@ -152,7 +154,7 @@ pair = []
 for i in range(6):
     g = acct / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     pdf = acct / f"p{i}.pdf"; pdf.write_bytes(b"%PDF")
-    pair.append(B.Doc(f"d{i}", "s", pdf, g, {"type": "object",
+    pair.append(DS.Doc(f"d{i}", "s", pdf, g, {"type": "object",
                                              "properties": {"a": {"type": "string"}}}))
 calls = collections.Counter()
 
@@ -166,10 +168,10 @@ def broke_adapter(prov):
     return extract
 
 
-saved_adapter, saved_fetch, saved_manifest = D.adapter, B.fetch, B.read_manifest
+saved_adapter, saved_fetch, saved_manifest = D.adapter, DS.download_dataset, DS.read_manifest
 D.adapter = as_adapter(broke_adapter)
-B.fetch = lambda *_: acct
-B.read_manifest = lambda *a, **k: pair
+DS.download_dataset = lambda *_: acct
+DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(pair))
 try:
     B.run(["datalab", "reducto"], out=acct, score_workers=1, predict_workers={"*": 1})
     report("an account failure stops the run rather than publishing", False,
@@ -177,7 +179,7 @@ try:
 except AccountFailure:
     report("an account failure stops the run rather than publishing", True)
 finally:
-    V.adapter, B.fetch, B.read_manifest = saved_adapter, saved_fetch, saved_manifest
+    V.adapter, DS.download_dataset, DS.read_manifest = saved_adapter, saved_fetch, saved_manifest
 report("the healthy vendor still ran every document", calls["reducto"] == 6,
        f"{calls['reducto']} of 6 -- a shared flag stops it after one")
 report("...and no run published a summary from a half-run corpus",
@@ -192,7 +194,7 @@ five = []
 for i in range(5):
     g = narrow / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     (narrow / "predictions" / f"d{i}.json").write_text(json.dumps({"a": "x"}))
-    five.append(B.Doc(f"d{i}", "s", narrow / "x.pdf", g,
+    five.append(DS.Doc(f"d{i}", "s", narrow / "x.pdf", g,
                       {"type": "object", "properties": {"a": {"type": "string"}}}))
 B.grade(B.Run("datalab", {}, narrow), five, workers=1)
 lines = lambda: len((narrow / "scores.jsonl").read_text().strip().splitlines())   # noqa: E731
@@ -215,7 +217,7 @@ twenty = []
 for i in range(20):
     g = disk / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     pdf = disk / f"p{i}.pdf"; pdf.write_bytes(b"%PDF")
-    twenty.append(B.Doc(f"d{i}", "s", pdf, g,
+    twenty.append(DS.Doc(f"d{i}", "s", pdf, g,
                         {"type": "object", "properties": {"a": {"type": "string"}}}))
 paid = collections.Counter()
 D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o: (
@@ -245,7 +247,7 @@ some = []
 for i in range(5):
     g = vd / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     (vd / "predictions" / f"d{i}.json").write_text(json.dumps({"a": "x"}))
-    some.append(B.Doc(f"d{i}", "s", vd / "x.pdf", g,
+    some.append(DS.Doc(f"d{i}", "s", vd / "x.pdf", g,
                       {"type": "object", "properties": {"a": {"type": "string"}}}))
 real_write = pathlib.Path.write_text
 
@@ -275,6 +277,7 @@ import sys, json, pathlib, signal
 signal.signal(signal.SIGINT, signal.default_int_handler)
 sys.path.insert(0, {str(ROOT)!r})
 import omni_extract_bench.benchmark as B
+import omni_extract_bench.data as DS
 
 def main():
     out = pathlib.Path(sys.argv[1])
@@ -288,7 +291,7 @@ def main():
         g = out / f"g{{i}}.json"; g.write_text(json.dumps(gt))
         (out / "predictions" / f"d{{i:02d}}.json").write_text(
             json.dumps({{"rows": list(reversed(gt["rows"]))}}))
-        docs.append(B.Doc(f"d{{i:02d}}", "s", out / "x.pdf", g, schema))
+        docs.append(DS.Doc(f"d{{i:02d}}", "s", out / "x.pdf", g, schema))
     B.grade(B.Run("datalab", {{}}, out), docs, workers=4)
 
 if __name__ == "__main__":
@@ -324,7 +327,7 @@ small = []
 for i in range(6):
     g = fresh / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     (fresh / "predictions" / f"d{i}.json").write_text(json.dumps({"a": "x"}))
-    small.append(B.Doc(f"d{i}", "s", fresh / "x.pdf", g, schema))
+    small.append(DS.Doc(f"d{i}", "s", fresh / "x.pdf", g, schema))
 
 graded = []
 real_score_one = B.score_one
