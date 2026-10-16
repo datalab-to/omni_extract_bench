@@ -139,6 +139,13 @@ report("...with the field it was read from", rec["cost"]["source"] == "usage.cos
 report("a vendor that reports no cost is billed out of band, not guessed",
        (stub(lambda p, s, **o: Extraction(result={"a": 1})) is not None
         and document.predict("extend", PDF, SCHEMA)["cost"]["billed_out_of_band"] is True))
+report("...but not one that reported credits",
+       (stub(lambda p, s, **o: Extraction(result={"a": 1}, cost=Cost(credits=2.0))) is not None
+        and document.predict("extend", PDF, SCHEMA)["cost"]["billed_out_of_band"] is False))
+report("...nor a failed call",
+       (stub(lambda p, s, **o: (_ for _ in ()).throw(VendorError("refused", status=400))) is not None
+        and document.predict("extend", PDF, SCHEMA)["cost"]["billed_out_of_band"] is False))
+stub(lambda pdf, schema, **o: OK)
 _sent = document.predict("datalab", PDF, SCHEMA)["run_manifest"]["settings"]
 report("what the provider was actually sent is recorded, not a name for it",
        _sent == seen["opts"], f'{_sent} vs {seen["opts"]}')

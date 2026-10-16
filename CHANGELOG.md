@@ -96,9 +96,11 @@ Runs and folders:
 
 - a folder holds one dataset and one manifest: `plan` and `oeb grade` refuse another, in one wording.
   `oeb grade` reads them from the folder's settings.json when not given; a folder of your own gets them
-  there once its first grading succeeds (a failed one writes no settings, scores or summary); every refusal says the folder's
-  settings.json can be deleted to start over, and a manifest's path is spelled one way
-  (`./manifest.parquet` is `manifest.parquet`, `data.normal`);
+  there once its first grading succeeds (a failed one writes no settings, scores or summary). A folder of
+  your own's refusal says its settings.json can be deleted to start over; a run's says to use another
+  `--out`, since its records are answers for its own dataset's documents. The rule is per run folder;
+  `--out` is only their parent. A manifest's path is spelled one way (`./manifest.parquet` is
+  `manifest.parquet`, `data.normal`), and one outside the dataset is refused before anything is compared;
 - settings.json records `dataset` (without its revision), `commit` and `manifest` in place of `corpus` and
   `corpus_commit`, and `prepare` writes it whole;
 - `record(run, doc_id, result)` writes what `harness.predict` returned and returns it;
@@ -113,12 +115,16 @@ Runs and folders:
 - `--workers` and `plan(workers=...)` replace `--predict-workers`: one number for every adapter, or a
   JSON object of a number per adapter (`llm_single_shot` is every model id; an adapter of yours is the
   name it was filed or declared under). A key that isn't an adapter is refused, naming the adapter it
-  uses; `grade(score_workers=...)` is the scoring processes. An option given as a whole number for a
-  float setting is that float, so it names the same run; one of the wrong type is refused; and
+  uses, and 0, overall or for one adapter, is the default; `grade(score_workers=...)` is the scoring
+  processes. An option given as a whole number for a float setting is that float, so it names the same
+  run; one of the wrong type, NaN or infinity is refused, and an unknown one is named with the options;
 - `execute` grades what was predicted when predicting fails part way (an account failure included),
   but not when it is interrupted; `--score-only` grades it then. A bug in an adapter stops its runs,
   naming the run, the document and the adapter; an `extract` that returns something other than an
-  `Extraction` says so.
+  `Extraction` says so; and
+- summary.json's `usd` and `credits` are each null when no call reported it, so a vendor billed in
+  credits doesn't read as free; a record's `cost.billed_out_of_band` is true only for a call that
+  succeeded and reported neither.
 
 Datasets:
 
@@ -130,8 +136,9 @@ Datasets:
 - a `doc_path` is a relative path inside the dataset to a file, any name, and documents may share one
   (one PDF asked with several schemas); a `gt_path` is a relative path inside the dataset named
   `<doc_id>.json`; a doc_id is a str and a filename, unique ignoring case; a schema is a non-empty JSON
-  object; a null or empty suite is `"other"` (`data.NO_SUITE`); an empty manifest is refused; doc ids
-  that differ only in case are named with both spellings;
+  object, written as a JSON string; a null or empty suite is `"other"` (`data.NO_SUITE`); an empty
+  manifest is refused; doc ids that differ only in case are named with both spellings; a refused row is
+  named by its doc_id;
 - `read_manifest` keeps the manifest's order (it sorted by suite and doc id), so `--limit N` takes the
   manifest's first N, and reads each manifest once per process;
 - a `Doc`'s `doc_path` and `gt_path` are full local paths, `Doc.id` is its `doc_id`, and a manifest's
@@ -149,11 +156,16 @@ The command line:
   resumes); Ctrl-C exits 130; anything else is a traceback, a bug of ours;
 - the closing hint counts only the documents `--retry-failed` would predict again;
 - `oeb benchmark -y`, and `--score-only`, which spends nothing, print the plan and don't ask; a declined
-  plan prints `nothing run`; `--sample N` and `--docs FILE` (ids, one per line; blank lines and `#`
+  plan prints `nothing run`; the question goes to stderr; with no terminal to ask (a pipe, a notebook,
+  CI), `oeb benchmark` refuses unless given `-y`; a bug of ours is a traceback and exits 1, as a
+  `UsageError` or a `Stop` does; `--sample N` and `--docs FILE` (ids, one per line; blank lines and `#`
   comments skipped) choose documents;
 - `oeb grade <folder>` (new) grades a folder of predictions/<doc_id>.json, yours or a run's;
 - `oeb check` (new) says whether a dataset is one oeb can run: its manifest, every file it names (naming
   the row of a missing one), and every gold; and
-- `oeb score --gold` replaces `--gt`, and names the flag of a missing, non-JSON or non-object file; a
+- `oeb score --gold` replaces `--gt` (which says so), and names the flag of a missing, non-JSON or
+  non-object file; files given to the command line may start with a UTF-8 byte-order mark; a stray
+  prediction named for a document in another case gets "did you mean"; `oeb grade` on the parent of run
+  folders names them; a
   bare `--order-matters` is every array; `--options` says when a path doesn't exist; a flag given a
   folder says so; a folder of loose `<doc_id>.json` files is told to move them into `predictions/`.

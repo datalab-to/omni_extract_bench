@@ -32,8 +32,8 @@ score(
   schema,             # the JSON Schema the prediction was generated against
   order_matters=(),   # arrays where position is part of the answer, e.g. ["steps"]; True for all
   verdicts=False,     # also return one verdict per address
-  absent=states_nothing,  # which values get no address; default: null, "", [], {}
-)
+  absent=values.states_nothing,  # which values get no address; default: null, "", [], {}
+)                     # values: from omni_extract_bench.scorers.field_matching import values
 ```
 
 `absent=lambda v: False` makes `null`, `""`, `[]` and `{}` values the prediction must
@@ -173,7 +173,8 @@ p = benchmark.plan(
   sample=0,               # N documents spread over every suite
   only=None,              # these doc ids only (a frozenset); each must be in the dataset
   timeout=1800.0,
-  workers=0,              # documents in flight per adapter: N, or {adapter: N}
+  workers=0,              # documents in flight per adapter: N, or {adapter: N} (azure-cu's is azure_cu;
+                          # every model id's llm_single_shot); 0, overall or for one, is the default
   score_workers=0,        # processes used to score
   verdicts=True,          # write verdicts; False to skip them
   score_only=False,       # score the predictions; call no vendor
@@ -193,7 +194,7 @@ summary["datalab-f46415c9"]["headline"] # the mean accuracy, a failure counting 
 | one document | `doc.doc_path`, `doc.gt_path` | `harness.predict` | `scorer.gold(doc)`, `scorer.score` |
 | a dataset | `download_dataset`, `read_manifest`, `select`, `dataset_id` | | `scorer.check(docs)`, `scorer.summarize(lines)` |
 | one run | | `prepare`, `needs`, `record`, `recorded`, `predicted` | `grade(run, docs)`, `read_scores(run)` |
-| a folder | `settled`, `declare` (its settings.json), `gradable` | | `scorer_errors(summary)` |
+| a folder | `settled`, `declare` (its settings.json), `gradable` | | |
 | a plan | | `plan`, `predict_all`, `owed(plan, run)` | `grade_all` |
 | both | | `execute`; `describe` | |
 
@@ -204,7 +205,7 @@ is a package owning its gold shape); `data`, `scorers`, `gold`, `score`, `summar
 The same names, in the same modules, as omni-parse-bench's (whose rows are pages, not documents).
 `data.read_manifest(dataset, manifest)` gives the dataset's folder and every document, each with
 its file and gold as full local paths (a manifest that breaks the dataset's rules raises
-`data.ManifestError`, naming what's wrong); `data.select(docs, suites, limit, sample, only)` picks the ones to run: by suite (an unknown suite
+`data.ManifestError`, naming what's wrong); `data.select(docs, suites=None, limit=0, sample=0, only=None)` picks the ones to run: by suite (an unknown suite
 is refused), by doc id, `sample` documents spread over every suite (the same ones each time), then
 the first `limit`. On the command line, `--sample N` and `--docs FILE` (doc ids, one per line; blank
 lines and `#` comments are skipped). `--sample` larger than the selection takes all of it, and with
@@ -266,8 +267,9 @@ score only  false
   proceed? [y/N]
 ```
 
-With `-y`, or `--score-only`, which spends nothing, the plan is printed and the run goes on without
-asking; a declined plan prints `oeb benchmark: nothing run`. The execution looks like:
+The question goes to stderr. With no terminal to ask (a pipe, a notebook, CI), it refuses unless
+given `-y`, since a run costs money. With `-y`, or `--score-only`, which spends nothing, the plan is
+printed and the run goes on without asking; a declined plan prints `oeb benchmark: nothing run`. The execution looks like:
 
 ```
  run                                    done   ok   err   in flight       cost     avg    dur
@@ -288,7 +290,9 @@ kept, and the same command resumes. A document whose grading raises in our score
 grading stops with the traceback, naming the run and the document, and that run writes no scores or summary (a lost prediction may
 already have been rebuilt from its record), since a
 summary with it left out would be wrong. Runs are graded one after another, so those graded before it
-keep their new files, each a whole grading. Fix the bug, then grade again with `--score-only`. A gold that
+keep their new files, each a whole grading. Fix the bug, then grade again with `--score-only`. A bug of
+ours is a traceback, and exits 1, as a `UsageError` or a `Stop` does: the exit code doesn't tell them
+apart, stderr does. A gold that
 can't be read stops it too, as a `GoldError`.
 
 
@@ -316,11 +320,14 @@ a parquet file with one row per document, with columns:
 - `suite`
 - `doc_path`
 - `gt_path`
-- `schema`
+- `schema`, the JSON Schema as a JSON string (`json.dumps(schema)`)
 
 `doc_path` and `gt_path` are relative to the dataset's folder, wherever the manifest is in it, and
 a gold is named for its document, `<doc_id>.json`, in any folder. An input may have any name, and
-documents may share one, such as one PDF asked with several schemas. A doc id appears once.
+documents may share one, such as one PDF asked with several schemas. A doc id appears once. A run
+folder holds one dataset and one manifest; the rule is per run folder, and `--out` is only their
+parent, so two runs in one `--out` may be on different manifests, and their headlines then aren't
+comparable.
 It is the same shape as [ours](https://huggingface.co/datasets/datalab-to/omni_extract_bench).
 
 With no `--dataset`, a run uses ours, `hf://datasets/datalab-to/omni_extract_bench`, and with no
@@ -632,7 +639,7 @@ finishes.
   "run": "datalab-f46415c9",
   "provider": "datalab",
   "settings": {"mode": "balanced", "base_url": "https://www.datalab.to", "poll_interval": 5.0},
-  "scorer": "0.1.8+3f9a0c2e71b4",
+  "scorer": "1.0.0+…",
   "headline": 0.8076406248606786,
   "documents": 6,
   "scored": 6,
@@ -663,7 +670,8 @@ documents, and every per-suite block carries its own `pending`. It is `accuracy 
 coverage`; `accuracy`, `precision` and `recall` are over the scored documents only. `documents` is the
 documents graded, `scored` those with a usable prediction, `failed` the rest. With none scored,
 `accuracy`, `precision`, `recall` and the rates are null, since there is nothing to average. `usd` and
-`credits` are what the records say the calls cost; `credits` is null when none reported any. Each suite
+`credits` are what the records say the calls cost; each is null when no call reported it, so a vendor
+billed in credits doesn't read as free. Each suite
 is the same block as the run's numbers, with its own `pending`; `run`, `provider`, `settings`,
 `scorer`, `usd` and `credits` are the run's alone. A sample's headline (`--manifest manifests/...`) is
 over that sample, so it isn't comparable with the whole manifest's.
@@ -714,6 +722,9 @@ Schema, so the harness re-encodes yours to fit each one before sending it.
 }
 ```
 
+`cost.billed_out_of_band` is true when a call that succeeded reported neither dollars nor credits: it
+was billed elsewhere (an account's plan), so its cost isn't in the run's `usd` or `credits`.
+
 
 ### scores.jsonl
 
@@ -726,7 +737,7 @@ One line per document, in document order whatever order the workers finished in.
   "doc_id": "long__dd1155_schedule_continuation_0011",
   "suite": "extractbench",
   "provider": "datalab",
-  "scorer": "0.1.8+3f9a0c2e71b4",
+  "scorer": "1.0.0+…",
   "status": "scored",
   "accuracy": 0.9555555555555556,
   "precision": 0.9555555555555556,

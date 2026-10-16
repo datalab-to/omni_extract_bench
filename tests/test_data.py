@@ -36,7 +36,7 @@ def test_an_empty_manifest_is_refused(tmp_path):
 def test_a_manifest_is_a_relative_path_inside_the_dataset(tmp_path):
     ds = dataset(tmp_path / "ds")
     for manifest in (str(ds / "manifest.parquet"), "../ds/manifest.parquet"):
-        with pytest.raises(data.ManifestError, match="--manifest manifest.parquet|without '..'"):
+        with pytest.raises(data.ManifestError, match="inside the dataset"):
             data.read_manifest(ds, manifest)
     with pytest.raises(data.ManifestError, match="ds/manifest.parquet"):
         data.read_manifest(ds, "ds/manifest.parquet")
@@ -78,7 +78,7 @@ def test_ids_differing_only_in_case_show_both_spellings(tmp_path):
                    ds / "manifest.parquet")
     with pytest.raises(data.ManifestError) as e:
         data.read_manifest(ds)
-    assert "'d0'" in str(e.value) and "'D0'" in str(e.value)
+    assert "d0" in str(e.value) and "D0" in str(e.value)
 
 
 def test_a_dataset_offline_and_uncached_is_refused_at_once(monkeypatch):

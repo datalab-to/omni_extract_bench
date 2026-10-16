@@ -187,8 +187,15 @@ for answer, want in (("y", True), ("yes", True), ("Y", True),
     got, _ = _asked(answer)
     check(f"a terminal answering {answer!r} -> {want}", got is want, str(got))
 check("the plan is shown before the question", "benchmark: 1 run" in _asked("y")[1])
-check("...on stderr, so stdout stays the summary", _asked("y")[1].strip() == "benchmark: 1 run")
-check("no terminal proceeds without asking", _asked("n", tty=False)[0] is True)
+_out = io.StringIO()
+with contextlib.redirect_stdout(_out):
+    _, _err = _asked("y")
+check("...and the question on stderr, so stdout stays the summary", not _out.getvalue() and "proceed?" in _err)
+try:
+    _asked("n", tty=False)
+    check("no terminal and no -y is refused", False, "it went on")
+except cli.errors.UsageError as exc:
+    check("no terminal and no -y is refused", "-y" in str(exc), str(exc))
 check("...and a closed terminal does not", _asked(EOFError)[0] is False)
 
 print(f"\n{'ALL CLI TESTS PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}")

@@ -101,10 +101,15 @@ def settled(out: Path, dataset: str | None = None, manifest: str | None = None) 
              ("manifest", manifest and data.normal(manifest)))
     for key, now in asked:
         if now and (was := said.get(key)) and was != now:
-            held = "a run" if is_run(said) else "predictions graded"
-            raise errors.UsageError(f"{out} holds {held} on {key} {was}, not {now}: a folder holds one "
-                                    f"dataset and one manifest; pass --{key} {was}, another folder, or "
-                                    f"delete {out / 'settings.json'} to use it with another")
+            # Note: a run's records are answers for its own dataset's documents; deleting its settings.json
+            # would grade them against another dataset's gold, so a run is only ever given another --out.
+            if is_run(said):
+                raise errors.UsageError(f"{out} holds a run on {key} {was}, not {now}: a run folder holds "
+                                        f"one dataset and one manifest; pass --{key} {was}, or use another "
+                                        "--out")
+            raise errors.UsageError(f"{out} holds predictions graded on {key} {was}, not {now}: a folder "
+                                    f"holds one dataset and one manifest; pass --{key} {was}, another "
+                                    f"folder, or delete {out / 'settings.json'} to grade it on another")
     return said
 
 
@@ -136,19 +141,30 @@ def _said(out: Path) -> dict:
 
 def recorded(run: Run, doc_id: str) -> dict | None:
     """What the run has recorded for the document, or None when nothing (or nothing readable, which is
-    logged)."""
+    logged once)."""
     path = run.records / f"{doc_id}.json"
     try:
         got = json.loads(path.read_text())
     except FileNotFoundError:
         return None
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        log.warning("%s isn't readable JSON (%s); it is treated as missing", path, exc)
+        _warn_once(path, f"{path} isn't readable JSON ({exc}); it is treated as missing")
         return None
     if not isinstance(got, dict):
-        log.warning("%s isn't a record; it is treated as missing", path)
+        _warn_once(path, f"{path} isn't a record; it is treated as missing")
         return None
     return got
+
+
+_WARNED: set[Path] = set()   # `_warn_once`'s files
+
+
+def _warn_once(path: Path, message: str) -> None:
+    """Logs `message` the first time a file is found unreadable in this process: a record is read by
+    `restore`, `needs` and grading alike, and one warning is enough."""
+    if path in _WARNED: return
+    _WARNED.add(path)
+    log.warning("%s", message)
 
 
 def predicted(run: Run, doc_id: str) -> dict | None:
@@ -346,9 +362,9 @@ def _per_adapter(workers: Mapping[str, int]) -> dict[str, int]:
             except errors.UsageError:
                 hint = f"the adapters are {sorted(adapters)}"
             raise errors.UsageError(f"--workers is per adapter, and {key!r} isn't one: {hint}")
-        if isinstance(n, bool) or not isinstance(n, int) or n < 1:
-            raise errors.UsageError(f"--workers gives {key!r} {n!r}; documents at once is a whole number, 1 "
-                                    "or more")
+        if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+            raise errors.UsageError(f"--workers gives {key!r} {n!r}; documents at once is a whole number, or 0 "
+                                    "for the adapter's default")
     return dict(workers)
 
 
@@ -473,8 +489,10 @@ def gradable(out: Path) -> None:
         raise errors.UsageError(f"no folder at {out}; pass the folder holding predictions/<doc_id>.json")
     if not (out / "predictions").is_dir():
         loose = sorted(f.name for f in out.glob("*.json") if f.name not in ("settings.json", "summary.json"))
+        runs = sorted(d.name for d in out.iterdir() if (d / "predictions").is_dir())
         hint = (f"; {out} looks like the predictions/ folder itself: pass its parent, {out.parent}"
                 if out.name == "predictions" else
+                f"; it holds run folders: pass one of {', '.join(runs[:5])}" if runs else
                 f"; it holds {errors.counted(len(loose), 'JSON file')} (e.g. {loose[0]}): move them into "
                 f"{out}/predictions/"
                 if loose else "")
@@ -629,10 +647,12 @@ def _summary(run: Run, said: Mapping[str, Any], lines: list[dict], pending: list
     per = {k: s["per_suite"].get(k, none) | {"pending": by.get(k, 0)} for k in sorted({*s["per_suite"], *by})}
     for k in by: per[k]["headline"] = None
     costs = [c for x in lines if (c := (recorded(run, x["doc_id"]) or {}).get("cost"))]
+    # Note: None, not 0, when no call reported one: a vendor billed in credits isn't free.
+    usd = [c["usd"] for c in costs if c.get("usd") is not None]
     credits = [c["credits"] for c in costs if c.get("credits") is not None]
     return {"run": run.out.name, "provider": run.provider, "settings": said.get("settings", {}),
             "scorer": SCORER, **s, "headline": None if pending else s["headline"], "per_suite": per,
-            "pending": len(pending), "usd": round(sum(c.get("usd") or 0 for c in costs), 4),
+            "pending": len(pending), "usd": round(sum(usd), 4) if usd else None,
             "credits": round(sum(credits), 4) if credits else None}
 
 
@@ -655,9 +675,12 @@ def _warn_unusable(run: Run, said: Mapping[str, Any], docs: Sequence[data.Doc], 
     whole = _manifest_of(run, said) or docs
     names = {f"{d.doc_id}.json" for d in whole}
     if stray := sorted(n + ("/" if (run.predictions / n).is_dir() else "") for n in listed - names):
+        folded = {i.casefold(): i for i in names}
+        meant = next((f"; did you mean {folded[n.casefold()]} for {n}?" for n in stray
+                      if n.casefold() in folded), "")
         log.warning("%s: %s in predictions/ named for no document of the manifest, so left out, e.g. %s; a "
-                    "prediction is predictions/<doc_id>.json, named exactly (case too)",
-                    run.out, errors.counted(len(stray), "file"), stray[:3])
+                    "prediction is predictions/<doc_id>.json, named exactly (case too)%s",
+                    run.out, errors.counted(len(stray), "file"), stray[:3], meant)
     if unread := [x["doc_id"] for x in lines if str(x.get("error", "")).startswith(UNREADABLE)]:
         log.warning("%s: %s %s a JSON object, so %s graded as failed (each line says why), e.g. %s",
                     run.out, errors.counted(len(unread), "prediction"), "isn't" if len(unread) == 1 else "aren't",

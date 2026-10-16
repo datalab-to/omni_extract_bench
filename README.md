@@ -49,6 +49,8 @@ oeb benchmark \
 
 This will execute 4 different runs -- one for each pair (provider, settings).
 
+It shows the plan and asks before calling any vendor; with no terminal to ask (a pipe, a notebook, CI), pass `-y`, or it refuses.
+
 `--dataset` picks the dataset (a folder on disk, or a HuggingFace dataset; ours by default), and `--manifest` picks which of its documents to run. For example, a 40-document subset of ours:
 
 ```bash
@@ -167,14 +169,8 @@ Return with verdicts to dive deeper into exact places where the model failed.
 
 result = score(prediction, ground_truth, schema, verdicts=True)
 print(result["verdicts"][0]) # print the first verdict
-# {
-#       "address": [["k", "currency"]],
-#       "gold_raw": null,
-#       "pred_raw": "USD",
-#       "gold_canon": null,
-#       "pred_canon": "usd",
-#       "result": "invented_field"
-#     }
+# Verdict(address=(('k', 'currency'),), gold_raw=None, pred_raw='USD', gold_canon=None,
+#         pred_canon='usd', result='invented_field')
 ```
 
 From the cli.

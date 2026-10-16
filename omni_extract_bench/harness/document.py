@@ -122,7 +122,10 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = registry.DEFAU
         },
         "provider": provider,
         "cost": {**got.cost._asdict(), "wall_s": elapsed, "attempts": attempts,
-                 "billed_out_of_band": got.cost.usd is None},
+                 # Note: a call that succeeded and said nothing of its cost was billed elsewhere (an
+                 # account's plan); a failed call, or one that reported credits, wasn't.
+                 "billed_out_of_band": (error is None and got.cost.usd is None
+                                        and got.cost.credits is None)},
         "job_id": got.job_id,
         "schema_sent": sent,
         "run_manifest": {

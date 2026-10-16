@@ -13,6 +13,7 @@ indistinguishable from the maxed-out one the benchmark claims to publish.
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import hashlib
 import json
 import re
@@ -153,11 +154,26 @@ def config_for(provider: str, options: dict | None = None):
                 f"run would be stored and published under a model it did not use. Run the "
                 f"one you want: --providers {options['model']}")
         options = {**options, "model": provider}
+    fields = [f.name for f in dataclasses.fields(config_type)]
+    if unknown := sorted(set(options) - set(fields)):
+        near = difflib.get_close_matches(unknown[0], fields, n=1)
+        raise base_errors.UsageError(f"{provider} has no option {unknown[0]!r}"
+                                     + (f" (did you mean {near[0]!r}?)" if near else "")
+                                     + f"; its options are: {', '.join(fields) or '(none)'}")
+    for k, v in options.items():
+        # Note: NaN and infinity are no JSON, and a run's settings are written as JSON.
+        if not _finite(v):
+            raise base_errors.UsageError(f"{provider}: option {k} is {v!r}; give a finite number")
+    return config_type(**_typed(provider, config_type, options))
+
+
+def _finite(value) -> bool:
+    """Whether `value` is JSON without NaN or infinity anywhere in it."""
     try:
-        return config_type(**_typed(provider, config_type, options))
-    except TypeError as exc:
-        known = ", ".join(f.name for f in dataclasses.fields(config_type)) or "(none)"
-        raise base_errors.UsageError(f"{provider}: {exc}. Its options are: {known}") from None
+        json.dumps(value, allow_nan=False, default=str)
+    except ValueError:
+        return False
+    return True
 
 
 def _typed(provider: str, config_type: type, options: dict) -> dict:

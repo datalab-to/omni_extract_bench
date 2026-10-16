@@ -127,3 +127,40 @@ def test_the_package_exports_the_scorer_and_the_dataset():
 
     assert {"data", "scorers", "gold", "score", "summarize", "check", "Verdict"} <= set(oeb.__all__)
     assert not hasattr(oeb, "__version__"), "the version is the distribution's: importlib.metadata"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_a_non_finite_option_is_refused(value):
+    from omni_extract_bench.harness import registry
+    with pytest.raises(UsageError, match="poll_interval"):
+        registry.config_for("datalab", {"poll_interval": value})
+
+
+def test_an_unknown_option_is_named_with_the_options():
+    from omni_extract_bench.harness import registry
+    with pytest.raises(UsageError) as e:
+        registry.config_for("datalab", {"modde": "accurate"})
+    assert "'modde'" in str(e.value) and "mode" in str(e.value) and "__init__" not in str(e.value)
+
+
+def test_workers_zero_per_adapter_is_its_default():
+    assert benchmark._per_adapter({"datalab": 0}) == {"datalab": 0}
+    assert benchmark._workers_for("datalab", {"datalab": 0}) == benchmark.WORKERS["datalab"]
+
+
+def test_a_run_folder_is_never_told_to_delete_its_settings(tmp_path):
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / "settings.json").write_text(json.dumps({"provider": "datalab", "dataset": "/a",
+                                                                  "manifest": "manifest.parquet"}))
+    with pytest.raises(UsageError) as e:
+        benchmark.settled(tmp_path / "run", manifest="other.parquet")
+    assert "--out" in str(e.value) and "settings.json" not in str(e.value)
+
+
+def test_a_manifest_outside_the_dataset_is_refused_before_any_comparison(tmp_path):
+    from omni_extract_bench import data
+    (tmp_path / "f").mkdir()
+    (tmp_path / "f" / "settings.json").write_text(json.dumps({"manifest": "manifest.parquet"}))
+    for bad in ("/abs/manifest.parquet", "../manifest.parquet"):
+        with pytest.raises(data.ManifestError):
+            benchmark.settled(tmp_path / "f", manifest=bad)

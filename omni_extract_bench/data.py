@@ -152,8 +152,15 @@ def dataset_id(dataset: str | Path) -> str:
 
 
 def normal(manifest: str) -> str:
-    """A manifest's path in its dataset, spelled one way: `./manifest.parquet` is `manifest.parquet`."""
-    return PurePosixPath(manifest).as_posix()
+    """A manifest's path in its dataset, spelled one way (`./manifest.parquet` is `manifest.parquet`);
+    refuses a path that isn't inside the dataset, absolute or with `..`."""
+    m = PurePosixPath(manifest)
+    if m.is_absolute() or ".." in m.parts:
+        here = (f"; for this one, pass --dataset {Path(manifest).parent} --manifest {Path(manifest).name}"
+                if Path(manifest).is_file() else "")
+        raise ManifestError(f"--manifest {manifest} must be a path inside the dataset, relative to it, e.g. "
+                            f"manifests/sample.parquet{here}")
+    return m.as_posix()
 
 
 def commit(dataset: str | Path, root: Path) -> str | None:
@@ -174,13 +181,6 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
             "    pip install 'omni-extract-bench[benchmark]'"
         ) from None
     manifest = normal(manifest)
-    if Path(manifest).is_absolute() or ".." in Path(manifest).parts:
-        on_disk = Path(manifest)
-        raise ManifestError(
-            f"--manifest {manifest!r} must be a relative path inside the dataset (--dataset), without "
-            f"'..', e.g. manifests/sample.parquet"
-            + (f"; for this one, pass --dataset {on_disk.parent} --manifest {on_disk.name}"
-               if on_disk.is_file() else ""))
     _on_hub(dataset, manifest)
     root = download_dataset(dataset)
     path = root / manifest
@@ -204,27 +204,28 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
         # A doc_id is a filename (`predictions/<doc_id>.json`); caught here, the row can be named.
         doc_id = row["doc_id"]
         if not isinstance(doc_id, str) or not doc_id or doc_id in (".", "..") or Path(doc_id).name != doc_id:
-            raise ManifestError(f"{path}: row {n} has doc_id {doc_id!r}, which is not a filename. "
+            raise ManifestError(f"{path}: row {n + 1} has doc_id {doc_id!r}, which is not a filename. "
                              f"It names this document's prediction, its record and its row in "
                              f"scores.jsonl, so it has to be one path component.")
         if row["suite"] is not None and not isinstance(row["suite"], str):
-            raise ManifestError(f"{path}: row {n} ({doc_id}) has suite {row['suite']!r}; it must be a "
+            raise ManifestError(f"{path}: document {doc_id} has suite {row['suite']!r}; it must be a "
                                 f"string, or null for {NO_SUITE!r}")
         if not _inside(row["doc_path"]):
-            raise ManifestError(f"{path}: row {n} ({doc_id}) has doc_path {row['doc_path']!r}; it must be a "
+            raise ManifestError(f"{path}: document {doc_id} has doc_path {row['doc_path']!r}; it must be a "
                                 f"relative path inside the dataset to a file, e.g. docs/<file>.pdf (any "
                                 f"name; documents may share one)")
         if not _inside(row["gt_path"], doc_id):
-            raise ManifestError(f"{path}: row {n} ({doc_id}) has gt_path {row['gt_path']!r}; it must be a "
+            raise ManifestError(f"{path}: document {doc_id} has gt_path {row['gt_path']!r}; it must be a "
                                 f"relative path inside the dataset named for its document, "
                                 f"e.g. gold/{doc_id}.json")
         try:
             schema = json.loads(row["schema"])
         except (TypeError, json.JSONDecodeError) as exc:
-            raise ManifestError(f"{path}: row {n} ({doc_id}) has a schema column that is not "
-                             f"JSON: {exc}") from None
+            raise ManifestError(f"{path}: document {doc_id} has a schema that is not a JSON string ({exc}); "
+                                "the schema column holds the JSON Schema as text: write it with "
+                                "json.dumps(schema)") from None
         if not isinstance(schema, dict) or not schema:
-            raise ManifestError(f"{path}: row {n} ({doc_id}) has schema {row['schema']!r:.80}; it must be a "
+            raise ManifestError(f"{path}: document {doc_id} has schema {row['schema']!r:.80}; it must be a "
                                 "non-empty JSON object, the JSON Schema of the extraction")
         suite = row["suite"] if (row["suite"] or "").strip() else NO_SUITE
         docs.append(Doc(doc_id=doc_id, suite=suite, doc_path=root / row["doc_path"],
@@ -238,7 +239,8 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
     for d in docs: by.setdefault(d.doc_id.casefold(), []).append(d.doc_id)
     if twice := [ids for ids in by.values() if len(ids) > 1]:
         raise ManifestError(f"{path}: doc ids in the manifest more than once (ignoring case, since each "
-                            f"names files): {errors.counted(len(twice), 'id')}, e.g. {twice[:3]}")
+                            f"names files): {errors.counted(len(twice), 'id')}, e.g. "
+                            + "; ".join(" and ".join(ids) for ids in twice[:3]))
     return root, tuple(docs)
 
 

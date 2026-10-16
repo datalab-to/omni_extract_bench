@@ -297,3 +297,30 @@ def test_a_folder_of_your_own_is_not_called_a_run(tmp_path, capsys):
     assert oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--score-workers", "1")[0] == 0
     code, _, err = oeb(capsys, "grade", str(mine), "--dataset", str(other), "--score-workers", "1")
     assert code == 1 and "holds a run" not in err and "settings.json" in err
+
+
+def test_usd_is_null_when_no_call_reported_one(tmp_path):
+    ds = dataset(tmp_path / "ds")
+    mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}, "d1.json": {"a": "x"}})
+    s = benchmark.grade(benchmark.Run("mine", {}, mine), list(data.read_manifest(ds)[1]), QUIET,
+                        score_workers=1)
+    assert s["usd"] is None and s["credits"] is None
+
+
+def test_an_unreadable_record_is_warned_about_once(tmp_path, caplog):
+    ds = dataset(tmp_path / "ds")
+    run = predictions(tmp_path / "run", {"d0.json": {"a": "x"}})
+    (run / "records").mkdir()
+    (run / "records" / "d1.json").write_text("{not json")
+    (run / "settings.json").write_text(json.dumps({"provider": "datalab"}))
+    with caplog.at_level(logging.WARNING):
+        benchmark.grade(benchmark.Run("datalab", {}, run), list(data.read_manifest(ds)[1]), QUIET,
+                        score_workers=1)
+        benchmark.recorded(benchmark.Run("datalab", {}, run), "d1")
+    assert sum("isn't readable JSON" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_grade_on_the_parent_of_run_folders_names_them(tmp_path):
+    (tmp_path / "runs" / "datalab-1" / "predictions").mkdir(parents=True)
+    with pytest.raises(UsageError, match="datalab-1"):
+        benchmark.gradable(tmp_path / "runs")

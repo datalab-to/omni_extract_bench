@@ -29,7 +29,7 @@ EXAMPLE_MODELS = ("openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemin
 def read_object(path: str, flag: str) -> dict:
     """The JSON object in the file `path` that `flag` names."""
     try:
-        got = json.loads(pathlib.Path(path).read_text())
+        got = json.loads(pathlib.Path(path).read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         raise errors.UsageError(f"{flag} {path}: no such file") from None
     except IsADirectoryError:
@@ -61,7 +61,7 @@ def read_options(value: str | None, *, per_provider: bool = True) -> dict:
             raise errors.UsageError(f"--options {value!r} is neither inline JSON nor a file that exists; "
                                     "pass a JSON object, or the path of a file holding one") from None
         try:
-            parsed = json.loads(path.read_text())
+            parsed = json.loads(path.read_text(encoding="utf-8-sig"))
         except json.JSONDecodeError as exc:
             raise errors.UsageError(f"--options: {path} isn't JSON: {exc}") from None
     if not isinstance(parsed, dict):
@@ -108,26 +108,25 @@ def read_ids(path: pathlib.Path, flag: str) -> frozenset[str]:
     """A file of ids, one per line; blank lines and `#` comments are skipped."""
     if not path.is_file():
         raise errors.UsageError(f"{flag} {path}: no such file; it holds ids, one per line")
-    return frozenset(x for line in path.read_text().splitlines() if (x := line.split("#", 1)[0].strip()))
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    return frozenset(x for line in lines if (x := line.split("#", 1)[0].strip()))
 
 
 def confirm_plan(plan) -> bool:
-    """Show what the benchmark is about to do, and ask. `-y` / `--yes` skips this entirely.
+    """Show what the benchmark is about to do, and ask; `-y` / `--yes` skips this entirely. The plan and the
+    question go to stderr, leaving stdout for the summaries.
 
-    A benchmark run costs real money and takes hours, so the default is to say what it will
-    cost before it starts. The plan goes to stderr with the rest of the progress, leaving
-    stdout for the summary.
-
-    NOBODY TO ASK IS NOT THE SAME AS NO. A pipe, a cron job or a CI step has no terminal, so
-    it proceeds -- it was scripted, which is consent. Only an interactive session is asked.
-    """
+    Note: with no terminal to ask (a pipe, a notebook, CI), the run is refused rather than taken as consent:
+    it costs money, and a script says so once with `-y`."""
     from rich import console
 
     console.Console(stderr=True, highlight=False).print(plan)
     if not sys.stdin.isatty():
-        return True
+        raise errors.UsageError("no terminal to ask before calling vendors; pass -y to run")
+    sys.stderr.write("  proceed? [y/N] ")
+    sys.stderr.flush()
     try:
-        return input("  proceed? [y/N] ").strip().lower() in ("y", "yes")
+        return input().strip().lower() in ("y", "yes")
     except EOFError:
         return False
 
@@ -153,6 +152,10 @@ def _retryable(p) -> int:
 def cmd_score(args) -> int:
     from .scorers import field_matching
 
+    if args.gt is not None:
+        raise errors.UsageError("--gt is now --gold (since 1.0.0): pass --gold " + args.gt)
+    if args.gold is None:
+        raise errors.UsageError("--gold is required: the ground truth, JSON")
     pred, gold, schema = (read_object(path, flag) for flag, path in (
         ("--pred", args.pred), ("--gold", args.gold), ("--schema", args.schema)))
     # Note: a bare --order-matters is every array, as the library's `order_matters=True`.
@@ -322,7 +325,8 @@ def main(argv=None) -> int:
 
     s = sub.add_parser("score", help="score one prediction against one ground truth")
     s.add_argument("--pred", required=True, help="the prediction, JSON")
-    s.add_argument("--gold", required=True, help="the ground truth, JSON")
+    s.add_argument("--gold", help="the ground truth, JSON (required)")
+    s.add_argument("--gt", help=argparse.SUPPRESS)   # Note: before 1.0.0's name, to say what it is now.
     s.add_argument("--schema", required=True,
                    help="the JSON Schema the prediction was generated against")
     s.add_argument("--verdicts", action="store_true",

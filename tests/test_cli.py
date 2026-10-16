@@ -151,3 +151,19 @@ def test_a_stop_still_prints_the_summaries_it_wrote(tmp_path, capsys, monkeypatc
                          "--out", str(tmp_path / "runs"), "-y")
     (s,) = json.loads(out).values()
     assert code == 1 and s["pending"] == 2 and "AccountFailure" in err and "resume" in err
+
+
+def test_score_says_gt_is_now_gold(tmp_path, capsys):
+    f = tmp_path / "x.json"
+    f.write_text("{}")
+    code, _, err = oeb(capsys, "score", "--pred", str(f), "--gt", str(f), "--schema", str(f))
+    assert code == 1 and "--gold" in err
+
+
+def test_cli_files_may_start_with_a_byte_order_mark(tmp_path):
+    f = tmp_path / "pred.json"
+    f.write_bytes(b"\xef\xbb\xbf" + json.dumps({"a": "x"}).encode())
+    assert cli.read_object(str(f), "--pred") == {"a": "x"}
+    ids = tmp_path / "ids.txt"
+    ids.write_bytes(b"\xef\xbb\xbfd0\n")
+    assert cli.read_ids(ids, "--docs") == frozenset({"d0"})

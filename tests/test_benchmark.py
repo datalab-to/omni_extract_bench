@@ -358,14 +358,14 @@ except ValueError as exc:
 
 _bad_schema = Path(tempfile.mkdtemp()) / "m.parquet"
 _pq.write_table(_pa.Table.from_pylist(
-    [{"doc_id": "a", "suite": "s", "doc_path": "x.pdf", "gt_path": "x.json",
+    [{"doc_id": "a", "suite": "s", "doc_path": "x.pdf", "gt_path": "a.json",
       "schema": "{not json"}]), _bad_schema)
 try:
     DS.read_manifest(_bad_schema.parent, _bad_schema.name)
     report("a schema column that is not JSON is refused", False, "it was accepted")
 except ValueError as exc:
-    report("...and an unreadable schema names the row it is in",
-           "row 0" in str(exc) and "a" in str(exc), str(exc))
+    report("...and an unreadable schema names the document it is in",
+           "document a" in str(exc) and "json.dumps" in str(exc), str(exc))
 
 import huggingface_hub as _hf                                                  # noqa: E402
 
@@ -459,7 +459,7 @@ try:
     report("a doc_id that is not a filename is refused", False, "it was accepted")
 except ValueError as exc:
     report("a doc_id that is not a filename is refused",
-           "row 0" in str(exc) and "'a/b'" in str(exc), str(exc))
+           "row 1" in str(exc) and "'a/b'" in str(exc), str(exc))
 
 print("\nEVERY DOCUMENT COUNTS ONCE, WHATEVER IT WEIGHS")
 def scored(suite, matched, total, **rest):
