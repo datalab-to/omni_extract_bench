@@ -363,7 +363,7 @@ benchmark.grade(run, list(every))
   document, or, with `retry_failed`, when its recorded failure may not recur. A loop that
   predicts everything every time can skip it; it is what makes a loop resumable;
 - `record(run, doc_id, result)` writes a result from `predict`: its prediction, if the call
-  succeeded, then the record;
+  succeeded, then the record, and returns the record;
 - `recorded(run, doc_id)` reads the document's record, or None;
 - `predicted(run, doc_id)` reads the document's prediction, or None: what grading reads; and
 - `grade(run, docs)` grades every document of `docs` (pass the whole manifest, so a smaller loop

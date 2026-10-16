@@ -21,7 +21,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 from omni_extract_bench import score                            # noqa: E402
 from omni_extract_bench.benchmark import (                        # noqa: E402
-    Run, grade, needs, record)
+    Run, grade, needs, record, recorded)
 from omni_extract_bench.scorers.field_matching import summarize                   # noqa: E402
 from omni_extract_bench.data import Doc                            # noqa: E402
 
@@ -89,8 +89,10 @@ for doc_id, (suite, pred) in WRITTEN.items():
     docs.append(Doc(doc_id, suite, root / f"{doc_id}.pdf", root / f"{doc_id}.json", SCH))
 (root / "refused.json").write_text(json.dumps(GOLD))
 docs.append(Doc("refused", "micro1", root / "refused.pdf", root / "refused.json", SCH))
-record(Run("datalab", {}, out), "refused", {"result": None, "error": {
-    "type": "VendorError", "status": 400, "transient": False, "message": "schema too deep"}})
+_refused = {"result": None, "error": {
+    "type": "VendorError", "status": 400, "transient": False, "message": "schema too deep"}}
+report("record returns the record it wrote",
+       record(Run("datalab", {}, out), "refused", _refused) == _refused == recorded(Run("datalab", {}, out), "refused"))
 docs.append(Doc("never-ran", "internal", root / "x.pdf", root / "perfect.json", SCH))
 
 summary_of_run = grade(Run("datalab", {}, out), docs)

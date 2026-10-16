@@ -171,13 +171,15 @@ def needs(run: Run, doc: data.Doc, retry_failed: bool = False) -> bool:
     return retry_failed and bool((got.get("error") or {}).get("transient"))
 
 
-def record(run: Run, doc_id: str, result: dict) -> None:
-    """One answer written down: its prediction, if it has one, then the record. predictions/ holds
-    only answers; a failure is described in the record alone. The record is the marker `needs`
-    reads, so a kill between the two predicts the document again rather than skipping it."""
+def record(run: Run, doc_id: str, result: dict) -> dict:
+    """What `harness.predict` returned for the document, written down and returned, as the record it now
+    has: its prediction, if it has one, then the record. predictions/ holds only answers; a failure is
+    described in the record alone. The record is the marker `needs` reads, so a kill between the two
+    predicts the document again rather than skipping it."""
     if result["error"] is None:
         _write_json_atomic(run.predictions / f"{doc_id}.json", result["result"])
     _write_json_atomic(run.records / f"{doc_id}.json", result)
+    return result
 
 
 def owed(p: Plan, run: Run) -> tuple[int, int]:
