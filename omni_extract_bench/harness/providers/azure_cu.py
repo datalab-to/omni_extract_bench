@@ -34,7 +34,7 @@ from ..budget import Budget, PollRetry
 
 from ..contract import Cost, Extraction
 
-from ..errors import MissingCredential, VendorError
+from ..errors import MissingCredential, VendorError, VendorUnreachable
 
 API_VERSION = "2025-05-01-preview"
 DEFAULT_COMPLETION_MODEL = "gpt-4.1-mini"
@@ -203,7 +203,7 @@ def _await(client, op_url: str, *, budget, poll_interval: float, want_result: bo
         except httpx.TransportError as exc:
             if retry.again():
                 continue
-            raise VendorError(f"polling failed: {exc}"[:300], status=None) from None
+            raise VendorUnreachable(f"polling failed: {exc}"[:300]) from None
         if r.status_code >= 400:
             if retry.again(r.status_code):
                 continue

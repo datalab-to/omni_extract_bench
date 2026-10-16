@@ -31,7 +31,7 @@ from ..budget import Budget, PollRetry
 
 from ..contract import Cost, Extraction
 
-from ..errors import MissingCredential, VendorError
+from ..errors import MissingCredential, VendorError, VendorUnreachable
 
 from ..responses import as_object
 
@@ -160,7 +160,7 @@ def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
         except httpx.TransportError as exc:
             if retry.again():
                 continue
-            raise VendorError(f"polling failed: {exc}"[:300], status=None) from None
+            raise VendorUnreachable(f"polling failed: {exc}"[:300]) from None
         retry.ok()
         polls += 1
         body = r.json()

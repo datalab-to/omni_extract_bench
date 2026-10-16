@@ -135,6 +135,9 @@ MissingDependency    # an adapter whose SDK isn't installed
 AccountFailure       # the account can't pay
 ```
 
+A PDF that doesn't exist raises `FileNotFoundError`, and a schema that isn't a JSON object
+`TypeError`: both are the caller's to fix, not the vendor's answer.
+
 Everything else comes back in `record["error"]` (type, HTTP status, whether it's transient, and
 the message), with `record["result"]` set to `None`.
 
@@ -173,7 +176,7 @@ p = benchmark.plan(
 )
 print(benchmark.describe(p))   # what it would do, with no vendor call
 summary = benchmark.execute(p)
-summary["datalab-f46415c9"]["headline"] # the mean accuracy, e.g. 0.9145
+summary["datalab-f46415c9"]["headline"] # the mean accuracy, a failure counting 0, e.g. 0.9145
 ```
 
 ### The functions, by what they work on
@@ -328,9 +331,11 @@ It's **resumable**, and safe to run twice.
 - A document is predicted again only when it has no record. The record is written last, so
   its presence means the prediction beside it is complete.
 - `--retry-failed` predicts again documents whose recorded failure may not recur: a timeout, an
-  outage, a 429 or 5xx. A 400 or a refusal is an answer, and is not retried.
+  outage (`VendorUnreachable`), a 429 or a 5xx (500, 502-504, 520-524). A 400, a refusal or an
+  unusable answer is an answer, and is not retried. `record["error"]["transient"]` says something
+  else: whether `predict` retried within the call, which it never does for a timeout or a failed poll.
 - Grading is fresh every time: every document of the manifest is graded again, which calls no
-  vendor, and `scores.jsonl` and `summary.json` are written whole when it finishes. So a run's
+  vendor, and `scores.jsonl`, `summary.json` and `verdicts/` are written whole when it finishes. So a run's
   scores are always one grading's, a gold correction or a new scorer reaches a run on its next
   grading, and `--suites`, `--limit`, `--sample` and `--docs` narrow what is predicted, never what is scored. An
   interrupted grading writes nothing; the last finished grading's files stand. Each line says
@@ -393,8 +398,15 @@ oeb grade mine/ --dataset my/corpus --manifest manifests/sub.parquet
 oeb grade mine/ --suites extractbench
 ```
 
-The first grades against our dataset; the second against a dataset of your own, and one manifest in
-it; the third grades only one suite.
+The first grades against the dataset and manifest the folder's `settings.json` names (a run's
+does), else ours; the second against a dataset of your own, and one manifest in it; the third grades
+only one suite. A run folder is never graded against another dataset than its own: that is refused.
+Grading a run with `--suites` replaces its summary with those suites', and says so. Files in
+`predictions/` that match no document, and predictions that can't be read, are counted in a warning.
+
+Before grading a dataset of your own, `oeb check --dataset my/corpus` says whether oeb can run it:
+its manifest, that every file it names exists, and that every gold is a JSON object. The first
+problem is printed, naming its row.
 
 The folder is your submission, so a document with no prediction fails: a document left out is one
 your system didn't answer. To grade part of the dataset, pass `--suites`. The folder gets
@@ -569,7 +581,9 @@ finishes.
 }
 ```
 
-`headline` is the mean accuracy, the one number to compare runs by. The run and each suite are the
+`headline` is the mean accuracy over every document, a failed one counting 0: the one number to
+compare runs by, which a system can't raise by failing on its hard documents. It is `accuracy *
+coverage`; `accuracy`, `precision` and `recall` are over the scored documents only. The run and each suite are the
 same shape, so whatever you read at the top you can read per suite as well.
 
 
@@ -656,7 +670,8 @@ One line per document, in document order whatever order the workers finished in.
 
 ### verdicts/&lt;doc_id&gt;.jsonl
 
-One line per address: what happened there, and what each side was compared as. This is the
+One line per address: what happened there, and what each side was compared as. The folder is one
+grading's, swapped in when it finishes; `--no-verdicts` removes it. This is the
 same shape `score(..., verdicts=True)` returns, and it's a low-level address breakdown of how
 scoring happened.
 

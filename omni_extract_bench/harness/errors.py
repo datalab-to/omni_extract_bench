@@ -10,7 +10,7 @@ marked 174 documents "failed" in 60 seconds after a credit ceiling.
 """
 from __future__ import annotations
 
-TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
+TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 523, 524})
 
 
 class VendorError(RuntimeError):
@@ -54,6 +54,20 @@ class VendorTimeout(VendorError):
     were collapsed once: "timed out at the shared limit after 412 polls" and "returned
     something unparseable" both read as "no output". Never transient -- a retry spends another
     full budget on a document already known to exceed it.
+    """
+
+    @property
+    def transient(self) -> bool:
+        return False
+
+
+class VendorUnreachable(VendorError):
+    """The vendor couldn't be reached, or its answer didn't come back: a network fault, with no HTTP
+    status.
+
+    Not `transient` within a call: a poll that fails may leave a job running at the vendor, and asking
+    again from the upload would buy the extraction twice. But it is no answer about the document, so
+    `--retry-failed` predicts it again (`benchmark.needs`), as it does a timeout.
     """
 
     @property

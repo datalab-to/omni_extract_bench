@@ -2,6 +2,11 @@
 
 ## 1.0.0 (unreleased)
 
+**`headline` changes meaning.** It is the mean accuracy over every document, a failed or missing one
+counting 0 (as omni-parse-bench's failed page fails its tests), so a system can't rank higher by
+failing on its hard documents. It is `accuracy * coverage`; `accuracy`, `precision` and `recall` stay
+over the scored documents. The scoring-code digest changes, so every run is graded again once.
+
 Breaking changes to `omni_extract_bench.benchmark`. `score`, `predict` and the command line are
 unchanged unless a line below says otherwise.
 
@@ -116,3 +121,24 @@ unchanged unless a line below says otherwise.
   exists, and that every gold is a JSON object (`field_matching.check`).
 - A document's suite may be null or empty, and is then `"other"` (`data.NO_SUITE`); any other
   non-string is refused.
+- `oeb grade <folder>` grades a run against the dataset and manifest its `settings.json` names, and
+  refuses another dataset (it would overwrite the run's scores with a grading against gold it never
+  saw). Grading a run with `--suites` says it replaces the run's summary. A grading warns of files in
+  `predictions/` that match no document, and of predictions it can't read.
+- `grade` refuses an empty `docs`, and `oeb check` an empty manifest, rather than writing an empty
+  summary over a run's scores.
+- `verdicts/` is one grading's, swapped in when it finishes; `--no-verdicts` removes an old one.
+- `--retry-failed` follows omni-parse-bench's rule: a timeout, an outage (the new `VendorUnreachable`,
+  raised for a failed poll or connection) or a 429 or 5xx (now also 520-524) is predicted again; it
+  retried only 429 and 5xx. `record["error"]["transient"]` still says whether `predict` retried
+  within the call.
+- A manifest's schema must be a non-empty JSON object, and its doc_id a str.
+- `score` refuses a prediction that isn't a JSON object (or None), as it does a gold.
+- A mistake on the command line is one line, `oeb <command>: <what was wrong>`, and exit 1, instead of
+  a traceback; `-q` goes before or after the command. Messages name what was wrong: a `--options` file
+  that doesn't exist, JSON that isn't an object, a `--docs` file that doesn't exist, a `--manifest`
+  (a path inside `--dataset`), an `hf:/` address with one slash, and which flags selected no documents.
+- `select` refuses a bare str of suites, and a negative `limit` or `sample`, and takes any iterable
+  for `only`; `plan` refuses a bare str of providers, a timeout that isn't positive, and a `workers`
+  that isn't a number or a mapping.
+- A bug in an adapter still stops its runs, now naming the document and the adapter.

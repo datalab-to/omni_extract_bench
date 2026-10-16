@@ -55,7 +55,7 @@ for label, exists in (("no record at all", False), ("a record from a previous ru
             json.dumps({"result": {"a": 1}, "error": None}))
     report(f"re-attempt {label}: {not exists}", needs(_resume, doc) is (not exists))
 (_resume.records / "failed.json").write_text(json.dumps(
-    {"result": None, "error": {"type": "VendorError", "transient": True}}))
+    {"result": None, "error": {"type": "VendorError", "status": 503, "transient": True}}))
 report("a recorded failure is not re-attempted either, transient or not",
        needs(_resume, Doc("failed", "s", TMP / "x.pdf", TMP / "g.json", {})) is False)
 report("...unless retry_failed asks for one whose failure may not recur",
@@ -64,6 +64,17 @@ report("...unless retry_failed asks for one whose failure may not recur",
     {"result": None, "error": {"type": "VendorError", "status": 400, "transient": False}}))
 report("...and never one that was an answer, a 400",
        needs(_resume, Doc("refused", "s", TMP / "x.pdf", TMP / "g.json", {}), retry_failed=True) is False)
+for _kind, _err in (("a timeout", {"type": "VendorTimeout", "status": None, "transient": False}),
+                    ("an outage", {"type": "VendorUnreachable", "status": None, "transient": False}),
+                    ("a 522", {"type": "VendorError", "status": 522, "transient": True})):
+    (_resume.records / "again.json").write_text(json.dumps({"result": None, "error": _err}))
+    report(f"...and retry_failed does predict again {_kind}, as omni-parse-bench does",
+           needs(_resume, Doc("again", "s", TMP / "x.pdf", TMP / "g.json", {}), retry_failed=True) is True)
+for _kind, _err in (("a schema the vendor can't take", {"type": "DialectError", "status": None}),
+                    ("an unusable answer", {"type": "VendorError", "status": None})):
+    (_resume.records / "final.json").write_text(json.dumps({"result": None, "error": _err}))
+    report(f"...but not {_kind}",
+           needs(_resume, Doc("final", "s", TMP / "x.pdf", TMP / "g.json", {}), retry_failed=True) is False)
 
 print("\nEVERY DOCUMENT COMES BACK, FAILURES INCLUDED")
 root, out = TMP / "corpus", TMP / "run"
@@ -314,17 +325,17 @@ with _mock.patch.dict(sys.modules, {"huggingface_hub": None}):
 
 _exact = Path(tempfile.mkdtemp()) / "m.parquet"
 # "{}" is a valid doc_id, path and JSON, so the row is built from COLUMNS itself.
-_pq.write_table(_pa.Table.from_pylist([{c: "{}" for c in DS.COLUMNS} | {"doc_path": "{}.pdf", "gt_path": "{}.json"}]), _exact)
+_pq.write_table(_pa.Table.from_pylist([{c: "{}" for c in DS.COLUMNS} | {"doc_path": "{}.pdf", "gt_path": "{}.json", "schema": "{\"type\": \"object\"}"}]), _exact)
 try:
     _, _only = DS.read_manifest(_exact.parent, _exact.name)
     report("a manifest of exactly COLUMNS is enough to read",
-           len(_only) == 1 and _only[0].schema == {})
+           len(_only) == 1 and _only[0].schema == {"type": "object"})
 except Exception as exc:                                                       # noqa: BLE001
     report("a manifest of exactly COLUMNS is enough to read", False,
            f"{type(exc).__name__}: {exc}")
 
 _extra = Path(tempfile.mkdtemp()) / "m.parquet"
-_pq.write_table(_pa.Table.from_pylist([{**{c: "{}" for c in DS.COLUMNS}, "doc_path": "{}.pdf", "gt_path": "{}.json", "language": "tha"}]), _extra)
+_pq.write_table(_pa.Table.from_pylist([{**{c: "{}" for c in DS.COLUMNS}, "doc_path": "{}.pdf", "gt_path": "{}.json", "schema": "{\"type\": \"object\"}", "language": "tha"}]), _extra)
 _, (_one,) = DS.read_manifest(_extra.parent, _extra.name)
 report("a column of the dataset's own is carried on the document, not refused",
        dict(_one.extra) == {"language": "tha"}, str(dict(_one.extra)))
@@ -490,8 +501,10 @@ half = ([scored("s", 10, 10) for _ in range(5)]
 h = summarize(half)
 report("a failed document does not drag precision down to nothing", h["precision"] == 1.0)
 report("...it shows up as coverage", h["coverage"] == 0.5)
-report("...and the flat mean over every document is still one multiplication away",
-       abs(h["accuracy"] * h["coverage"] - 0.5) < 1e-9)
+report("...and the headline counts it as 0, so failing a hard document can't raise a run's rank",
+       abs(h["headline"] - 0.5) < 1e-9 and abs(h["accuracy"] * h["coverage"] - h["headline"]) < 1e-9,
+       str(h["headline"]))
+report("...per suite too", abs(h["per_suite"]["s"]["headline"] - 0.5) < 1e-9)
 report("an empty run does not divide by zero",
        summarize([])["accuracy"] == 0.0 and summarize([])["coverage"] == 0.0
        and summarize([])["unfound_rate"] == 0.0)
@@ -575,11 +588,11 @@ report("oeb grade grades a folder of your own: the document left out fails, noth
 with _contextlib.redirect_stdout(_io.StringIO()) as _o:
     _cli.main(["grade", str(_mine), "--dataset", str(_ds), "--score-workers", "1", "--suites", "mine"])
 report("...and --suites grades only those suites", json.loads(_o.getvalue())["documents"] == 2)
-try:
-    _cli.main(["grade", str(_mine), "--dataset", str(_ds), "--suites", "nope"])
-    report("...and an unknown suite is refused", False, "it was accepted")
-except ValueError as exc:
-    report("...and an unknown suite is refused, naming the dataset's suites", "mine" in str(exc), str(exc))
+with _contextlib.redirect_stderr(_io.StringIO()) as _e:
+    _rc = _cli.main(["grade", str(_mine), "--dataset", str(_ds), "--suites", "nope"])
+report("...and an unknown suite is refused, naming the dataset's suites, as one line and exit 1",
+       _rc == 1 and _e.getvalue().startswith("oeb grade: unknown suites") and "mine" in _e.getvalue(),
+       _e.getvalue())
 
 print("\nCHOOSING THE DOCUMENTS")
 _many = [Doc(f"{s}{i}", s, TMP / "x.pdf", TMP / "g.json", {}) for s in ("a", "b", "c") for i in range(10)]

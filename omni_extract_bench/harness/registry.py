@@ -102,13 +102,13 @@ def out_name(provider: str, options: dict | None = None) -> str:
 
     THE NAME IS A FUNCTION OF THE SETTINGS, ALL OF THEM, so a directory holds one
     configuration and two configurations never share one -- `runs/datalab-f46415c9` and
-    `runs/datalab-01a72762` are the balanced and the accurate run, and `needs_run` cannot hand
+    `runs/datalab-01a72762` are the balanced and the accurate run, and `benchmark.needs` cannot hand
     either the other's records. Naming what a run merely CHANGED about the defaults would tie
     the name to the defaults, and they move: the day a vendor's maximum tier moves with them,
     two tiers land in one directory and average into one published number.
 
     The digest is not readable, and nothing here tries to make it so. WHAT A RUN WAS ASKED IS
-    WRITTEN INTO THE RUN, by `benchmark.run`, as `settings.json` -- beside the answers, where
+    WRITTEN INTO THE RUN, by `benchmark.prepare`, as `settings.json` -- beside the answers, where
     there is no width budget to select fields against.
 
     `openai/gpt-5.6-sol` would otherwise nest, and a `:batch` suffix is not a filename on every

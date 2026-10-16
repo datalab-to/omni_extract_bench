@@ -160,6 +160,10 @@ def resolve_refs(schema, root=None, depth=0, max_depth=12):
     no type. Inlining changes nothing semantically. Recursive definitions stop at ``max_depth``
     rather than expanding forever.
     """
+    # TODO(paul): `depth` counts nesting levels (each dict and list), not $ref expansions, so a
+    # non-recursive $ref nested 7 or more object levels deep survives inlining, and `score` reports it
+    # as recursive; a dangling $ref (`#/defs/nope`) gets the same "recursive" message. Count only
+    # expansions toward `max_depth`, and name an unresolvable ref.
     if root is None:
         root = schema
     if depth > max_depth or not isinstance(schema, (dict, list)):
@@ -824,6 +828,9 @@ def score(pred: Any, gold: Any, schema: Any,
     default drops `null`, `""`, `[]` and `{}`; `lambda v: False` makes each one a value the
     prediction must reproduce. Scores under different `absent`s are not comparable.
     """
+    if pred is not None and not isinstance(pred, dict):
+        raise TypeError(f"the prediction must be a JSON object, the extraction, or None for no answer; "
+                        f"got a {type(pred).__name__}")
     if gold is not None and not isinstance(gold, dict):
         raise TypeError(
             f"ground truth must be a JSON object, got {type(gold).__name__}. A schema whose root "
@@ -968,7 +975,8 @@ ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
 
 def summarize(lines: Iterable[dict]) -> dict:
     """A run's score lines (scores.jsonl's, one per document) as one summary: `headline`, the mean
-    accuracy over the scored documents, then coverage, the three metrics and where the errors were
+    accuracy over every document, a failed one counting 0 (as omni-parse-bench's failed page fails its
+    tests), then coverage, the three metrics and where the errors were
     (`_over`), over every line and then per suite, each suite in the same shape. A line carries its
     document's suite, so the lines are all it needs."""
     lines = list(lines)
@@ -979,7 +987,11 @@ def summarize(lines: Iterable[dict]) -> dict:
 
 
 def _over(lines: list[dict]) -> dict:
-    """How a set of documents went: coverage, the three metrics, and where the errors were."""
+    """How a set of documents went: the headline, coverage, the three metrics over the scored documents,
+    and where the errors were.
+
+    Note: `headline` counts a failed document as 0, so a system can't rank higher by failing on its
+    hard documents; `accuracy` is over the scored ones, and `headline` is `accuracy * coverage`."""
     scored = [x for x in lines if x["status"] == "scored"]
 
     def mean(of) -> float:
@@ -987,7 +999,7 @@ def _over(lines: list[dict]) -> dict:
 
     accuracy = mean(lambda x: x["accuracy"])
     return {
-        "headline": accuracy,
+        "headline": sum(x["accuracy"] for x in scored) / len(lines) if lines else 0.0,
         "documents": len(lines),
         "scored": len(scored),
         "coverage": len(scored) / len(lines) if lines else 0.0,

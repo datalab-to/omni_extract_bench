@@ -27,7 +27,7 @@ from ..budget import Budget, PollRetry
 
 from ..contract import Cost, Extraction
 
-from ..errors import MissingCredential, VendorError
+from ..errors import MissingCredential, VendorError, VendorUnreachable
 
 DEFAULT_BASE_URL = "https://www.datalab.to"
 
@@ -130,7 +130,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
             except httpx.TransportError as exc:
                 if retry.again():
                     continue
-                raise VendorError(f"polling failed: {exc}"[:300], status=None) from None
+                raise VendorUnreachable(f"polling failed: {exc}"[:300]) from None
             if r.status_code != 200:
                 if retry.again(r.status_code):
                     continue

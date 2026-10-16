@@ -24,7 +24,7 @@ import functools
 import json
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -103,8 +103,10 @@ def download_dataset(dataset: str | Path) -> Path:
     if (at := _hf_dataset(dataset)) is None:
         root = Path(dataset).expanduser()
         if not root.is_dir():
+            hint = (f"; a Hugging Face dataset is written {HF_PREFIX}<org>/<name>, with two slashes"
+                    if str(dataset).startswith("hf:") else "")
             raise FileNotFoundError(f"no dataset folder at {root}; pass --dataset a dataset folder "
-                                    f"or {HF_PREFIX}<org>/<name>")
+                                    f"or {HF_PREFIX}<org>/<name>{hint}")
         return root
     repo, revision = at
     from huggingface_hub import errors as hf_errors
@@ -151,10 +153,9 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
     path = root / manifest
     if not path.exists():
         raise ManifestError(
-            f"there is no manifest at {path}. It is a parquet file with one row per "
-            f"document, as {', '.join(COLUMNS)}; ours is at "
-            f"https://huggingface.co/datasets/{REPO}, and a corpus of your own follows the "
-            f"same convention."
+            f"there is no manifest at {path}. --manifest is a path inside the dataset (--dataset), "
+            f"{MANIFEST} by default; a manifest is a parquet file with one row per document, as "
+            f"{', '.join(COLUMNS)}, as ours at https://huggingface.co/datasets/{REPO}."
         )
     table = pq.read_table(path)
     absent = [c for c in COLUMNS if c not in table.column_names]
@@ -167,7 +168,7 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
     for n, row in enumerate(table.to_pylist()):
         # A doc_id is a filename (`predictions/<doc_id>.json`); caught here, the row can be named.
         doc_id = row["doc_id"]
-        if not doc_id or doc_id in (".", "..") or Path(doc_id).name != doc_id:
+        if not isinstance(doc_id, str) or not doc_id or doc_id in (".", "..") or Path(doc_id).name != doc_id:
             raise ManifestError(f"{path}: row {n} has doc_id {doc_id!r}, which is not a filename. "
                              f"It names this document's prediction, its record and its row in "
                              f"scores.jsonl, so it has to be one path component.")
@@ -186,6 +187,9 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
         except (TypeError, json.JSONDecodeError) as exc:
             raise ManifestError(f"{path}: row {n} ({doc_id}) has a schema column that is not "
                              f"JSON: {exc}") from None
+        if not isinstance(schema, dict) or not schema:
+            raise ManifestError(f"{path}: row {n} ({doc_id}) has schema {row['schema']!r:.80}; it must be a "
+                                "non-empty JSON object, the JSON Schema of the extraction")
         suite = row["suite"] if (row["suite"] or "").strip() else NO_SUITE
         docs.append(Doc(doc_id=doc_id, suite=suite, doc_path=root / row["doc_path"],
                         gt_path=root / row["gt_path"], schema=schema,
@@ -199,12 +203,18 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
 
 
 def select(docs: Sequence[Doc], suites: Sequence[str] | None = None, limit: int = 0,
-           sample: int = 0, only: frozenset[str] | None = None) -> tuple[Doc, ...]:
+           sample: int = 0, only: Iterable[str] | None = None) -> tuple[Doc, ...]:
     """The documents of `docs` (a dataset's, from `read_manifest`) to run, in their order, filtered by
     suite and by `only` (doc ids, each of which must be among them), and limited.
 
     `sample` picks that many documents spread over every suite: suites in turn, each document evenly
     spaced within its suite, so a smoke test sees every kind of document and the same ones each time."""
+    _names(suites, "suites")
+    _names(only, "only")
+    for flag, k in (("limit", limit), ("sample", sample)):
+        if isinstance(k, bool) or not isinstance(k, int) or k < 0:
+            raise ValueError(f"{flag} is {k!r}, but it counts documents: a whole number, 0 for no limit")
+    only = None if only is None else frozenset(only)
     rows = tuple(docs)
     known = {r.suite for r in rows}
     if bad := sorted(set(suites or ()) - known):
@@ -224,6 +234,12 @@ def select(docs: Sequence[Doc], suites: Sequence[str] | None = None, limit: int 
         chosen = {r.doc_id for r in turns[:sample]}
         rows = tuple(r for r in rows if r.doc_id in chosen)
     return rows[:limit] if limit else rows
+
+
+def _names(xs: Iterable[str] | None, what: str) -> None:
+    """Refuses a bare str where several names are expected: iterated, `"micro1"` is six one-letter names."""
+    if isinstance(xs, str):
+        raise TypeError(f"{what} is the str {xs!r}, but it takes several names; pass a list, e.g. [{xs!r}]")
 
 
 def _inside(path: str, doc_id: str | None = None) -> bool:

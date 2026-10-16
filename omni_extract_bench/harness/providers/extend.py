@@ -6,7 +6,7 @@ import httpx
 from ..schema import MAX_REF_DEPTH, resolve_refs
 from ..budget import Budget, PollRetry
 from ..contract import Cost, Extraction
-from ..errors import MissingCredential, VendorError
+from ..errors import MissingCredential, VendorError, VendorUnreachable
 
 BASE = "https://api.extend.ai"
 API_VERSION = "2026-02-09"
@@ -84,7 +84,7 @@ def poll(c: httpx.Client, run_id: str, budget, base_url: str = BASE) -> dict:
         except httpx.TransportError as exc:
             if retry.again():
                 continue
-            raise VendorError(f"polling failed: {exc}"[:300], status=None) from None
+            raise VendorUnreachable(f"polling failed: {exc}"[:300]) from None
         if r.status_code >= 400:
             if retry.again(r.status_code):
                 continue

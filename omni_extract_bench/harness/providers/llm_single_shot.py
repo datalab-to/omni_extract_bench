@@ -43,7 +43,7 @@ from ..budget import Budget
 
 from ..contract import Cost, Extraction
 
-from ..errors import MissingCredential, VendorError
+from ..errors import MissingCredential, VendorError, VendorUnreachable
 
 SYSTEM_PROMPT = """\
 You are a document data extraction system. You will be given a PDF document \
@@ -156,6 +156,8 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
         except openai.APIStatusError as exc:
             raise VendorError(f"{type(exc).__name__}: {exc}"[:300],
                               status=getattr(exc, "status_code", None)) from None
+        except openai.APIConnectionError as exc:
+            raise VendorUnreachable(f"{type(exc).__name__}: {exc}"[:300]) from None
         except openai.APIError as exc:
             raise VendorError(f"{type(exc).__name__}: {exc}"[:300]) from None
 
