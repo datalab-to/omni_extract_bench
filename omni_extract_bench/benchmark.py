@@ -88,9 +88,10 @@ def scorer_version() -> str:
 SCORER = scorer_version()
 
 
-def _write_json_atomic(path: Path, obj, *, indent: int | None = None) -> None:
+def _write_json_atomic(path: Path, obj) -> None:
+    """Written whole, then moved into place, so a crash never leaves half a file."""
     tmp = path.with_name(f".{path.name}.partial")
-    tmp.write_text(json.dumps(obj, default=str, indent=indent))
+    tmp.write_text(json.dumps(obj, default=str, ensure_ascii=False, indent=2) + "\n")
     os.replace(tmp, path)
 
 
@@ -148,7 +149,7 @@ def prepare(run: Run, dataset: str, timeout: float, manifest: str = data.MANIFES
     run.records.mkdir(parents=True, exist_ok=True)
     _write_json_atomic(run.out / "settings.json", {
         **_head(run), "dataset": data.dataset_id(dataset), **({"commit": commit} if commit else {}),
-        "manifest": manifest, "timeout_s": timeout}, indent=2)
+        "manifest": manifest, "timeout_s": timeout})
 
 
 def recorded(run: Run, doc_id: str) -> dict | None:
@@ -249,7 +250,7 @@ def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, score_workers: 
     lines = [graded[d.doc_id] for d in attempted]
     _write_scores(run.out, lines)
     summary = {**_head(run), "scorer": SCORER, **scorer.summarize(lines), "pending": len(docs) - len(lines)}
-    _write_json_atomic(run.out / "summary.json", summary, indent=2)
+    _write_json_atomic(run.out / "summary.json", summary)
     return summary
 
 
