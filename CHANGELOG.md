@@ -77,3 +77,17 @@ unchanged unless a line below says otherwise.
 - Internal now: `data._hf_dataset`, and benchmark's `_plural`, `_write_json_atomic`, `_settings`,
   `_head`, `_asked`, `_score_one`, `_write_scores`, `_settings_cell`, `_facts` and `_plan_view`.
   `read_scores(run)` returns a run's score lines, a list in file order.
+- `grade(run, docs, score_workers=...)`: grade's scoring processes are `score_workers`, as
+  `plan`'s are (it was `workers`). `workers` means calls in flight, and only `plan` takes it.
+- A manifest, or a row of one, that breaks the dataset's rules raises `data.ManifestError`, a
+  `ValueError`. A malformed `hf://` address is still a plain `ValueError`.
+- `record(run, doc_id, result)` returns the record it wrote.
+- `data.select(docs, suites, limit, sample, only)` and `plan(sample=..., only=...)`, as
+  omni-parse-bench's: `sample` picks that many documents spread over every suite, the same ones each
+  time, and `only` keeps those doc ids, each of which must be in the dataset. On the command line,
+  `oeb benchmark --sample N` and `--docs FILE` (doc ids, one per line). An unknown suite is now
+  refused, naming the dataset's suites; it used to select nothing.
+- `plan` warns when `--out` holds a run made at another commit of its dataset, and carries on: the
+  run's old predictions are graded against the new gold. Pass another `--out` to keep them apart.
+- A `Verdict`'s `verdict` field is `result`, and so is the key in `verdicts/<doc_id>.jsonl`. The
+  scoring-code digest changes, so every run is graded again once; no provider is called.
