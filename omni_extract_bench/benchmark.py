@@ -214,14 +214,14 @@ def owed(p: Plan, run: Run) -> tuple[int, int]:
 
 
 def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, score_workers: int = 0,
-          progress=NULL, whole: Sequence[data.Doc] | None = None) -> dict:
+          progress=NULL, *, among: Sequence[data.Doc] | None = None) -> dict:
     """Grade every document of `docs` (usually the whole manifest, as `grade_all` passes it), fresh, and
     write scores.jsonl (one line each, in their order), summary.json and, with `verdicts`, verdicts/
     (one file per scored document) whole once grading finishes: they are always one grading's, of
     `docs`. An interrupted grading writes nothing, so the last finished one's files stand; without
     `verdicts`, an old verdicts/ is removed. Returns the summary, as omni-parse-bench's `grade` does;
     the lines themselves are `read_scores(run)`. Files in predictions/ that match no document of
-    the manifest (`whole`, when `docs` is a part of it), and predictions that can't be read (graded
+    the manifest (`among`, when `docs` is a part of it), and predictions that can't be read (graded
     as failed), are counted in a warning. A prediction is read only from a file named exactly
     `<doc_id>.json`, so a name that differs in case is a stray file on every system, macOS included.
 
@@ -283,7 +283,7 @@ def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, score_workers: 
     summary = _with_pending({**_head(run), "scorer": SCORER, **scorer.summarize(lines)},
                             [d for d in docs if d.doc_id not in graded])
     _write_json_atomic(run.out / "summary.json", summary)
-    _warn_unusable(run, docs, whole or docs, listed)
+    _warn_unusable(run, docs, among or docs, listed)
     log.info("%s", _closing(run.out.name, summary))
     return summary
 
@@ -309,12 +309,12 @@ def _closing(name: str, s: dict) -> str:
     return f"{name}: headline {s['headline']:.3f}, coverage {s['scored']}/{total}"
 
 
-def _warn_unusable(run: Run, docs: list[data.Doc], whole: Sequence[data.Doc],
+def _warn_unusable(run: Run, docs: list[data.Doc], among: Sequence[data.Doc],
                    listed: frozenset[str]) -> None:
     """A warning for each kind of file in predictions/ that grading couldn't use: one named for no
-    document of the manifest `whole` (a misnamed file is otherwise only a lower coverage), a folder,
+    document of the manifest `among` (a misnamed file is otherwise only a lower coverage), a folder,
     and a prediction of `docs` that can't be read, which was graded as failed."""
-    names = {f"{d.doc_id}.json" for d in whole}
+    names = {f"{d.doc_id}.json" for d in among}
     stray = sorted(listed - names)
     stray += sorted(f"{f.name}/" for f in run.predictions.iterdir() if f.is_dir())
     if stray:

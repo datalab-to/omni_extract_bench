@@ -152,7 +152,7 @@ unchanged unless a line below says otherwise.
 - A prediction is read only from a file named exactly `<doc_id>.json`, case included, so a folder
   grades the same on every system; a file named for no document of the manifest is counted in one
   warning (files of suites left out by `--suites` aren't), and `--suites` on any graded folder says it
-  replaces the summary. `grade` takes the whole manifest as `whole=`.
+  replaces the summary. `grade` takes the whole manifest as `among=`.
 - An adapter added in code or by a package is keyed by the name it was filed under (`resolve`,
   `--workers`); ours keep their short module names.
 - An option is given as its `Config` field's type: `{"poll_interval": 5}` is the default 5.0, one run,

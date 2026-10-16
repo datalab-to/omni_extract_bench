@@ -312,7 +312,7 @@ def cmd_grade(args) -> int:
             "%s: grading only %s replaces its summary with these suites'; grade without --suites for the "
             "whole manifest", out, ", ".join(args.suites))
     summary = benchmark.grade(benchmark.Run(provider, {}, out), chosen, verdicts=args.verdicts,
-                              score_workers=args.score_workers, whole=docs)
+                              score_workers=args.score_workers, among=docs)
     if "dataset" not in said:
         # Note: written once a grading has finished, so the next grading of this folder is against
         # the same dataset and manifest without being told, and a failed one leaves nothing behind.

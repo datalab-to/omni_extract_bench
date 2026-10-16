@@ -308,7 +308,7 @@ def test_files_of_suites_left_out_are_not_stray(tmp_path, caplog):
     every = data.read_manifest(ds)[1]
     with caplog.at_level(logging.WARNING, logger="omni_extract_bench"):
         benchmark.grade(benchmark.Run("mine", {}, run), list(data.select(every, ["s"])), score_workers=1,
-                        whole=every)
+                        among=every)
     assert "named for no document" not in caplog.text
 
 
