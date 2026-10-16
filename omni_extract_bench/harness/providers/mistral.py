@@ -17,9 +17,7 @@ from pathlib import Path
 
 import httpx
 
-from ..contract import Cost, Extraction
-
-from ..errors import MissingCredential, VendorError
+from .. import contract, errors
 
 MODEL = "mistral-ocr-latest"
 URL = "https://api.mistral.ai/v1/ocr"
@@ -36,7 +34,7 @@ def prepare_schema(schema: dict) -> dict:
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
-            config: Config = Config()) -> Extraction:
+            config: Config = Config()) -> contract.Extraction:
     """One POST, one response, one parse.
 
     No polling, so the document's budget IS this request's timeout -- there is no second phase
@@ -46,7 +44,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     """
     key = os.environ.get("MISTRAL_API_KEY")
     if not key:
-        raise MissingCredential("MISTRAL_API_KEY is not set")
+        raise errors.MissingCredential("MISTRAL_API_KEY is not set")
 
     b64 = base64.b64encode(pdf.read_bytes()).decode()
     body = {
@@ -61,24 +59,24 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                                  "Content-Type": "application/json"},
                    json=body, timeout=timeout)
     if r.status_code >= 400:
-        raise VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
-                          status=r.status_code, body=r.text)
+        raise errors.VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
+                                 status=r.status_code, body=r.text)
 
     payload = r.json()
     annotation = payload.get("document_annotation")
     if annotation is None:
-        raise VendorError("200 with no document_annotation", status=200, body=r.text[:300])
+        raise errors.VendorError("200 with no document_annotation", status=200, body=r.text[:300])
     try:
         parsed = json.loads(annotation) if isinstance(annotation, str) else annotation
     except json.JSONDecodeError as exc:
-        raise VendorError(f"document_annotation is not JSON: {exc}",
-                          status=200, body=str(annotation)[:300]) from None
+        raise errors.VendorError(f"document_annotation is not JSON: {exc}",
+                                 status=200, body=str(annotation)[:300]) from None
     if not isinstance(parsed, dict) or not parsed:
-        raise VendorError("document_annotation was empty", status=200, body=r.text[:300])
+        raise errors.VendorError("document_annotation was empty", status=200, body=r.text[:300])
 
     usage = payload.get("usage_info") or {}
-    return Extraction(
+    return contract.Extraction(
         result=parsed,
         raw={k: v for k, v in payload.items() if k != "document_annotation"},
-        cost=Cost.reported(usage.get("cost"), "usage_info.cost"))
+        cost=contract.Cost.reported(usage.get("cost"), "usage_info.cost"))
 

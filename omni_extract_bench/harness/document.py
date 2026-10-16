@@ -27,13 +27,13 @@ import dataclasses
 import time
 from pathlib import Path
 
-from ..errors import UsageError
+from .. import errors as base_errors
+from . import budget, contract, errors, registry, responses
 from . import schema as SCHEMA
-from .budget import Budget
-from .contract import Cost, Extraction
-from .errors import AccountFailure, DialectError, VendorError, VendorTimeout
-from .registry import DEFAULT_TIMEOUT, MODEL_SEPARATOR, adapter, config_for
-from .responses import cost_from_response
+
+# Note: bound here, not called as `registry.adapter`, so a test can substitute the vendor call
+# on this module while `registry.config_for` keeps building the real `Config`.
+adapter = registry.adapter
 
 TRANSIENT_ATTEMPTS = 4
 TRANSIENT_BACKOFF = (20, 60, 120)
@@ -42,12 +42,12 @@ ACCOUNT_MARKERS = ("exceeded the maximum number of credits", "subscription has e
                    "insufficient_quota")
 
 
-def _is_account_failure(exc: VendorError) -> bool:
+def _is_account_failure(exc: errors.VendorError) -> bool:
     blob = f"{exc} {exc.body or ''}".lower()
     return exc.status == 402 or any(m in blob for m in ACCOUNT_MARKERS)
 
 
-def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOUT,
+def predict(provider: str, pdf, schema: dict, *, timeout: float = registry.DEFAULT_TIMEOUT,
             overlay: bool = True, **options) -> dict:
     """Run one document through one provider and return the answer with its evidence.
 
@@ -58,12 +58,12 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     api = adapter(provider)
     pdf = Path(pdf)
     if not pdf.exists():
-        raise UsageError(f"no document at {pdf}")
+        raise base_errors.UsageError(f"no document at {pdf}")
     if not isinstance(schema, dict):
         raise TypeError(f"schema must be a JSON object, got {type(schema).__name__}.")
 
-    config = config_for(provider, options)
-    budget = Budget(timeout)
+    config = registry.config_for(provider, options)
+    deadline = budget.Budget(timeout)
     started = time.time()
     got, error, attempts = None, None, 0
 
@@ -77,40 +77,40 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
         sent = shape(asked)
     except Exception as exc:  # noqa: BLE001 -- a dialect may raise anything; see DialectError
         sent = asked
-        error = DialectError(f"{provider} could not shape this schema: "
-                             f"{type(exc).__name__}: {exc}"[:400])
+        error = errors.DialectError(f"{provider} could not shape this schema: "
+                                    f"{type(exc).__name__}: {exc}"[:400])
     # The DialectError is this document's answer; `cost.attempts` stays 0, as nothing was sent.
     if error is None:
         for attempt in range(TRANSIENT_ATTEMPTS):
             attempts = attempt + 1
             try:
-                got = api.extract(pdf, sent, timeout=budget.remaining(), config=config)
-                if not isinstance(got, Extraction):
+                got = api.extract(pdf, sent, timeout=deadline.remaining(), config=config)
+                if not isinstance(got, contract.Extraction):
                     raise TypeError(f"{provider}: extract must return an Extraction (contract.py), "
                                     f"not a {type(got).__name__}")
                 error = None
                 break
-            except VendorError as exc:
+            except errors.VendorError as exc:
                 if _is_account_failure(exc):
-                    raise AccountFailure(str(exc)[:200]) from None
+                    raise errors.AccountFailure(str(exc)[:200]) from None
                 error = exc
                 if not exc.transient or attempt == TRANSIENT_ATTEMPTS - 1:
                     break
                 time.sleep(min(TRANSIENT_BACKOFF[min(attempt, len(TRANSIENT_BACKOFF) - 1)],
-                               budget.remaining()))
-                if budget.expired():
-                    error = VendorTimeout(
+                               deadline.remaining()))
+                if deadline.expired():
+                    error = errors.VendorTimeout(
                         f"the uniform {timeout:.0f}s budget was spent over {attempts} "
                         f"attempt(s); last failure: {exc}"[:400])
                     break
 
     elapsed = round(time.time() - started, 1)
     if got is not None and got.cost.usd is None:
-        usd, field = cost_from_response(got.raw if isinstance(got.raw, dict) else {})
+        usd, field = responses.cost_from_response(got.raw if isinstance(got.raw, dict) else {})
         if usd is not None:
-            got = got._replace(cost=Cost(usd=usd, source=field))
+            got = got._replace(cost=contract.Cost(usd=usd, source=field))
     if error is not None:
-        got = Extraction(result={}, raw=error.body, cost=Cost())
+        got = contract.Extraction(result={}, raw=error.body, cost=contract.Cost())
     return {
         "result": None if error is not None else got.result,
         "raw": got.raw,
@@ -128,8 +128,8 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
         "run_manifest": {
             "timeout_s": timeout,
             "settings": dataclasses.asdict(config),
-            "model": provider if MODEL_SEPARATOR in provider else None,
-            "timed_out": isinstance(error, VendorTimeout),
+            "model": provider if registry.MODEL_SEPARATOR in provider else None,
+            "timed_out": isinstance(error, errors.VendorTimeout),
             "conventions_applied": overlay and overlaid != schema,
             "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         },

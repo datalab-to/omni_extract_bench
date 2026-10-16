@@ -35,9 +35,9 @@ import collections
 from collections.abc import Callable, Hashable, Iterable
 from typing import Any, Literal, NamedTuple
 
-from ...errors import UsageError
+from ... import errors
 from . import matching as OM
-from .values import canon_key, cmp_leaf, states_nothing
+from . import values
 
 Json = Any
 
@@ -241,7 +241,7 @@ def _reading_order(address: Address) -> tuple:
 
 def flatten(node: Any, schema: Any = None, prefix: Address = (),
             skipped: list[Address] | None = None,
-            absent: Callable[[Any], bool] = states_nothing) -> Leaves:
+            absent: Callable[[Any], bool] = values.states_nothing) -> Leaves:
     """Give every value in one document an address.
 
     Only one document. This never looks at the other one.
@@ -442,7 +442,7 @@ class Row(NamedTuple):
         for a, v in leaves.items():
             cut = next((i for i, s in enumerate(a) if s[0] == INDEX), None)
             if cut is None or (ordered and node_key(address + a[:cut]) in ordered):
-                named[a] = canon_key(v)
+                named[a] = values.canon_key(v)
             else:
                 grouped.setdefault(a[:cut], {}).setdefault(a[cut][1], {})[a[cut + 1:]] = v
         arrays = {array_path: {i: cls.at(sub, address + array_path + ((INDEX, i),), ordered)
@@ -811,7 +811,7 @@ def _resolve_order(order_matters: bool | Iterable[str], schema: Any,
             )
         if name not in known:
             near = sorted(known)
-            raise UsageError(
+            raise errors.UsageError(
                 f"order_matters names {name!r}, which is not an array here. "
                 + (f"Arrays available: {', '.join(repr(n) for n in near[:12])}"
                    + (f" (and {len(near) - 12} more)" if len(near) > 12 else "")
@@ -823,7 +823,7 @@ def _resolve_order(order_matters: bool | Iterable[str], schema: Any,
 
 def score(pred: Any, gold: Any, schema: Any,
           order_matters: bool | Iterable[str] = (), verdicts: bool = False,
-          absent: Callable[[Any], bool] = states_nothing) -> dict:
+          absent: Callable[[Any], bool] = values.states_nothing) -> dict:
     """Score one prediction against one ground truth.
 
     `absent` decides which values state nothing, and so get no address on either side. The
@@ -870,7 +870,7 @@ def score(pred: Any, gold: Any, schema: Any,
     only_gold = set(gold_leaves) - shared
     only_pred = set(pred_leaves) - shared
     union = shared | only_gold | only_pred
-    matched = sum(1 for a in shared if cmp_leaf(pred_leaves[a], gold_leaves[a]) >= 1.0)
+    matched = sum(1 for a in shared if values.cmp_leaf(pred_leaves[a], gold_leaves[a]) >= 1.0)
     misread = len(shared) - matched
     unfound = len(only_gold)
     slots = _schema_nodes(schema)
@@ -899,8 +899,8 @@ def score(pred: Any, gold: Any, schema: Any,
         per_address = [Verdict(a, None, None, None, None, result="skipped_open_map")
                        for a in skipped]
         for a in sorted(union, key=_reading_order):
-            gold_canon = canon_key(gold_leaves[a]) if a in gold_leaves else None
-            pred_canon = canon_key(pred_leaves[a]) if a in pred_leaves else None
+            gold_canon = values.canon_key(gold_leaves[a]) if a in gold_leaves else None
+            pred_canon = values.canon_key(pred_leaves[a]) if a in pred_leaves else None
             if a in shared:
                 result = "matched" if gold_canon == pred_canon else "misread"
             elif a in only_gold:
@@ -962,7 +962,7 @@ def gold(doc: Any) -> dict:
                     "extraction")
 
 
-class GoldError(UsageError):
+class GoldError(errors.UsageError):
     """A gold file that can't be read, or isn't the extraction, a JSON object; the message names its document."""
 
 

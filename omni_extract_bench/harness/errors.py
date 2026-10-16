@@ -10,7 +10,7 @@ marked 174 documents "failed" in 60 seconds after a credit ceiling. Each is a `S
 """
 from __future__ import annotations
 
-from ..errors import Stop
+from .. import errors as base_errors
 
 TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 523, 524})
 
@@ -77,7 +77,7 @@ class VendorUnreachable(VendorError):
         return False
 
 
-class AccountFailure(Stop):
+class AccountFailure(base_errors.Stop):
     """The account cannot pay. NOT a fact about the document, so it stops the run.
 
     One vendor marked 174 documents "failed" in 60 seconds after hitting a credit ceiling,
@@ -85,7 +85,7 @@ class AccountFailure(Stop):
     """
 
 
-class MissingCredential(Stop):
+class MissingCredential(base_errors.Stop):
     """A vendor's API key is not in the environment.
 
     Ours to fix and identical for every document, so it is raised past the runner rather than
@@ -94,5 +94,5 @@ class MissingCredential(Stop):
     """
 
 
-class MissingDependency(ImportError, Stop):
+class MissingDependency(ImportError, base_errors.Stop):
     """An adapter could not import its SDK. Ours to fix, and identical for every document."""

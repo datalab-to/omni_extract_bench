@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 
-from .errors import TRANSIENT_STATUSES, VendorTimeout
+from . import errors
 
 class Budget:
     """The uniform per-document deadline. ONE of these per `extract()` call, made first.
@@ -45,7 +45,7 @@ class Budget:
     def check(self, what: str) -> None:
         """Raise if the budget is gone. `what` says what was still outstanding."""
         if self.expired():
-            raise VendorTimeout(f"timed out at the uniform {self.total:.0f}s limit; {what}")
+            raise errors.VendorTimeout(f"timed out at the uniform {self.total:.0f}s limit; {what}")
 
 
 class PollRetry:
@@ -80,7 +80,7 @@ class PollRetry:
         out is the loop's own business -- it re-checks and raises `VendorTimeout`, which is the
         honest answer when the vendor is still working.
         """
-        if status is not None and status not in TRANSIENT_STATUSES:
+        if status is not None and status not in errors.TRANSIENT_STATUSES:
             return False
         self.count += 1
         if self.count > self.limit:

@@ -11,7 +11,7 @@ Results go to stdout as JSON; progress and messages go to stderr. `benchmark` sh
 for a yes unless given `-y`. A `UsageError` (what was asked is wrong) or a `Stop` (an account, a key or a
 dependency) is printed as `oeb <command>: <what was wrong>` and exits 1, after a `benchmark` stopped by a
 `Stop` prints the summaries it wrote; an interrupt exits 130; anything else, a scorer that raises among
-them, is a bug of ours, and is raised as it is, with nothing written.
+them, is a bug of ours, and is raised as it is, with no scores or summary written.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import logging
 import pathlib
 import sys
 
-from .errors import Stop, UsageError, counted
+from . import errors
 
 EXAMPLE_MODELS = ("openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash")
 
@@ -31,14 +31,14 @@ def read_object(path: str, flag: str) -> dict:
     try:
         got = json.loads(pathlib.Path(path).read_text())
     except FileNotFoundError:
-        raise UsageError(f"{flag} {path}: no such file") from None
+        raise errors.UsageError(f"{flag} {path}: no such file") from None
     except IsADirectoryError:
-        raise UsageError(f"{flag} {path} is a folder; pass a JSON file") from None
+        raise errors.UsageError(f"{flag} {path} is a folder; pass a JSON file") from None
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise UsageError(f"{flag} {path} isn't JSON: {exc}") from None
+        raise errors.UsageError(f"{flag} {path} isn't JSON: {exc}") from None
     if not isinstance(got, dict):
-        raise UsageError(f"{flag} {path} holds a JSON {'null' if got is None else type(got).__name__}; it "
-                         "must be a JSON object")
+        raise errors.UsageError(f"{flag} {path} holds a JSON "
+                                f"{'null' if got is None else type(got).__name__}; it must be a JSON object")
     return got
 
 
@@ -58,24 +58,24 @@ def read_options(value: str | None, *, per_provider: bool = True) -> dict:
         parsed = json.loads(value)
     except json.JSONDecodeError:
         if not (path := pathlib.Path(value)).is_file():
-            raise UsageError(f"--options {value!r} is neither inline JSON nor a file that exists; pass a JSON "
-                             "object, or the path of a file holding one") from None
+            raise errors.UsageError(f"--options {value!r} is neither inline JSON nor a file that exists; "
+                                    "pass a JSON object, or the path of a file holding one") from None
         try:
             parsed = json.loads(path.read_text())
         except json.JSONDecodeError as exc:
-            raise UsageError(f"--options: {path} isn't JSON: {exc}") from None
+            raise errors.UsageError(f"--options: {path} isn't JSON: {exc}") from None
     if not isinstance(parsed, dict):
-        raise UsageError(f"--options must be a JSON object, not {value!r:.80}")
+        raise errors.UsageError(f"--options must be a JSON object, not {value!r:.80}")
     def ok(value):
         return (isinstance(value, dict)
                 or (isinstance(value, list) and value
                     and all(isinstance(x, dict) for x in value)))
 
     if per_provider and not all(ok(v) for v in parsed.values()):
-        raise UsageError('--options maps a provider to its options, or to a LIST of them to '
-                         'run it once for each:\n'
-                         '    \'{"datalab": {"mode": "accurate"}}\'\n'
-                         '    \'{"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}\'')
+        raise errors.UsageError('--options maps a provider to its options, or to a LIST of them to '
+                                'run it once for each:\n'
+                                '    \'{"datalab": {"mode": "accurate"}}\'\n'
+                                '    \'{"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}\'')
     return parsed
 
 
@@ -97,17 +97,17 @@ def read_workers(value: str | None) -> int | dict[str, int]:
     try:
         out = json.loads(value)
     except json.JSONDecodeError:
-        raise UsageError(f"--workers is a number, or a JSON object like '{{\"datalab\": 20}}', "
-                         f"not {value!r}") from None
+        raise errors.UsageError(f"--workers is a number, or a JSON object like '{{\"datalab\": 20}}', "
+                                f"not {value!r}") from None
     if isinstance(out, dict):
         return out
-    raise UsageError(f"--workers must be a number or a JSON object, not {value!r}")
+    raise errors.UsageError(f"--workers must be a number or a JSON object, not {value!r}")
 
 
 def read_ids(path: pathlib.Path, flag: str) -> frozenset[str]:
     """A file of ids, one per line; blank lines and `#` comments are skipped."""
     if not path.is_file():
-        raise UsageError(f"{flag} {path}: no such file; it holds ids, one per line")
+        raise errors.UsageError(f"{flag} {path}: no such file; it holds ids, one per line")
     return frozenset(x for line in path.read_text().splitlines() if (x := line.split("#", 1)[0].strip()))
 
 
@@ -121,9 +121,9 @@ def confirm_plan(plan) -> bool:
     NOBODY TO ASK IS NOT THE SAME AS NO. A pipe, a cron job or a CI step has no terminal, so
     it proceeds -- it was scripted, which is consent. Only an interactive session is asked.
     """
-    from rich.console import Console
+    from rich import console
 
-    Console(stderr=True, highlight=False).print(plan)
+    console.Console(stderr=True, highlight=False).print(plan)
     if not sys.stdin.isatty():
         return True
     try:
@@ -151,13 +151,13 @@ def _retryable(p) -> int:
 
 
 def cmd_score(args) -> int:
-    from .scorers.field_matching import score
+    from .scorers import field_matching
 
     pred, gold, schema = (read_object(path, flag) for flag, path in (
         ("--pred", args.pred), ("--gold", args.gold), ("--schema", args.schema)))
     # Note: a bare --order-matters is every array, as the library's `order_matters=True`.
     order = True if args.order_matters == [] else tuple(args.order_matters or ())
-    result = score(pred, gold, schema, order_matters=order, verdicts=args.verdicts)
+    result = field_matching.score(pred, gold, schema, order_matters=order, verdicts=args.verdicts)
     if args.verdicts:
         result["verdicts"] = [v._asdict() for v in result["verdicts"]]
     json.dump(result, sys.stdout, indent=2, default=str)
@@ -167,10 +167,10 @@ def cmd_score(args) -> int:
 
 def cmd_predict(args) -> int:
     """One document through one vendor. The mirror of `oeb score`: files in, JSON out."""
-    from .harness import predict
+    from . import harness
 
-    record = predict(args.provider, args.doc, read_object(args.schema, "--schema"), timeout=args.timeout,
-                     **read_options(args.options, per_provider=False))
+    record = harness.predict(args.provider, args.doc, read_object(args.schema, "--schema"),
+                             timeout=args.timeout, **read_options(args.options, per_provider=False))
     json.dump(record, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
     return 1 if record.get("error") else 0
@@ -198,7 +198,7 @@ def cmd_benchmark(args) -> int:
         return 1
     try:
         summaries = benchmark.execute(p, _say)
-    except Stop:
+    except errors.Stop:
         # Note: `execute` grades what was predicted before it raises, so every run has its summary.
         json.dump(_written(p), sys.stdout, indent=2, default=str)
         sys.stdout.write("\n")
@@ -206,7 +206,7 @@ def cmd_benchmark(args) -> int:
     json.dump(summaries, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
     if n := _retryable(p):
-        _say(f"{counted(n, 'document')} failed in a way that may not recur: --retry-failed predicts "
+        _say(f"{errors.counted(n, 'document')} failed in a way that may not recur: --retry-failed predicts "
              f"{'it' if n == 1 else 'them'} again")
     return 0
 
@@ -245,8 +245,9 @@ def cmd_check(args) -> int:
     missing = [f"{d.doc_id} {col} {f}" for d in docs for col, f in (("doc_path", d.doc_path), ("gt_path", d.gt_path))
                if not f.is_file()]
     if missing:
-        raise UsageError(f"files the manifest names that don't exist: {counted(len(missing), 'file')}, e.g. "
-                         + "; ".join(missing[:3]))
+        raise errors.UsageError(f"files the manifest names that don't exist: "
+                                f"{errors.counted(len(missing), 'file')}, e.g. "
+                                + "; ".join(missing[:3]))
     field_matching.check(docs)
     print(json.dumps({"ok": True, "manifest": args.manifest, "documents": len(docs),
                       "suites": len({d.suite for d in docs}), "inputs": len({d.doc_path for d in docs})}))
@@ -269,46 +270,43 @@ def cmd_providers(args) -> int:
     """
     import dataclasses
 
-    from rich import box
-    from rich.console import Console
-    from rich.table import Table
+    from rich import box, console, table
 
-    from .harness import PROVIDERS
-    from .harness.registry import config_for
+    from . import harness
 
-    console = Console()
+    out = console.Console()
 
     if not args.provider:
-        if not console.is_terminal:
-            for provider in (*PROVIDERS, *EXAMPLE_MODELS):
+        if not out.is_terminal:
+            for provider in (*harness.PROVIDERS, *EXAMPLE_MODELS):
                 print(provider)
             return 0
-        table = Table(box=box.SIMPLE_HEAD, pad_edge=False, show_edge=False)
-        table.add_column("provider")
-        for provider in PROVIDERS:
-            table.add_row(provider)
-        table.add_section()
+        sheet = table.Table(box=box.SIMPLE_HEAD, pad_edge=False, show_edge=False)
+        sheet.add_column("provider")
+        for provider in harness.PROVIDERS:
+            sheet.add_row(provider)
+        sheet.add_section()
         for model in EXAMPLE_MODELS:
-            table.add_row(model)
-        console.print(table)
+            sheet.add_row(model)
+        out.print(sheet)
         print("\nthe three model ids are examples: any OpenRouter org/model id works.")
         return 0
 
-    config = config_for(args.provider)
+    config = harness.registry.config_for(args.provider)
     fields = dataclasses.fields(config)
     if not fields:
-        console.print(f"{args.provider}: no options -- it takes the document and the schema "
-                      f"and nothing else")
+        out.print(f"{args.provider}: no options -- it takes the document and the schema "
+                  f"and nothing else")
         return 0
 
-    table = Table(box=box.SIMPLE_HEAD, pad_edge=False, show_edge=False,
-                  title=args.provider, title_justify="left")
-    table.add_column("option")
-    table.add_column("default", overflow="fold")
+    sheet = table.Table(box=box.SIMPLE_HEAD, pad_edge=False, show_edge=False,
+                        title=args.provider, title_justify="left")
+    sheet.add_column("option")
+    sheet.add_column("default", overflow="fold")
     for field in fields:
         value = getattr(config, field.name)
-        table.add_row(field.name, "''" if value == "" else str(value))
-    console.print(table)
+        sheet.add_row(field.name, "''" if value == "" else str(value))
+    out.print(sheet)
     # Note: a model id's `model` is its name, which --options refuses, so the example is another field.
     if example := next((f.name for f in fields if f.name != "model"), None):
         print(f"\noeb benchmark --providers {args.provider} "
@@ -402,7 +400,8 @@ def main(argv=None) -> int:
                    help="which documents of the dataset: a parquet inside it. Default: the one the "
                         "folder's settings.json names, else manifest.parquet")
     g.add_argument("--score-workers", type=int, default=0, metavar="N",
-                   help="processes used to grade. Default: one per core, capped at 8; 1 grades in this process")
+                   help="processes used to grade. Default: one per core, capped at 8; 1 grades in this "
+                        "process")
     g.add_argument("--no-verdicts", dest="verdicts", action="store_false",
                    help="skip the per-address verdicts")
     g.set_defaults(fn=cmd_grade)
@@ -442,10 +441,10 @@ def main(argv=None) -> int:
     resume = args.cmd == "benchmark"
     try:
         return args.fn(args)
-    except UsageError as exc:
+    except errors.UsageError as exc:
         print(f"oeb {args.cmd}: {exc}", file=sys.stderr)
         return 1
-    except Stop as exc:
+    except errors.Stop as exc:
         print(f"oeb {args.cmd}: {type(exc).__name__}: {exc}"
               + ("; fix it and rerun to resume" if resume else ""), file=sys.stderr)
         return 1

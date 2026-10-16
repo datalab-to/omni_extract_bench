@@ -31,11 +31,14 @@ Modules:
   ones defined in code with `add_adapter`, and exports `out_name` and `VendorUnreachable`;
   `registry.adapter_names()` lists the names `--workers` takes; and
 - the package exports `data`, `scorers`, `gold`, `score`, `summarize`, `check` and `Verdict`; `canon_key`,
-  `cmp_leaf` and `match_rows` stay in `scorers.field_matching`, and `__version__` is gone (it is the
-  distribution's, `importlib.metadata`).
+  `cmp_leaf` and `match_rows` live in `scorers.field_matching.values` and `.matching`, and `__version__`
+  is gone (it is the distribution's, `importlib.metadata`).
 
 Helpers that were public by accident are private: `workers_for`, `_settings` and `_score_one`;
-`benchmark` no longer re-exports `predict`.
+`benchmark` no longer re-exports `predict`. A module imports modules, not names, so it no longer holds
+names it only imported: `benchmark.UsageError` is `errors.UsageError`, `scorers.field_matching.canon_key`
+(and `cmp_leaf`, `states_nothing`) is `scorers.field_matching.values.canon_key`, and
+`harness.schema.resolve_refs` is `scorers.field_matching.resolve_refs`.
 
 The scorer:
 
@@ -47,7 +50,7 @@ The scorer:
   `scored`, `failed`, `coverage`, `accuracy`, `precision`, `recall` and where the errors were; `headline`
   is null for no documents, and the metrics over the scored are null when none was scored;
 - a scorer that raises is a bug of ours: grading stops with it, naming the run and the document, and
-  writes nothing (the `error` status, the `errors` count and exit 2 are gone); with several runs, those
+  writes no scores or summary (the `error` status, the `errors` count and exit 2 are gone); with several runs, those
   graded before the crash keep their new files, and `--score-only` grades again after the fix. An unknown
   `order_matters` name is a `UsageError`;
 - `check(docs)` raises a `GoldError` naming the first document whose gold can't be read or isn't a JSON
@@ -60,7 +63,7 @@ Grading:
   the folder against the whole manifest (`grade_all` passes it), so `--suites` and `--limit` narrow what
   is predicted, never what is scored; `oeb grade` has no `--suites`;
 - grading is fresh every time: every document is graded again, and `verdicts/`, `scores.jsonl`, then
-  `summary.json`, are written when it finishes; an interrupted grading writes nothing. `--rescore` is
+  `summary.json`, are written when it finishes; an interrupted grading writes no scores or summary. `--rescore` is
   gone. Each line, and the summary, carries `scorer` (the release and a digest of the scoring files);
 - a document with no prediction is pending only when a run never attempted it (no record, in a folder
   whose settings.json names a provider); otherwise it fails, so a document left out of a folder of your
@@ -93,7 +96,7 @@ Runs and folders:
 
 - a folder holds one dataset and one manifest: `plan` and `oeb grade` refuse another, in one wording.
   `oeb grade` reads them from the folder's settings.json when not given; a folder of your own gets them
-  there once its first grading succeeds (a failed one writes nothing); every refusal says the folder's
+  there once its first grading succeeds (a failed one writes no settings, scores or summary); every refusal says the folder's
   settings.json can be deleted to start over, and a manifest's path is spelled one way
   (`./manifest.parquet` is `manifest.parquet`, `data.normal`);
 - settings.json records `dataset` (without its revision), `commit` and `manifest` in place of `corpus` and

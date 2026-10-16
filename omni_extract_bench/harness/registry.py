@@ -20,7 +20,7 @@ import typing
 from importlib import metadata
 from types import ModuleType
 
-from ..errors import UsageError
+from .. import errors as base_errors
 from .providers import (azure_cu, datalab, extend, llamaextract, llm_single_shot, mistral,
                         reducto)
 
@@ -72,9 +72,9 @@ def adapter(provider: str):
             exc.add_note(f"while loading adapter {provider!r} from package {ep.dist.name!r}")
             raise
     if provider not in ADAPTERS:
-        raise UsageError(f"unknown provider {provider!r}. Known vendors: "
-                         f"{', '.join(PROVIDERS)}. Any OpenRouter model id also works, "
-                         f"e.g. openai/gpt-5.6-sol")
+        raise base_errors.UsageError(f"unknown provider {provider!r}. Known vendors: "
+                                     f"{', '.join(PROVIDERS)}. Any OpenRouter model id also works, "
+                                     f"e.g. openai/gpt-5.6-sol")
     return ADAPTERS[provider]
 
 
@@ -148,7 +148,7 @@ def config_for(provider: str, options: dict | None = None):
     options = options or {}
     if MODEL_SEPARATOR in provider:
         if "model" in options:
-            raise UsageError(
+            raise base_errors.UsageError(
                 f"{provider}: `model` is the provider name, not an option -- otherwise the "
                 f"run would be stored and published under a model it did not use. Run the "
                 f"one you want: --providers {options['model']}")
@@ -157,7 +157,7 @@ def config_for(provider: str, options: dict | None = None):
         return config_type(**_typed(provider, config_type, options))
     except TypeError as exc:
         known = ", ".join(f.name for f in dataclasses.fields(config_type)) or "(none)"
-        raise UsageError(f"{provider}: {exc}. Its options are: {known}") from None
+        raise base_errors.UsageError(f"{provider}: {exc}. Its options are: {known}") from None
 
 
 def _typed(provider: str, config_type: type, options: dict) -> dict:
@@ -175,7 +175,8 @@ def _typed(provider: str, config_type: type, options: dict) -> dict:
         if t is float and isinstance(v, int) and not isinstance(v, bool):
             out[k] = float(v)
         elif not isinstance(v, t) or (t is not bool and isinstance(v, bool)):
-            raise UsageError(f"{provider}: option {k} is {v!r}, a {type(v).__name__}; it takes a {t.__name__}")
+            raise base_errors.UsageError(f"{provider}: option {k} is {v!r}, a {type(v).__name__}; it takes a "
+                                         f"{t.__name__}")
     return out
 
 

@@ -29,10 +29,9 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from ..schema import MAX_REF_DEPTH, resolve_refs
-from ..budget import Budget, PollRetry
-from ..contract import Cost, Extraction
-from ..errors import MissingCredential, VendorError
+from ...scorers import field_matching
+from .. import schema as SCHEMA
+from .. import budget, contract, errors
 
 BASE = "https://api.cloud.llamaindex.ai"
 TIER = "agentic_plus"
@@ -131,7 +130,7 @@ def prepare_schema(schema: dict) -> dict:
     when the corpus says it is not.
     """
     return to_typed_enum_dialect(
-        drop_schema_metadata(resolve_refs(schema, max_depth=MAX_REF_DEPTH)))
+        drop_schema_metadata(field_matching.resolve_refs(schema, max_depth=SCHEMA.MAX_REF_DEPTH)))
 
 
 def _req(
@@ -151,8 +150,8 @@ def _req(
             body = e.read().decode("utf-8", "replace")[:600]
         except Exception:  # noqa: BLE001
             body = "<body unavailable>"
-        raise VendorError(f"HTTP {e.code} {method} {url.split('?')[0]}: {body}",
-                          status=e.code, body=body) from None
+        raise errors.VendorError(f"HTTP {e.code} {method} {url.split('?')[0]}: {body}",
+                                 status=e.code, body=body) from None
 
 
 def _project_id(key: str) -> str:
@@ -190,7 +189,7 @@ def _dt(v: object) -> datetime | None:
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
-            config: Config = Config()) -> Extraction:
+            config: Config = Config()) -> contract.Extraction:
     """Upload, submit a v2 extract job at `tier`, poll it to a terminal state.
 
     `tier` is an argument rather than an environment variable because it is a PARITY decision:
@@ -200,11 +199,11 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     The job id comes back with the result, so a job that outlived its budget is named in the
     record rather than being anonymous.
     """
-    budget = Budget(timeout)
+    deadline = budget.Budget(timeout)
     key = (os.environ.get("LLAMA_CLOUD_API_KEY")
            or os.environ.get("LLAMAPARSE_API_KEY"))
     if not key:
-        raise MissingCredential("LLAMA_CLOUD_API_KEY (or LLAMAPARSE_API_KEY) is not set")
+        raise errors.MissingCredential("LLAMA_CLOUD_API_KEY (or LLAMAPARSE_API_KEY) is not set")
 
     project_id = _project_id(key)
     file_id = _upload(pdf, key)
@@ -218,21 +217,21 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     job_id = job.get("id") or job.get("job_id")
 
     polls = 0
-    retry = PollRetry(budget)
+    retry = budget.PollRetry(deadline)
     while True:
-        budget.check(f"job {job_id} was still running server-side after {polls} polls")
+        deadline.check(f"job {job_id} was still running server-side after {polls} polls")
         try:
             body = _req("GET", f"{BASE}/api/v2/extract/{job_id}"
                                f"?project_id={project_id}&expand=metadata", key)
-        except VendorError as exc:
+        except errors.VendorError as exc:
             if retry.again(exc.status):
                 continue
             raise
         except (urllib.error.URLError, OSError, ValueError) as exc:
             if retry.again():
                 continue
-            raise VendorError(f"job {job_id}: polling failed repeatedly: {exc}"[:300],
-                              status=None) from None
+            raise errors.VendorError(f"job {job_id}: polling failed repeatedly: {exc}"[:300],
+                                     status=None) from None
         retry.ok()
         polls += 1
         status = body.get("status")
@@ -241,19 +240,19 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
         time.sleep(config.poll_interval)
 
     if status in ("FAILED", "ERROR", "CANCELLED"):
-        raise VendorError(f"LlamaExtract {status}: {body.get('error_message')}", status=200)
+        raise errors.VendorError(f"LlamaExtract {status}: {body.get('error_message')}", status=200)
 
     result = body.get("extract_result") or body.get("data") or body.get("result")
     if not isinstance(result, dict) or not result:
-        raise VendorError(f"{status} with no extraction: {json.dumps(body)[:300]}", status=200)
+        raise errors.VendorError(f"{status} with no extraction: {json.dumps(body)[:300]}", status=200)
 
     start, end = _dt(body.get("created_at")), _dt(body.get("updated_at"))
-    return Extraction(
+    return contract.Extraction(
         result=result,
         raw={**{k: v for k, v in body.items()
                 if k not in ("extract_result", "data", "result")},
              "tier": config.tier,
              "server_latency_s": round((end - start).total_seconds(), 2) if start and end else None},
-        cost=Cost(),
+        cost=contract.Cost(),
         job_id=job_id)
 

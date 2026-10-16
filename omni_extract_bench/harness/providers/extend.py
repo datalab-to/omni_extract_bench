@@ -3,10 +3,9 @@ import dataclasses, json, os, time
 from pathlib import Path
 import httpx
 
-from ..schema import MAX_REF_DEPTH, resolve_refs
-from ..budget import Budget, PollRetry
-from ..contract import Cost, Extraction
-from ..errors import MissingCredential, VendorError, VendorUnreachable
+from ...scorers import field_matching
+from .. import schema as SCHEMA
+from .. import budget, contract, errors
 
 BASE = "https://api.extend.ai"
 API_VERSION = "2026-02-09"
@@ -74,22 +73,22 @@ def submit(c: httpx.Client, file_id: str, schema: dict, base_url: str = BASE,
     return rid
 
 
-def poll(c: httpx.Client, run_id: str, budget, base_url: str = BASE) -> dict:
+def poll(c: httpx.Client, run_id: str, deadline, base_url: str = BASE) -> dict:
     polls = 0
-    retry = PollRetry(budget)
+    retry = budget.PollRetry(deadline)
     while True:
-        budget.check(f"run {run_id} was still processing after {polls} polls")
+        deadline.check(f"run {run_id} was still processing after {polls} polls")
         try:
             r = c.get(f"{base_url}/extract_runs/{run_id}", timeout=60)
         except httpx.TransportError as exc:
             if retry.again():
                 continue
-            raise VendorUnreachable(f"polling failed: {exc}"[:300]) from None
+            raise errors.VendorUnreachable(f"polling failed: {exc}"[:300]) from None
         if r.status_code >= 400:
             if retry.again(r.status_code):
                 continue
-            raise VendorError(f"poll HTTP {r.status_code}: {r.text[:250]}",
-                              status=r.status_code, body=r.text)
+            raise errors.VendorError(f"poll HTTP {r.status_code}: {r.text[:250]}",
+                                     status=r.status_code, body=r.text)
         retry.ok()
         polls += 1
         b = r.json()
@@ -118,7 +117,7 @@ def extraction_of(run: dict):
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = DEFAULT_TIMEOUT_S,
-            config: Config = Config()) -> Extraction:
+            config: Config = Config()) -> contract.Extraction:
     """Get a generic processor, upload, submit a run, poll it to a terminal state.
 
     Extend does not report a per-document cost, so `cost.usd` is None and the record says
@@ -126,37 +125,37 @@ def extract(pdf: Path, schema: dict, *, timeout: float = DEFAULT_TIMEOUT_S,
     """
     key = os.environ.get("EXTEND_API_KEY")
     if not key:
-        raise MissingCredential("EXTEND_API_KEY is not set")
+        raise errors.MissingCredential("EXTEND_API_KEY is not set")
 
-    budget = Budget(timeout)
+    deadline = budget.Budget(timeout)
     with httpx.Client(headers=headers(key, config.api_version), timeout=120) as c:
         try:
             file_id = upload(c, pdf, config.base_url)
             run_id = submit(c, file_id, schema, config.base_url, config.array_strategy)
         except httpx.HTTPStatusError as exc:
-            raise VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
-                              status=exc.response.status_code,
-                              body=exc.response.text) from None
+            raise errors.VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
+                                     status=exc.response.status_code,
+                                     body=exc.response.text) from None
         except RuntimeError as exc:
-            raise VendorError(str(exc)[:300], status=200) from None
-        run = poll(c, run_id, budget, config.base_url)
+            raise errors.VendorError(str(exc)[:300], status=200) from None
+        run = poll(c, run_id, deadline, config.base_url)
 
     status = str(run.get("status", "")).upper()
     payload, envelope_path = extraction_of(run)
     result = restore_reserved(payload)
     if not isinstance(result, dict) or not result:
-        raise VendorError(f"run finished {status} with no extraction: {json.dumps(run)[:300]}",
-                          status=200)
+        raise errors.VendorError(f"run finished {status} with no extraction: {json.dumps(run)[:300]}",
+                                 status=200)
     usage = run.get("usage") or {}
     credits = usage.get("totalCredits", usage.get("credits"))
-    return Extraction(result=result,
-                      raw={**{k: v for k, v in run.items()
+    return contract.Extraction(result=result,
+                               raw={**{k: v for k, v in run.items()
                               if k not in ("output", "result", "edited")},
                            "envelope_path": envelope_path},
-                      cost=Cost(credits=credits if isinstance(credits, (int, float))
+                               cost=contract.Cost(credits=credits if isinstance(credits, (int, float))
                                         and not isinstance(credits, bool) else None,
-                                source="usage.totalCredits" if credits is not None else None),
-                      job_id=run_id)
+                                         source="usage.totalCredits" if credits is not None else None),
+                               job_id=run_id)
 
 
 #: Extend reserves `id`. `rename_reserved` (in `prepare_schema`) and `restore_reserved` (in
@@ -264,7 +263,7 @@ def to_strict_dialect(node, in_items=False, allowed=STRICT_ALLOWED_KEYS):
 def prepare_schema(schema):
     """The schema Extend is sent: reserved names aliased, $refs inlined, strict dialect."""
     return to_strict_dialect(
-        resolve_refs(rename_reserved(schema), max_depth=MAX_REF_DEPTH))
+        field_matching.resolve_refs(rename_reserved(schema), max_depth=SCHEMA.MAX_REF_DEPTH))
 
 
 def restore_reserved(obj):

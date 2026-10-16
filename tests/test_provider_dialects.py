@@ -19,9 +19,8 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 from omni_extract_bench.harness import schema as SCHEMA  # noqa: E402
 from omni_extract_bench.harness.providers import datalab  # noqa: E402
-from omni_extract_bench.harness.schema import (  # noqa: E402
-    resolve_refs as deref, strip_benchmark_keys as strip_bench_keys,
-)
+from omni_extract_bench.harness.schema import strip_benchmark_keys as strip_bench_keys
+from omni_extract_bench.scorers.field_matching import resolve_refs as deref
 from omni_extract_bench.harness.errors import VendorError  # noqa: E402
 from omni_extract_bench.harness.document import _is_account_failure  # noqa: E402
 

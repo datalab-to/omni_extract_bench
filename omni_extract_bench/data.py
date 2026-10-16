@@ -30,7 +30,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .errors import UsageError, counted
+from . import errors
 
 log = logging.getLogger(__name__)
 REPO = "datalab-to/omni_extract_bench"
@@ -46,7 +46,7 @@ COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
 NO_SUITE = "other"          # the suite of a document whose manifest gives none (null or "")
 
 
-class ManifestError(UsageError):
+class ManifestError(errors.UsageError):
     """A manifest, or a row of one, that breaks the dataset's rules; the message names it and the fix."""
 
 
@@ -77,14 +77,14 @@ def _hf_dataset(dataset: str | Path) -> tuple[str, str | None] | None:
     form = f"hf://datasets/<org>/<name>[@<revision>], e.g. {DEFAULT_DATASET}"
     s = str(dataset)
     if isinstance(dataset, Path) and s.startswith("hf:"):
-        raise UsageError(f"the dataset {s!r} was made a Path, which folds the '//' out of an "
-                         f"address. Pass it as a str: {form}")
+        raise errors.UsageError(f"the dataset {s!r} was made a Path, which folds the '//' out of an "
+                                f"address. Pass it as a str: {form}")
     if not s.startswith("hf://"):
         return None
     org, _, name = s.removeprefix(HF_PREFIX).partition("/")
     name, at, revision = name.partition("@")
     if not s.startswith(HF_PREFIX) or not org or not name or "/" in name or (at and not revision):
-        raise UsageError(f"{s!r} does not name a HuggingFace dataset. Write it as {form}")
+        raise errors.UsageError(f"{s!r} does not name a HuggingFace dataset. Write it as {form}")
     return f"{org}/{name}", revision or None
 
 
@@ -102,12 +102,12 @@ def download_dataset(dataset: str | Path) -> Path:
         if not root.is_dir():
             hint = (f"; a Hugging Face dataset is written {HF_PREFIX}<org>/<name>, with two slashes"
                     if str(dataset).startswith("hf:") else "")
-            raise UsageError(f"no dataset folder at {root}; pass --dataset a dataset folder "
-                             f"or {HF_PREFIX}<org>/<name>{hint}")
+            raise errors.UsageError(f"no dataset folder at {root}; pass --dataset a dataset folder "
+                                    f"or {HF_PREFIX}<org>/<name>{hint}")
         return root
     repo, revision = at
+    import huggingface_hub
     from huggingface_hub import errors as hf_errors
-    from huggingface_hub import snapshot_download
 
     log.info("reading %s from the Hugging Face cache, downloading what it lacks", dataset)
     # Note: hundreds of files; the Hub drops some requests under that load, and a download picks up
@@ -115,23 +115,23 @@ def download_dataset(dataset: str | Path) -> Path:
     # network with nothing cached, is the same on every attempt, so it fails at once.
     for attempt in range(DOWNLOAD_ATTEMPTS):
         try:
-            return Path(snapshot_download(repo, repo_type="dataset", revision=revision, max_workers=4))
+            return Path(huggingface_hub.snapshot_download(repo, repo_type="dataset", revision=revision, max_workers=4))
         except (hf_errors.RepositoryNotFoundError, hf_errors.GatedRepoError,
                 hf_errors.RevisionNotFoundError) as exc:
-            raise UsageError(f"can't read dataset {dataset}: {type(exc).__name__}. Check the repo and "
-                             "revision, and that you're logged in with access (huggingface-cli login)"
-                             ) from None
+            raise errors.UsageError(f"can't read dataset {dataset}: {type(exc).__name__}. Check the repo and "
+                                    "revision, and that you're logged in with access (huggingface-cli login)"
+                                    ) from None
         except (hf_errors.LocalEntryNotFoundError, hf_errors.OfflineModeIsEnabled) as exc:
             # Note: offline by the user's own setting, connecting changes nothing; unsetting it does.
             how = ("HF_HUB_OFFLINE is set; unset it" if os.environ.get("HF_HUB_OFFLINE", "") not in ("", "0")
                    else "the Hub can't be reached; connect")
-            raise UsageError(f"can't read dataset {dataset}: it isn't in the Hugging Face cache, and {how}, "
-                             f"or pass --dataset a folder ({type(exc).__name__})") from None
+            raise errors.UsageError(f"can't read dataset {dataset}: it isn't in the Hugging Face cache, and "
+                                    f"{how}, or pass --dataset a folder ({type(exc).__name__})") from None
         except hf_errors.HfHubHTTPError as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             if status in (401, 403):
-                raise UsageError(f"can't read dataset {dataset}: HTTP {status}. Log in with access to it "
-                                 "(huggingface-cli login)") from None
+                raise errors.UsageError(f"can't read dataset {dataset}: HTTP {status}. Log in with access to "
+                                        "it (huggingface-cli login)") from None
             if attempt == DOWNLOAD_ATTEMPTS - 1: raise
             log.warning("downloading %s failed (HTTP %s); trying again in %ds", dataset, status,
                         30 * (attempt + 1))
@@ -208,12 +208,12 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
                              f"It names this document's prediction, its record and its row in "
                              f"scores.jsonl, so it has to be one path component.")
         if row["suite"] is not None and not isinstance(row["suite"], str):
-            raise ManifestError(f"{path}: row {n} ({doc_id}) has suite {row['suite']!r}; it must be a string, "
-                                f"or null for {NO_SUITE!r}")
+            raise ManifestError(f"{path}: row {n} ({doc_id}) has suite {row['suite']!r}; it must be a "
+                                f"string, or null for {NO_SUITE!r}")
         if not _inside(row["doc_path"]):
             raise ManifestError(f"{path}: row {n} ({doc_id}) has doc_path {row['doc_path']!r}; it must be a "
-                                f"relative path inside the dataset to a file, e.g. docs/<file>.pdf (any name; "
-                                f"documents may share one)")
+                                f"relative path inside the dataset to a file, e.g. docs/<file>.pdf (any "
+                                f"name; documents may share one)")
         if not _inside(row["gt_path"], doc_id):
             raise ManifestError(f"{path}: row {n} ({doc_id}) has gt_path {row['gt_path']!r}; it must be a "
                                 f"relative path inside the dataset named for its document, "
@@ -237,8 +237,8 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
     by: dict[str, list[str]] = {}
     for d in docs: by.setdefault(d.doc_id.casefold(), []).append(d.doc_id)
     if twice := [ids for ids in by.values() if len(ids) > 1]:
-        raise ManifestError(f"{path}: doc ids in the manifest more than once (ignoring case, since each names "
-                            f"files): {counted(len(twice), 'id')}, e.g. {twice[:3]}")
+        raise ManifestError(f"{path}: doc ids in the manifest more than once (ignoring case, since each "
+                            f"names files): {errors.counted(len(twice), 'id')}, e.g. {twice[:3]}")
     return root, tuple(docs)
 
 
@@ -254,17 +254,19 @@ def select(docs: Sequence[Doc], suites: Iterable[str] | None = None, limit: int 
         if isinstance(n, bool) or not isinstance(n, int):
             raise TypeError(f"{name} is a whole number, not {n!r}")
         if n < 0:
-            raise UsageError(f"--{name} is {n}, but it counts documents, so it can't be negative; 0 is no limit")
+            raise errors.UsageError(f"--{name} is {n}, but it counts documents, so it can't be negative; 0 "
+                                    "is no limit")
     rows = tuple(docs)
     known = {r.suite for r in rows}
     if suites is not None and (bad := sorted(suites - known)):
-        raise UsageError(f"unknown suites {bad}; the dataset's suites are {sorted(known)}")
+        raise errors.UsageError(f"unknown suites {bad}; the dataset's suites are {sorted(known)}")
     rows = tuple(r for r in rows if suites is None or r.suite in suites)
     if only is not None:
         if bad := sorted(only - {r.doc_id for r in rows}):
             where = " (or its suites)" if suites else ""
-            raise UsageError(f"documents asked for that aren't in the dataset{where}: "
-                             f"{counted(len(bad), 'document')}, e.g. {bad[:3]}; nothing has been run")
+            raise errors.UsageError(f"documents asked for that aren't in the dataset{where}: "
+                                    f"{errors.counted(len(bad), 'document')}, e.g. {bad[:3]}; nothing has "
+                                    "been run")
         rows = tuple(r for r in rows if r.doc_id in only)
     if sample and rows:
         by: dict[str, list] = {}
@@ -307,7 +309,7 @@ def _on_hub(dataset: str | Path, manifest: str) -> None:
         return
     repo, revision = at
     try:
-        from huggingface_hub import file_exists
+        import huggingface_hub
     except ImportError:
         raise ImportError(
             "huggingface_hub is needed to fetch the benchmark corpus, and is not installed:\n"
@@ -315,7 +317,7 @@ def _on_hub(dataset: str | Path, manifest: str) -> None:
             "The scorer itself needs none of it -- `score` and `oeb score` work without."
         ) from None
     try:
-        missing = not file_exists(repo, manifest, repo_type="dataset", revision=revision)
+        missing = not huggingface_hub.file_exists(repo, manifest, repo_type="dataset", revision=revision)
     except OSError:
         missing = False
     if missing:

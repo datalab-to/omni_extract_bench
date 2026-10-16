@@ -285,7 +285,8 @@ again, it says how many. A `UsageError` (what was asked is wrong) or a `Stop` (a
 dependency) is one line, `oeb benchmark: ...`, and exits 1; after a `Stop`, the summaries grading wrote
 are printed to stdout first. Ctrl-C exits 130 and grades nothing. Either way, what was predicted is
 kept, and the same command resumes. A document whose grading raises in our scorer is a bug of ours:
-grading stops with the traceback, naming the run and the document, and that run writes nothing, since a
+grading stops with the traceback, naming the run and the document, and that run writes no scores or summary (a lost prediction may
+already have been rebuilt from its record), since a
 summary with it left out would be wrong. Runs are graded one after another, so those graded before it
 keep their new files, each a whole grading. Fix the bug, then grade again with `--score-only`. A gold that
 can't be read stops it too, as a `GoldError`.
@@ -356,9 +357,9 @@ the whole, use another `--out` for the sample.
 
 It's **resumable**, and safe to run twice.
 
-- A document is predicted again only when it has no record. The record is written last, so
-  its presence means the prediction beside it is complete, and it is the source of truth for an
-  answer: a prediction lost or broken beside a record of an answer is rebuilt from it, with no call,
+- A document is predicted again only when it has no record. The prediction is written before the
+  record, so a record never stands beside a half-written prediction, and the record is the source of
+  truth for an answer: a prediction lost or broken beside a record of an answer is rebuilt from it, with no call,
   whenever the run is graded (`--score-only`, `oeb grade` and the grading after predicting). A
   prediction of `{}` is an answer like any other: scored, with every field the gold states unfound.
 - `--retry-failed` predicts again documents whose recorded failure may not recur: a timeout, an
@@ -371,7 +372,7 @@ It's **resumable**, and safe to run twice.
   vendor, and `verdicts/`, `scores.jsonl` and then `summary.json` are written when it finishes. So a
   run's scores are always one grading's, a gold correction or a new scorer reaches a run on its next
   grading, and `--suites`, `--limit`, `--sample` and `--docs` narrow what is predicted, never what is
-  scored. An interrupted grading writes nothing; the last finished grading's files stand. Each line
+  scored. An interrupted grading writes no scores or summary; the last finished grading's files stand. Each line
   says which scoring code (`scorer`, the release and a digest of the scoring files) graded it.
 - A document is pending, not failed, when it was never attempted: no line, counted in the
   summary's `pending` (and each suite's). While any is pending the `headline` is null, since a
@@ -447,7 +448,7 @@ The first grades against the dataset and manifest the folder's `settings.json` n
 the second against a dataset of your own, and one manifest in it. A folder's first grading that
 succeeds writes its dataset and manifest into its `settings.json` (a run's already has them), so a
 later `oeb grade mine/` grades against the same ones, and another dataset or manifest is refused
-(delete `mine/settings.json` to start the folder over); a grading that fails writes nothing. A grading
+(delete `mine/settings.json` to start the folder over); a grading that fails writes no settings, scores or summary. A grading
 none of whose files names a document of the manifest is refused, so a forgotten `--dataset` can't
 grade your documents against ours. Grading covers the whole manifest; `per_suite` in the summary
 says how each suite went. Files in `predictions/` named for no document of the manifest, and
@@ -464,7 +465,7 @@ problem is printed, naming its row. A dataset that passes is printed as JSON: `d
 The folder is your submission, so a document with no prediction fails: a document left out is one
 your system didn't answer. The folder gets `scores.jsonl` and `summary.json`, as a run's does; the
 summary is printed to stdout and the closing line to stderr. A `UsageError` or a `Stop` is one line,
-`oeb grade: ...`, and exits 1; a scorer that raises is a traceback, with nothing written.
+`oeb grade: ...`, and exits 1; a scorer that raises is a traceback, with no scores or summary written.
 
 From Python, a folder of your own is a `Run` whose `out` is the folder itself (`provider` names it in
 the score lines; its options are `{}`), graded against the whole manifest:

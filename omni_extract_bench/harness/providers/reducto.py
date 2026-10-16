@@ -27,13 +27,7 @@ from pathlib import Path
 
 import httpx
 
-from ..budget import Budget, PollRetry
-
-from ..contract import Cost, Extraction
-
-from ..errors import MissingCredential, VendorError, VendorUnreachable
-
-from ..responses import as_object
+from .. import budget, contract, errors, responses
 
 BASE_URL = "https://platform.reducto.ai"
 DEFAULT_DEEP_EXTRACT_MODEL = "v2"
@@ -138,11 +132,11 @@ def _submit(client: httpx.Client, api_key: str, payload: dict) -> str:
 
 
 def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
-          budget) -> dict:
+          deadline) -> dict:
     polls = 0
-    retry = PollRetry(budget)
+    retry = budget.PollRetry(deadline)
     while True:
-        budget.check(f"job {job_id} was still running server-side after {polls} polls")
+        deadline.check(f"job {job_id} was still running server-side after {polls} polls")
         try:
             r = client.get(
                 f"{BASE_URL}/job/{job_id}",
@@ -153,14 +147,14 @@ def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
         except httpx.HTTPStatusError as exc:
             if retry.again(exc.response.status_code):
                 continue
-            raise VendorError(f"poll HTTP {exc.response.status_code}: "
-                              f"{exc.response.text[:250]}",
-                              status=exc.response.status_code,
-                              body=exc.response.text) from None
+            raise errors.VendorError(f"poll HTTP {exc.response.status_code}: "
+                                     f"{exc.response.text[:250]}",
+                                     status=exc.response.status_code,
+                                     body=exc.response.text) from None
         except httpx.TransportError as exc:
             if retry.again():
                 continue
-            raise VendorUnreachable(f"polling failed: {exc}"[:300]) from None
+            raise errors.VendorUnreachable(f"polling failed: {exc}"[:300]) from None
         retry.ok()
         polls += 1
         body = r.json()
@@ -176,7 +170,7 @@ def prepare_schema(schema: dict) -> dict:
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
-            config: Config = Config()) -> Extraction:
+            config: Config = Config()) -> contract.Extraction:
     """Upload, submit an async extract, poll to completion.
 
     A job that outlives its budget is named in the record by `job_id`, so it can be chased by
@@ -184,9 +178,9 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     """
     key = os.environ.get("REDUCTO_API_KEY")
     if not key:
-        raise MissingCredential("REDUCTO_API_KEY is not set")
+        raise errors.MissingCredential("REDUCTO_API_KEY is not set")
 
-    budget = Budget(timeout)
+    deadline = budget.Budget(timeout)
     with httpx.Client() as client:
         try:
             file_id = _upload(client, key, pdf)
@@ -194,13 +188,13 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                 file_id, schema, config.system_prompt, config.deep_extract_model,
                 config.agentic_table_mode))
         except httpx.HTTPStatusError as exc:
-            raise VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
-                              status=exc.response.status_code,
-                              body=exc.response.text) from None
+            raise errors.VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
+                                     status=exc.response.status_code,
+                                     body=exc.response.text) from None
         except RuntimeError as exc:
-            raise VendorError(str(exc)[:300], status=200) from None
+            raise errors.VendorError(str(exc)[:300], status=200) from None
 
-        body = _poll(client, key, job_id, config.poll_interval, budget)
+        body = _poll(client, key, job_id, config.poll_interval, deadline)
         try:
             latency_s = _server_duration(client, key, job_id)
         except Exception:  # noqa: BLE001
@@ -208,21 +202,21 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
 
     status = body.get("status") or "?"
     if status != "Completed":
-        raise VendorError(f"reducto {status}: {json.dumps(body)[:300]}", status=200)
+        raise errors.VendorError(f"reducto {status}: {json.dumps(body)[:300]}", status=200)
     extract_resp = body.get("result") or {}
-    extraction = as_object(extract_resp.get("result", extract_resp))
+    extraction = responses.as_object(extract_resp.get("result", extract_resp))
     if extraction is None:
-        raise VendorError(f"completed with no extraction: {json.dumps(body)[:300]}", status=200)
+        raise errors.VendorError(f"completed with no extraction: {json.dumps(body)[:300]}", status=200)
 
     usage = dict(extract_resp.get("usage") or {})
     credits = usage.get("credits")
-    return Extraction(result=extraction,
-                      raw={**{k: v for k, v in body.items() if k != "result"},
+    return contract.Extraction(result=extraction,
+                               raw={**{k: v for k, v in body.items() if k != "result"},
                            "result": {k: v for k, v in extract_resp.items() if k != "result"},
                            "latency_s": latency_s},
-                      cost=Cost(credits=credits if isinstance(credits, (int, float))
+                               cost=contract.Cost(credits=credits if isinstance(credits, (int, float))
                                         and not isinstance(credits, bool) else None,
-                                source="usage.credits" if credits is not None else None),
-                      job_id=job_id)
+                                         source="usage.credits" if credits is not None else None),
+                               job_id=job_id)
 
 
