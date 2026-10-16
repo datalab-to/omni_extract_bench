@@ -619,7 +619,7 @@ with _mock.patch.object(DS, "_on_hub", lambda *a: None), \
     (_out / "settings.json").write_text(json.dumps({"dataset": _hub, "commit": "c1"}))
     with _mock.patch.object(_logging.getLogger("omni_extract_bench.benchmark"), "warning") as _warned:
         _p = _bench.plan(["datalab"], out=_at / "runs", dataset=_hub)
-    _msg = _warned.call_args[0][0] if _warned.called else ""
+    _msg = (_warned.call_args[0][0] % _warned.call_args[0][1:]) if _warned.called else ""
     report("plan warns when a run was made at another commit, and carries on",
            len(_p.docs) == 2 and "c1" in _msg and "c2" in _msg and "--out" in _msg, _msg)
     (_out / "settings.json").write_text(json.dumps({"dataset": _hub, "commit": "c2"}))

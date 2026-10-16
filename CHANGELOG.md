@@ -69,7 +69,10 @@ Grading:
 - a prediction is read only under its exact name, case too, so a folder grades the same on every system.
   Grading warns once about files named for no document and predictions it couldn't read (graded as
   failed);
-- a failed call writes no prediction: predictions/ holds only answers, and the error is in records/; and
+- a failed call writes no prediction: predictions/ holds only answers, and the error is in records/;
+- a gold that can't be read, or isn't a JSON object, is a `GoldError` naming its document (`gold`
+  raises it, and `check` is `gold` over every document); grading stops on it, as omni-parse-bench
+  does, since it is the dataset's problem, not a scorer bug; and
 - `owed(plan, run)` counts what grading will grade over the whole manifest, by the same rule as `grade`.
 
 Runs and folders:

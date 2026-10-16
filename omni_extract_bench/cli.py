@@ -1,4 +1,4 @@
-"""Command-line interface.
+"""The `oeb` command: a thin wrapper over `score`, `predict` and `benchmark`.
 
     oeb score      --pred p.json --gold g.json --schema s.json [--verdicts]
     oeb benchmark  --providers datalab reducto --out runs/

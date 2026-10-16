@@ -945,13 +945,20 @@ class Verdict(NamedTuple):
 
 
 
-def gold(doc: Any) -> Json:
-    """A document's ground truth, the extraction, from its gold file (`doc.gt_path`, a `data.Doc`'s)."""
+def gold(doc: Any) -> dict:
+    """A document's ground truth, the extraction, from its gold file (`doc.gt_path`, a `data.Doc`'s); a
+    `GoldError` naming the document when the file can't be read or isn't a JSON object."""
     import json
     from pathlib import Path
 
-    return json.loads(Path(doc.gt_path).read_text())
-
+    try:
+        g = json.loads(Path(doc.gt_path).read_text())
+    except (OSError, ValueError) as exc:
+        raise GoldError(f"{doc.doc_id}: its gold {doc.gt_path} can't be read: {exc}") from None
+    if isinstance(g, dict): return g
+    kind = "null" if g is None else type(g).__name__
+    raise GoldError(f"{doc.doc_id}: its gold {doc.gt_path} is a JSON {kind}; it must be a JSON object, the "
+                    "extraction")
 
 
 class GoldError(UsageError):
@@ -967,15 +974,7 @@ def check(docs: Iterable[Any]) -> None:
     means scoring, which costs as much as grading, and grading names a document that fails."""
     if hasattr(docs, "gt_path"):
         raise TypeError("check takes the documents, an iterable of them; for one, pass [doc]")
-    for d in docs:
-        try:
-            g = gold(d)
-        except (OSError, ValueError) as exc:
-            raise GoldError(f"{d.doc_id}: its gold {d.gt_path} can't be read: {exc}") from None
-        if isinstance(g, dict): continue
-        kind = "null" if g is None else type(g).__name__
-        raise GoldError(f"{d.doc_id}: its gold {d.gt_path} is a JSON {kind}; it must be a JSON object, "
-                         "the extraction")
+    for d in docs: gold(d)
 
 
 ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """The whole benchmark: fetch the corpus, predict with each vendor, score, write it down.
 
     oeb benchmark --providers datalab reducto --out runs/
@@ -173,10 +172,13 @@ def recorded(run: Run, doc_id: str) -> dict | None:
         got = json.loads(path.read_text())
     except FileNotFoundError:
         return None
-    except (OSError, json.JSONDecodeError) as exc:
-        log.warning("%s isn't readable (%s); its document counts as not predicted", path, exc)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        log.warning("%s isn't readable JSON (%s); it is treated as missing", path, exc)
         return None
-    return got if isinstance(got, dict) else None
+    if not isinstance(got, dict):
+        log.warning("%s isn't a record; it is treated as missing", path)
+        return None
+    return got
 
 
 def needs(run: Run, doc: data.Doc, retry_failed: bool = False) -> bool:
@@ -367,14 +369,15 @@ SCORE_WORKERS = min(8, os.cpu_count() or 1)
 
 
 def _score_one(doc: data.Doc, *, run: Run, verdicts: Path | None, listed: frozenset[str]) -> dict:
-    """Grade one prediction on disk and return its line. Module-level and picklable for the process pool,
-    and it never raises: one bad document is one line. Its verdicts are written into the folder `verdicts`,
+    """Grade one prediction on disk and return its line. Module-level and picklable for the process pool;
+    one bad prediction is one line. Its verdicts are written into the folder `verdicts`,
     when given; `listed`, predictions/'s file names, says by exact name whether it has a prediction.
 
     A document fails (status `failed`) when its record says the call failed, or when it has no usable
     prediction: a folder of predictions you bring is your submission, so a missing file counts against
-    coverage rather than being left out of it. A grading that raises is ours (status `error`), left out of
-    the scores."""
+    coverage rather than being left out of it. A gold that can't be read (`scorer.GoldError`) is the
+    dataset's, so it is raised and stops the grading; any other grading that raises is ours (status
+    `error`), left out of the scores."""
     row = {"run": run.out.name, "doc_id": doc.doc_id, "suite": doc.suite, "provider": run.provider,
            "scorer": SCORER}
     if failed := (recorded(run, doc.doc_id) or {}).get("error"):
@@ -385,8 +388,9 @@ def _score_one(doc: data.Doc, *, run: Run, verdicts: Path | None, listed: frozen
         return {**row, "status": "failed", "error": UNREADABLE}
     if not pred:
         return {**row, "status": "failed", "error": "empty prediction"}
+    gold = scorer.gold(doc)
     try:
-        result = scorer.score(pred, scorer.gold(doc), doc.schema, verdicts=verdicts is not None)
+        result = scorer.score(pred, gold, doc.schema, verdicts=verdicts is not None)
         if verdicts is not None:
             verdicts.mkdir(parents=True, exist_ok=True)
             (verdicts / f"{doc.doc_id}.jsonl").write_text(
@@ -401,7 +405,7 @@ def predicted(run: Run, doc_id: str) -> dict | None:
     or none readable as an object. Quiet: `grade` says once how many it couldn't read."""
     try:
         got = json.loads((run.predictions / f"{doc_id}.json").read_text())
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     return got if isinstance(got, dict) else None
 
@@ -557,22 +561,22 @@ def plan(providers: Sequence[str], *, out: str | Path = Path("runs"), dataset: s
             raise UsageError(f"no run at {run.out}: {run.provider} with these settings was never predicted "
                              "under this --out; check --out and --options, or drop --score-only")
         said = settled(run.out, str(dataset), manifest)
-        if msg := _commit_moved(run, said.get("commit"), commit):
-            log.warning(msg)
+        if (msg := _another_commit(run, said.get("commit"), commit)) is not None:
+            log.warning("%s", msg)
     return Plan(tuple(runs.values()), tuple(docs), str(dataset), manifest, timeout,
                 workers, score_workers, verdicts, score_only, retry_failed)
 
 
-def _commit_moved(run: Run, was: str | None, commit: str | None) -> str | None:
-    """The warning for a run made at commit `was` of its dataset, planned at `commit`, or `None`.
+def _another_commit(r: Run, was: str | None, now: str | None) -> str | None:
+    """A warning when a run made at one commit of its dataset is planned at another, else None.
 
     Note: warned, not refused: a new commit is usually a gold correction, which grading takes in on its
-    own; but a document that changed would be graded on an old prediction."""
-    if not commit or was in (None, commit):
-        return None
-    return (f"{run.out} was made at commit {was} of its dataset, and this plan uses {commit}: its "
-            f"predictions made at {was} will be graded against the gold at {commit}. Pass another "
-            f"--out to keep them apart.")
+    own. But the run's documents were predicted at the old commit, so a changed document would be graded
+    on an old prediction; a new --out keeps the two apart."""
+    if was is None or now is None or was == now: return None
+    return (f"{r.out} was predicted at commit {was} of its dataset, and this is commit {now}: its "
+            "predictions will be graded against this commit's gold. If the documents changed, pass another "
+            "--out to predict them again")
 
 
 def predict_all(p: Plan) -> None:
@@ -707,7 +711,7 @@ def execute(p: Plan, say: Callable[[str], None] = print) -> dict[str, dict]:
 
 
 def describe(p: Plan) -> str:
-    """What `execute(p)` would do, as plain text (`progress.plan_view`), with no vendor call."""
+    """What `execute(p)` would do, as plain text (`progress.describe`), with no vendor call."""
     from . import progress
 
     return progress.describe(p)

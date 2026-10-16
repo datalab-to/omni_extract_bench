@@ -150,3 +150,20 @@ def test_a_file_of_a_suite_is_never_stray(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="omni_extract_bench"):
         s = benchmark.grade(benchmark.Run("mine", {}, run), data.read_manifest(ds)[1], QUIET, score_workers=1)
     assert "named for no document" not in caplog.text and set(s["per_suite"]) == {"s", "t"}
+
+
+def test_a_gold_that_cant_be_read_stops_grading_naming_its_document(tmp_path, capsys):
+    """A bad gold is the dataset's problem, as in omni-parse-bench: refused (exit 1), not a scorer bug."""
+    ds = dataset(tmp_path / "ds")
+    (ds / "gold" / "d1.json").write_text("[]")
+    mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}, "d1.json": {"a": "x"}})
+    code, _, err = oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--score-workers", "1")
+    assert code == 1 and "d1" in err and not (mine / "summary.json").exists()
+
+
+def test_a_prediction_of_bytes_is_graded_as_failed(tmp_path, capsys):
+    ds = dataset(tmp_path / "ds")
+    mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}})
+    (mine / "predictions" / "d1.json").write_bytes(b"\xff\xfe\x00")
+    code, out, _ = oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--score-workers", "1")
+    assert code == 0 and json.loads(out)["failed"] == 1
