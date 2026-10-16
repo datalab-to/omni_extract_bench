@@ -285,8 +285,10 @@ again, it says how many. A `UsageError` (what was asked is wrong) or a `Stop` (a
 dependency) is one line, `oeb benchmark: ...`, and exits 1; after a `Stop`, the summaries grading wrote
 are printed to stdout first. Ctrl-C exits 130 and grades nothing. Either way, what was predicted is
 kept, and the same command resumes. A document whose grading raises in our scorer is a bug of ours:
-grading stops with the traceback, naming the run and the document, and writes nothing, since a summary
-with it left out would be wrong. A gold that can't be read stops it too, as a `GoldError`.
+grading stops with the traceback, naming the run and the document, and that run writes nothing, since a
+summary with it left out would be wrong. Runs are graded one after another, so those graded before it
+keep their new files, each a whole grading. Fix the bug, then grade again with `--score-only`. A gold that
+can't be read stops it too, as a `GoldError`.
 
 
 ### Settings per provider
@@ -356,7 +358,9 @@ It's **resumable**, and safe to run twice.
 
 - A document is predicted again only when it has no record. The record is written last, so
   its presence means the prediction beside it is complete, and it is the source of truth for an
-  answer: a prediction lost or broken beside a record of an answer is rebuilt from it, with no call.
+  answer: a prediction lost or broken beside a record of an answer is rebuilt from it, with no call,
+  whenever the run is graded (`--score-only`, `oeb grade` and the grading after predicting). A
+  prediction of `{}` is an answer like any other: scored, with every field the gold states unfound.
 - `--retry-failed` predicts again documents whose recorded failure may not recur: a timeout, an
   outage (`VendorUnreachable`: the vendor couldn't be reached), a 429 or a 5xx (500, 502-504,
   520-524). A 400, a refusal or an unusable answer is an answer, and is not retried. Within one

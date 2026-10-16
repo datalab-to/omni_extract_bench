@@ -106,9 +106,10 @@ def settled(out: Path, dataset: str | None = None, manifest: str | None = None) 
              ("manifest", manifest and data.normal(manifest)))
     for key, now in asked:
         if now and (was := said.get(key)) and was != now:
-            raise UsageError(f"{out} holds a run on {key} {was}, not {now}: a folder holds one dataset and "
+            held = "a run" if is_run(said) else "predictions graded"
+            raise UsageError(f"{out} holds {held} on {key} {was}, not {now}: a folder holds one dataset and "
                              f"one manifest; pass --{key} {was}, another folder, or delete "
-                             f"{out / 'settings.json'} to grade it on another")
+                             f"{out / 'settings.json'} to use it with another")
     return said
 
 
@@ -179,7 +180,7 @@ def needs(run: Run, doc: data.Doc, retry_failed: bool = False) -> bool:
 
 def restore(run: Run, doc_id: str) -> bool:
     """Whether the document's prediction was rebuilt from its record: missing or unreadable beside a record
-    of an answer, it is written from the record's result, with no call. `predict_all` does this."""
+    of an answer, it is written from the record's result, with no call. `grade` does this."""
     rec = recorded(run, doc_id)
     if rec is None or rec.get("error") is not None or predicted(run, doc_id) is not None: return False
     write_json(run.predictions / f"{doc_id}.json", rec["result"])
@@ -304,7 +305,7 @@ def plan(providers: Sequence[str], *, out: str | Path = Path("runs"), dataset: s
         said = settled(run.out, str(dataset), manifest)
         if (msg := _another_commit(run, said.get("commit"), commit)) is not None:
             log.warning("%s", msg)
-    return Plan(tuple(runs.values()), tuple(docs), str(dataset), manifest, timeout,
+    return Plan(tuple(runs.values()), tuple(docs), str(dataset), data.normal(manifest), timeout,
                 workers, score_workers, verdicts, score_only, retry_failed)
 
 
@@ -395,9 +396,6 @@ def predict_all(p: Plan) -> None:
         bar = {r.out.name: bars.reporter(r.out.name) for r in runs}
         left, work = {}, []
         for r in runs:
-            for d in p.docs:
-                if restore(r, d.doc_id):
-                    log.info("%s: rebuilt %s's prediction from its record", r.out.name, d.doc_id)
             todo = [d for d in p.docs if needs(r, d, p.retry_failed)]
             log.info("%s: %d documents, %d to run", r.out.name, len(p.docs), len(todo))
             bar[r.out.name].start(len(todo), workers)
@@ -501,12 +499,16 @@ def grade(run: Run, docs: Sequence[data.Doc], say: Callable[[str], None] = print
     folder's settings.json as `oeb grade` will write it once grading succeeds; otherwise it is read from the
     folder.
 
-    A document's prediction is `predictions/<doc_id>.json`, named exactly. In a run (`is_run`), a document
+    A document's prediction is `predictions/<doc_id>.json`, named exactly; one lost beside a record of its
+    answer is rebuilt from it first (`restore`). In a run (`is_run`), a document
     never attempted (`_tried`) is pending; otherwise one with no usable prediction fails. A folder of your
     own none of whose files names a document is refused, and a scorer that raises stops the grading:
     either way nothing is written. docs/API.md has the summary's fields."""
     gradable(run.out)
     said = _said(run.out) if settings is None else settings
+    if rebuilt := [d.doc_id for d in docs if restore(run, d.doc_id)]:
+        log.info("%s: %s rebuilt from %s, e.g. %s", run.out, counted(len(rebuilt), "prediction"),
+                 "its record" if len(rebuilt) == 1 else "their records", rebuilt[:3])
     keeps, listed = is_run(said), _listed(run)
     if not keeps and not listed & {f"{d.doc_id}.json" for d in docs}:
         raise UsageError(f"none of the {counted(len(listed), 'file')} in {run.predictions} names a document "
@@ -593,8 +595,6 @@ def _score_one(doc: data.Doc, *, run: Run, verdicts: Path | None, listed: frozen
         return {**row, "status": "failed", "error": f"no prediction: predictions/{doc.doc_id}.json"}
     if (pred := predicted(run, doc.doc_id)) is None:
         return {**row, "status": "failed", "error": f"{UNREADABLE}: {_unreadable(run, doc.doc_id)}"}
-    if not pred:
-        return {**row, "status": "failed", "error": "empty prediction"}
     gold = scorer.gold(doc)
     try:
         result = scorer.score(pred, gold, doc.schema, verdicts=verdicts is not None)
@@ -660,24 +660,31 @@ def _warn_unusable(run: Run, said: Mapping[str, Any], docs: Sequence[data.Doc], 
     and those that aren't a JSON object (graded as failed); and a grading of fewer documents than the
     folder's manifest. A naming slip (`<doc_id>.pdf.json`, another case) otherwise shows only as a lower
     coverage."""
-    names = {f"{d.doc_id}.json" for d in docs}
+    whole = _manifest_of(run, said) or docs
+    names = {f"{d.doc_id}.json" for d in whole}
     if stray := sorted(n + ("/" if (run.predictions / n).is_dir() else "") for n in listed - names):
         log.warning("%s: %s in predictions/ named for no document of the manifest, so left out, e.g. %s; a "
                     "prediction is predictions/<doc_id>.json, named exactly (case too)",
                     run.out, counted(len(stray), "file"), stray[:3])
     if unread := [x["doc_id"] for x in lines if str(x.get("error", "")).startswith(UNREADABLE)]:
-        log.warning("%s: %s aren't a JSON object, so their documents were graded as failed (each line says "
-                    "why), e.g. %s", run.out, counted(len(unread), "prediction"), unread[:3])
-    whole = None
-    if said.get("dataset") and said.get("manifest"):
-        try:
-            whole = data.read_manifest(said["dataset"] + (f"@{said['commit']}" if said.get("commit") else ""),
-                                       said["manifest"])[1]
-        except UsageError:
-            pass
-    if whole is not None and len(docs) < len(whole):
+        log.warning("%s: %s %s a JSON object, so %s graded as failed (each line says why), e.g. %s",
+                    run.out, counted(len(unread), "prediction"), "isn't" if len(unread) == 1 else "aren't",
+                    "its document was" if len(unread) == 1 else "their documents were", unread[:3])
+    if len(docs) < len(whole):
         log.warning("%s: graded %s of its manifest's %d, so its summary covers only those; grade_all passes "
                     "the whole manifest", run.out, counted(len(docs), "document"), len(whole))
+
+
+def _manifest_of(run: Run, said: Mapping[str, Any]) -> tuple[data.Doc, ...] | None:
+    """The documents of the manifest the folder is graded on, as its own settings.json (or `said`, as it
+    will be written) names it; None when neither names one, or it can't be read."""
+    own = _said(run.out) | {k: v for k, v in said.items() if k in ("dataset", "commit", "manifest")}
+    if not (own.get("dataset") and own.get("manifest")): return None
+    try:
+        return data.read_manifest(own["dataset"] + (f"@{own['commit']}" if own.get("commit") else ""),
+                                  own["manifest"])[1]
+    except UsageError:
+        return None
 
 
 def read_scores(run: Run) -> list[dict]:

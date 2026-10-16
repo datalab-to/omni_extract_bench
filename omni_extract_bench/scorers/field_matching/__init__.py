@@ -810,11 +810,12 @@ def _resolve_order(order_matters: bool | Iterable[str], schema: Any,
                 f"inside matrix."
             )
         if name not in known:
-            near = sorted(known) or ["<this document has no arrays>"]
+            near = sorted(known)
             raise UsageError(
                 f"order_matters names {name!r}, which is not an array here. "
-                f"Arrays available: {', '.join(repr(n) for n in near[:12])}"
-                + (f" (and {len(near) - 12} more)" if len(near) > 12 else "")
+                + (f"Arrays available: {', '.join(repr(n) for n in near[:12])}"
+                   + (f" (and {len(near) - 12} more)" if len(near) > 12 else "")
+                   if near else "This document has no arrays.")
             )
         out |= known[name]
     return frozenset(out)

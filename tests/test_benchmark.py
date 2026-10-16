@@ -116,10 +116,12 @@ report("one row per attempted document: the one never attempted is pending, not 
 report("a correct prediction scores 1.0", by_id["perfect"]["accuracy"] == 1.0)
 report("a misread row is charged, not fatal", by_id["one-misread"]["accuracy"] == 0.8,
        str(by_id["one-misread"]["accuracy"]))
-for doc_id in ("refused", "nothing"):
-    row = by_id[doc_id]
-    report(f"{doc_id}: status=failed with NULL metrics, and a reason",
-           row["status"] == "failed" and "accuracy" not in row and row.get("error"), str(row))
+row = by_id["refused"]
+report("refused: status=failed with NULL metrics, and a reason",
+       row["status"] == "failed" and "accuracy" not in row and row.get("error"), str(row))
+row = by_id["nothing"]
+report("nothing ({}): an answer, scored, every field the gold states unfound",
+       row["status"] == "scored" and row["accuracy"] == 0.0 and row["unfound"] == row["total"], str(row))
 report("a failed call writes no prediction: predictions/ holds only answers",
        not (out / "predictions" / "refused.json").exists())
 report("...and its row carries the record's error",

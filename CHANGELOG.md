@@ -47,7 +47,8 @@ The scorer:
   `scored`, `failed`, `coverage`, `accuracy`, `precision`, `recall` and where the errors were; `headline`
   is null for no documents, and the metrics over the scored are null when none was scored;
 - a scorer that raises is a bug of ours: grading stops with it, naming the run and the document, and
-  writes nothing (the `error` status, the `errors` count and exit 2 are gone). An unknown
+  writes nothing (the `error` status, the `errors` count and exit 2 are gone); with several runs, those
+  graded before the crash keep their new files, and `--score-only` grades again after the fix. An unknown
   `order_matters` name is a `UsageError`;
 - `check(docs)` raises a `GoldError` naming the first document whose gold can't be read or isn't a JSON
   object; and
@@ -82,7 +83,10 @@ Grading:
   raises it, and `check` is `gold` over every document); grading stops on it, as omni-parse-bench
   does, since it is the dataset's problem, not a scorer bug;
 - the record is the source of truth for an answer: a prediction lost or unreadable beside a record of an
-  answer is rebuilt from it by `predict_all`, with no call; and
+  answer is rebuilt from it, with no call, whenever the run is graded (`--score-only` and `oeb grade`
+  too);
+- a prediction of `{}` is scored, every field the gold states unfound; it was failed as "empty
+  prediction"; and
 - `owed(plan, run)` counts what grading will grade over the whole manifest, by the same rule as `grade`.
 
 Runs and folders:

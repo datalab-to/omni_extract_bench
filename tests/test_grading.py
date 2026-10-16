@@ -264,3 +264,36 @@ def test_loose_predictions_are_told_where_to_go(tmp_path, capsys):
     (flat / "d0.json").write_text("{}")
     code, _, err = oeb(capsys, "grade", str(flat))
     assert code == 1 and "flat/predictions" in err
+
+
+def test_every_grading_rebuilds_a_lost_prediction_from_its_record(tmp_path, capsys):
+    """--score-only, oeb grade and a library grade all score an answer its record holds, rebuilt."""
+    ds = dataset(tmp_path / "ds")
+    run = benchmark.Run("mine", {}, tmp_path / "run")
+    run.predictions.mkdir(parents=True), run.records.mkdir()
+    for d in ("d0", "d1"): benchmark.record(run, d, {"result": {"a": "x"}, "error": None})
+    benchmark.declare(run.out, str(ds), "manifest.parquet", {"run": "run", "provider": "mine"})
+    (run.predictions / "d1.json").unlink()
+    code, out, _ = oeb(capsys, "grade", str(run.out), "--score-workers", "1")
+    assert code == 0 and json.loads(out)["failed"] == 0 and (run.predictions / "d1.json").exists()
+    (run.predictions / "d1.json").write_text("[]")
+    s = benchmark.grade(run, data.read_manifest(ds)[1], QUIET, score_workers=1)
+    assert s["failed"] == 0 and json.loads((run.predictions / "d1.json").read_text()) == {"a": "x"}
+
+
+def test_the_subset_warning_reads_the_folders_own_settings_and_calls_no_ungraded_file_stray(tmp_path, caplog):
+    ds = dataset(tmp_path / "ds", n=3)
+    mine = predictions(tmp_path / "mine", {f"d{i}.json": {"a": "x"} for i in range(3)})
+    (mine / "settings.json").write_text(json.dumps({"dataset": data.dataset_id(ds), "manifest": "manifest.parquet"}))
+    with caplog.at_level(logging.WARNING):
+        benchmark.grade(benchmark.Run("mine", {}, mine), data.read_manifest(ds)[1][:1], QUIET,
+                        settings={"dataset": data.dataset_id(ds)}, score_workers=1)
+    assert "1 document of its manifest's 3" in caplog.text and "named for no document" not in caplog.text
+
+
+def test_a_folder_of_your_own_is_not_called_a_run(tmp_path, capsys):
+    ds, other = dataset(tmp_path / "ds"), dataset(tmp_path / "other")
+    mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}, "d1.json": {"a": "x"}})
+    assert oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--score-workers", "1")[0] == 0
+    code, _, err = oeb(capsys, "grade", str(mine), "--dataset", str(other), "--score-workers", "1")
+    assert code == 1 and "holds a run" not in err and "settings.json" in err
