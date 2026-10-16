@@ -184,9 +184,14 @@ def recorded(run: Run, doc_id: str) -> dict | None:
 def needs(run: Run, doc: data.Doc, retry_failed: bool = False) -> bool:
     """True when the run has no readable record of the document (it was never attempted), or, with
     `retry_failed`, when its record is a failure that may not recur (`_retryable`: a timeout, an
-    outage, a 429 or 5xx). A failure that is an answer (a 400, a refusal) is never retried."""
+    outage, a 429 or 5xx). A failure that is an answer (a 400, a refusal) is never retried.
+
+    Note: a record of an answer whose prediction can't be read is predicted again, as omni-parse-bench
+    does: grading reads predictions alone, so the answer would otherwise fail for good."""
     if (got := recorded(run, doc.doc_id)) is None:
         return True
+    if got.get("error") is None:
+        return predicted(run, doc.doc_id) is None
     return retry_failed and _retryable(got.get("error"))
 
 

@@ -51,8 +51,8 @@ _resume = Run("datalab", {}, TMP / "resume")
 for label, exists in (("no record at all", False), ("a record from a previous run", True)):
     doc = Doc(str(abs(hash(label))), "s", TMP / "x.pdf", TMP / "g.json", {})
     if exists:
-        (_resume.records / f"{doc.doc_id}.json").write_text(
-            json.dumps({"result": {"a": 1}, "error": None}))
+        _resume.predictions.mkdir(exist_ok=True)
+        record(_resume, doc.doc_id, {"result": {"a": 1}, "error": None})
     report(f"re-attempt {label}: {not exists}", needs(_resume, doc) is (not exists))
 (_resume.records / "failed.json").write_text(json.dumps(
     {"result": None, "error": {"type": "VendorError", "status": 503, "transient": True}}))

@@ -167,3 +167,15 @@ def test_a_prediction_of_bytes_is_graded_as_failed(tmp_path, capsys):
     (mine / "predictions" / "d1.json").write_bytes(b"\xff\xfe\x00")
     code, out, _ = oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--score-workers", "1")
     assert code == 0 and json.loads(out)["failed"] == 1
+
+
+def test_an_answer_whose_prediction_was_lost_is_predicted_again(tmp_path):
+    run = benchmark.Run("mine", {}, tmp_path / "run")
+    run.predictions.mkdir(parents=True), run.records.mkdir()
+    doc = data.Doc("d0", "s", tmp_path / "d0.pdf", tmp_path / "d0.json", {})
+    benchmark.record(run, "d0", {"result": {"a": "x"}, "error": None})
+    assert not benchmark.needs(run, doc)
+    (run.predictions / "d0.json").unlink()
+    assert benchmark.needs(run, doc), "grading reads predictions alone, so a lost one is predicted again"
+    benchmark.record(run, "d0", {"result": None, "error": {"type": "VendorError", "status": 400}})
+    assert not benchmark.needs(run, doc), "a failure has no prediction, and isn't predicted again"
