@@ -168,6 +168,12 @@ are not comparable to default ones.
 
 Asserted by `tests/test_spec_null_semantics.py`.
 
+**A field's provenance is not a value.** A prediction's key ending in `_citations` or `_meta` whose
+base name is a sibling in the same object (`total_citations` beside `total`) is dropped before
+scoring, for every vendor alike: it says where a value came from, not a fact the schema asked for, so
+it is never charged as an invented field. A real field that merely ends the same way survives
+(`regulatory_citations` stays unless `regulatory` sits beside it).
+
 ### 5.1 Rendering is folded; content is not
 
 `17 APR 2020` and `2020-04-17` compare equal. `NIKE, Inc.` and `Nike` do not. The test is not

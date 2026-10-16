@@ -7,12 +7,11 @@
     oeb predict    --provider datalab --doc x.pdf --schema s.json
     oeb providers [datalab]
 
-Results go to stdout as JSON; progress and messages go to stderr (`-q`: messages only). `benchmark`
-shows its plan and waits for a yes unless given `-y`. `benchmark` and `grade` exit 2 when a document's
-grading raised in our code, so a scorer bug can't pass as a vendor's score. A `UsageError` (what was
-asked is wrong) or a `Stop` (an account, a key or a dependency) is printed as
-`oeb <command>: <what was wrong>` and exits 1; an interrupt exits 130; anything else is a bug of ours,
-and is raised as it is.
+Results go to stdout as JSON; progress and messages go to stderr. `benchmark` shows its plan and waits
+for a yes unless given `-y`. A `UsageError` (what was asked is wrong) or a `Stop` (an account, a key or a
+dependency) is printed as `oeb <command>: <what was wrong>` and exits 1, after a `benchmark` stopped by a
+`Stop` prints the summaries it wrote; an interrupt exits 130; anything else, a scorer that raises among
+them, is a bug of ours, and is raised as it is, with nothing written.
 """
 from __future__ import annotations
 
@@ -22,7 +21,7 @@ import logging
 import pathlib
 import sys
 
-from .errors import Stop, UsageError
+from .errors import Stop, UsageError, counted
 
 EXAMPLE_MODELS = ("openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash")
 
@@ -33,6 +32,8 @@ def read_object(path: str, flag: str) -> dict:
         got = json.loads(pathlib.Path(path).read_text())
     except FileNotFoundError:
         raise UsageError(f"{flag} {path}: no such file") from None
+    except IsADirectoryError:
+        raise UsageError(f"{flag} {path} is a folder; pass a JSON file") from None
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise UsageError(f"{flag} {path} isn't JSON: {exc}") from None
     if not isinstance(got, dict):
@@ -131,20 +132,22 @@ def confirm_plan(plan) -> bool:
         return False
 
 
-def _say(args):
-    """Where a grading's closing line and advice go: stderr, or nowhere with `-q`."""
-    return (lambda m: None) if args.quiet else (lambda m: print(m, file=sys.stderr))
+def _say(m: str) -> None:
+    """A grading's closing line, or advice: to stderr, beside the progress."""
+    print(m, file=sys.stderr)
 
 
-def _bugs(args, summaries: dict[str, dict]) -> int:
-    """2, said, when a document's grading raised in our code (a scorer bug, left out of the scores); else 0."""
+def _written(p) -> dict[str, dict]:
+    """Each run's summary.json, by run name, as grading wrote it."""
+    return {r.out.name: json.loads((r.out / "summary.json").read_text())
+            for r in p.runs if (r.out / "summary.json").is_file()}
+
+
+def _retryable(p) -> int:
+    """The documents whose failure may not recur, which `--retry-failed` would predict again."""
     from . import benchmark
 
-    if not (errored := {k: n for k, s in summaries.items() if (n := benchmark.scorer_errors(s))}): return 0
-    print(f"oeb {args.cmd}: grading raised in our code, not the vendor's, for {sum(errored.values())} "
-          "documents (" + ", ".join(f"{k} {n}" for k, n in errored.items())
-          + "); they are left out of the scores: report it with the run's scores.jsonl", file=sys.stderr)
-    return 2
+    return sum(benchmark.needs(r, d, True) and not benchmark.needs(r, d) for r in p.runs for d in p.docs)
 
 
 def cmd_score(args) -> int:
@@ -193,13 +196,19 @@ def cmd_benchmark(args) -> int:
     elif not confirm_plan(progress.plan_view(p)):
         print("oeb benchmark: nothing run", file=sys.stderr)
         return 1
-    say = _say(args)
-    summaries = benchmark.execute(p, say)
+    try:
+        summaries = benchmark.execute(p, _say)
+    except Stop:
+        # Note: `execute` grades what was predicted before it raises, so every run has its summary.
+        json.dump(_written(p), sys.stdout, indent=2, default=str)
+        sys.stdout.write("\n")
+        raise
     json.dump(summaries, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
-    if failed := sum(s["failed"] for s in summaries.values()):
-        say(f"{failed} documents failed: --retry-failed predicts again those whose failure may not recur")
-    return _bugs(args, summaries)
+    if n := _retryable(p):
+        _say(f"{counted(n, 'document')} failed in a way that may not recur: --retry-failed predicts "
+             f"{'it' if n == 1 else 'them'} again")
+    return 0
 
 
 def cmd_grade(args) -> int:
@@ -215,14 +224,14 @@ def cmd_grade(args) -> int:
     manifest = args.manifest or said.get("manifest") or data.MANIFEST
     _, docs = data.read_manifest(dataset, manifest)
     run = benchmark.Run(said.get("provider") or out.name, {}, out)
-    summary = benchmark.grade(run, docs, _say(args), settings=said, verdicts=args.verdicts,
+    summary = benchmark.grade(run, docs, _say, settings=said, verdicts=args.verdicts,
                               score_workers=args.score_workers)
-    if not run.records.is_dir():
+    if not benchmark.is_run(said):
         # Note: only once grading succeeded, so a failed one leaves the folder as it was.
         benchmark.declare(out, dataset, manifest, said)
     json.dump(summary, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
-    return _bugs(args, {out.name: summary})
+    return 0
 
 
 def cmd_check(args) -> int:
@@ -236,7 +245,8 @@ def cmd_check(args) -> int:
     missing = [f"{d.doc_id} {col} {f}" for d in docs for col, f in (("doc_path", d.doc_path), ("gt_path", d.gt_path))
                if not f.is_file()]
     if missing:
-        raise UsageError(f"{len(missing)} files the manifest names don't exist, e.g. {'; '.join(missing[:3])}")
+        raise UsageError(f"files the manifest names that don't exist: {counted(len(missing), 'file')}, e.g. "
+                         + "; ".join(missing[:3]))
     field_matching.check(docs)
     print(json.dumps({"ok": True, "manifest": args.manifest, "documents": len(docs),
                       "suites": len({d.suite for d in docs}), "inputs": len({d.doc_path for d in docs})}))
@@ -310,14 +320,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="oeb", description="Benchmark document extraction: score one "
                                  "prediction, grade a folder of them, check a dataset, or predict and "
                                  "grade with each vendor.")
-    ap.add_argument("-q", "--quiet", action="store_true", help="progress off; results only")
-    # Note: also after the command (`oeb grade x -q`); SUPPRESS so a command's default can't undo it.
-    quiet = argparse.ArgumentParser(add_help=False)
-    quiet.add_argument("-q", "--quiet", action="store_true", default=argparse.SUPPRESS,
-                       help="progress off; results only")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("score", parents=[quiet], help="score one prediction against one ground truth")
+    s = sub.add_parser("score", help="score one prediction against one ground truth")
     s.add_argument("--pred", required=True, help="the prediction, JSON")
     s.add_argument("--gold", required=True, help="the ground truth, JSON")
     s.add_argument("--schema", required=True,
@@ -331,7 +336,7 @@ def main(argv=None) -> int:
                         "rows appear in a document is usually an accident of layout")
     s.set_defaults(fn=cmd_score)
 
-    b = sub.add_parser("benchmark", parents=[quiet],
+    b = sub.add_parser("benchmark",
                        help="fetch the corpus, run it through each vendor, score it")
     b.add_argument("--providers", nargs="+", required=True, metavar="NAME",
                    help="vendors and/or model ids, e.g. datalab reducto "
@@ -388,7 +393,7 @@ def main(argv=None) -> int:
                         "with no terminal to ask -- a pipe, a cron job -- never waits anyway")
     b.set_defaults(fn=cmd_benchmark)
 
-    g = sub.add_parser("grade", parents=[quiet], help="grade a folder of predictions/<doc_id>.json: yours, or a run's")
+    g = sub.add_parser("grade", help="grade a folder of predictions/<doc_id>.json: yours, or a run's")
     g.add_argument("run", help="the folder holding predictions/")
     g.add_argument("--dataset", default=None,
                    help="the dataset: a folder on disk, or hf://datasets/<org>/<name>[@<revision>]. "
@@ -402,7 +407,7 @@ def main(argv=None) -> int:
                    help="skip the per-address verdicts")
     g.set_defaults(fn=cmd_grade)
 
-    c = sub.add_parser("check", parents=[quiet], help="whether a dataset is one oeb can run: its manifest, files and gold")
+    c = sub.add_parser("check", help="whether a dataset is one oeb can run: its manifest, files and gold")
     c.add_argument("--dataset", default=None,
                    help="the dataset: a folder on disk, or hf://datasets/<org>/<name>[@<revision>]. "
                         "Default: ours")
@@ -410,7 +415,7 @@ def main(argv=None) -> int:
                    help="which documents of the dataset: a parquet inside it. Default: manifest.parquet")
     c.set_defaults(fn=cmd_check)
 
-    d = sub.add_parser("predict", parents=[quiet], help="run one document through one vendor")
+    d = sub.add_parser("predict", help="run one document through one vendor")
     d.add_argument("--provider", required=True,
                    help="a vendor or a model id; `oeb providers` lists them")
     d.add_argument("--doc", required=True, help="the document, PDF")
@@ -421,7 +426,7 @@ def main(argv=None) -> int:
                    help='options for this provider, as JSON or a path: \'{"mode": "accurate"}\'')
     d.set_defaults(fn=cmd_predict)
 
-    pl = sub.add_parser("providers", parents=[quiet],
+    pl = sub.add_parser("providers",
                         help="list the vendors benchmark can run, or detail one of them")
     pl.add_argument("provider", nargs="?",
                     help="name one to see what --options takes for it, and the defaults")
@@ -432,7 +437,7 @@ def main(argv=None) -> int:
     handler.setFormatter(logging.Formatter("%(message)s"))
     logging.getLogger().handlers[:] = [handler]
     logging.getLogger().setLevel(logging.WARNING)
-    logging.getLogger(__package__).setLevel(logging.WARNING if args.quiet else logging.INFO)
+    logging.getLogger(__package__).setLevel(logging.INFO)
 
     resume = args.cmd == "benchmark"
     try:

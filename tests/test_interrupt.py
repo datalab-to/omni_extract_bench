@@ -257,15 +257,13 @@ def failing_write(self, *a, **k):
 pathlib.Path.write_text = failing_write
 try:
     B.grade(B.Run("datalab", {}, vd), some, score_workers=1, verdicts=True)
+    report("a grading that can't write its verdicts stops", False, "it returned normally")
+except OSError:
+    report("a grading that can't write its verdicts stops, not a row passed off as the vendor's", True)
 finally:
     pathlib.Path.write_text = real_write
-got = B.read_scores(B.Run("datalab", {}, vd))
-report("the other four documents survive", sum(r["status"] == "scored" for r in got) == 4,
-       str([r["status"] for r in got]))
-report("the failing one is a row, not an escape: ours (`error`), not the vendor's failure",
-       sum(r["status"] == "error" for r in got) == 1)
-report("...and the file holds all five", 
-       len((vd / "scores.jsonl").read_text().strip().splitlines()) == 5)
+report("...and writes nothing: no scores, no summary, no verdicts half-made",
+       not any((vd / f).exists() for f in ("scores.jsonl", "summary.json", "verdicts", ".verdicts.partial")))
 
 print("\nAND AN INTERRUPT WHILE SCORING KEEPS WHAT IT GRADED")
 score_script = out / "score_it.py"

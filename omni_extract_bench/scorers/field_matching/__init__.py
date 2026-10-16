@@ -811,7 +811,7 @@ def _resolve_order(order_matters: bool | Iterable[str], schema: Any,
             )
         if name not in known:
             near = sorted(known) or ["<this document has no arrays>"]
-            raise ValueError(
+            raise UsageError(
                 f"order_matters names {name!r}, which is not an array here. "
                 f"Arrays available: {', '.join(repr(n) for n in near[:12])}"
                 + (f" (and {len(near) - 12} more)" if len(near) > 12 else "")
@@ -983,8 +983,7 @@ ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
 def summarize(lines: Iterable[dict]) -> dict:
     """A run's score lines (scores.jsonl's, one per document) as one summary (`_over`), over every line and
     then per suite, each suite in the same shape. A line carries its document's suite, so the lines are all
-    it needs. A line's status is `scored`, `failed` (no usable prediction) or `error` (grading raised in
-    our code: a scorer bug, left out of every number but `errors`)."""
+    it needs. A line's status is `scored` or `failed` (no usable prediction)."""
     lines = list(lines)
     if bad := next((x for x in lines if not isinstance(x, dict) or "suite" not in x or "status" not in x), None):
         raise ValueError(f"summarize takes score lines, each with its document's suite and status, as "
@@ -1002,22 +1001,20 @@ def _over(lines: list[dict]) -> dict:
 
     Note: `headline` counts a failed document as 0, so a system can't rank higher by failing on its
     hard documents; `accuracy` is over the scored ones, and `headline` is `accuracy * coverage`. It is
-    None for no documents, since there is no number to compare."""
-    graded = [x for x in lines if x["status"] != "error"]
-    scored = [x for x in graded if x["status"] == "scored"]
+    None for no documents, since there is no number to compare, and the metrics over the scored are None
+    when none was scored: 0.0 would read as everything wrong (and a 0.0 rate as nothing wrong)."""
+    scored = [x for x in lines if x["status"] == "scored"]
 
-    def mean(of) -> float:
-        return sum(of(x) for x in scored) / len(scored) if scored else 0.0
+    def mean(of) -> float | None:
+        return sum(of(x) for x in scored) / len(scored) if scored else None
 
-    accuracy = mean(lambda x: x["accuracy"])
     return {
-        "headline": sum(x["accuracy"] for x in scored) / len(graded) if graded else None,
-        "documents": len(graded),
+        "headline": sum(x["accuracy"] for x in scored) / len(lines) if lines else None,
+        "documents": len(lines),
         "scored": len(scored),
-        "failed": len(graded) - len(scored),
-        "errors": len(lines) - len(graded),
-        "coverage": len(scored) / len(graded) if graded else 0.0,
-        "accuracy": accuracy,
+        "failed": len(lines) - len(scored),
+        "coverage": len(scored) / len(lines) if lines else None,
+        "accuracy": mean(lambda x: x["accuracy"]),
         "precision": mean(lambda x: x["precision"]),
         "recall": mean(lambda x: x["recall"]),
         **{f"{e}_rate": mean(lambda x, e=e: x[e] / x["total"] if x["total"] else 0.0)

@@ -95,14 +95,14 @@ def test_a_run_with_pending_documents_has_no_headline_yet(tmp_path):
     run.records.mkdir(parents=True)
     run.predictions.mkdir()
     benchmark.record(run, "d0", {"result": {"a": "x"}, "error": None})
-    said = []
-    s = benchmark.grade(run, docs, said.append, score_workers=1)
+    said, a_run = [], {"provider": "mine"}   # Note: a run's settings name its provider (`is_run`).
+    s = benchmark.grade(run, docs, said.append, settings=a_run, score_workers=1)
     assert s["headline"] is None and s["pending"] == 2 and s["accuracy"] == 1.0
     assert s["per_suite"]["s"]["pending"] == 2 and s["per_suite"]["s"]["headline"] is None
     assert said == [("run: headline — (2 pending: a headline needs every document); 1 of 3 documents "
                      "graded, 0 failed")]
     for d in ("d1", "d2"): benchmark.record(run, d, {"result": {"a": "x"}, "error": None})
-    s = benchmark.grade(run, docs, said.append, score_workers=1)
+    s = benchmark.grade(run, docs, said.append, settings=a_run, score_workers=1)
     assert s["headline"] == 1.0 and s["pending"] == 0 and s["per_suite"]["s"]["pending"] == 0
     assert said[-1] == "run: headline 1.000; 3 of 3 documents graded, 0 failed"
 
@@ -120,20 +120,22 @@ def test_a_summary_says_what_graded_it_and_what_it_cost(tmp_path):
     assert (s["failed"], s["usd"], s["credits"]) == (1, 0.75, 3)
 
 
-def test_a_scorer_bug_is_left_out_and_exits_2(tmp_path, capsys, monkeypatch):
+def test_a_scorer_bug_stops_grading_naming_the_document_and_writes_nothing(tmp_path, capsys, monkeypatch):
+    """A bug of ours: raised as it is, since a summary with the document left out would be wrong."""
     from omni_extract_bench.scorers import field_matching
 
     ds = dataset(tmp_path / "ds")
-    mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}, "d1.json": {"a": "x"}})
+    mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}, "d1.json": {"a": "y"}})
     real = field_matching.score
-    monkeypatch.setattr(field_matching, "score", lambda pred, gold, schema, **kw:
-                        (_ for _ in ()).throw(RuntimeError("a bug")) if pred.get("a") == "y" else real(pred, gold,
-                                                                                                    schema, **kw))
-    (mine / "predictions" / "d1.json").write_text(json.dumps({"a": "y"}))
-    code, out, err = oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--score-workers", "1")
-    s = json.loads(out)
-    assert code == 2 and "raised in our code" in err
-    assert (s["errors"], s["documents"], s["headline"], s["coverage"]) == (1, 1, 1.0, 1.0)
+
+    def score(pred, gold, schema, **kw):
+        if pred.get("a") == "y": raise RuntimeError("a bug")
+        return real(pred, gold, schema, **kw)
+    monkeypatch.setattr(field_matching, "score", score)
+    with pytest.raises(RuntimeError) as e:
+        oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--score-workers", "1")
+    assert "d1" in " ".join(e.value.__notes__)
+    assert sorted(f.name for f in mine.iterdir()) == ["predictions"], "nothing written"
 
 
 def test_grading_the_predictions_folder_itself_points_at_its_parent(tmp_path, capsys):
@@ -169,13 +171,96 @@ def test_a_prediction_of_bytes_is_graded_as_failed(tmp_path, capsys):
     assert code == 0 and json.loads(out)["failed"] == 1
 
 
-def test_an_answer_whose_prediction_was_lost_is_predicted_again(tmp_path):
+def test_an_answer_whose_prediction_was_lost_is_rebuilt_not_paid_for_again(tmp_path):
+    """The record is the source of truth for an answer: a lost or corrupt prediction is written from it."""
     run = benchmark.Run("mine", {}, tmp_path / "run")
     run.predictions.mkdir(parents=True), run.records.mkdir()
     doc = data.Doc("d0", "s", tmp_path / "d0.pdf", tmp_path / "d0.json", {})
     benchmark.record(run, "d0", {"result": {"a": "x"}, "error": None})
-    assert not benchmark.needs(run, doc)
     (run.predictions / "d0.json").unlink()
-    assert benchmark.needs(run, doc), "grading reads predictions alone, so a lost one is predicted again"
-    benchmark.record(run, "d0", {"result": None, "error": {"type": "VendorError", "status": 400}})
-    assert not benchmark.needs(run, doc), "a failure has no prediction, and isn't predicted again"
+    assert not benchmark.needs(run, doc), "it has an answer"
+    assert benchmark.restore(run, "d0") and json.loads((run.predictions / "d0.json").read_text()) == {"a": "x"}
+    (run.predictions / "d0.json").write_text("{not json")
+    assert benchmark.restore(run, "d0") and not benchmark.restore(run, "d0"), "rebuilt once, then left"
+    benchmark.record(run, "d1", {"result": None, "error": {"type": "VendorError", "status": 400}})
+    assert not benchmark.restore(run, "d1"), "a failure has no answer to rebuild"
+
+
+def test_a_grading_that_matches_no_document_is_refused_and_writes_nothing(tmp_path, capsys):
+    ds = dataset(tmp_path / "ds")
+    for k, answers in enumerate(({"invoice.json": {"a": "x"}}, {})):
+        mine = predictions(tmp_path / f"mine{k}", answers)
+        code, _, err = oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--score-workers", "1")
+        assert code == 1 and "--dataset" in err
+        assert sorted(f.name for f in mine.iterdir()) == ["predictions"], "nothing written, nothing locked"
+
+
+def test_no_verdicts_after_an_interrupted_grading_leaves_no_verdicts(tmp_path):
+    docs = data.read_manifest(dataset(tmp_path / "ds"))[1]
+    run = benchmark.Run("mine", {}, predictions(tmp_path / "run", {"d0.json": {"a": "x"}, "d1.json": {"a": "x"}}))
+    (run.out / ".verdicts.partial").mkdir()
+    (run.out / ".verdicts.partial" / "d0.jsonl").write_text("{}")
+    benchmark.grade(run, docs, QUIET, verdicts=False, score_workers=1)
+    assert not (run.out / "verdicts").exists() and not (run.out / ".verdicts.partial").exists()
+
+
+def test_a_folder_of_your_own_with_records_is_yours(tmp_path, capsys):
+    """A run is a folder whose settings.json names a provider; records/ alone doesn't make one."""
+    ds = dataset(tmp_path / "ds")
+    mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}})
+    (mine / "records").mkdir()
+    code, out, _ = oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--score-workers", "1")
+    s = json.loads(out)
+    assert code == 0 and (s["documents"], s["failed"], s["pending"]) == (2, 1, 0)
+
+
+@pytest.mark.parametrize("raw, why", [(b"", "empty"), (b"\xff\xfe", "UTF-8"), (b"{not", "isn't JSON"),
+                                      (b"[1]", "list"), (b"null", "null")])
+def test_a_prediction_that_isnt_an_object_says_why(tmp_path, raw, why):
+    docs = data.read_manifest(dataset(tmp_path / "ds"))[1]
+    run = benchmark.Run("mine", {}, predictions(tmp_path / "run", {"d0.json": {"a": "x"}}))
+    (run.predictions / "d1.json").write_bytes(raw)
+    benchmark.grade(run, docs, QUIET, score_workers=1)
+    (line,) = [x for x in benchmark.read_scores(run) if x["doc_id"] == "d1"]
+    assert line["status"] == "failed" and why in line["error"]
+
+
+def test_a_prediction_with_a_byte_order_mark_reads_as_its_json(tmp_path):
+    docs = data.read_manifest(dataset(tmp_path / "ds"))[1]
+    run = benchmark.Run("mine", {}, predictions(tmp_path / "run", {"d0.json": {"a": "x"}}))
+    (run.predictions / "d1.json").write_bytes(b"\xef\xbb\xbf" + json.dumps({"a": "x"}).encode())
+    assert benchmark.grade(run, docs, QUIET, score_workers=1)["headline"] == 1.0
+
+
+def test_with_nothing_scored_the_metrics_are_null(tmp_path):
+    docs = data.read_manifest(dataset(tmp_path / "ds"))[1]
+    run = benchmark.Run("mine", {}, predictions(tmp_path / "run", {"d0.json": "[]", "d1.json": "[]"}))
+    s = benchmark.grade(run, docs, QUIET, score_workers=1)
+    assert (s["headline"], s["coverage"], s["accuracy"], s["misread_rate"]) == (0.0, 0.0, None, None)
+    assert s["per_suite"]["s"]["accuracy"] is None
+
+
+def test_grading_part_of_a_folders_manifest_says_so(tmp_path, caplog):
+    ds = dataset(tmp_path / "ds", n=3)
+    mine = predictions(tmp_path / "mine", {f"d{i}.json": {"a": "x"} for i in range(3)})
+    (mine / "settings.json").write_text(json.dumps({"dataset": data.dataset_id(ds), "manifest": "manifest.parquet"}))
+    with caplog.at_level(logging.WARNING):
+        benchmark.grade(benchmark.Run("mine", {}, mine), data.read_manifest(ds)[1][:1], QUIET, score_workers=1)
+    assert "1 document of its manifest's 3" in caplog.text
+
+
+def test_a_manifest_spelled_another_way_is_the_same_manifest(tmp_path, capsys):
+    ds = dataset(tmp_path / "ds")
+    mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}, "d1.json": {"a": "x"}})
+    assert oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--manifest", "./manifest.parquet",
+               "--score-workers", "1")[0] == 0
+    assert json.loads((mine / "settings.json").read_text())["manifest"] == "manifest.parquet"
+    assert oeb(capsys, "grade", str(mine), "--manifest", "manifest.parquet", "--score-workers", "1")[0] == 0
+
+
+def test_loose_predictions_are_told_where_to_go(tmp_path, capsys):
+    flat = tmp_path / "flat"
+    flat.mkdir()
+    (flat / "d0.json").write_text("{}")
+    code, _, err = oeb(capsys, "grade", str(flat))
+    assert code == 1 and "flat/predictions" in err

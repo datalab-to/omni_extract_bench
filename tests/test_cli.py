@@ -95,17 +95,17 @@ def test_a_model_ids_options_hint_never_suggests_model(capsys):
     assert code == 0 and '"model"' not in out.split("oeb benchmark")[-1]
 
 
-def test_quiet_keeps_stdout_and_drops_the_closing_line(tmp_path, capsys):
+def test_grade_prints_the_summary_and_a_closing_line(tmp_path, capsys):
     ds = dataset(tmp_path / "ds")
     mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}, "d1.json": {"a": "x"}})
     code, out, err = oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--score-workers", "1")
     assert code == 0 and "headline 1.000" in err and json.loads(out)["headline"] == 1.0
-    code, out, err = oeb(capsys, "grade", str(mine), "--score-workers", "1", "-q")
-    assert code == 0 and err == "" and json.loads(out)["headline"] == 1.0
+    with pytest.raises(SystemExit):
+        oeb(capsys, "grade", str(mine), "-q")
 
 
 def test_check_describes_a_dataset_that_can_run(tmp_path, capsys):
-    code, out, _ = oeb(capsys, "check", "--dataset", str(dataset(tmp_path / "ds")), "-q")
+    code, out, _ = oeb(capsys, "check", "--dataset", str(dataset(tmp_path / "ds")))
     assert code == 0 and json.loads(out) == {"ok": True, "manifest": "manifest.parquet", "documents": 2,
                                              "suites": 1, "inputs": 2}
 
@@ -120,3 +120,34 @@ def test_library_misuse_says_how_to_call_it(tmp_path):
         field_matching.summarize([field_matching.score({"a": "x"}, {"a": "x"}, SCHEMA)])
     with pytest.raises(UsageError, match="no folder at"):
         benchmark.read_scores(benchmark.Run("mine", {}, tmp_path / "nope"))
+
+
+def test_a_flag_given_a_folder_is_one_line(tmp_path, capsys):
+    (tmp_path / "s.json").write_text(json.dumps(SCHEMA))
+    code, _, err = oeb(capsys, "score", "--pred", str(tmp_path), "--gold", str(tmp_path / "s.json"),
+                       "--schema", str(tmp_path / "s.json"))
+    assert code == 1 and "--pred" in err and "folder" in err
+
+
+def test_an_unknown_order_matters_name_is_one_line(tmp_path, capsys):
+    pred = tmp_path / "p.json"
+    pred.write_text(json.dumps({"a": "x"}))
+    (tmp_path / "s.json").write_text(json.dumps(SCHEMA))
+    code, _, err = oeb(capsys, "score", "--pred", str(pred), "--gold", str(pred), "--schema",
+                       str(tmp_path / "s.json"), "--order-matters", "lineitems")
+    assert code == 1 and "lineitems" in err
+
+
+def test_a_stop_still_prints_the_summaries_it_wrote(tmp_path, capsys, monkeypatch):
+    from omni_extract_bench.harness.errors import AccountFailure
+
+    def execute(p, say):
+        for r in p.runs:
+            r.out.mkdir(parents=True, exist_ok=True)
+            (r.out / "summary.json").write_text(json.dumps({"headline": None, "pending": 2}))
+        raise AccountFailure("out of credits")
+    monkeypatch.setattr(benchmark, "execute", execute)
+    code, out, err = oeb(capsys, "benchmark", "--providers", "datalab", "--dataset", str(dataset(tmp_path / "ds")),
+                         "--out", str(tmp_path / "runs"), "-y")
+    (s,) = json.loads(out).values()
+    assert code == 1 and s["pending"] == 2 and "AccountFailure" in err and "resume" in err

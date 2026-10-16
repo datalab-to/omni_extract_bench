@@ -106,6 +106,8 @@ report("record returns the record it wrote",
        record(Run("datalab", {}, out), "refused", _refused) == _refused == recorded(Run("datalab", {}, out), "refused"))
 docs.append(Doc("never-ran", "internal", root / "x.pdf", root / "perfect.json", SCH))
 
+# Note: a run's settings name its provider (`is_run`), so a document it never attempted is pending.
+(out / "settings.json").write_text(json.dumps({"provider": "datalab"}))
 summary_of_run = grade(Run("datalab", {}, out), docs)
 rows = graded(Run("datalab", {}, out), docs)
 by_id = {r["doc_id"]: r for r in rows}
@@ -299,7 +301,7 @@ with _mock.patch.dict(sys.modules, {"huggingface_hub": None}):
     (_gone / "pdfs" / "d1.pdf").unlink()
     code, _, err = _check(_gone)
     report("...and names a file the manifest names that doesn't exist",
-           code == 1 and "1 files the manifest names don't exist" in err and "d1.pdf" in err, err)
+           code == 1 and "don't exist: 1 file" in err and "d1.pdf" in err, err)
     _list = byo(Path(tempfile.mkdtemp()), _relative)
     (_list / "gold" / "d1.json").write_text("[]")
     code, _, err = _check(_list)
@@ -505,12 +507,13 @@ report("...and the headline counts it as 0, so failing a hard document can't rai
        abs(h["headline"] - 0.5) < 1e-9 and abs(h["accuracy"] * h["coverage"] - h["headline"]) < 1e-9,
        str(h["headline"]))
 report("...per suite too", abs(h["per_suite"]["s"]["headline"] - 0.5) < 1e-9)
-report("an empty run does not divide by zero, and has no headline",
-       summarize([])["accuracy"] == 0.0 and summarize([])["coverage"] == 0.0
-       and summarize([])["unfound_rate"] == 0.0 and summarize([])["headline"] is None)
-_bug = summarize([scored("s", 10, 10), {"suite": "s", "status": "error", "error": "KeyError: a bug"}])
-report("a document whose grading raised in our code is left out of every number but errors",
-       (_bug["documents"], _bug["errors"], _bug["coverage"], _bug["headline"]) == (1, 1, 1.0, 1.0), str(_bug))
+report("an empty run does not divide by zero, and has no number at all",
+       summarize([])["accuracy"] is None and summarize([])["coverage"] is None
+       and summarize([])["unfound_rate"] is None and summarize([])["headline"] is None)
+_none = summarize([{"suite": "s", "status": "failed", "error": "no prediction"}])
+report("...and with nothing scored, the metrics over the scored are null, not 0.0",
+       (_none["accuracy"], _none["misread_rate"], _none["headline"], _none["coverage"]) == (None, None, 0.0, 0.0),
+       str(_none))
 
 print("\nA MISSING SDK STOPS THE PROVIDER AND STORES NOTHING")
 from omni_extract_bench import benchmark as _bench                         # noqa: E402

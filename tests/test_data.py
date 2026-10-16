@@ -68,3 +68,29 @@ def test_check_names_the_row_of_a_missing_file(tmp_path, capsys):
     (ds / "gold" / "d1.json").unlink()
     code, _, err = oeb(capsys, "check", "--dataset", str(ds))
     assert code == 1 and "d1 gt_path" in err
+
+
+def test_ids_differing_only_in_case_show_both_spellings(tmp_path):
+    ds = dataset(tmp_path / "ds")
+    (ds / "gold" / "D0.json").write_text((ds / "gold" / "d0.json").read_text())
+    rows = pq.read_table(ds / "manifest.parquet").to_pylist()
+    pq.write_table(pa.Table.from_pylist([rows[0], rows[0] | {"doc_id": "D0", "gt_path": "gold/D0.json"}]),
+                   ds / "manifest.parquet")
+    with pytest.raises(data.ManifestError) as e:
+        data.read_manifest(ds)
+    assert "'d0'" in str(e.value) and "'D0'" in str(e.value)
+
+
+def test_a_dataset_offline_and_uncached_is_refused_at_once(monkeypatch):
+    import huggingface_hub
+    from huggingface_hub import errors as hf_errors
+
+    tries = []
+
+    def offline(*a, **k):
+        tries.append(1)
+        raise hf_errors.LocalEntryNotFoundError("x")
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", offline)
+    with pytest.raises(UsageError, match="cache"):
+        data.download_dataset("hf://datasets/someone/nowhere@nope")
+    assert len(tries) == 1

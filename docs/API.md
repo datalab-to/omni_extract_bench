@@ -212,9 +212,9 @@ lines and `#` comments are skipped). `--sample` larger than the selection takes 
 `"other"` (`data.NO_SUITE`), so it merges with a suite really named "other". Rows may share an input
 file (one PDF asked with several schemas); each gold is named for its row, `<doc_id>.json`.
 
-`owed(plan, run)` is `(to predict, to grade)`: the plan's documents the run has no record of (with
-`retry_failed`, also the retryable failures), and the manifest's documents that will have a line
-once it is graded (the rest are pending). `describe` shows both. `scorer.check(docs)` raises naming
+`owed(plan, run)` is two counts, `(to predict, to grade)`: how many of the plan's documents the run has
+no record of (with `retry_failed`, also the retryable failures), and how many of the manifest's
+documents will have a line once it is graded (the rest are pending). `describe` shows both. `scorer.check(docs)` raises naming
 the first document whose gold can't be read or isn't a JSON object, as `oeb check` does.
 
 ### Two levels of data
@@ -281,9 +281,12 @@ asking; a declined plan prints `oeb benchmark: nothing run`. The execution looks
 
 Then each run's summary is printed to stdout, by run name, as its summary.json holds it, and each
 run's closing line to stderr; when documents failed it says that `--retry-failed` may predict some
-again. It exits 2, with a warning, when a document's grading raised in our code. A `UsageError` (what
-was asked is wrong) or a `Stop` (an account, a key or a dependency) is one line, `oeb benchmark: ...`,
-and exits 1; Ctrl-C exits 130. Either way, what was predicted is kept, and the same command resumes.
+again, it says how many. A `UsageError` (what was asked is wrong) or a `Stop` (an account, a key or a
+dependency) is one line, `oeb benchmark: ...`, and exits 1; after a `Stop`, the summaries grading wrote
+are printed to stdout first. Ctrl-C exits 130 and grades nothing. Either way, what was predicted is
+kept, and the same command resumes. A document whose grading raises in our scorer is a bug of ours:
+grading stops with the traceback, naming the run and the document, and writes nothing, since a summary
+with it left out would be wrong. A gold that can't be read stops it too, as a `GoldError`.
 
 
 ### Settings per provider
@@ -352,10 +355,12 @@ the whole, use another `--out` for the sample.
 It's **resumable**, and safe to run twice.
 
 - A document is predicted again only when it has no record. The record is written last, so
-  its presence means the prediction beside it is complete.
+  its presence means the prediction beside it is complete, and it is the source of truth for an
+  answer: a prediction lost or broken beside a record of an answer is rebuilt from it, with no call.
 - `--retry-failed` predicts again documents whose recorded failure may not recur: a timeout, an
-  outage (`VendorUnreachable`), a 429 or a 5xx (500, 502-504, 520-524). A 400, a refusal or an
-  unusable answer is an answer, and is not retried. It decides from the error's type and status;
+  outage (`VendorUnreachable`: the vendor couldn't be reached), a 429 or a 5xx (500, 502-504,
+  520-524). A 400, a refusal or an unusable answer is an answer, and is not retried. Within one
+  call, a 429 or 5xx is tried again after 20, 60 and 120 seconds before it is recorded. It decides from the error's type and status;
   `record["error"]["transient"]` says something else: whether `predict` retried within the call,
   which it never does for a timeout or a failed poll.
 - Grading is fresh every time: every document of the manifest is graded again, which calls no
@@ -367,8 +372,9 @@ It's **resumable**, and safe to run twice.
 - A document is pending, not failed, when it was never attempted: no line, counted in the
   summary's `pending` (and each suite's). While any is pending the `headline` is null, since a
   headline is a finished run's; the closing line says `<run>: headline — (3 pending: a headline needs
-  every document); 5 of 8 documents graded, 1 failed`. A recorded failure is failed. A folder of predictions you bring keeps no
-  records, so a document missing from it is failed: it is your submission.
+  every document); 5 of 8 documents graded, 1 failed`. A recorded failure is failed. Only a run
+  (its settings.json names a provider, `is_run`) has pending documents: in a folder of predictions
+  you bring, a document missing from it is failed, since it is your submission.
 
 So a Ctrl-C, a crash or a credit ceiling costs you the documents in flight, and nothing else.
 Reinvoke the same command to carry on: it predicts what is left, then grades everything.
@@ -408,17 +414,19 @@ benchmark.grade(run, list(every))
 - `grade(run, docs, say=print, *, settings=None, verdicts=True, score_workers=0, progress=NULL)`
   grades the folder against `docs` (pass the whole manifest, so a smaller loop never shrinks a run's
   scores), fresh, writes `verdicts/`, `scores.jsonl` and then `summary.json`, says its closing line,
-  and returns the summary (`read_scores(run)` gives the lines). A document never attempted is
-  pending; a recorded failure, or a missing prediction in a folder that keeps no records, is
-  failed. A folder that doesn't exist or has no `predictions/` is refused (`gradable`).
+  and returns the summary (`read_scores(run)` gives the lines). A document a run never attempted is
+  pending; a recorded failure, or a missing prediction in a folder of your own, is failed. A folder
+  of your own none of whose files names a document is refused, writing nothing. A folder that doesn't exist or has no `predictions/` is refused (`gradable`).
   `score_workers` is the number of scoring processes (0: one per core, capped at 8), the same name
   `plan` uses; `verdicts=False` skips the per-address verdict files; `settings` is the folder's
   settings.json as it will be, when not yet written;
 - `settled(out, dataset=None, manifest=None)` is the folder's settings.json (`{}` when it has none),
   refusing another dataset or manifest than it names; `declare(out, dataset, manifest, fields)` writes
   it, with the commit; and
-- `pools(plan)` is each adapter's documents at once, `scorer_errors(summary)` the documents whose
-  grading raised in our code, and `write_json(path, obj)` writes a file whole.
+- `restore(run, doc_id)` rebuilds a document's lost or unreadable prediction from its record of an
+  answer, with no call, and says whether it did; `is_run(settings)` says whether a folder's settings
+  are a run's; and
+- `pools(plan)` is each adapter's documents at once, and `write_json(path, obj)` writes a file whole.
 
 The folder is then exactly one `oeb benchmark` writes, so either can resume or grade it.
 
@@ -434,10 +442,14 @@ oeb grade mine/ --dataset my/corpus --manifest manifests/sub.parquet
 The first grades against the dataset and manifest the folder's `settings.json` names, else ours;
 the second against a dataset of your own, and one manifest in it. A folder's first grading that
 succeeds writes its dataset and manifest into its `settings.json` (a run's already has them), so a
-later `oeb grade mine/` grades against the same ones, and another dataset or manifest is refused; a
-grading that fails writes nothing. Grading covers the whole manifest; `per_suite` in the summary
+later `oeb grade mine/` grades against the same ones, and another dataset or manifest is refused
+(delete `mine/settings.json` to start the folder over); a grading that fails writes nothing. A grading
+none of whose files names a document of the manifest is refused, so a forgotten `--dataset` can't
+grade your documents against ours. Grading covers the whole manifest; `per_suite` in the summary
 says how each suite went. Files in `predictions/` named for no document of the manifest, and
-predictions that can't be read (graded as failed), are counted in one warning each. A prediction is read only from a file named exactly
+predictions that aren't a JSON object (graded as failed; each line says why: empty, not UTF-8, not
+JSON, or a list), are counted in one warning each. A file saved with a UTF-8 byte-order mark reads as
+its JSON. A prediction is read only from a file named exactly
 `<doc_id>.json`, case included, so a folder grades the same on macOS and Linux.
 
 Before grading a dataset of your own, `oeb check --dataset my/corpus` says whether oeb can run it:
@@ -447,14 +459,27 @@ problem is printed, naming its row. A dataset that passes is printed as JSON: `d
 
 The folder is your submission, so a document with no prediction fails: a document left out is one
 your system didn't answer. The folder gets `scores.jsonl` and `summary.json`, as a run's does; the
-summary is printed to stdout and the closing line to stderr (`-q`, before or after the command,
-leaves only stdout and errors). `oeb grade` exits 2, with a warning, when a document's grading raised
-in our code: those documents are left out of the scores. A `UsageError` or a `Stop` is one line,
-`oeb grade: ...`, and exits 1.
+summary is printed to stdout and the closing line to stderr. A `UsageError` or a `Stop` is one line,
+`oeb grade: ...`, and exits 1; a scorer that raises is a traceback, with nothing written.
+
+From Python, a folder of your own is a `Run` whose `out` is the folder itself (`provider` names it in
+the score lines; its options are `{}`), graded against the whole manifest:
+
+```python
+from pathlib import Path
+from omni_extract_bench import benchmark, data
+
+_, docs = data.read_manifest("my/corpus")
+run = benchmark.Run("mine", {}, Path("mine"))
+summary = benchmark.grade(run, docs, score_workers=1)
+lines = benchmark.read_scores(run)        # scores.jsonl, back
+```
+
+`benchmark.grade` doesn't write `settings.json`; `oeb grade` does, once grading succeeds.
 
 ## providers
 
-See providers:
+See providers (a table in a terminal; piped, one name per line):
 
 ```bash
 oeb providers
@@ -607,7 +632,6 @@ finishes.
   "documents": 6,
   "scored": 6,
   "failed": 0,
-  "errors": 0,
   "coverage": 1.0,
   "accuracy": 0.8076406248606786,
   "precision": 0.8101146573593331,
@@ -632,10 +656,12 @@ compare runs by, which a system can't raise by failing on its hard documents. It
 finished run: while any document is pending it is null, overall and in each suite with pending
 documents, and every per-suite block carries its own `pending`. It is `accuracy *
 coverage`; `accuracy`, `precision` and `recall` are over the scored documents only. `documents` is the
-documents graded, `scored` those with a usable prediction, `failed` the rest; `errors` counts documents
-whose grading raised in our code, left out of every other number. `usd` and `credits` are what the
-records say the calls cost; `credits` is null when none reported any. The run and each suite are the
-same shape, so whatever you read at the top you can read per suite as well.
+documents graded, `scored` those with a usable prediction, `failed` the rest. With none scored,
+`accuracy`, `precision`, `recall` and the rates are null, since there is nothing to average. `usd` and
+`credits` are what the records say the calls cost; `credits` is null when none reported any. Each suite
+is the same block as the run's numbers, with its own `pending`; `run`, `provider`, `settings`,
+`scorer`, `usd` and `credits` are the run's alone. A sample's headline (`--manifest manifests/...`) is
+over that sample, so it isn't comparable with the whole manifest's.
 
 
 ### predictions/&lt;doc_id&gt;.json
@@ -687,8 +713,7 @@ Schema, so the harness re-encodes yours to fit each one before sending it.
 ### scores.jsonl
 
 One line per document, in document order whatever order the workers finished in. Its `status` is
-`scored`, `failed` (no usable prediction: the line says why) or `error` (grading raised in our code:
-left out of the scores).
+`scored` or `failed` (no usable prediction: the line says why).
 
 ```json
 {
