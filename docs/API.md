@@ -138,8 +138,13 @@ AccountFailure       # the account can't pay
 A PDF that doesn't exist raises `FileNotFoundError`, and a schema that isn't a JSON object
 `TypeError`: both are the caller's to fix, not the vendor's answer.
 
-Everything else comes back in `record["error"]` (type, HTTP status, whether it's transient, and
-the message), with `record["result"]` set to `None`.
+A failure the vendor reports comes back in `record["error"]` (type, HTTP status, whether `predict`
+retried it within the call, and the message), with `record["result"]` set to `None`. A 429 or 5xx is
+retried within the call first, after 20, 60 and 120 seconds, inside the document's `timeout`; a
+timeout or a failed poll is not, since the first would spend a second budget and the second may buy
+the extraction twice. Anything else an adapter raises is a bug, not an answer: `predict_all` stops
+that adapter's runs, naming the document, and keeps what was recorded (an adapter whose `extract`
+returns something other than an `Extraction` raises `TypeError` saying so).
 
 
 ## benchmark
@@ -176,7 +181,8 @@ p = benchmark.plan(
 )
 print(benchmark.describe(p))   # what it would do, with no vendor call
 summary = benchmark.execute(p)
-summary["datalab-f46415c9"]["headline"] # the mean accuracy, a failure counting 0, e.g. 0.9145
+summary["datalab-f46415c9"]["headline"] # the mean accuracy, a failure counting 0, e.g. 0.9145;
+                                        # null while any document is pending
 ```
 
 ### The functions, by what they work on
@@ -184,7 +190,7 @@ summary["datalab-f46415c9"]["headline"] # the mean accuracy, a failure counting 
 | | reading data (`data`) | predicting (`harness`, `benchmark`) | scoring (`scorer`, `benchmark`) |
 | --- | --- | --- | --- |
 | one document | `doc.doc_path`, `doc.gt_path` | `harness.predict` | `scorer.gold(doc)`, `scorer.score` |
-| a dataset | `download_dataset`, `read_manifest`, `select`, `dataset_id` | | `scorer.summarize(lines)` |
+| a dataset | `download_dataset`, `read_manifest`, `select`, `dataset_id` | | `scorer.check(docs)`, `scorer.summarize(lines)` |
 | one run | | `prepare`, `needs`, `record`, `recorded`, `predicted` | `grade(run, docs)`, `read_scores(run)` |
 | a plan | | `plan`, `predict_all`, `owed(plan, run)` | `grade_all` |
 | both | | `execute`; `describe` | |
@@ -198,7 +204,16 @@ The same names, in the same modules, as omni-parse-bench's (whose rows are pages
 its file and gold as full local paths (a manifest that breaks the dataset's rules raises
 `data.ManifestError`, naming what's wrong); `data.select(docs, suites, limit, sample, only)` picks the ones to run: by suite (an unknown suite
 is refused), by doc id, `sample` documents spread over every suite (the same ones each time), then
-the first `limit`. On the command line, `--sample N` and `--docs FILE` (doc ids, one per line).
+the first `limit`. On the command line, `--sample N` and `--docs FILE` (doc ids, one per line; blank
+lines and `#` comments are skipped). `--sample` larger than the selection takes all of it, and with
+`--docs` it samples among those documents. A null or empty `suite` in a manifest is read as
+`"other"` (`data.NO_SUITE`), so it merges with a suite really named "other". Rows may share an input
+file (one PDF asked with several schemas); each gold is named for its row, `<doc_id>.json`.
+
+`owed(plan, run)` is `(to predict, to grade)`: the plan's documents the run has no record of (with
+`retry_failed`, also the retryable failures), and the manifest's documents that will have a line
+once it is graded (the rest are pending). `describe` shows both. `scorer.check(docs)` raises naming
+the first document whose gold can't be read or isn't a JSON object, as `oeb check` does.
 
 ### Two levels of data
 
@@ -228,7 +243,6 @@ manifest    manifest.parquet
 documents   1 document selected
 timeout     1800s per document
 score only  false
-rescoring   false
 
 ╭─────────┬─────────┬──────────────────┬─────────────────────────────────┬─────────┬───────╮
 │ adapter │ at once │ run              │ settings                        │ predict │ grade │
@@ -320,9 +334,9 @@ oeb benchmark --providers datalab --dataset hf://datasets/someone/their-corpus@v
 oeb benchmark --providers datalab --dataset my/corpus
 ```
 
-A run folder holds one dataset: pointing it at another is refused before anything is read.
-Two manifests of the same dataset may share a run folder, since they are the same documents
-and gold.
+A run folder holds one dataset and one manifest: pointing it at another of either is refused before
+anything is read, since a grading of the other would replace its summary. To predict a sample, then
+the whole, use another `--out` for the sample, or grade the whole run with `--suites`.
 
 ### Resuming
 
@@ -332,8 +346,9 @@ It's **resumable**, and safe to run twice.
   its presence means the prediction beside it is complete.
 - `--retry-failed` predicts again documents whose recorded failure may not recur: a timeout, an
   outage (`VendorUnreachable`), a 429 or a 5xx (500, 502-504, 520-524). A 400, a refusal or an
-  unusable answer is an answer, and is not retried. `record["error"]["transient"]` says something
-  else: whether `predict` retried within the call, which it never does for a timeout or a failed poll.
+  unusable answer is an answer, and is not retried. It decides from the error's type and status;
+  `record["error"]["transient"]` says something else: whether `predict` retried within the call,
+  which it never does for a timeout or a failed poll.
 - Grading is fresh every time: every document of the manifest is graded again, which calls no
   vendor, and `scores.jsonl`, `summary.json` and `verdicts/` are written whole when it finishes. So a run's
   scores are always one grading's, a gold correction or a new scorer reaches a run on its next
@@ -341,7 +356,9 @@ It's **resumable**, and safe to run twice.
   interrupted grading writes nothing; the last finished grading's files stand. Each line says
   which scoring code (`scorer`, the release and a digest of the scoring files) graded it.
 - A document is pending, not failed, when it was never attempted: no line, counted in the
-  summary's `pending`. A recorded failure is failed. A folder of predictions you bring keeps no
+  summary's `pending` (and each suite's). While any is pending the `headline` is null, since a
+  headline is a finished run's; the closing line says `headline - (3 pending; a headline needs every
+  document), coverage 5/8`. A recorded failure is failed. A folder of predictions you bring keeps no
   records, so a document missing from it is failed: it is your submission.
 
 So a Ctrl-C, a crash or a credit ceiling costs you the documents in flight, and nothing else.
@@ -398,15 +415,19 @@ oeb grade mine/ --dataset my/corpus --manifest manifests/sub.parquet
 oeb grade mine/ --suites extractbench
 ```
 
-The first grades against the dataset and manifest the folder's `settings.json` names (a run's
-does), else ours; the second against a dataset of your own, and one manifest in it; the third grades
-only one suite. A run folder is never graded against another dataset than its own: that is refused.
-Grading a run with `--suites` replaces its summary with those suites', and says so. Files in
-`predictions/` that match no document, and predictions that can't be read, are counted in a warning.
+The first grades against the dataset and manifest the folder's `settings.json` names, else ours;
+the second against a dataset of your own, and one manifest in it; the third grades only one suite. A
+folder's first grading writes its dataset and manifest into its `settings.json` (a run's already has
+them), so a later `oeb grade mine/` grades against the same ones, and another dataset or manifest is
+refused. Grading with `--suites` replaces the folder's summary with those suites', and says so. Files
+in `predictions/` named for no document of the manifest, and predictions that can't be read (graded
+as failed), are counted in one warning each. A prediction is read only from a file named exactly
+`<doc_id>.json`, case included, so a folder grades the same on macOS and Linux.
 
 Before grading a dataset of your own, `oeb check --dataset my/corpus` says whether oeb can run it:
 its manifest, that every file it names exists, and that every gold is a JSON object. The first
-problem is printed, naming its row.
+problem is printed, naming its row. A dataset that passes is printed as JSON: `documents` (rows),
+`suites`, and `inputs`, the distinct input files (fewer than `documents` when rows share one).
 
 The folder is your submission, so a document with no prediction fails: a document left out is one
 your system didn't answer. To grade part of the dataset, pass `--suites`. The folder gets
@@ -452,8 +473,9 @@ poll_interval   5.0
 oeb benchmark --providers datalab --options '{"datalab": {"mode": ...}}'
 ```
 
-Those defaults are the vendor's maximum tier. Parity here is "as much as the vendor will give",
-not one number for everyone.
+Those defaults are each adapter's `Config`, and not always the vendor's highest tier (datalab's
+is `balanced`): `--options` asks for another. An option is given as its field's type (a whole number
+for a float field is the same setting), and a value of another type is refused.
 
 In your code:
 
@@ -582,7 +604,9 @@ finishes.
 ```
 
 `headline` is the mean accuracy over every document, a failed one counting 0: the one number to
-compare runs by, which a system can't raise by failing on its hard documents. It is `accuracy *
+compare runs by, which a system can't raise by failing on its hard documents. It exists only for a
+finished run: while any document is pending it is null, overall and in each suite with pending
+documents, and every per-suite block carries its own `pending`. It is `accuracy *
 coverage`; `accuracy`, `precision` and `recall` are over the scored documents only. The run and each suite are the
 same shape, so whatever you read at the top you can read per suite as well.
 

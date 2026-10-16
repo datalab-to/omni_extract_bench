@@ -960,14 +960,17 @@ def check(docs: Iterable[Any]) -> None:
 
     It does not check a gold against its schema, nor that the scorer can read a schema: finding out
     means scoring, which costs as much as grading, and grading names a document that fails."""
+    if hasattr(docs, "gt_path"):
+        raise TypeError("check takes the documents, an iterable of them; for one, pass [doc]")
     for d in docs:
         try:
             g = gold(d)
         except (OSError, ValueError) as exc:
             raise ValueError(f"{d.doc_id}: its gold {d.gt_path} can't be read: {exc}") from None
         if isinstance(g, dict): continue
-        raise ValueError(f"{d.doc_id}: its gold {d.gt_path} is a JSON {type(g).__name__}; it must be a "
-                         "JSON object, the extraction")
+        kind = "null" if g is None else type(g).__name__
+        raise ValueError(f"{d.doc_id}: its gold {d.gt_path} is a JSON {kind}; it must be a JSON object, "
+                         "the extraction")
 
 
 ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
@@ -980,6 +983,10 @@ def summarize(lines: Iterable[dict]) -> dict:
     (`_over`), over every line and then per suite, each suite in the same shape. A line carries its
     document's suite, so the lines are all it needs."""
     lines = list(lines)
+    if bad := next((x for x in lines if not isinstance(x, dict) or "suite" not in x or "status" not in x), None):
+        raise ValueError(f"summarize takes score lines, each with its document's suite and status, as "
+                         f"scores.jsonl holds (benchmark.read_scores); got {bad!r:.120}. score()'s result "
+                         "is one line's numbers, without them")
     by_suite: dict[str, list[dict]] = collections.defaultdict(list)
     for x in lines:
         by_suite[x["suite"]].append(x)

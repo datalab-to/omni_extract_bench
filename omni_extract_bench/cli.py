@@ -23,28 +23,33 @@ import pathlib
 import sys
 
 
-def read_json(path: str):
-    """Parse one local JSON file, naming the file when it will not parse.
+def read_json(path: str, flag: str = ""):
+    """Parse one local JSON file, naming the file (and the flag that gave it) when it will not parse.
 
     The bare `json` message says line and column and not which of the three documents it came
     from, which is the only thing a reader needs when two of them are vendor output.
     """
+    where = f"{flag} {path}" if flag else str(path)
     try:
         return json.loads(pathlib.Path(path).read_text())
     except FileNotFoundError:
-        raise ValueError(f"{path}: no such file") from None
+        raise ValueError(f"{where}: no such file") from None
     except json.JSONDecodeError as exc:
-        raise ValueError(f"{path}: not JSON -- {exc}") from None
+        raise ValueError(f"{where}: not JSON -- {exc}") from None
 
 
 def cmd_score(args) -> int:
     from .scorers.field_matching import score
 
-    pred, gt, schema = (read_json(f) for f in (args.pred, args.gt, args.schema))
+    pred, gt, schema = (read_json(f, flag) for flag, f in (("--pred", args.pred), ("--gt", args.gt),
+                                                           ("--schema", args.schema)))
     files = (("--pred", args.pred, pred), ("--gt", args.gt, gt), ("--schema", args.schema, schema))
     if bad := next(((flag, path, x) for flag, path, x in files if not isinstance(x, dict)), None):
-        raise ValueError(f"{bad[0]} {bad[1]} is a JSON {type(bad[2]).__name__}; it must be a JSON object")
-    result = score(pred, gt, schema, order_matters=args.order_matters or (), verdicts=args.verdicts)
+        kind = "null" if bad[2] is None else type(bad[2]).__name__
+        raise ValueError(f"{bad[0]} {bad[1]} is a JSON {kind}; it must be a JSON object")
+    # Note: a bare --order-matters is every array, as the library's `order_matters=True`.
+    order = True if args.order_matters == [] else tuple(args.order_matters or ())
+    result = score(pred, gt, schema, order_matters=order, verdicts=args.verdicts)
     if args.verdicts:
         result["verdicts"] = [v._asdict() for v in result["verdicts"]]
     json.dump(result, sys.stdout, indent=2, default=str)
@@ -184,7 +189,7 @@ def cmd_predict(args) -> int:
     """One document through one vendor. The mirror of `oeb score`: files in, JSON out."""
     from .harness import predict
 
-    record = predict(args.provider, args.doc, read_json(args.schema), timeout=args.timeout,
+    record = predict(args.provider, args.doc, read_json(args.schema, "--schema"), timeout=args.timeout,
                      **read_options(args.options, per_provider=False))
     json.dump(record, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
@@ -213,10 +218,10 @@ def confirm_plan(plan) -> bool:
 
 
 def _ids(path: pathlib.Path) -> frozenset[str]:
-    """The doc ids a `--docs` file names, one per line."""
+    """The doc ids a `--docs` file names, one per line; blank lines and `#` comments are skipped."""
     if not path.is_file():
         raise FileNotFoundError(f"--docs {path}: no such file; it holds doc ids, one per line")
-    return frozenset(path.read_text().split())
+    return frozenset(x for line in path.read_text().splitlines() if (x := line.split("#", 1)[0].strip()))
 
 
 def cmd_benchmark(args) -> int:
@@ -265,8 +270,10 @@ def cmd_check(args) -> int:
     _, docs = data.read_manifest(args.dataset or data.DEFAULT_DATASET, args.manifest)
     if not docs:
         raise ValueError(f"the manifest {args.manifest} names no documents")
-    if missing := [str(f) for d in docs for f in (d.doc_path, d.gt_path) if not f.is_file()]:
-        raise ValueError(f"{len(missing)} files the manifest names don't exist, e.g. {missing[:3]}")
+    missing = [f"{d.doc_id} {col} {f}" for d in docs for col, f in (("doc_path", d.doc_path), ("gt_path", d.gt_path))
+               if not f.is_file()]
+    if missing:
+        raise ValueError(f"{len(missing)} files the manifest names don't exist: {'; '.join(missing[:3])}")
     field_matching.check(docs)
     print(json.dumps({"ok": True, "manifest": args.manifest, "documents": len(docs),
                       "suites": len({d.suite for d in docs}), "inputs": len({d.doc_path for d in docs})}))
@@ -281,24 +288,37 @@ def cmd_grade(args) -> int:
 
     out = pathlib.Path(args.run)
     if not (out / "predictions").is_dir():
+        hint = (f"; {out} looks like the predictions/ folder itself: pass its parent, {out.parent}"
+                if out.name == "predictions" else "")
         raise FileNotFoundError(f"{out} has no predictions/ folder; it holds predictions/<doc_id>.json, "
-                                "one per document you predicted")
-    said = json.loads((out / "settings.json").read_text()) if (out / "settings.json").is_file() else {}
+                                f"one per document you predicted{hint}")
+    path = out / "settings.json"
+    said = json.loads(path.read_text()) if path.is_file() else {}
     provider = said.get("provider") or out.name
-    # Note: a run folder says what it was predicted on; graded against another dataset, its scores
-    # would be overwritten with a grading against gold it never saw.
+    # Note: a folder says what it was graded (or predicted) on; graded against another dataset or
+    # manifest, its scores would be replaced by a grading against gold it never saw.
     dataset = args.dataset or said.get("dataset") or data.DEFAULT_DATASET
     if (was := said.get("dataset")) and data.dataset_id(dataset) != was:
         raise ValueError(f"{out} is a run on dataset {was}, not {data.dataset_id(dataset)}, and a run never "
-                         f"mixes datasets; pass --dataset {was}, or grade a copy")
+                         f"mixes datasets; pass --dataset {was}, or grade a copy without its settings.json")
     manifest = args.manifest or said.get("manifest") or data.MANIFEST
-    if args.suites and (out / "records").is_dir():
+    if (was := said.get("manifest")) and manifest != was:
+        raise ValueError(f"{out} is a run on manifest {was}, not {manifest}, and a run never mixes "
+                         f"manifests; pass --manifest {was}, or grade a copy without its settings.json")
+    root, docs = data.read_manifest(dataset, manifest)
+    chosen = list(data.select(docs, args.suites))
+    if args.suites and (out / "summary.json").is_file():
         logging.getLogger(__package__).warning(
-            "%s: grading only %s replaces the run's summary with these suites'; grade without --suites "
-            "for the whole run", out, ", ".join(args.suites))
-    _, docs = data.read_manifest(dataset, manifest)
-    summary = benchmark.grade(benchmark.Run(provider, {}, out), list(data.select(docs, args.suites)),
-                              verdicts=args.verdicts, score_workers=args.score_workers)
+            "%s: grading only %s replaces its summary with these suites'; grade without --suites for the "
+            "whole manifest", out, ", ".join(args.suites))
+    summary = benchmark.grade(benchmark.Run(provider, {}, out), chosen, verdicts=args.verdicts,
+                              score_workers=args.score_workers, whole=docs)
+    if "dataset" not in said:
+        # Note: written once a grading has finished, so the next grading of this folder is against
+        # the same dataset and manifest without being told, and a failed one leaves nothing behind.
+        commit = {"commit": root.name} if data._hf_dataset(dataset) is not None else {}
+        benchmark._write_json_atomic(path, said | {"dataset": data.dataset_id(dataset), **commit,
+                                                   "manifest": manifest})
     json.dump(summary, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0
@@ -325,8 +345,8 @@ def main(argv=None) -> int:
                         "side was compared as")
     s.add_argument("--order-matters", nargs="*", metavar="ARRAY",
                    help="arrays whose order is part of the answer, e.g. steps, "
-                        "'books[*].chapters'. Default: none -- the order rows appear in a "
-                        "document is usually an accident of layout")
+                        "'books[*].chapters'; given bare, every array. Default: none -- the order "
+                        "rows appear in a document is usually an accident of layout")
     s.set_defaults(fn=cmd_score)
 
     b = sub.add_parser("benchmark", parents=[quiet],
@@ -352,7 +372,8 @@ def main(argv=None) -> int:
                    help="N documents spread over every suite, the same ones each time; a smoke test "
                         "that sees every kind of document")
     b.add_argument("--docs", type=pathlib.Path, metavar="FILE",
-                   help="a file of doc ids, one per line: run only these documents")
+                   help="a file of doc ids, one per line (blank lines and # comments skipped): run "
+                        "only these documents")
     b.add_argument("--timeout", type=float, default=1800,
                    help="seconds one document may take, the same for every vendor")
     b.add_argument("--workers", metavar="N|JSON",
@@ -438,6 +459,17 @@ def main(argv=None) -> int:
         return args.fn(args)
     except (ValueError, FileNotFoundError) as exc:   # Note: a ManifestError is a ValueError.
         print(f"oeb {args.cmd}: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print(f"oeb {args.cmd}: interrupted; rerun to resume", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        # Note: the harness's errors exist only once it is imported, which a command that met one did.
+        errors = sys.modules.get(f"{__package__}.harness.errors")
+        if errors is None or not isinstance(exc, errors.AccountFailure | errors.MissingCredential):
+            raise
+        resume = "; fix it and rerun to resume" if args.cmd == "benchmark" else ""
+        print(f"oeb {args.cmd}: {type(exc).__name__}: {exc}{resume}", file=sys.stderr)
         return 1
 
 

@@ -78,7 +78,7 @@ def test_grade_says_which_files_it_could_not_use(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="omni_extract_bench"):
         benchmark.grade(benchmark.Run("mine", {}, run), list(data.read_manifest(ds)[1]), score_workers=1)
     said = caplog.text
-    assert "2 files in predictions/ match no document" in said and "d0.pdf.json" in said and "nested/" in said
+    assert "2 files in predictions/ are named for no document" in said and "d0.pdf.json" in said and "nested/" in said
     assert "1 predictions can't be read" in said and "d1" in said
 
 
@@ -240,3 +240,187 @@ def test_an_adapter_bug_stops_its_runs_naming_the_document(tmp_path, monkeypatch
     with pytest.raises(KeyError) as got:
         benchmark.predict_all(p)
     assert any("while predicting d0 with the datalab adapter" in n and "a bug" in n for n in got.value.__notes__)
+
+
+# A headline is a finished run's.
+
+def test_a_run_with_pending_documents_has_no_headline_yet(tmp_path, caplog):
+    ds = dataset(tmp_path / "ds", n=3)
+    run = benchmark.Run("mine", {}, tmp_path / "run")
+    run.records.mkdir(parents=True)
+    run.predictions.mkdir()
+    benchmark.record(run, "d0", {"result": {"a": "x"}, "error": None})
+    with caplog.at_level(logging.INFO, logger="omni_extract_bench"):
+        s = benchmark.grade(run, list(data.read_manifest(ds)[1]), score_workers=1)
+    assert s["headline"] is None and s["pending"] == 2 and s["accuracy"] == 1.0
+    assert s["per_suite"]["s"]["pending"] == 2 and s["per_suite"]["s"]["headline"] is None
+    assert "headline - (2 pending; a headline needs every document), coverage 1/3" in caplog.text
+    for d in ("d1", "d2"): benchmark.record(run, d, {"result": {"a": "x"}, "error": None})
+    s = benchmark.grade(run, list(data.read_manifest(ds)[1]), score_workers=1)
+    assert s["headline"] == 1.0 and s["pending"] == 0 and s["per_suite"]["s"]["pending"] == 0
+
+
+# A run folder holds one dataset and one manifest.
+
+def test_a_run_never_mixes_manifests(tmp_path, capsys):
+    ds = dataset(tmp_path / "ds")
+    (ds / "manifests").mkdir()
+    pq.write_table(pq.read_table(ds / "manifest.parquet").slice(0, 1), ds / "manifests" / "one.parquet")
+    p = benchmark.plan(["datalab"], out=tmp_path / "runs", dataset=str(ds))
+    benchmark.prepare(p.runs[0], str(ds), 30, "manifest.parquet")
+    with pytest.raises(ValueError, match="a run never mixes manifests; pass --manifest manifest.parquet"):
+        benchmark.plan(["datalab"], out=tmp_path / "runs", dataset=str(ds), manifest="manifests/one.parquet")
+    code, _, err = oeb(capsys, "grade", str(p.runs[0].out), "--manifest", "manifests/one.parquet")
+    assert code == 1 and "a run never mixes manifests" in err
+
+
+def test_your_folder_remembers_what_it_was_graded_on(tmp_path, capsys):
+    ds = dataset(tmp_path / "ds")
+    mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}, "d1.json": {"a": "x"}})
+    code, _, err = oeb(capsys, "grade", str(mine), "--dataset", str(tmp_path / "nope"))
+    assert code == 1 and not (mine / "settings.json").exists(), "a failed grading writes nothing"
+    assert oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--score-workers", "1")[0] == 0
+    said = json.loads((mine / "settings.json").read_text())
+    assert said["dataset"] == data.dataset_id(ds) and said["manifest"] == "manifest.parquet"
+    code, out, _ = oeb(capsys, "grade", str(mine), "--score-workers", "1")
+    assert code == 0 and json.loads(out)["documents"] == 2, "graded again on its own dataset, not ours"
+    code, _, err = oeb(capsys, "grade", str(mine), "--dataset", str(dataset(tmp_path / "other")))
+    assert code == 1 and "a copy without its settings.json" in err
+
+
+# A prediction is read only from a file named exactly for its document.
+
+def test_a_name_that_differs_in_case_is_stray_everywhere(tmp_path, caplog):
+    ds = dataset(tmp_path / "ds")
+    run = predictions(tmp_path / "run", {"d0.json": {"a": "x"}, "D1.json": {"a": "x"}})
+    with caplog.at_level(logging.WARNING, logger="omni_extract_bench"):
+        s = benchmark.grade(benchmark.Run("mine", {}, run), list(data.read_manifest(ds)[1]), score_workers=1)
+    assert s["scored"] == 1 and s["coverage"] == 0.5 and "D1.json" in caplog.text
+    assert any(x["doc_id"] == "d1" and "no prediction: predictions/d1.json" in x["error"]
+               for x in benchmark.read_scores(benchmark.Run("mine", {}, run)))
+
+
+def test_files_of_suites_left_out_are_not_stray(tmp_path, caplog):
+    ds = dataset(tmp_path / "ds")
+    rows = pq.read_table(ds / "manifest.parquet").to_pylist()
+    pq.write_table(pa.Table.from_pylist([rows[0], rows[1] | {"suite": "t"}]), ds / "manifest.parquet")
+    run = predictions(tmp_path / "run", {"d0.json": {"a": "x"}, "d1.json": {"a": "x"}})
+    every = data.read_manifest(ds)[1]
+    with caplog.at_level(logging.WARNING, logger="omni_extract_bench"):
+        benchmark.grade(benchmark.Run("mine", {}, run), list(data.select(every, ["s"])), score_workers=1,
+                        whole=every)
+    assert "named for no document" not in caplog.text
+
+
+# --workers and --options say what was meant.
+
+def test_an_added_adapter_is_keyed_by_the_name_it_was_filed_under(monkeypatch):
+    import types
+
+    from omni_extract_bench.harness import registry
+
+    monkeypatch.setitem(registry.ADAPTERS, "mine", types.ModuleType("plug.adapter"))
+    assert registry.resolve("mine") == "mine" and registry.resolve("datalab") == "datalab"
+    assert registry.resolve("openai/gpt-5") == "llm_single_shot"
+    assert benchmark._per_adapter({"mine": 2}) == {"mine": 2}
+
+
+def test_an_option_given_as_another_type_is_one_run_or_refused():
+    from omni_extract_bench.harness import registry
+
+    assert registry.out_name("datalab", {"poll_interval": 5}) == registry.out_name("datalab")
+    with pytest.raises(ValueError, match="option poll_interval is 'x', a str; it takes a float"):
+        registry.config_for("datalab", {"poll_interval": "x"})
+
+
+# A stop that isn't a mistake in what was asked is still one line.
+
+@pytest.mark.parametrize("raised, code, said", [
+    (KeyboardInterrupt(), 130, "oeb benchmark: interrupted; rerun to resume"),
+    ("account", 1, "oeb benchmark: AccountFailure: out of credits; fix it and rerun to resume"),
+])
+def test_an_account_failure_or_ctrl_c_is_one_line(tmp_path, capsys, monkeypatch, raised, code, said):
+    from omni_extract_bench.harness import errors
+
+    exc = errors.AccountFailure("out of credits") if raised == "account" else raised
+
+    def boom(p):
+        raise exc
+    monkeypatch.setattr(benchmark, "execute", boom)
+    got = oeb(capsys, "benchmark", "--providers", "datalab", "--dataset", str(dataset(tmp_path / "ds")),
+              "--out", str(tmp_path / "runs"), "-y")
+    assert got[0] == code and said in got[2] and "Traceback" not in got[2]
+
+
+def test_an_adapter_returning_the_wrong_type_says_so(tmp_path, monkeypatch):
+    import types
+
+    from omni_extract_bench.harness import document
+
+    real = document.adapter
+    monkeypatch.setattr(document, "adapter", lambda provider: types.SimpleNamespace(
+        __name__=real(provider).__name__, Config=real(provider).Config,
+        prepare_schema=real(provider).prepare_schema, extract=lambda pdf, schema, **kw: {"a": "x"}))
+    (pdf := tmp_path / "d.pdf").write_bytes(b"%PDF")
+    with pytest.raises(TypeError, match="extract must return an Extraction"):
+        document.predict("datalab", pdf, SCHEMA)
+
+
+# Messages say what was wrong, and where.
+
+def test_check_names_the_row_of_a_missing_file(tmp_path, capsys):
+    ds = dataset(tmp_path / "ds")
+    (ds / "gold" / "d1.json").unlink()
+    code, _, err = oeb(capsys, "check", "--dataset", str(ds))
+    assert code == 1 and "d1 gt_path" in err
+
+
+def test_a_manifest_must_be_inside_the_dataset(tmp_path, capsys):
+    ds = dataset(tmp_path / "ds")
+    code, _, err = oeb(capsys, "check", "--dataset", str(ds), "--manifest", str(ds / "manifest.parquet"))
+    assert code == 1 and "must be a relative path inside the dataset" in err and "--manifest manifest.parquet" in err
+    code, _, err = oeb(capsys, "check", "--dataset", str(ds), "--manifest", "../ds/manifest.parquet")
+    assert code == 1 and "without '..'" in err
+
+
+def test_score_names_the_flag_and_says_null(tmp_path, capsys):
+    (g := tmp_path / "g.json").write_text(json.dumps({"a": "x"}))
+    (s := tmp_path / "s.json").write_text(json.dumps(SCHEMA))
+    (n := tmp_path / "n.json").write_text("null")
+    code, _, err = oeb(capsys, "score", "--pred", str(n), "--gt", str(g), "--schema", str(s))
+    assert code == 1 and "--pred" in err and "a JSON null" in err
+    code, _, err = oeb(capsys, "score", "--pred", str(g), "--gt", str(tmp_path / "x.json"), "--schema", str(s))
+    assert code == 1 and "--gt" in err and "no such file" in err
+
+
+def test_a_bare_order_matters_is_every_array(tmp_path, capsys):
+    schema = {"type": "object", "properties": {"xs": {"type": "array", "items": {"type": "string"}}}}
+    (g := tmp_path / "g.json").write_text(json.dumps({"xs": ["a", "b", "c"]}))
+    (p := tmp_path / "p.json").write_text(json.dumps({"xs": ["c", "b", "a"]}))
+    (s := tmp_path / "s.json").write_text(json.dumps(schema))
+    loose = json.loads(oeb(capsys, "score", "--pred", str(p), "--gt", str(g), "--schema", str(s))[1])
+    strict = json.loads(oeb(capsys, "score", "--pred", str(p), "--gt", str(g), "--schema", str(s),
+                            "--order-matters")[1])
+    assert loose["accuracy"] == 1.0 and strict["accuracy"] < 1.0
+
+
+def test_a_docs_file_skips_blank_lines_and_comments(tmp_path):
+    (f := tmp_path / "ids.txt").write_text("# the hard ones\nd0  # a note\n\nd1\n")
+    assert cli._ids(f) == frozenset({"d0", "d1"})
+
+
+def test_grading_the_predictions_folder_itself_points_at_its_parent(tmp_path, capsys):
+    run = predictions(tmp_path / "run", {"d0.json": {"a": "x"}})
+    code, _, err = oeb(capsys, "grade", str(run / "predictions"))
+    assert code == 1 and f"pass its parent, {run}" in err
+
+
+def test_library_misuse_says_how_to_call_it(tmp_path):
+    ds = dataset(tmp_path / "ds")
+    doc = data.read_manifest(ds)[1][0]
+    with pytest.raises(TypeError, match=r"pass \[doc\]"):
+        field_matching.check(doc)
+    with pytest.raises(ValueError, match="summarize takes score lines"):
+        field_matching.summarize([field_matching.score({"a": "x"}, {"a": "x"}, SCHEMA)])
+    with pytest.raises(FileNotFoundError, match="no run at"):
+        benchmark.read_scores(benchmark.Run("mine", {}, tmp_path / "nope"))

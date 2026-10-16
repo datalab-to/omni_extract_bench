@@ -16,6 +16,7 @@ import dataclasses
 import hashlib
 import json
 import re
+import typing
 from importlib import metadata
 from types import ModuleType
 
@@ -90,11 +91,12 @@ def add_adapter(provider: str, module: ModuleType, *, replace: bool = False) -> 
 
 
 def resolve(provider: str) -> str:
-    """This adapter's module name -- what `WORKERS` is keyed by, and what groups the runs of
-    one adapter together however many model ids reached it."""
+    """This adapter's name -- what `WORKERS` and `--workers` are keyed by, and what groups the runs of
+    one adapter together however many model ids reached it: one of ours by its module's short name
+    (`llm_single_shot` for every model id), one added in code or by a package by the name it was
+    filed under."""
     name = adapter(provider).__name__
-    # Note: only our own modules are shortened; two outside ones may end in the same word.
-    return name.rsplit(".", 1)[-1] if name.startswith(f"{__package__}.providers.") else name
+    return name.rsplit(".", 1)[-1] if name.startswith(f"{__package__}.providers.") else provider
 
 
 def out_name(provider: str, options: dict | None = None) -> str:
@@ -141,10 +143,29 @@ def config_for(provider: str, options: dict | None = None):
                 f"one you want: --providers {options['model']}")
         options = {**options, "model": provider}
     try:
-        return config_type(**options)
+        return config_type(**_typed(provider, config_type, options))
     except TypeError as exc:
         known = ", ".join(f.name for f in dataclasses.fields(config_type)) or "(none)"
         raise ValueError(f"{provider}: {exc}. Its options are: {known}") from None
+
+
+def _typed(provider: str, config_type: type, options: dict) -> dict:
+    """`options` with each value given as its `Config` field's type: a whole number for a float field
+    becomes a float, so `{"delay": 0}` and the default `0.0` name one run; a value of another simple
+    type is refused, naming the option. A field typed otherwise (a union, a list) is passed as given."""
+    try:
+        hints = typing.get_type_hints(config_type)
+    except Exception:  # noqa: BLE001 -- a plugin's annotations may not resolve; then nothing is checked
+        return options
+    out = dict(options)
+    for k, v in options.items():
+        t = hints.get(k)
+        if t not in (str, int, float, bool): continue
+        if t is float and isinstance(v, int) and not isinstance(v, bool):
+            out[k] = float(v)
+        elif not isinstance(v, t) or (t is not bool and isinstance(v, bool)):
+            raise ValueError(f"{provider}: option {k} is {v!r}, a {type(v).__name__}; it takes a {t.__name__}")
+    return out
 
 
 def settings_for(provider: str, options: dict | None = None) -> dict:

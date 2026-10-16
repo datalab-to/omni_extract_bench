@@ -142,3 +142,26 @@ unchanged unless a line below says otherwise.
   for `only`; `plan` refuses a bare str of providers, a timeout that isn't positive, and a `workers`
   that isn't a number or a mapping.
 - A bug in an adapter still stops its runs, now naming the document and the adapter.
+- While any document is pending, `headline` is null, overall and in each suite with pending
+  documents: a headline is a finished run's. Every per-suite block carries its own `pending`, and the
+  closing line says `headline - (N pending; ...), coverage scored/total`.
+- A run folder holds one manifest as well as one dataset: `plan` and `oeb grade` refuse another.
+- `oeb grade` on a folder of your own writes its dataset and manifest into its `settings.json` once a
+  grading has finished, so the next `oeb grade` of it grades against the same ones; a failed grading
+  writes nothing.
+- A prediction is read only from a file named exactly `<doc_id>.json`, case included, so a folder
+  grades the same on every system; a file named for no document of the manifest is counted in one
+  warning (files of suites left out by `--suites` aren't), and `--suites` on any graded folder says it
+  replaces the summary. `grade` takes the whole manifest as `whole=`.
+- An adapter added in code or by a package is keyed by the name it was filed under (`resolve`,
+  `--workers`); ours keep their short module names.
+- An option is given as its `Config` field's type: `{"poll_interval": 5}` is the default 5.0, one run,
+  not two; a value of another type is refused, naming the option.
+- An account or credential failure, and Ctrl-C (exit 130), are one line on the command line too. An
+  adapter whose `extract` returns something other than an `Extraction` says so.
+- `--manifest` must be a relative path inside the dataset; `oeb check` names the row of a missing
+  file; `oeb score` names the flag of a missing or non-JSON file, and says "null"; a bare
+  `--order-matters` is every array; a `--docs` file skips blank lines and `#` comments; `oeb grade
+  <folder>/predictions` points at the folder; `predicted` no longer logs, so an unreadable prediction
+  is reported once; `summarize` refuses what isn't a score line; `read_scores` on a missing folder
+  raises `FileNotFoundError`; `scorer.check(doc)` says to pass a list.

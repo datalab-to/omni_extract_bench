@@ -84,6 +84,9 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
             attempts = attempt + 1
             try:
                 got = api.extract(pdf, sent, timeout=budget.remaining(), config=config)
+                if not isinstance(got, Extraction):
+                    raise TypeError(f"{provider}: extract must return an Extraction (contract.py), "
+                                    f"not a {type(got).__name__}")
                 error = None
                 break
             except VendorError as exc:

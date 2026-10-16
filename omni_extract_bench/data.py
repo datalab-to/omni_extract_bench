@@ -148,14 +148,23 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
             "pyarrow is needed to read the benchmark manifest, and is not installed:\n"
             "    pip install 'omni-extract-bench[benchmark]'"
         ) from None
+    if Path(manifest).is_absolute() or ".." in Path(manifest).parts:
+        on_disk = Path(manifest)
+        raise ManifestError(
+            f"--manifest {manifest!r} must be a relative path inside the dataset (--dataset), without "
+            f"'..', e.g. manifests/sample.parquet"
+            + (f"; for this one, pass --dataset {on_disk.parent} --manifest {on_disk.name}"
+               if on_disk.is_file() else ""))
     _on_hub(dataset, manifest)
     root = download_dataset(dataset)
     path = root / manifest
     if not path.exists():
+        hint = (f" {manifest} is a file here, outside the dataset: pass --dataset {Path(manifest).parent} "
+                f"--manifest {Path(manifest).name}." if Path(manifest).is_file() else "")
         raise ManifestError(
             f"there is no manifest at {path}. --manifest is a path inside the dataset (--dataset), "
             f"{MANIFEST} by default; a manifest is a parquet file with one row per document, as "
-            f"{', '.join(COLUMNS)}, as ours at https://huggingface.co/datasets/{REPO}."
+            f"{', '.join(COLUMNS)}, as ours at https://huggingface.co/datasets/{REPO}.{hint}"
         )
     table = pq.read_table(path)
     absent = [c for c in COLUMNS if c not in table.column_names]
@@ -177,7 +186,8 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
                                 f"or null for {NO_SUITE!r}")
         if not _inside(row["doc_path"]):
             raise ManifestError(f"{path}: row {n} ({doc_id}) has doc_path {row['doc_path']!r}; it must be a "
-                                f"relative path inside the dataset to a file, e.g. pdfs/{doc_id}.pdf")
+                                f"relative path inside the dataset to a file, e.g. docs/<file>.pdf (any name; "
+                                f"documents may share one)")
         if not _inside(row["gt_path"], doc_id):
             raise ManifestError(f"{path}: row {n} ({doc_id}) has gt_path {row['gt_path']!r}; it must be a "
                                 f"relative path inside the dataset named for its document, "
