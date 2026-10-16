@@ -301,7 +301,9 @@ oeb benchmark --providers datalab \
 
 *Any HuggingFace dataset*, pinned to a revision with `@`. It is downloaded whole, at that
 revision, into the HuggingFace cache (ours is 0.9 GB), so its documents and gold are always one
-commit's, and a second run downloads nothing. For example,
+commit's, and a second run downloads nothing. A run's `settings.json` records the commit; when
+`--out` holds a run made at another commit, `plan` warns and carries on, so its old predictions
+are graded against the new gold. Pass another `--out` to keep them apart. For example,
 
 ```bash
 oeb benchmark --providers datalab --dataset hf://datasets/someone/their-corpus@v2

@@ -405,11 +405,25 @@ def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path 
         if path.exists() and (was := json.loads(path.read_text()).get("dataset")) not in (None, ident):
             raise ValueError(f"{run.out} is a run on dataset {was}, not {ident}, and a run never "
                              f"mixes datasets; pass another --out, or --dataset {was}")
-    _, every = data.read_manifest(dataset, manifest)
+    root, every = data.read_manifest(dataset, manifest)
+    commit = root.name if data._hf_dataset(dataset) is not None else None
+    for run in runs.values():
+        if msg := _commit_moved(run, commit):
+            log.warning(msg)
     if not (docs := data.select(every, suites, limit, sample, only)):
         raise ValueError("no documents selected: check --suites and --limit")
     return Plan(tuple(runs.values()), tuple(docs), str(dataset), manifest, timeout,
                 workers, score_workers, verdicts, score_only, retry_failed)
+
+
+def _commit_moved(run: Run, commit: str | None) -> str | None:
+    """The warning for a run made at another commit of its dataset than `commit`, or `None`."""
+    path = run.out / "settings.json"
+    if not commit or not path.exists() or (was := json.loads(path.read_text()).get("commit")) in (None, commit):
+        return None
+    return (f"{run.out} was made at commit {was} of its dataset, and this plan uses {commit}: its "
+            f"predictions made at {was} will be graded against the gold at {commit}. Pass another "
+            f"--out to keep them apart.")
 
 
 def predict_all(p: Plan) -> None:

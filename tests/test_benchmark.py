@@ -509,6 +509,27 @@ except ValueError as exc:
     report("an id not in the dataset is refused, naming it", "zz" in str(exc), str(exc))
 report("suites, then limit", [d.doc_id for d in DS.select(_many, suites=["c"], limit=2)] == ["c0", "c1"])
 
+print("\nA RUN MADE AT ANOTHER COMMIT")
+import logging as _logging                                                     # noqa: E402
+
+_at = Path(tempfile.mkdtemp())
+_new = byo(_at, _relative).rename(_at / "c2")      # a downloaded dataset's folder is named for its commit
+_hub = "hf://datasets/someone/theirs"
+with _mock.patch.object(DS, "_on_hub", lambda *a: None), \
+        _mock.patch.object(DS, "download_dataset", lambda d: _new):
+    _out = _bench.plan(["datalab"], out=_at / "runs", dataset=_hub).runs[0].out
+    _out.mkdir(parents=True)
+    (_out / "settings.json").write_text(json.dumps({"dataset": _hub, "commit": "c1"}))
+    with _mock.patch.object(_logging.getLogger("omni_extract_bench.benchmark"), "warning") as _warned:
+        _p = _bench.plan(["datalab"], out=_at / "runs", dataset=_hub)
+    _msg = _warned.call_args[0][0] if _warned.called else ""
+    report("plan warns when a run was made at another commit, and carries on",
+           len(_p.docs) == 2 and "c1" in _msg and "c2" in _msg and "--out" in _msg, _msg)
+    (_out / "settings.json").write_text(json.dumps({"dataset": _hub, "commit": "c2"}))
+    with _mock.patch.object(_logging.getLogger("omni_extract_bench.benchmark"), "warning") as _warned:
+        _bench.plan(["datalab"], out=_at / "runs", dataset=_hub)
+    report("...and is quiet at the same commit", not _warned.called)
+
 print("\nA MISSING EXTRA SAYS WHAT TO INSTALL")
 import unittest.mock                                                       # noqa: E402
 
