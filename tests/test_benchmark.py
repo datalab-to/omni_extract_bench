@@ -238,6 +238,27 @@ with _mock.patch.dict(sys.modules, {"huggingface_hub": None}):
     _, docs = DS.read_manifest(_shared)
     report("documents may share one input file, as one PDF asked with several schemas",
            len(docs) == 2 and docs[0].doc_path == docs[1].doc_path)
+    for _bad in ("", ".", "pdfs/", None):
+        tmp = Path(tempfile.mkdtemp())
+        _empty = byo(tmp, _relative)
+        _rows = _pq.read_table(_empty / "manifest.parquet").to_pylist()
+        _pq.write_table(_pa.Table.from_pylist([_rows[0] | {"doc_path": _bad}]), _empty / "manifest.parquet")
+        try:
+            DS.read_manifest(_empty)
+            report(f"a doc_path of {_bad!r} is refused", False, "it was accepted")
+        except DS.ManifestError as exc:
+            report(f"a doc_path of {_bad!r} is refused", "to a file" in str(exc), str(exc))
+    tmp = Path(tempfile.mkdtemp())
+    _cased = byo(tmp, _relative)
+    _rows = _pq.read_table(_cased / "manifest.parquet").to_pylist()
+    (_cased / "gold" / "D0.json").write_text((_cased / "gold" / "d0.json").read_text())
+    _pq.write_table(_pa.Table.from_pylist([_rows[0], _rows[0] | {"doc_id": "D0", "gt_path": "gold/D0.json"}]),
+                    _cased / "manifest.parquet")
+    try:
+        DS.read_manifest(_cased)
+        report("doc ids that differ only in case are refused", False, "they were accepted")
+    except DS.ManifestError as exc:
+        report("doc ids that differ only in case are refused", "ignoring case" in str(exc), str(exc))
     tmp = Path(tempfile.mkdtemp())
     _twice = byo(tmp, _relative)
     _rows = _pq.read_table(_twice / "manifest.parquet").to_pylist()
@@ -258,7 +279,7 @@ with _mock.patch.dict(sys.modules, {"huggingface_hub": None}):
 
 _exact = Path(tempfile.mkdtemp()) / "m.parquet"
 # "{}" is a valid doc_id, path and JSON, so the row is built from COLUMNS itself.
-_pq.write_table(_pa.Table.from_pylist([{c: "{}" for c in DS.COLUMNS} | {"gt_path": "{}.json"}]), _exact)
+_pq.write_table(_pa.Table.from_pylist([{c: "{}" for c in DS.COLUMNS} | {"doc_path": "{}.pdf", "gt_path": "{}.json"}]), _exact)
 try:
     _, _only = DS.read_manifest(_exact.parent, _exact.name)
     report("a manifest of exactly COLUMNS is enough to read",
@@ -268,7 +289,7 @@ except Exception as exc:                                                       #
            f"{type(exc).__name__}: {exc}")
 
 _extra = Path(tempfile.mkdtemp()) / "m.parquet"
-_pq.write_table(_pa.Table.from_pylist([{**{c: "{}" for c in DS.COLUMNS}, "gt_path": "{}.json", "language": "tha"}]), _extra)
+_pq.write_table(_pa.Table.from_pylist([{**{c: "{}" for c in DS.COLUMNS}, "doc_path": "{}.pdf", "gt_path": "{}.json", "language": "tha"}]), _extra)
 _, (_one,) = DS.read_manifest(_extra.parent, _extra.name)
 report("a column of the dataset's own is carried on the document, not refused",
        dict(_one.extra) == {"language": "tha"}, str(dict(_one.extra)))

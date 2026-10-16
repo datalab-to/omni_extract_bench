@@ -589,13 +589,17 @@ def grade_all(p: Plan) -> dict[str, dict]:
 
 def execute(p: Plan) -> dict[str, dict]:
     """Predict, then grade. Returns each run's summary, by run name. What was predicted is graded
-    even when predicting stopped early."""
+    even when predicting failed part way.
+
+    Note: not when it was interrupted (Ctrl-C): whoever stopped it wants it stopped, grading takes
+    minutes, and `--score-only` grades what is there."""
     try:
         if not p.score_only:
             predict_all(p)
-    finally:
-        summaries = grade_all(p)
-    return summaries
+    except Exception:
+        grade_all(p)
+        raise
+    return grade_all(p)
 
 
 def _settings_cell(asked: list[str]) -> Group:

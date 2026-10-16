@@ -100,10 +100,12 @@ unchanged unless a line below says otherwise.
   folder; an input may have any name, and documents may share one (one PDF asked with several
   schemas). A doc id may appear once.
 - `read_manifest` keeps the manifest's order; it sorted by suite and doc id. So `--limit N` takes the
-  manifest's first N.
+  manifest's first N: a run resumed with the same `--limit` may predict other documents than it did.
 - `download_dataset` retries a failed download (5 attempts), and refuses a folder that doesn't exist.
-- `execute` grades what was predicted even when predicting stopped early, an account failure
-  included: a run's unattempted documents are `pending` in its summary.
+- `execute` grades what was predicted even when predicting fails part way, an account failure
+  included: a run's unattempted documents are `pending` in its summary. An interrupt (Ctrl-C) grades
+  nothing; `--score-only` grades it then.
+- Doc ids must be unique ignoring case, since each names files.
 - `plan` refuses a run asked for twice and a negative `--limit`, `--sample`, `--workers` or
   `--score-workers`; it used to merge the repeat.
 - `grade` refuses a folder with no `predictions/`, as `oeb grade` did.

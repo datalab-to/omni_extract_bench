@@ -172,7 +172,7 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
                              f"scores.jsonl, so it has to be one path component.")
         if not _inside(row["doc_path"]):
             raise ManifestError(f"{path}: row {n} ({doc_id}) has doc_path {row['doc_path']!r}; it must be a "
-                                f"relative path inside the dataset, e.g. pdfs/{doc_id}.pdf")
+                                f"relative path inside the dataset to a file, e.g. pdfs/{doc_id}.pdf")
         if not _inside(row["gt_path"], doc_id):
             raise ManifestError(f"{path}: row {n} ({doc_id}) has gt_path {row['gt_path']!r}; it must be a "
                                 f"relative path inside the dataset named for its document, "
@@ -185,8 +185,11 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
         docs.append(Doc(doc_id=doc_id, suite=row["suite"], doc_path=root / row["doc_path"],
                         gt_path=root / row["gt_path"], schema=schema,
                         extra={k: v for k, v in row.items() if k not in COLUMNS}))
-    if twice := [i for i, k in collections.Counter(d.doc_id for d in docs).items() if k > 1]:
-        raise ManifestError(f"{path}: {len(twice)} doc ids are in the manifest more than once, e.g. {twice[:3]}")
+    # Note: ignoring case, because an id names files, and two ids that differ only in case name one file
+    # on a case-insensitive disk (macOS, Windows).
+    if twice := [i for i, k in collections.Counter(d.doc_id.casefold() for d in docs).items() if k > 1]:
+        raise ManifestError(f"{path}: {len(twice)} doc ids are in the manifest more than once (ignoring "
+                            f"case), e.g. {twice[:3]}")
     return root, tuple(docs)
 
 
@@ -219,14 +222,15 @@ def select(docs: Sequence[Doc], suites: Sequence[str] | None = None, limit: int 
 
 
 def _inside(path: str, doc_id: str | None = None) -> bool:
-    """Whether `path` is relative and stays inside the dataset, and, given `doc_id`, is a gold named
-    for it: `<doc_id>.json`.
+    """Whether `path` is a non-empty string, relative, inside the dataset and naming a file (it has an
+    extension), and, given `doc_id`, is a gold named for it: `<doc_id>.json`.
 
     Note: a gold is named for its document, in any folder, so one dataset's documents can carry golds
     of several kinds, one manifest each, and no two documents share one. An input is not: several
     documents may read one file, as when one PDF is asked with several schemas."""
+    if not isinstance(path, str) or not path.strip(): return False
     p = Path(path)
-    return (not p.is_absolute() and ".." not in p.parts
+    return (not p.is_absolute() and ".." not in p.parts and bool(p.suffix)
             and (doc_id is None or (p.stem == doc_id and p.suffix == ".json")))
 
 
