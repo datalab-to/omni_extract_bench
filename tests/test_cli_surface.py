@@ -84,6 +84,7 @@ INVOCATIONS = {
                "--schema", "s.json"], "cmd_score"),
     "benchmark": (["benchmark", "--providers", "datalab"], "cmd_benchmark"),
     "grade": (["grade", "mine/"], "cmd_grade"),
+    "check": (["check"], "cmd_check"),
     "providers": (["providers"], "cmd_providers"),
     "predict": (["predict", "--provider", "datalab", "--doc", "d.pdf",
                  "--schema", "s.json"], "cmd_predict"),

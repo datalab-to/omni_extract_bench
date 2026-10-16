@@ -259,6 +259,33 @@ with _mock.patch.dict(sys.modules, {"huggingface_hub": None}):
         report("doc ids that differ only in case are refused", False, "they were accepted")
     except DS.ManifestError as exc:
         report("doc ids that differ only in case are refused", "ignoring case" in str(exc), str(exc))
+
+    import contextlib as _ctx
+    import io as _io
+
+    from omni_extract_bench import cli as _cli
+
+    def _check(corpus):
+        out, err = _io.StringIO(), _io.StringIO()
+        with _ctx.redirect_stdout(out), _ctx.redirect_stderr(err):
+            code = _cli.main(["check", "--dataset", str(corpus)])
+        return code, out.getvalue(), err.getvalue()
+
+    _ok = byo(Path(tempfile.mkdtemp()), _relative)
+    code, out, _ = _check(_ok)
+    report("oeb check describes a dataset that can run",
+           code == 0 and json.loads(out) == {"ok": True, "manifest": "manifest.parquet", "documents": 2,
+                                             "suites": 1, "inputs": 2}, out)
+    _gone = byo(Path(tempfile.mkdtemp()), _relative)
+    (_gone / "pdfs" / "d1.pdf").unlink()
+    code, _, err = _check(_gone)
+    report("...and names a file the manifest names that doesn't exist",
+           code == 1 and "1 files the manifest names don't exist" in err and "d1.pdf" in err, err)
+    _list = byo(Path(tempfile.mkdtemp()), _relative)
+    (_list / "gold" / "d1.json").write_text("[]")
+    code, _, err = _check(_list)
+    report("...and a gold that isn't a JSON object, naming its document",
+           code == 1 and "d1" in err and "JSON object" in err, err)
     tmp = Path(tempfile.mkdtemp())
     _twice = byo(tmp, _relative)
     _rows = _pq.read_table(_twice / "manifest.parquet").to_pylist()

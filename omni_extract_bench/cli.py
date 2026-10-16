@@ -3,6 +3,7 @@
     oeb score      --pred p.json --gt g.json --schema s.json [--verdicts]
     oeb benchmark  --providers datalab reducto --out runs/
     oeb grade      mine/ [--dataset ...] [--manifest ...] [--suites ...]
+    oeb check      [--dataset ...] [--manifest ...]       # is the dataset one oeb can run?
     oeb predict    --provider datalab --doc x.pdf --schema s.json
     oeb providers [datalab]
 
@@ -229,6 +230,35 @@ def cmd_benchmark(args) -> int:
     return 0
 
 
+def cmd_check(args) -> int:
+    """`oeb check`: whether a dataset is one oeb can run. It checks, stopping at the first problem:
+
+        1. the manifest, as `data.read_manifest` does: the columns doc_id, suite, doc_path, gt_path
+           and schema are there; each doc_id is a filename; each doc_path is a relative path inside
+           the dataset to a file (one with an extension); each gt_path is a relative path inside the
+           dataset named `<doc_id>.json`; each schema is JSON; and doc ids are unique, ignoring case;
+        2. every doc_path and gt_path exists as a file; and
+        3. every gold reads as a JSON object (`field_matching.check`).
+
+    It does not open an input (a PDF isn't checked to be a PDF), check a gold against its schema, or
+    run the scorer. The problem goes to stderr, naming its row; a dataset that passes is described on
+    stdout, as JSON, and exits 0."""
+    from . import data
+    from .scorers import field_matching
+
+    try:
+        _, docs = data.read_manifest(args.dataset or data.DEFAULT_DATASET, args.manifest)
+        if missing := [str(f) for d in docs for f in (d.doc_path, d.gt_path) if not f.is_file()]:
+            raise ValueError(f"{len(missing)} files the manifest names don't exist, e.g. {missing[:3]}")
+        field_matching.check(docs)
+    except (ValueError, FileNotFoundError) as exc:   # Note: a ManifestError is a ValueError.
+        print(f"oeb check: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps({"ok": True, "manifest": args.manifest, "documents": len(docs),
+                      "suites": len({d.suite for d in docs}), "inputs": len({d.doc_path for d in docs})}))
+    return 0
+
+
 def cmd_grade(args) -> int:
     """Grade a folder of predictions/<doc_id>.json, whatever made them, and print its summary. A
     document with no prediction fails: the folder is your submission, so a document left out is one
@@ -339,6 +369,14 @@ def main(argv=None) -> int:
     g.add_argument("--no-verdicts", dest="verdicts", action="store_false",
                    help="skip the per-address verdicts")
     g.set_defaults(fn=cmd_grade)
+
+    c = sub.add_parser("check", help="whether a dataset is one oeb can run: its manifest, files and gold")
+    c.add_argument("--dataset", default=None,
+                   help="the dataset: a folder on disk, or hf://datasets/<org>/<name>[@<revision>]. "
+                        "Default: ours")
+    c.add_argument("--manifest", default="manifest.parquet",
+                   help="which documents of the dataset: a parquet inside it. Default: manifest.parquet")
+    c.set_defaults(fn=cmd_check)
 
     d = sub.add_parser("predict", help="run one document through one vendor")
     d.add_argument("--provider", required=True,

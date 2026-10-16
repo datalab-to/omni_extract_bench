@@ -112,3 +112,5 @@ unchanged unless a line below says otherwise.
 - `prepare` reads the manifest, so a broken one stops before anything is written.
 - `harness.out_name` is exported.
 - `predicted` and `read_scores` log a file they can't read.
+- `oeb check` says whether a dataset is one oeb can run: its manifest, that every file it names
+  exists, and that every gold is a JSON object (`field_matching.check`).

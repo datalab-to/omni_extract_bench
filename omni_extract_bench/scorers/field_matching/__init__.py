@@ -28,7 +28,7 @@ same problem one level down:
         _worth_if_paired(book A, book B)             are these the same book?
             _best_pairing(A.chapters, B.chapters)    only the chapters can say
 """
-__all__ = ["score", "gold", "summarize", "Verdict",
+__all__ = ["score", "gold", "check", "summarize", "Verdict",
            "node_key", "show", "format_node", "KEY", "INDEX"]
 
 import collections
@@ -943,6 +943,24 @@ def gold(doc: Any) -> Json:
     from pathlib import Path
 
     return json.loads(Path(doc.gt_path).read_text())
+
+
+
+def check(docs: Iterable[Any]) -> None:
+    """Raises a ValueError naming the first document of `docs` (a manifest's, `data.read_manifest`)
+    whose gold file can't be read, isn't JSON, or isn't a JSON object, the one shape `score` takes.
+    What `oeb check` runs.
+
+    It does not check a gold against its schema, nor that the scorer can read a schema: finding out
+    means scoring, which costs as much as grading, and grading names a document that fails."""
+    for d in docs:
+        try:
+            g = gold(d)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"{d.doc_id}: its gold {d.gt_path} can't be read: {exc}") from None
+        if isinstance(g, dict): continue
+        raise ValueError(f"{d.doc_id}: its gold {d.gt_path} is a JSON {type(g).__name__}; it must be a "
+                         "JSON object, the extraction")
 
 
 ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
