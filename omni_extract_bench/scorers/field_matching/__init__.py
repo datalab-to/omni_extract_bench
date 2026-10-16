@@ -28,13 +28,14 @@ same problem one level down:
         _worth_if_paired(book A, book B)             are these the same book?
             _best_pairing(A.chapters, B.chapters)    only the chapters can say
 """
-__all__ = ["score", "gold", "check", "summarize", "Verdict",
+__all__ = ["score", "gold", "check", "summarize", "Verdict", "GoldError",
            "node_key", "show", "format_node", "KEY", "INDEX"]
 
 import collections
 from collections.abc import Callable, Hashable, Iterable
 from typing import Any, Literal, NamedTuple
 
+from ...errors import UsageError
 from . import matching as OM
 from .values import canon_key, cmp_leaf, states_nothing
 
@@ -953,8 +954,12 @@ def gold(doc: Any) -> Json:
 
 
 
+class GoldError(UsageError):
+    """A gold file that can't be read, or isn't the extraction, a JSON object; the message names its document."""
+
+
 def check(docs: Iterable[Any]) -> None:
-    """Raises a ValueError naming the first document of `docs` (a manifest's, `data.read_manifest`)
+    """Raises a `GoldError` naming the first document of `docs` (a manifest's, `data.read_manifest`)
     whose gold file can't be read, isn't JSON, or isn't a JSON object, the one shape `score` takes.
     What `oeb check` runs.
 
@@ -966,10 +971,10 @@ def check(docs: Iterable[Any]) -> None:
         try:
             g = gold(d)
         except (OSError, ValueError) as exc:
-            raise ValueError(f"{d.doc_id}: its gold {d.gt_path} can't be read: {exc}") from None
+            raise GoldError(f"{d.doc_id}: its gold {d.gt_path} can't be read: {exc}") from None
         if isinstance(g, dict): continue
         kind = "null" if g is None else type(g).__name__
-        raise ValueError(f"{d.doc_id}: its gold {d.gt_path} is a JSON {kind}; it must be a JSON object, "
+        raise GoldError(f"{d.doc_id}: its gold {d.gt_path} is a JSON {kind}; it must be a JSON object, "
                          "the extraction")
 
 
@@ -977,11 +982,10 @@ ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
 
 
 def summarize(lines: Iterable[dict]) -> dict:
-    """A run's score lines (scores.jsonl's, one per document) as one summary: `headline`, the mean
-    accuracy over every document, a failed one counting 0 (as omni-parse-bench's failed page fails its
-    tests), then coverage, the three metrics and where the errors were
-    (`_over`), over every line and then per suite, each suite in the same shape. A line carries its
-    document's suite, so the lines are all it needs."""
+    """A run's score lines (scores.jsonl's, one per document) as one summary (`_over`), over every line and
+    then per suite, each suite in the same shape. A line carries its document's suite, so the lines are all
+    it needs. A line's status is `scored`, `failed` (no usable prediction) or `error` (grading raised in
+    our code: a scorer bug, left out of every number but `errors`)."""
     lines = list(lines)
     if bad := next((x for x in lines if not isinstance(x, dict) or "suite" not in x or "status" not in x), None):
         raise ValueError(f"summarize takes score lines, each with its document's suite and status, as "
@@ -994,22 +998,26 @@ def summarize(lines: Iterable[dict]) -> dict:
 
 
 def _over(lines: list[dict]) -> dict:
-    """How a set of documents went: the headline, coverage, the three metrics over the scored documents,
-    and where the errors were.
+    """How a set of documents went: the headline, the counts, coverage, the three metrics over the scored
+    documents, and where the errors were.
 
     Note: `headline` counts a failed document as 0, so a system can't rank higher by failing on its
-    hard documents; `accuracy` is over the scored ones, and `headline` is `accuracy * coverage`."""
-    scored = [x for x in lines if x["status"] == "scored"]
+    hard documents; `accuracy` is over the scored ones, and `headline` is `accuracy * coverage`. It is
+    None for no documents, since there is no number to compare."""
+    graded = [x for x in lines if x["status"] != "error"]
+    scored = [x for x in graded if x["status"] == "scored"]
 
     def mean(of) -> float:
         return sum(of(x) for x in scored) / len(scored) if scored else 0.0
 
     accuracy = mean(lambda x: x["accuracy"])
     return {
-        "headline": sum(x["accuracy"] for x in scored) / len(lines) if lines else 0.0,
-        "documents": len(lines),
+        "headline": sum(x["accuracy"] for x in scored) / len(graded) if graded else None,
+        "documents": len(graded),
         "scored": len(scored),
-        "coverage": len(scored) / len(lines) if lines else 0.0,
+        "failed": len(graded) - len(scored),
+        "errors": len(lines) - len(graded),
+        "coverage": len(scored) / len(graded) if graded else 0.0,
         "accuracy": accuracy,
         "precision": mean(lambda x: x["precision"]),
         "recall": mean(lambda x: x["recall"]),

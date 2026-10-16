@@ -27,6 +27,7 @@ import dataclasses
 import time
 from pathlib import Path
 
+from ..errors import UsageError
 from . import schema as SCHEMA
 from .budget import Budget
 from .contract import Cost, Extraction
@@ -57,7 +58,7 @@ def predict(provider: str, pdf, schema: dict, *, timeout: float = DEFAULT_TIMEOU
     api = adapter(provider)
     pdf = Path(pdf)
     if not pdf.exists():
-        raise FileNotFoundError(f"no document at {pdf}")
+        raise UsageError(f"no document at {pdf}")
     if not isinstance(schema, dict):
         raise TypeError(f"schema must be a JSON object, got {type(schema).__name__}.")
 

@@ -217,9 +217,9 @@ for i in range(20):
 paid = collections.Counter()
 D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o: (
     paid.update([prov]), Extraction(result={"a": "x"}, cost=Cost(usd=0.1)))[1])
-real_write_json = B._write_json_atomic
+real_write_json = B.write_json
 DS.read_manifest = lambda *a, **k: (disk, tuple(twenty))
-B._write_json_atomic = lambda path, obj, **kw: (
+B.write_json = lambda path, obj, **kw: (
     real_write_json(path, obj, **kw) if path.name == "settings.json"
     else (_ for _ in ()).throw(OSError("No space left on device")))
 try:
@@ -231,7 +231,7 @@ try:
 except OSError:
     report("a failed write stops the vendor", True)
 finally:
-    B._write_json_atomic = real_write_json
+    B.write_json = real_write_json
     D.adapter, DS.read_manifest = saved_adapter, saved_manifest
 report("...after a couple of documents, not all twenty", paid["datalab"] <= 8,
        f"{paid['datalab']} of 20 paid for with nothing stored")
@@ -262,7 +262,7 @@ finally:
 got = B.read_scores(B.Run("datalab", {}, vd))
 report("the other four documents survive", sum(r["status"] == "scored" for r in got) == 4,
        str([r["status"] for r in got]))
-report("the failing one is a row, not an escape",
+report("the failing one is a row, not an escape: ours (`error`), not the vendor's failure",
        sum(r["status"] == "error" for r in got) == 1)
 report("...and the file holds all five", 
        len((vd / "scores.jsonl").read_text().strip().splitlines()) == 5)

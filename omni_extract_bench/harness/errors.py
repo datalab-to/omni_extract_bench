@@ -6,9 +6,11 @@ condition once drifted apart and left 91 predictions unretried while 18 identica
 `AccountFailure`, `MissingCredential` and `MissingDependency` are RAISED, never returned.
 None is a fact about a document -- each is identical for every document in the corpus -- so a
 returned one would be written down as a settled answer that no resume re-attempts. One vendor
-marked 174 documents "failed" in 60 seconds after a credit ceiling.
+marked 174 documents "failed" in 60 seconds after a credit ceiling. Each is a `Stop`.
 """
 from __future__ import annotations
+
+from ..errors import Stop
 
 TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 523, 524})
 
@@ -75,7 +77,7 @@ class VendorUnreachable(VendorError):
         return False
 
 
-class AccountFailure(RuntimeError):
+class AccountFailure(Stop):
     """The account cannot pay. NOT a fact about the document, so it stops the run.
 
     One vendor marked 174 documents "failed" in 60 seconds after hitting a credit ceiling,
@@ -83,7 +85,7 @@ class AccountFailure(RuntimeError):
     """
 
 
-class MissingCredential(RuntimeError):
+class MissingCredential(Stop):
     """A vendor's API key is not in the environment.
 
     Ours to fix and identical for every document, so it is raised past the runner rather than
@@ -92,5 +94,5 @@ class MissingCredential(RuntimeError):
     """
 
 
-class MissingDependency(ImportError):
+class MissingDependency(ImportError, Stop):
     """An adapter could not import its SDK. Ours to fix, and identical for every document."""

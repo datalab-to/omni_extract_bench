@@ -20,6 +20,7 @@ import typing
 from importlib import metadata
 from types import ModuleType
 
+from ..errors import UsageError
 from .providers import (azure_cu, datalab, extend, llamaextract, llm_single_shot, mistral,
                         reducto)
 
@@ -71,7 +72,7 @@ def adapter(provider: str):
             exc.add_note(f"while loading adapter {provider!r} from package {ep.dist.name!r}")
             raise
     if provider not in ADAPTERS:
-        raise ValueError(f"unknown provider {provider!r}. Known vendors: "
+        raise UsageError(f"unknown provider {provider!r}. Known vendors: "
                          f"{', '.join(PROVIDERS)}. Any OpenRouter model id also works, "
                          f"e.g. openai/gpt-5.6-sol")
     return ADAPTERS[provider]
@@ -95,7 +96,17 @@ def resolve(provider: str) -> str:
     one adapter together however many model ids reached it: one of ours by its module's short name
     (`llm_single_shot` for every model id), one added in code or by a package by the name it was
     filed under."""
-    name = adapter(provider).__name__
+    return _name(provider, adapter(provider))
+
+
+def adapter_names() -> frozenset[str]:
+    """`resolve`'s name for every adapter filed so far, and `llm_single_shot`, every model id's."""
+    return frozenset(_name(p, m) for p, m in ADAPTERS.items()) | {"llm_single_shot"}
+
+
+def _name(provider: str, module: ModuleType) -> str:
+    """`resolve`'s name for the adapter `module`, filed under `provider`."""
+    name = module.__name__
     return name.rsplit(".", 1)[-1] if name.startswith(f"{__package__}.providers.") else provider
 
 
@@ -137,7 +148,7 @@ def config_for(provider: str, options: dict | None = None):
     options = options or {}
     if MODEL_SEPARATOR in provider:
         if "model" in options:
-            raise ValueError(
+            raise UsageError(
                 f"{provider}: `model` is the provider name, not an option -- otherwise the "
                 f"run would be stored and published under a model it did not use. Run the "
                 f"one you want: --providers {options['model']}")
@@ -146,7 +157,7 @@ def config_for(provider: str, options: dict | None = None):
         return config_type(**_typed(provider, config_type, options))
     except TypeError as exc:
         known = ", ".join(f.name for f in dataclasses.fields(config_type)) or "(none)"
-        raise ValueError(f"{provider}: {exc}. Its options are: {known}") from None
+        raise UsageError(f"{provider}: {exc}. Its options are: {known}") from None
 
 
 def _typed(provider: str, config_type: type, options: dict) -> dict:
@@ -164,7 +175,7 @@ def _typed(provider: str, config_type: type, options: dict) -> dict:
         if t is float and isinstance(v, int) and not isinstance(v, bool):
             out[k] = float(v)
         elif not isinstance(v, t) or (t is not bool and isinstance(v, bool)):
-            raise ValueError(f"{provider}: option {k} is {v!r}, a {type(v).__name__}; it takes a {t.__name__}")
+            raise UsageError(f"{provider}: option {k} is {v!r}, a {type(v).__name__}; it takes a {t.__name__}")
     return out
 
 

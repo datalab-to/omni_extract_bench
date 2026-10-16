@@ -116,8 +116,8 @@ report("a misread row is charged, not fatal", by_id["one-misread"]["accuracy"] =
        str(by_id["one-misread"]["accuracy"]))
 for doc_id in ("refused", "nothing"):
     row = by_id[doc_id]
-    report(f"{doc_id}: status=error with NULL metrics, and a reason",
-           row["status"] == "error" and "accuracy" not in row and row.get("error"), str(row))
+    report(f"{doc_id}: status=failed with NULL metrics, and a reason",
+           row["status"] == "failed" and "accuracy" not in row and row.get("error"), str(row))
 report("a failed call writes no prediction: predictions/ holds only answers",
        not (out / "predictions" / "refused.json").exists())
 report("...and its row carries the record's error",
@@ -132,7 +132,7 @@ _mine = graded(Run("my-own-model", {}, brought), docs)
 report("a folder of your own may name a provider there is no adapter for",
        len(_mine) == len(_theirs) and json.loads((brought / "summary.json").read_text())["settings"] == {})
 report("a folder you bring keeps no records, so a document missing from it is failed, not pending",
-       _theirs["never-ran"]["status"] == "error" and len(_theirs) == 6, str(_theirs.get("never-ran")))
+       _theirs["never-ran"]["status"] == "failed" and len(_theirs) == 6, str(_theirs.get("never-ran")))
 
 print("\nA SCHEMA THE SCORER CAN READ")
 REF_SCHEMA = {
@@ -497,7 +497,7 @@ report("...and the ones that did not happen read zero",
 
 print("\nA FAILURE COSTS COVERAGE, NOT A FALSE PRECISION")
 half = ([scored("s", 10, 10) for _ in range(5)]
-        + [{"suite": "s", "status": "error", "error": "timeout"} for _ in range(5)])
+        + [{"suite": "s", "status": "failed", "error": "timeout"} for _ in range(5)])
 h = summarize(half)
 report("a failed document does not drag precision down to nothing", h["precision"] == 1.0)
 report("...it shows up as coverage", h["coverage"] == 0.5)
@@ -505,9 +505,12 @@ report("...and the headline counts it as 0, so failing a hard document can't rai
        abs(h["headline"] - 0.5) < 1e-9 and abs(h["accuracy"] * h["coverage"] - h["headline"]) < 1e-9,
        str(h["headline"]))
 report("...per suite too", abs(h["per_suite"]["s"]["headline"] - 0.5) < 1e-9)
-report("an empty run does not divide by zero",
+report("an empty run does not divide by zero, and has no headline",
        summarize([])["accuracy"] == 0.0 and summarize([])["coverage"] == 0.0
-       and summarize([])["unfound_rate"] == 0.0)
+       and summarize([])["unfound_rate"] == 0.0 and summarize([])["headline"] is None)
+_bug = summarize([scored("s", 10, 10), {"suite": "s", "status": "error", "error": "KeyError: a bug"}])
+report("a document whose grading raised in our code is left out of every number but errors",
+       (_bug["documents"], _bug["errors"], _bug["coverage"], _bug["headline"]) == (1, 1, 1.0, 1.0), str(_bug))
 
 print("\nA MISSING SDK STOPS THE PROVIDER AND STORES NOTHING")
 from omni_extract_bench import benchmark as _bench                         # noqa: E402
@@ -585,14 +588,8 @@ with _contextlib.redirect_stdout(_io.StringIO()) as _o:
 _s = json.loads(_o.getvalue())
 report("oeb grade grades a folder of your own: the document left out fails, nothing is pending",
        _rc == 0 and (_s["documents"], _s["scored"], _s["pending"]) == (2, 1, 0), str(_s))
-with _contextlib.redirect_stdout(_io.StringIO()) as _o:
-    _cli.main(["grade", str(_mine), "--dataset", str(_ds), "--score-workers", "1", "--suites", "mine"])
-report("...and --suites grades only those suites", json.loads(_o.getvalue())["documents"] == 2)
-with _contextlib.redirect_stderr(_io.StringIO()) as _e:
-    _rc = _cli.main(["grade", str(_mine), "--dataset", str(_ds), "--suites", "nope"])
-report("...and an unknown suite is refused, naming the dataset's suites, as one line and exit 1",
-       _rc == 1 and _e.getvalue().startswith("oeb grade: unknown suites") and "mine" in _e.getvalue(),
-       _e.getvalue())
+report("...and its per-suite block says how the suite went",
+       (_s["per_suite"]["mine"]["documents"], _s["per_suite"]["mine"]["failed"]) == (2, 1), str(_s["per_suite"]))
 
 print("\nCHOOSING THE DOCUMENTS")
 _many = [Doc(f"{s}{i}", s, TMP / "x.pdf", TMP / "g.json", {}) for s in ("a", "b", "c") for i in range(10)]

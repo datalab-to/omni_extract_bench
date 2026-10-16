@@ -133,7 +133,7 @@ or from the command line.
 
 
 ```bash
-oeb score --pred pred.json --gt gold.json --schema schema.json
+oeb score --pred pred.json --gold gold.json --schema schema.json
 ```
 
 ```json
@@ -180,7 +180,7 @@ print(result["verdicts"][0]) # print the first verdict
 From the cli.
 
 ```bash
-oeb score --pred pred.json --gt gold.json --schema schema.json --verdicts
+oeb score --pred pred.json --gold gold.json --schema schema.json --verdicts
 ```
 
 On the example above, printing one line each:

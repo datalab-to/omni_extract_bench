@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import collections
 import concurrent.futures as cf
-import io
 import functools
 import hashlib
 import importlib.metadata
@@ -36,33 +35,18 @@ import logging
 import os
 import shutil
 import threading
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
-from . import data
-from .scorers import field_matching as scorer
-from rich import box
-from rich.console import Console, Group
-from rich.rule import Rule
-from rich.table import Table
-from rich.text import Text
-
+from . import data, harness
+from .errors import Stop, UsageError
+from .harness.errors import TRANSIENT_STATUSES
 from .progress import NULL, Progress
-from .harness import (AccountFailure, MissingCredential, MissingDependency,
-                      predict)
-
+from .scorers import field_matching as scorer
 
 log = logging.getLogger(__name__)
-
-PLAN_WIDTH = 120
-
-
-def _plural(n: int, word: str) -> str:
-    """`1 document`, `2 documents`. A plan that says "1 documents" reads as a bug."""
-    return f"{n} {word}" if n == 1 else f"{n} {word}s"
-
 
 # The code a verdict depends on: a change to any of it is a new scorer.
 SCORING = ("scorers/field_matching/__init__.py", "scorers/field_matching/matching.py",
@@ -90,10 +74,15 @@ def scorer_version() -> str:
 SCORER = scorer_version()
 
 
-def _write_json_atomic(path: Path, obj) -> None:
+def write_json(path: Path, obj: Any) -> None:
     """Written whole, then moved into place, so a crash never leaves half a file."""
+    _write_text(path, json.dumps(obj, default=str, ensure_ascii=False, indent=2) + "\n")
+
+
+def _write_text(path: Path, text: str) -> None:
+    """`write_json` for any text."""
     tmp = path.with_name(f".{path.name}.partial")
-    tmp.write_text(json.dumps(obj, default=str, ensure_ascii=False, indent=2) + "\n")
+    tmp.write_text(text)
     os.replace(tmp, path)
 
 
@@ -130,32 +119,55 @@ def _settings(run: Run) -> dict:
     return settings_for(run.provider, run.options)
 
 
-def _head(run: Run) -> dict:
-    """What every file a run writes says about itself, before any numbers. A folder of your own
-    predictions may name a provider omni-extract-bench has no adapter for: its settings are then {}."""
-    try:
-        settings = _settings(run)
-    except ValueError:
-        settings = {}
-    return {"run": run.out.name, "provider": run.provider, "settings": settings}
-
-
 def prepare(run: Run, dataset: str, timeout: float, manifest: str = data.MANIFEST) -> None:
-    """The run's folder made, and what it asks written to its settings.json before it asks:
-    provider, settings, dataset (and the commit of a HuggingFace one, the downloaded folder's name),
-    manifest and the timeout per document, whole. `summary.json` comes after grading, which an interrupted
-    run never reaches."""
-    root, _ = data.read_manifest(dataset, manifest)
-    commit = root.name if data._hf_dataset(dataset) is not None else None
+    """The run's folder made, and what it asks written to its settings.json (`declare`) before it asks:
+    provider, settings and the timeout per document."""
     run.predictions.mkdir(parents=True, exist_ok=True)
     run.records.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(run.out / "settings.json", {
-        **_head(run), "dataset": data.dataset_id(dataset), **({"commit": commit} if commit else {}),
-        "manifest": manifest, "timeout_s": timeout})
+    declare(run.out, dataset, manifest, {"run": run.out.name, "provider": run.provider,
+                                         "settings": _settings(run), "timeout_s": timeout})
+
+
+def settled(out: Path, dataset: str | None = None, manifest: str | None = None) -> dict:
+    """The folder's settings.json ({} when it has none), checked against the dataset and manifest asked for
+    (None: whatever it says). A folder holds one dataset and one manifest, so another is refused: graded
+    against other gold, its scores would be replaced under the same name."""
+    said = _said(out)
+    for key, now in (("dataset", dataset and data.dataset_id(dataset)), ("manifest", manifest)):
+        if now and (was := said.get(key)) and was != now:
+            raise UsageError(f"{out} holds a run on {key} {was}, not {now}: a folder holds one dataset and "
+                             f"one manifest; pass --{key} {was}, or another folder")
+    return said
+
+
+def declare(out: Path, dataset: str, manifest: str, fields: Mapping[str, Any] | None = None) -> None:
+    """Writes the folder's settings.json, whole: `fields`, then the dataset (and the commit it was read at)
+    and the manifest it is graded on. `prepare` writes a run's; `oeb grade`, a folder of your own's once its
+    first grading succeeds."""
+    root, _ = data.read_manifest(dataset, manifest)
+    commit = data.commit(dataset, root)
+    write_json(out / "settings.json", {**(fields or {}), "dataset": data.dataset_id(dataset),
+                                       **({"commit": commit} if commit else {}), "manifest": manifest})
+
+
+def _said(out: Path) -> dict:
+    """The folder's settings.json as it stands; {} when it has none."""
+    path = out / "settings.json"
+    try:
+        said = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise UsageError(f"{path} isn't readable JSON ({exc}); fix it, or remove it to start the folder's "
+                         "settings over") from None
+    if not isinstance(said, dict):
+        raise UsageError(f"{path} holds a JSON {type(said).__name__}; settings.json is an object")
+    return said
 
 
 def recorded(run: Run, doc_id: str) -> dict | None:
-    """What the run has recorded for the document, or None when nothing (or nothing readable)."""
+    """What the run has recorded for the document, or None when nothing (or nothing readable, which is
+    logged)."""
     path = run.records / f"{doc_id}.json"
     try:
         got = json.loads(path.read_text())
@@ -177,17 +189,14 @@ def needs(run: Run, doc: data.Doc, retry_failed: bool = False) -> bool:
 
 
 def _retryable(error: dict | None) -> bool:
-    """Whether a recorded failure may go the other way on another try, by omni-parse-bench's rule: a
-    timeout, an outage (`VendorUnreachable`), or a transient HTTP status.
+    """Whether a recorded failure may go the other way on another try: a timeout, an outage
+    (`VendorUnreachable`), or a transient HTTP status.
 
     Note: read off the type and status, not the record's `transient`, which says whether `predict`
     retried within the call: it never does for a timeout or a failed poll, since the first would spend a
     second budget and the second may buy the extraction twice."""
-    from .harness.errors import TRANSIENT_STATUSES
-
     if not error: return False
-    return (error.get("type") in ("VendorTimeout", "VendorUnreachable")
-            or error.get("status") in TRANSIENT_STATUSES)
+    return error.get("type") in ("VendorTimeout", "VendorUnreachable") or error.get("status") in TRANSIENT_STATUSES
 
 
 def record(run: Run, doc_id: str, result: dict) -> dict:
@@ -196,59 +205,98 @@ def record(run: Run, doc_id: str, result: dict) -> dict:
     described in the record alone. The record is the marker `needs` reads, so a kill between the two
     predicts the document again rather than skipping it."""
     if result["error"] is None:
-        _write_json_atomic(run.predictions / f"{doc_id}.json", result["result"])
-    _write_json_atomic(run.records / f"{doc_id}.json", result)
+        write_json(run.predictions / f"{doc_id}.json", result["result"])
+    write_json(run.records / f"{doc_id}.json", result)
     return result
+
+
+def _listed(run: Run) -> frozenset[str]:
+    """The file names in predictions/; a prediction is read only under its exact name, so the score and the
+    stray-file warning agree on every disk, case-insensitive ones included."""
+    return frozenset(f.name for f in run.predictions.iterdir()) if run.predictions.is_dir() else frozenset()
+
+
+def _tried(run: Run, doc_id: str, listed: frozenset[str]) -> bool:
+    """Whether the run attempted the document: it has a record, or a prediction (`listed`, by exact name). In
+    a folder that keeps records, a document never tried is pending; `grade` and `owed` both follow this."""
+    return f"{doc_id}.json" in listed or recorded(run, doc_id) is not None
 
 
 def owed(p: Plan, run: Run) -> tuple[int, int]:
     """How many documents the run would predict, and then grade, by the rules `predict_all` and
-    `grade_all` follow: it predicts the plan's documents it has no record of, and grades every
-    document of the manifest that will have been attempted (the rest are pending)."""
+    `grade_all` follow: it predicts the plan's documents it has no record of, and grades every document of
+    the manifest it will have attempted (`_tried`; the rest are pending), or every document in a folder
+    without records/."""
     coming = set() if p.score_only else {d.doc_id for d in p.docs if needs(run, d, p.retry_failed)}
     _, every = data.read_manifest(p.dataset, p.manifest)
-    keeps = not p.score_only or run.records.is_dir()
-    to_grade = sum(not keeps or d.doc_id in coming or recorded(run, d.doc_id) is not None
-                   or predicted(run, d.doc_id) is not None for d in every)
-    return len(coming), to_grade
+    if p.score_only and not run.records.is_dir(): return 0, len(every)
+    listed = _listed(run)
+    return len(coming), sum(d.doc_id in coming or _tried(run, d.doc_id, listed) for d in every)
 
 
-def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, score_workers: int = 0,
-          progress=NULL, *, among: Sequence[data.Doc] | None = None) -> dict:
-    """Grade every document of `docs` (usually the whole manifest, as `grade_all` passes it), fresh, and
-    write scores.jsonl (one line each, in their order), summary.json and, with `verdicts`, verdicts/
-    (one file per scored document) whole once grading finishes: they are always one grading's, of
-    `docs`. An interrupted grading writes nothing, so the last finished one's files stand; without
-    `verdicts`, an old verdicts/ is removed. Returns the summary, as omni-parse-bench's `grade` does;
-    the lines themselves are `read_scores(run)`. Files in predictions/ that match no document of
-    the manifest (`among`, when `docs` is a part of it), and predictions that can't be read (graded
-    as failed), are counted in a warning. A prediction is read only from a file named exactly
-    `<doc_id>.json`, so a name that differs in case is a stray file on every system, macOS included.
+def gradable(out: Path) -> None:
+    """Refuses a folder grading can't read: one that doesn't exist, or that holds no predictions/."""
+    if not out.is_dir():
+        raise UsageError(f"no folder at {out}; pass the folder holding predictions/<doc_id>.json")
+    if not (out / "predictions").is_dir():
+        hint = (f"; {out} looks like the predictions/ folder itself: pass its parent, {out.parent}"
+                if out.name == "predictions" else "")
+        raise UsageError(f"{out} has no predictions/ folder, so nothing was predicted there; a folder to "
+                         f"grade holds predictions/<doc_id>.json{hint}")
 
-    While any document is pending, the summary's `headline` (and that of each suite with pending
-    documents) is null: a headline is a finished run's, and every other number is there as it stands.
 
-    A document is scored when it has a prediction, and failed (an error line, counted against
-    coverage) when its record says the call failed or it has no prediction. It is pending (no line,
-    counted in the summary's `pending`) when it was never attempted: the run keeps records, as a run
-    our loop predicts does, and has neither a record nor a prediction for it. A folder of
-    predictions you bring keeps no records, so a document missing from it is failed: it is your
-    submission. A folder with no predictions/ is refused: it is most likely another one (another
-    option, another --out)."""
-    if not run.predictions.is_dir():
-        raise ValueError(f"no run at {run.out}: it has no predictions/ folder, which holds "
-                         "predictions/<doc_id>.json, one per document predicted. Check the folder's path")
-    if not docs:
-        raise ValueError(f"no documents to grade {run.out} against: the manifest, or the suites chosen, "
-                         "hold none, and grading would write an empty summary over its scores")
+def scorer_errors(summary: dict) -> int:
+    """Documents whose grading raised in our code (status `error`): a scorer bug, left out of the scores;
+    `oeb benchmark` and `oeb grade` exit 2 when there are any."""
+    return summary.get("errors", 0)
+
+
+def _closing(s: dict) -> str:
+    """A grading's one line: the headline, or why there is none, and how many documents were graded and
+    failed."""
+    why = (f" ({s['pending']} pending: a headline needs every document)" if s["pending"]
+           else " (no documents)")
+    head = f"headline {s['headline']:.3f}" if s["headline"] is not None else "headline —" + why
+    return (f"{s['run']}: {head}; {s['documents']} of {s['documents'] + s['pending']} documents graded, "
+            f"{s['failed']} failed"
+            + (f"; {e} errored in our code" if (e := scorer_errors(s)) else ""))
+
+
+def grade(run: Run, docs: Sequence[data.Doc], say: Callable[[str], None] = print, *,
+          settings: Mapping[str, Any] | None = None, verdicts: bool = True, score_workers: int = 0,
+          progress=NULL) -> dict:
+    """Grade the run's folder against `docs`, the manifest's (`grade_all` passes them), write its
+    verdicts/ (with `verdicts`), scores.jsonl and summary.json, and return the summary. `settings` is the
+    folder's settings.json as `oeb grade` will write it once grading succeeds; otherwise it is read from the
+    folder.
+
+    A document's prediction is `predictions/<doc_id>.json`, named exactly. A document never attempted
+    (`_tried`) in a folder that keeps records is pending; otherwise one with no usable prediction fails.
+    docs/API.md has the summary's fields."""
+    gradable(run.out)
+    said = _said(run.out) if settings is None else settings
     partial = run.out / ".verdicts.partial"
-    shutil.rmtree(partial, ignore_errors=True)   # Note: an interrupted grading's.
-    keeps = run.records.is_dir()
-    listed = frozenset(f.name for f in run.predictions.iterdir() if f.is_file())
-    attempted = [d for d in docs if not keeps or recorded(run, d.doc_id) is not None
-                 or f"{d.doc_id}.json" in listed]
+    lines, pending = _graded(run, docs, partial if verdicts else None, score_workers, progress)
+    summary = _summary(run, said, lines, pending)
+    shutil.rmtree(run.out / "verdicts", ignore_errors=True)
+    if partial.is_dir(): partial.rename(run.out / "verdicts")
+    _write_text(run.out / "scores.jsonl", "".join(json.dumps(x, default=str) + "\n" for x in lines))
+    # Note: last, so summary.json always stands beside the scores it summarizes.
+    write_json(run.out / "summary.json", summary)
+    _warn_unusable(run, docs, lines)
+    say(_closing(summary))
+    return summary
+
+
+def _graded(run: Run, docs: Sequence[data.Doc], verdicts: Path | None, score_workers: int,
+            progress) -> tuple[list[dict], list[data.Doc]]:
+    """The score lines of the documents the folder attempted (`_tried`), in their order, each verdict file
+    written into `verdicts` when given; and the documents pending."""
+    if verdicts is not None: shutil.rmtree(verdicts, ignore_errors=True)   # Note: an interrupted grading's.
+    keeps, listed = run.records.is_dir(), _listed(run)
+    attempted = [d for d in docs if not keeps or _tried(run, d.doc_id, listed)]
     progress.start(len(attempted))
-    one = functools.partial(_score_one, run=run, verdicts=partial if verdicts else None, listed=listed)
+    one = functools.partial(_score_one, run=run, verdicts=verdicts, listed=listed)
     graded: dict[str, dict] = {}
     remaining = list(attempted)
     try:
@@ -276,94 +324,74 @@ def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, score_workers: 
             progress.record(error=row["status"] != "scored")
     finally:
         progress.finish()
-    lines = [graded[d.doc_id] for d in attempted]
-    shutil.rmtree(run.out / "verdicts", ignore_errors=True)
-    if partial.is_dir(): partial.rename(run.out / "verdicts")
-    _write_scores(run.out, lines)
-    summary = _with_pending({**_head(run), "scorer": SCORER, **scorer.summarize(lines)},
-                            [d for d in docs if d.doc_id not in graded])
-    _write_json_atomic(run.out / "summary.json", summary)
-    _warn_unusable(run, docs, among or docs, listed)
-    log.info("%s", _closing(run.out.name, summary))
-    return summary
+    return [graded[d.doc_id] for d in attempted], [d for d in docs if d.doc_id not in graded]
 
 
-def _with_pending(summary: dict, pending: list[data.Doc]) -> dict:
-    """`summary` with the count of documents never attempted, overall and per suite, and a null
-    headline wherever there are any."""
-    by: dict[str, int] = collections.Counter(d.suite for d in pending)
-    empty = {k: v for k, v in scorer.summarize([]).items() if k != "per_suite"}
-    per = {s: summary["per_suite"].get(s, empty) | {"pending": by.get(s, 0)}
-           for s in sorted({*summary["per_suite"], *by})}
-    for s in by: per[s]["headline"] = None
-    return summary | {"headline": None if pending else summary["headline"], "pending": len(pending),
-                      "per_suite": per}
+def _summary(run: Run, said: Mapping[str, Any], lines: list[dict], pending: list[data.Doc]) -> dict:
+    """`scorer.summarize` of the lines, beside what graded them, the pending count, and the cost; the
+    headline, overall and per suite, is None while any document there is pending: a run has one only once
+    it is finished."""
+    s = scorer.summarize(lines)
+    by = collections.Counter(d.suite for d in pending)
+    none = {k: v for k, v in scorer.summarize([]).items() if k != "per_suite"}   # a suite all pending
+    per = {k: s["per_suite"].get(k, none) | {"pending": by.get(k, 0)} for k in sorted({*s["per_suite"], *by})}
+    for k in by: per[k]["headline"] = None
+    costs = [c for x in lines if (c := (recorded(run, x["doc_id"]) or {}).get("cost"))]
+    credits = [c["credits"] for c in costs if c.get("credits") is not None]
+    return {"run": run.out.name, "provider": run.provider, "settings": said.get("settings", {}),
+            "scorer": SCORER, **s, "headline": None if pending else s["headline"], "per_suite": per,
+            "pending": len(pending), "usd": round(sum(c.get("usd") or 0 for c in costs), 4),
+            "credits": round(sum(credits), 4) if credits else None}
 
 
-def _closing(name: str, s: dict) -> str:
-    """A grading's one line: the headline, or why there is none yet, and coverage over every document."""
-    total = s["documents"] + s["pending"]
-    if s["headline"] is None:
-        return (f"{name}: headline - ({s['pending']} pending; a headline needs every document), "
-                f"coverage {s['scored']}/{total}")
-    return f"{name}: headline {s['headline']:.3f}, coverage {s['scored']}/{total}"
+#: The error of a line whose prediction is on disk but isn't a JSON object.
+UNREADABLE = "the prediction isn't readable as a JSON object"
 
 
-def _warn_unusable(run: Run, docs: list[data.Doc], among: Sequence[data.Doc],
-                   listed: frozenset[str]) -> None:
-    """A warning for each kind of file in predictions/ that grading couldn't use: one named for no
-    document of the manifest `among` (a misnamed file is otherwise only a lower coverage), a folder,
-    and a prediction of `docs` that can't be read, which was graded as failed."""
-    names = {f"{d.doc_id}.json" for d in among}
-    stray = sorted(listed - names)
-    stray += sorted(f"{f.name}/" for f in run.predictions.iterdir() if f.is_dir())
+def _warn_unusable(run: Run, docs: Sequence[data.Doc], lines: list[dict]) -> None:
+    """Logs the predictions grading couldn't use: files named for no document of the manifest `docs` (left
+    out), and those that couldn't be read as a JSON object (graded as failed). A naming slip
+    (`<doc_id>.pdf.json`, another case) otherwise shows only as a lower coverage."""
+    names = {f"{d.doc_id}.json" for d in docs}
+    stray = sorted(n + ("/" if (run.predictions / n).is_dir() else "") for n in _listed(run) - names)
     if stray:
-        log.warning("%s: %d files in predictions/ are named for no document of the manifest, e.g. %s; a "
-                    "prediction is predictions/<doc_id>.json, named exactly (case included)",
+        log.warning("%s: %d files in predictions/ are named for no document of the manifest, so they were "
+                    "left out, e.g. %s; a prediction is predictions/<doc_id>.json, named exactly (case too)",
                     run.out, len(stray), stray[:3])
-    unread = [d.doc_id for d in docs if f"{d.doc_id}.json" in listed
-              and recorded(run, d.doc_id) is None and predicted(run, d.doc_id) is None]
-    if unread:
-        log.warning("%s: %d predictions can't be read as a JSON object, and were graded as failed, e.g. %s",
-                    run.out, len(unread), unread[:3])
-
-
-def _asked(run: Run) -> list[str]:
-    """Every resolved setting the run sends the vendor, one string each."""
-    return [f"{k}={v if v != '' else chr(39) * 2}" for k, v in sorted(_settings(run).items())]
+    if unread := [x["doc_id"] for x in lines if x.get("error") == UNREADABLE]:
+        log.warning("%s: %d predictions couldn't be read as a JSON object, so their documents were graded "
+                    "as failed, e.g. %s", run.out, len(unread), unread[:3])
 
 
 SCORE_WORKERS = min(8, os.cpu_count() or 1)
 
 
-def _score_one(doc: data.Doc, *, run: Run, verdicts: Path | None = None,
-               listed: frozenset[str] | None = None) -> dict:
-    """Grade one prediction on disk and return its row. Module-level and picklable for the
-    process pool, and it never raises: one bad document is an error row. Its verdicts are written
-    into the folder `verdicts`, when given. `listed`, predictions/'s file names, when given, is what
-    says whether the document has a prediction, by exact name.
+def _score_one(doc: data.Doc, *, run: Run, verdicts: Path | None, listed: frozenset[str]) -> dict:
+    """Grade one prediction on disk and return its line. Module-level and picklable for the process pool,
+    and it never raises: one bad document is one line. Its verdicts are written into the folder `verdicts`,
+    when given; `listed`, predictions/'s file names, says by exact name whether it has a prediction.
 
-    A document fails when its record says the call failed, or when it has no prediction: a
-    folder of predictions you bring is your submission, so a missing file counts against
-    coverage rather than being left out of it."""
-    row = {"doc_id": doc.doc_id, "suite": doc.suite, "provider": run.provider,
+    A document fails (status `failed`) when its record says the call failed, or when it has no usable
+    prediction: a folder of predictions you bring is your submission, so a missing file counts against
+    coverage rather than being left out of it. A grading that raises is ours (status `error`), left out of
+    the scores."""
+    row = {"run": run.out.name, "doc_id": doc.doc_id, "suite": doc.suite, "provider": run.provider,
            "scorer": SCORER}
     if failed := (recorded(run, doc.doc_id) or {}).get("error"):
-        return {**row, "status": "error", "error": f"{failed['type']}: {failed['message']}"}
-    if listed is not None and f"{doc.doc_id}.json" not in listed:
-        return {**row, "status": "error", "error": f"no prediction: predictions/{doc.doc_id}.json"}
+        return {**row, "status": "failed", "error": f"{failed['type']}: {failed['message']}"}
+    if f"{doc.doc_id}.json" not in listed:
+        return {**row, "status": "failed", "error": f"no prediction: predictions/{doc.doc_id}.json"}
     if (pred := predicted(run, doc.doc_id)) is None:
-        return {**row, "status": "error", "error": "the prediction isn't readable as a JSON object"}
+        return {**row, "status": "failed", "error": UNREADABLE}
     if not pred:
-        return {**row, "status": "error", "error": "empty prediction"}
+        return {**row, "status": "failed", "error": "empty prediction"}
     try:
         result = scorer.score(pred, scorer.gold(doc), doc.schema, verdicts=verdicts is not None)
         if verdicts is not None:
             verdicts.mkdir(parents=True, exist_ok=True)
             (verdicts / f"{doc.doc_id}.jsonl").write_text(
-                "\n".join(json.dumps(v._asdict(), default=str)
-                          for v in result.pop("verdicts")))
-    except Exception as exc:                            # noqa: BLE001 -- the message is the row
+                "\n".join(json.dumps(v._asdict(), default=str) for v in result.pop("verdicts")))
+    except Exception as exc:                            # noqa: BLE001 -- the message is the line
         return {**row, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
     return {**row, "status": "scored", **result}
 
@@ -380,33 +408,20 @@ def predicted(run: Run, doc_id: str) -> dict | None:
 
 def read_scores(run: Run) -> list[dict]:
     """The run's score lines (scores.jsonl), in file order: one per graded document; [] for a run never
-    graded, and FileNotFoundError for a folder that doesn't exist. A line that doesn't parse is left
-    out, and logged."""
+    graded. A line that doesn't parse is left out, and logged. A folder that doesn't exist is refused: a
+    mistyped path isn't a run with no scores."""
     if not run.out.is_dir():
-        raise FileNotFoundError(f"no run at {run.out}")
+        raise UsageError(f"no folder at {run.out}; pass a run's folder, which holds scores.jsonl")
     path = run.out / "scores.jsonl"
-    try:
-        text = path.read_text()
-    except OSError:
-        return []
+    if not path.exists(): return []
     out = []
-    for n, line in enumerate(text.splitlines()):
-        if not line.strip():
-            continue
+    for n, line in enumerate(path.read_text().splitlines()):
+        if not line.strip(): continue
         try:
             out.append(json.loads(line))
         except json.JSONDecodeError:
             log.warning("%s: line %d isn't readable JSON; left out", path, n + 1)
     return out
-
-
-def _write_scores(out: Path, rows: list[dict]) -> None:
-    """One line per document, written wherever scoring stops. Atomic because it is read back: a
-    truncated file would silently lose everything past the cut."""
-    path = out / "scores.jsonl"
-    tmp = path.with_name(f".{path.name}.partial")
-    tmp.write_text("".join(json.dumps(row, default=str) + "\n" for row in rows))
-    os.replace(tmp, path)
 
 
 #: Documents in flight per adapter, keyed by adapter module so every OpenRouter model shares
@@ -439,18 +454,25 @@ def _per_adapter(workers: Mapping[str, int]) -> dict[str, int]:
 
     # Note: the adapters filed so far, which include every plugin a provider of this plan loaded;
     # resolving every provider would load every plugin, and a broken one would stop any run.
-    adapters = {registry.resolve(n) for n in registry.ADAPTERS} | {"llm_single_shot"}
+    adapters = registry.adapter_names()
     for key, n in workers.items():
         if key not in adapters:
             try:
                 a = registry.resolve(key)
                 hint = f"{key} uses the {a} adapter, whose pool all its runs share; write {{\"{a}\": {n}}}"
-            except ValueError:
+            except UsageError:
                 hint = f"the adapters are {sorted(adapters)}"
-            raise ValueError(f"--workers is per adapter, and {key!r} isn't one: {hint}")
+            raise UsageError(f"--workers is per adapter, and {key!r} isn't one: {hint}")
         if isinstance(n, bool) or not isinstance(n, int) or n < 1:
-            raise ValueError(f"--workers gives {key!r} {n!r}; documents at once is a whole number, 1 or more")
+            raise UsageError(f"--workers gives {key!r} {n!r}; documents at once is a whole number, 1 or more")
     return dict(workers)
+
+
+def pools(p: Plan) -> dict[str, int]:
+    """Each adapter of the plan's runs (`registry.resolve`) and its documents in flight, shared by its runs."""
+    from .harness.registry import resolve
+
+    return {a: _workers_for(a, p.workers) for a in sorted({resolve(r.provider) for r in p.runs})}
 
 
 def configurations(providers: list[str], options: dict | None = None) -> list[tuple[str, dict]]:
@@ -458,14 +480,14 @@ def configurations(providers: list[str], options: dict | None = None) -> list[tu
     entry is a run of its own."""
     unknown = sorted(set(options or {}) - set(providers))
     if unknown:
-        raise ValueError(
+        raise UsageError(
             f"--options names {unknown[0]!r}, which is not in --providers "
             f"({', '.join(providers)}). Its options would be silently ignored.")
     out = []
     for provider in providers:
         asked = (options or {}).get(provider)
         if isinstance(asked, list) and not asked:
-            raise ValueError(f"--options gives {provider!r} an empty list, so it would not "
+            raise UsageError(f"--options gives {provider!r} an empty list, so it would not "
                              f"run at all. Give it options, or leave it out.")
         out += [(provider, one or {}) for one in (asked if isinstance(asked, list) else [asked])]
     return out
@@ -487,31 +509,30 @@ class Plan(NamedTuple):
     retry_failed: bool = False             # predict again documents whose recorded failure was transient
 
 
-def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path = data.DEFAULT_DATASET,
-         manifest: str = data.MANIFEST, suites: list[str] | None = None, limit: int = 0,
+def plan(providers: Sequence[str], *, out: str | Path = Path("runs"), dataset: str | Path = data.DEFAULT_DATASET,
+         manifest: str = data.MANIFEST, suites: Iterable[str] | None = None, limit: int = 0,
          sample: int = 0, only: Iterable[str] | None = None,
          timeout: float = 1800.0, workers: int | Mapping[str, int] = 0,
          score_workers: int = 0, verdicts: bool = True,
          score_only: bool = False, retry_failed: bool = False, options: dict | None = None) -> Plan:
-    """Every run this invocation makes and the documents it covers, checked before any call: a
-    bad provider, option or `--out` fails here.
+    """Every run this invocation makes and the documents it covers, checked before any call: a bad
+    provider, option, count or folder fails here.
 
     `workers` is the documents in flight per adapter, shared by its runs: one number for every
     adapter, or a number per adapter (`_per_adapter`); 0, or an adapter left out, takes `WORKERS`."""
     from .harness.registry import out_name, resolve
 
-    data._names(providers, "providers")
-    data._names(suites, "suites")
+    if isinstance(providers, str):
+        raise TypeError(f"providers is a list of names, not the string {providers!r}; pass [{providers!r}]")
     if isinstance(workers, bool) or not isinstance(workers, int | Mapping):
-        raise TypeError(f"workers is {workers!r}; it is a number for every adapter, or a mapping of "
-                        "adapter to number")
-    counts = [("--limit", limit, "no limit"), ("--sample", sample, "no sample"),
-              ("--score-workers", score_workers, "the default")]
-    if isinstance(workers, int): counts.append(("--workers", workers, "the default per vendor"))
+        raise TypeError(f"workers is a number for every adapter, or a mapping of adapter to number, not "
+                        f"{workers!r}")
+    counts = [("--score-workers", score_workers, "the default")]
+    if isinstance(workers, int): counts.append(("--workers", workers, "each adapter's default"))
     for flag, n, zero in counts:
-        if n < 0: raise ValueError(f"{flag} is {n}, but it counts, so it can't be negative; 0 means {zero}")
+        if n < 0: raise UsageError(f"{flag} is {n}, but it counts, so it can't be negative; 0 means {zero}")
     if not timeout > 0:
-        raise ValueError(f"--timeout is {timeout}, but it is the seconds a document may take; give a "
+        raise UsageError(f"--timeout is {timeout}, but it is the seconds a document may take; give a "
                          "positive number")
     for provider in providers:
         resolve(provider)
@@ -520,40 +541,34 @@ def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path 
     for provider, options_ in configurations(providers, options):
         name = out_name(provider, options_)
         if name in runs:
-            raise ValueError(f"run {name} is asked for more than once: the same provider with the same "
+            raise UsageError(f"run {name} is asked for more than once: the same provider with the same "
                              "settings (an option set to its default is the same setting); drop the "
                              "repeat from --providers or --options")
         runs[name] = Run(provider, options_, Path(out) / name)
-    ident = data.dataset_id(dataset)
-    for run in runs.values():
-        # Note: a folder is named for provider and options, not dataset or manifest, so two of either
-        # would share one, and a grading of one would replace the other's summary.
-        said = json.loads(f.read_text()) if (f := run.out / "settings.json").exists() else {}
-        if (was := said.get("dataset")) not in (None, ident):
-            raise ValueError(f"{run.out} is a run on dataset {was}, not {ident}, and a run never "
-                             f"mixes datasets; pass another --out, or --dataset {was}")
-        if (was := said.get("manifest")) not in (None, manifest):
-            raise ValueError(f"{run.out} is a run on manifest {was}, not {manifest}, and a run never "
-                             f"mixes manifests; pass --manifest {was}, or another --out")
     root, every = data.read_manifest(dataset, manifest)
-    commit = root.name if data._hf_dataset(dataset) is not None else None
-    for run in runs.values():
-        if msg := _commit_moved(run, commit):
-            log.warning(msg)
-    if not every:
-        raise ValueError(f"the manifest {manifest} of {dataset} names no documents")
     if not (docs := data.select(every, suites, limit, sample, only)):
         given = [f for f, v in (("--suites", suites), ("--limit", limit), ("--sample", sample),
                                 ("--docs", only is not None)) if v]
-        raise ValueError(f"no documents selected by {', '.join(given) or 'the manifest'}; check them")
+        raise UsageError(f"no documents selected: {' and '.join(given)} chose none of the manifest's "
+                         f"{len(every)} documents")
+    commit = data.commit(dataset, root)
+    for run in runs.values():
+        if score_only and not run.predictions.is_dir():
+            raise UsageError(f"no run at {run.out}: {run.provider} with these settings was never predicted "
+                             "under this --out; check --out and --options, or drop --score-only")
+        said = settled(run.out, str(dataset), manifest)
+        if msg := _commit_moved(run, said.get("commit"), commit):
+            log.warning(msg)
     return Plan(tuple(runs.values()), tuple(docs), str(dataset), manifest, timeout,
                 workers, score_workers, verdicts, score_only, retry_failed)
 
 
-def _commit_moved(run: Run, commit: str | None) -> str | None:
-    """The warning for a run made at another commit of its dataset than `commit`, or `None`."""
-    path = run.out / "settings.json"
-    if not commit or not path.exists() or (was := json.loads(path.read_text()).get("commit")) in (None, commit):
+def _commit_moved(run: Run, was: str | None, commit: str | None) -> str | None:
+    """The warning for a run made at commit `was` of its dataset, planned at `commit`, or `None`.
+
+    Note: warned, not refused: a new commit is usually a gold correction, which grading takes in on its
+    own; but a document that changed would be graded on an old prediction."""
+    if not commit or was in (None, commit):
         return None
     return (f"{run.out} was made at commit {was} of its dataset, and this plan uses {commit}: its "
             f"predictions made at {was} will be graded against the gold at {commit}. Pass another "
@@ -600,14 +615,13 @@ def predict_all(p: Plan) -> None:
                 return
             try:
                 with bar[r.out.name].calling():
-                    got = predict(r.provider, file, d.schema, timeout=p.timeout, **r.options)
+                    got = harness.predict(r.provider, file, d.schema, timeout=p.timeout, **r.options)
                 record(r, d.doc_id, got)
             except BaseException as exc:
                 # Note: set here, by the worker that failed, not when the main thread gets to
                 # it: the other workers would otherwise send documents queued behind it.
                 halt.set()
-                if isinstance(exc, Exception) and not isinstance(
-                        exc, AccountFailure | MissingCredential | MissingDependency):
+                if isinstance(exc, Exception) and not isinstance(exc, Stop):
                     # Note: `predict` records every failure that is a fact about the document, so
                     # this is a bug in the adapter or in ours; recorded, it would pass as the vendor's.
                     exc.add_note(f"{r.out.name}: raised while predicting {d.doc_id} with the {adapter} "
@@ -661,29 +675,23 @@ def predict_all(p: Plan) -> None:
         raise failures[0]
 
 
-def grade_all(p: Plan) -> dict[str, dict]:
-    """Grade every run, serially, and publish each as soon as it is graded. Serial because
-    grading saturates every core. Each run is graded over the whole manifest, whatever `--suites`
-    and `--limit` chose to predict, so a smaller invocation never shrinks a run's scores: a document
-    not predicted yet is pending. Returns each run's summary, by run name.
+def grade_all(p: Plan, say: Callable[[str], None] = print) -> dict[str, dict]:
+    """`grade` each run of the plan over the whole manifest, serially, since grading saturates every core;
+    their summaries by run name. A smaller invocation (`--suites`, `--limit`) never shrinks a run's scores:
+    a document not predicted yet is pending.
 
-    A SECOND PHASE, NOT A SECOND DISPLAY. Grading starts once every vendor has answered, so
-    it gets a table of its own in the same shape -- with no cost and nothing in flight,
-    because there is no vendor. Streaming it instead, so a run that finished predicting
-    began grading, would put a process pool beside the live thread pools to save minutes at
-    the end of a run that spends hours at the start of it.
-    """
+    Note: a second phase with a table of its own, not streamed beside predicting: that would put a process
+    pool beside the live thread pools to save minutes at the end of a run that spends hours at its start."""
     summary = {}
     _, every = data.read_manifest(p.dataset, p.manifest)
     with Progress([r.out.name for r in p.runs]) as bars:
         for run in p.runs:
-            summary[run.out.name] = grade(run, list(every), verdicts=p.verdicts,
-                                          score_workers=p.score_workers,
+            summary[run.out.name] = grade(run, every, say, verdicts=p.verdicts, score_workers=p.score_workers,
                                           progress=bars.reporter(run.out.name))
     return summary
 
 
-def execute(p: Plan) -> dict[str, dict]:
+def execute(p: Plan, say: Callable[[str], None] = print) -> dict[str, dict]:
     """Predict, then grade. Returns each run's summary, by run name. What was predicted is graded
     even when predicting failed part way.
 
@@ -693,77 +701,13 @@ def execute(p: Plan) -> dict[str, dict]:
         if not p.score_only:
             predict_all(p)
     except Exception:
-        grade_all(p)
+        grade_all(p, say)
         raise
-    return grade_all(p)
-
-
-def _settings_cell(asked: list[str]) -> Group:
-    """One setting per line, ruled off from the next. A `Rule` sizes itself to the cell, whose
-    width nothing here knows in advance."""
-    if not asked:
-        return Group(Text("-", style="dim"))       # mistral: nothing to ask at all
-    rows: list = []
-    for n, setting in enumerate(asked):
-        if n:
-            rows.append(Rule(style="dim"))
-        rows.append(Text(setting, style="cyan"))
-    return Group(*rows)
-
-
-def _facts(p: Plan) -> Table:
-    """What this invocation is, one labelled row each. A row rather than another clause in a
-    sentence, so a new flag cannot lengthen a line that already ran to three of them."""
-    from .harness.registry import resolve
-
-    table = Table(box=None, show_header=False, pad_edge=False)
-    table.add_column("", style="dim", no_wrap=True)
-    table.add_column("", overflow="fold")
-    table.add_row("out", str(p.runs[0].out.parent) if p.runs else "")
-    table.add_row("runs", f"{len(p.runs)} over "
-                          f"{_plural(len({resolve(r.provider) for r in p.runs}), 'adapter')}")
-    table.add_row("dataset", p.dataset)
-    table.add_row("manifest", p.manifest)
-    table.add_row("documents", f"{_plural(len(p.docs), 'document')} selected")
-    table.add_row("timeout", f"{p.timeout:.0f}s per document")
-    # Shown even when false: `score only  false` is what says this will spend money.
-    for name, on in (("score only", p.score_only),):
-        table.add_row(name, Text(str(on).lower(), style="bold" if on else "dim"))
-    return table
-
-
-def _plan_view(p: Plan) -> Group:
-    """The whole plan as one renderable: each run, its settings, and what it still owes.
-    `describe` renders it as text for a log, the command line prints it in colour."""
-    from .harness.registry import resolve
-
-    by: dict[str, list[Run]] = {}
-    for run in p.runs:
-        by.setdefault(resolve(run.provider), []).append(run)
-    # A table, so a cell too wide for the terminal wraps rather than being cut.
-    table = Table(box=box.ROUNDED, header_style="dim", expand=False)
-    table.add_column("adapter", overflow="fold")
-    table.add_column("at once", justify="right", no_wrap=True)
-    table.add_column("run", overflow="fold")
-    table.add_column("settings", overflow="fold")
-    table.add_column("predict", justify="right", no_wrap=True)
-    table.add_column("grade", justify="right", no_wrap=True)
-    for adapter, runs in by.items():
-        workers = _workers_for(adapter, p.workers)
-        for n, run in enumerate(runs):
-            to_predict, to_grade = owed(p, run)
-            to_predict = 0 if p.score_only else to_predict
-            table.add_row(Text(adapter if n == 0 else "", style="bold"),
-                          Text(str(workers) if n == 0 else ""),
-                          Text(run.out.name), _settings_cell(_asked(run)),
-                          Text(str(to_predict), style="bold" if to_predict else ""),
-                          Text(str(to_grade), style="bold" if to_grade else ""),
-                          end_section=n == len(runs) - 1)
-    return Group(Text("benchmark", style="bold"), _facts(p), Text(""), table)
+    return grade_all(p, say)
 
 
 def describe(p: Plan) -> str:
-    """`_plan_view` as plain text, for a log that has no colour and no width to ask about."""
-    console = Console(file=io.StringIO(), width=PLAN_WIDTH, no_color=True, highlight=False)
-    console.print(_plan_view(p))
-    return "\n".join(line.rstrip() for line in console.file.getvalue().splitlines())
+    """What `execute(p)` would do, as plain text (`progress.plan_view`), with no vendor call."""
+    from . import progress
+
+    return progress.describe(p)

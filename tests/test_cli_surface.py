@@ -80,7 +80,7 @@ def parse(argv):
 
 
 INVOCATIONS = {
-    "score": (["score", "--gt", "g.json", "--pred", "p.json",
+    "score": (["score", "--gold", "g.json", "--pred", "p.json",
                "--schema", "s.json"], "cmd_score"),
     "benchmark": (["benchmark", "--providers", "datalab"], "cmd_benchmark"),
     "grade": (["grade", "mine/"], "cmd_grade"),
@@ -147,7 +147,7 @@ check("every cmd_* handler has an invocation in this file", not unchecked,
 
 import logging                                                          # noqa: E402
 
-parse(["score", "--gt", "g.json", "--pred", "p.json", "--schema", "s.json"])
+parse(["score", "--gold", "g.json", "--pred", "p.json", "--schema", "s.json"])
 for lib in ("httpx", "openai._base_client", "urllib3", "a_library_added_next_year"):
     check(f"{lib} does not narrate at INFO",
           logging.getLogger(lib).getEffectiveLevel() > logging.INFO)

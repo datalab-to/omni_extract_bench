@@ -140,8 +140,7 @@ from omni_extract_bench.scorers.field_matching import values                 # n
 
 report("the package exports the function, not the module",
        pkg.score is scorer.score and callable(pkg.score))
-report("values.canon_key is the one definition",
-       scorer.canon_key is values.canon_key and pkg.canon_key is values.canon_key)
+report("values.canon_key is the one definition", scorer.canon_key is values.canon_key)
 report("...and so is cmp_leaf", scorer.cmp_leaf is values.cmp_leaf)
 
 print(f"\n{'THE SCORER IS STANDALONE' if not FAILS else 'FAILURES:'}")

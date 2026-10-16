@@ -19,8 +19,8 @@ separately as `gt_rows`, `pred_rows` and `matched_rows`.
 happened there and what each side was compared as. It costs almost nothing on top of the
 score, because aligning the two documents is nearly all of the work and it is already done.
 
-`canon_key(value)` is the single definition of "are these two values equal?" used by leaf
-scoring, row-pair weighting, and blocking alike.
+`scorers.field_matching.values.canon_key(value)` is the single definition of "are these two values
+equal?" used by leaf scoring, row-pair weighting, and blocking alike.
 
 THREE PARSED DOCUMENTS IN, ONE DICT OUT. There is no runner here and no table format: scoring
 a corpus is a loop over `score`, written the way your corpus is laid out. To produce the
@@ -29,16 +29,7 @@ predictions with the vendor adapters in this repository, see `omni_extract_bench
 that only scores never installs a vendor SDK.
 """
 
-from .scorers.field_matching import Verdict, score, summarize
-from .scorers.field_matching.matching import match_rows
-from .scorers.field_matching.values import canon_key, cmp_leaf
+from . import data, scorers
+from .scorers.field_matching import Verdict, check, gold, score, summarize
 
-__all__ = [
-    "score",
-    "summarize",
-    "Verdict",
-    "canon_key",
-    "cmp_leaf",
-    "match_rows",
-]
-__version__ = "0.1.8"
+__all__ = ["check", "data", "gold", "score", "scorers", "summarize", "Verdict"]

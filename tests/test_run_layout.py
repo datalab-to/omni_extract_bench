@@ -326,7 +326,7 @@ report("a bad option is refused when the plan is made",
 bal, acc = plan.runs
 bal.records.mkdir(parents=True, exist_ok=True)
 for d in docs[:2]:
-    B._write_json_atomic(bal.records / f"{d.doc_id}.json", {"done": True})
+    B.write_json(bal.records / f"{d.doc_id}.json", {"done": True})
 (bal.out).mkdir(parents=True, exist_ok=True)
 (bal.out / "scores.jsonl").write_text(
     "".join(json.dumps({"doc_id": d.doc_id, "suite": "s", "status": "scored", "scorer": B.SCORER})

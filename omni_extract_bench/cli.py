@@ -1,18 +1,18 @@
 """Command-line interface.
 
-    oeb score      --pred p.json --gt g.json --schema s.json [--verdicts]
+    oeb score      --pred p.json --gold g.json --schema s.json [--verdicts]
     oeb benchmark  --providers datalab reducto --out runs/
-    oeb grade      mine/ [--dataset ...] [--manifest ...] [--suites ...]
+    oeb grade      mine/ [--dataset ...] [--manifest ...]
     oeb check      [--dataset ...] [--manifest ...]       # is the dataset one oeb can run?
     oeb predict    --provider datalab --doc x.pdf --schema s.json
     oeb providers [datalab]
 
-`score` grades one document: three JSON files in, the metrics dict out as JSON on stdout.
-A mistake in what was asked (a missing file, an unknown provider, a malformed option) is one line
-on stderr, `oeb <command>: <what was wrong>`, and exit 1; a traceback is a bug in oeb.
-`benchmark` is the whole published benchmark -- fetch the corpus, run it through each
-vendor, score, write it down -- and lives in `benchmark.py`, which is a script rather than
-library code precisely because it makes the orchestration decisions the library refuses to.
+Results go to stdout as JSON; progress and messages go to stderr (`-q`: messages only). `benchmark`
+shows its plan and waits for a yes unless given `-y`. `benchmark` and `grade` exit 2 when a document's
+grading raised in our code, so a scorer bug can't pass as a vendor's score. A `UsageError` (what was
+asked is wrong) or a `Stop` (an account, a key or a dependency) is printed as
+`oeb <command>: <what was wrong>` and exits 1; an interrupt exits 130; anything else is a bug of ours,
+and is raised as it is.
 """
 from __future__ import annotations
 
@@ -22,34 +22,31 @@ import logging
 import pathlib
 import sys
 
+from .errors import Stop, UsageError
 
-def read_json(path: str, flag: str = ""):
-    """Parse one local JSON file, naming the file (and the flag that gave it) when it will not parse.
 
-    The bare `json` message says line and column and not which of the three documents it came
-    from, which is the only thing a reader needs when two of them are vendor output.
-    """
-    where = f"{flag} {path}" if flag else str(path)
+def read_object(path: str, flag: str) -> dict:
+    """The JSON object in the file `path` that `flag` names."""
     try:
-        return json.loads(pathlib.Path(path).read_text())
+        got = json.loads(pathlib.Path(path).read_text())
     except FileNotFoundError:
-        raise ValueError(f"{where}: no such file") from None
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{where}: not JSON -- {exc}") from None
+        raise UsageError(f"{flag} {path}: no such file") from None
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise UsageError(f"{flag} {path} isn't JSON: {exc}") from None
+    if not isinstance(got, dict):
+        raise UsageError(f"{flag} {path} holds a JSON {'null' if got is None else type(got).__name__}; it "
+                         "must be a JSON object")
+    return got
 
 
 def cmd_score(args) -> int:
     from .scorers.field_matching import score
 
-    pred, gt, schema = (read_json(f, flag) for flag, f in (("--pred", args.pred), ("--gt", args.gt),
-                                                           ("--schema", args.schema)))
-    files = (("--pred", args.pred, pred), ("--gt", args.gt, gt), ("--schema", args.schema, schema))
-    if bad := next(((flag, path, x) for flag, path, x in files if not isinstance(x, dict)), None):
-        kind = "null" if bad[2] is None else type(bad[2]).__name__
-        raise ValueError(f"{bad[0]} {bad[1]} is a JSON {kind}; it must be a JSON object")
+    pred, gold, schema = (read_object(path, flag) for flag, path in (
+        ("--pred", args.pred), ("--gold", args.gold), ("--schema", args.schema)))
     # Note: a bare --order-matters is every array, as the library's `order_matters=True`.
     order = True if args.order_matters == [] else tuple(args.order_matters or ())
-    result = score(pred, gt, schema, order_matters=order, verdicts=args.verdicts)
+    result = score(pred, gold, schema, order_matters=order, verdicts=args.verdicts)
     if args.verdicts:
         result["verdicts"] = [v._asdict() for v in result["verdicts"]]
     json.dump(result, sys.stdout, indent=2, default=str)
@@ -139,21 +136,21 @@ def read_options(value: str | None, *, per_provider: bool = True) -> dict:
         parsed = json.loads(value)
     except json.JSONDecodeError:
         if not (path := pathlib.Path(value)).is_file():
-            raise FileNotFoundError(f"--options: {value!r} is not JSON, and there is no file of that "
-                                    "name; pass a JSON object, or the path of a file holding one") from None
+            raise UsageError(f"--options {value!r} is neither inline JSON nor a file that exists; pass a JSON "
+                             "object, or the path of a file holding one") from None
         try:
             parsed = json.loads(path.read_text())
         except json.JSONDecodeError as exc:
-            raise ValueError(f"--options: {path} is not JSON -- {exc}") from None
+            raise UsageError(f"--options: {path} isn't JSON: {exc}") from None
     if not isinstance(parsed, dict):
-        raise ValueError(f"--options must be a JSON object, not {value!r:.80}")
+        raise UsageError(f"--options must be a JSON object, not {value!r:.80}")
     def ok(value):
         return (isinstance(value, dict)
                 or (isinstance(value, list) and value
                     and all(isinstance(x, dict) for x in value)))
 
     if per_provider and not all(ok(v) for v in parsed.values()):
-        raise ValueError('--options maps a provider to its options, or to a LIST of them to '
+        raise UsageError('--options maps a provider to its options, or to a LIST of them to '
                          'run it once for each:\n'
                          '    \'{"datalab": {"mode": "accurate"}}\'\n'
                          '    \'{"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}\'')
@@ -178,18 +175,18 @@ def read_workers(value: str | None) -> int | dict[str, int]:
     try:
         out = json.loads(value)
     except json.JSONDecodeError:
-        raise ValueError(f"--workers is a number, or a JSON object like '{{\"datalab\": 20}}', "
+        raise UsageError(f"--workers is a number, or a JSON object like '{{\"datalab\": 20}}', "
                          f"not {value!r}") from None
     if isinstance(out, dict):
         return out
-    raise ValueError(f"--workers must be a number or a JSON object, not {value!r}")
+    raise UsageError(f"--workers must be a number or a JSON object, not {value!r}")
 
 
 def cmd_predict(args) -> int:
     """One document through one vendor. The mirror of `oeb score`: files in, JSON out."""
     from .harness import predict
 
-    record = predict(args.provider, args.doc, read_json(args.schema, "--schema"), timeout=args.timeout,
+    record = predict(args.provider, args.doc, read_object(args.schema, "--schema"), timeout=args.timeout,
                      **read_options(args.options, per_provider=False))
     json.dump(record, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
@@ -217,63 +214,70 @@ def confirm_plan(plan) -> bool:
         return False
 
 
-def _ids(path: pathlib.Path) -> frozenset[str]:
-    """The doc ids a `--docs` file names, one per line; blank lines and `#` comments are skipped."""
+def read_ids(path: pathlib.Path, flag: str) -> frozenset[str]:
+    """A file of ids, one per line; blank lines and `#` comments are skipped."""
     if not path.is_file():
-        raise FileNotFoundError(f"--docs {path}: no such file; it holds doc ids, one per line")
+        raise UsageError(f"{flag} {path}: no such file; it holds ids, one per line")
     return frozenset(x for line in path.read_text().splitlines() if (x := line.split("#", 1)[0].strip()))
 
 
+def _say(args):
+    """Where a grading's closing line and advice go: stderr, or nowhere with `-q`."""
+    return (lambda m: None) if args.quiet else (lambda m: print(m, file=sys.stderr))
+
+
+def _bugs(args, summaries: dict[str, dict]) -> int:
+    """2, said, when a document's grading raised in our code (a scorer bug, left out of the scores); else 0."""
+    from . import benchmark
+
+    if not (errored := {k: n for k, s in summaries.items() if (n := benchmark.scorer_errors(s))}): return 0
+    print(f"oeb {args.cmd}: grading raised in our code, not the vendor's, for {sum(errored.values())} "
+          "documents (" + ", ".join(f"{k} {n}" for k, n in errored.items())
+          + "); they are left out of the scores: report it with the run's scores.jsonl", file=sys.stderr)
+    return 2
+
+
 def cmd_benchmark(args) -> int:
-    from . import benchmark, data
+    from . import benchmark, data, progress
 
     p = benchmark.plan(args.providers, out=args.out,
                        dataset=args.dataset or data.DEFAULT_DATASET,
                        manifest=args.manifest, suites=args.suites,
                        limit=args.limit, sample=args.sample,
-                       only=_ids(args.docs) if args.docs else None,
+                       only=read_ids(args.docs, "--docs") if args.docs else None,
                        timeout=args.timeout,
                        workers=read_workers(args.workers),
                        score_workers=args.score_workers,
                        verdicts=args.verdicts,
                        score_only=args.score_only, retry_failed=args.retry_failed,
                        options=read_options(args.options))
-    if args.yes:
-        for line in benchmark.describe(p).splitlines():
-            logging.getLogger(__package__).info("%s", line)
-    elif not confirm_plan(benchmark._plan_view(p)):
-        logging.getLogger(__package__).warning("nothing run")
+    # Note: nothing to ask before grading alone, which spends nothing.
+    if args.yes or args.score_only:
+        print(benchmark.describe(p), file=sys.stderr)
+    elif not confirm_plan(progress.plan_view(p)):
+        print("oeb benchmark: nothing run", file=sys.stderr)
         return 1
-    json.dump(benchmark.execute(p), sys.stdout, indent=2)
+    say = _say(args)
+    summaries = benchmark.execute(p, say)
+    json.dump(summaries, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
-    return 0
+    if failed := sum(s["failed"] for s in summaries.values()):
+        say(f"{failed} documents failed: --retry-failed predicts again those whose failure may not recur")
+    return _bugs(args, summaries)
 
 
 def cmd_check(args) -> int:
-    """`oeb check`: whether a dataset is one oeb can run. It checks, stopping at the first problem:
-
-        1. the manifest, as `data.read_manifest` does: the columns doc_id, suite, doc_path, gt_path
-           and schema are there; each doc_id is a str and a filename; each suite is a string, or
-           null for "other"; each doc_path is a relative path inside the dataset to a file (one with
-           an extension); each gt_path is a relative path inside the dataset named `<doc_id>.json`;
-           each schema is a non-empty JSON object; doc ids are unique, ignoring case; and there is at
-           least one row;
-        2. every doc_path and gt_path exists as a file; and
-        3. every gold reads as a JSON object (`field_matching.check`).
-
-    It does not open an input (a PDF isn't checked to be a PDF), check a gold against its schema, or
-    run the scorer. The problem goes to stderr, naming its row; a dataset that passes is described on
-    stdout, as JSON, and exits 0."""
+    """`oeb check`: whether a dataset is one oeb can run, stopping at the first problem: its manifest
+    (`data.read_manifest`), every file the manifest names on disk, and every gold (`field_matching.check`).
+    It opens no input and runs no scorer; docs/API.md lists every rule."""
     from . import data
     from .scorers import field_matching
 
     _, docs = data.read_manifest(args.dataset or data.DEFAULT_DATASET, args.manifest)
-    if not docs:
-        raise ValueError(f"the manifest {args.manifest} names no documents")
     missing = [f"{d.doc_id} {col} {f}" for d in docs for col, f in (("doc_path", d.doc_path), ("gt_path", d.gt_path))
                if not f.is_file()]
     if missing:
-        raise ValueError(f"{len(missing)} files the manifest names don't exist: {'; '.join(missing[:3])}")
+        raise UsageError(f"{len(missing)} files the manifest names don't exist, e.g. {'; '.join(missing[:3])}")
     field_matching.check(docs)
     print(json.dumps({"ok": True, "manifest": args.manifest, "documents": len(docs),
                       "suites": len({d.suite for d in docs}), "inputs": len({d.doc_path for d in docs})}))
@@ -281,47 +285,26 @@ def cmd_check(args) -> int:
 
 
 def cmd_grade(args) -> int:
-    """Grade a folder of predictions/<doc_id>.json, whatever made them, and print its summary. A
-    document with no prediction fails: the folder is your submission, so a document left out is one
-    your system didn't answer. `--suites` grades part of the dataset on purpose."""
+    """Grade a folder of predictions/<doc_id>.json, whatever made them, against its whole manifest, and
+    print its summary. The folder's settings.json says its dataset and manifest; a folder of your own
+    gets them there once its first grading succeeds."""
     from . import benchmark, data
 
     out = pathlib.Path(args.run)
-    if not (out / "predictions").is_dir():
-        hint = (f"; {out} looks like the predictions/ folder itself: pass its parent, {out.parent}"
-                if out.name == "predictions" else "")
-        raise FileNotFoundError(f"{out} has no predictions/ folder; it holds predictions/<doc_id>.json, "
-                                f"one per document you predicted{hint}")
-    path = out / "settings.json"
-    said = json.loads(path.read_text()) if path.is_file() else {}
-    provider = said.get("provider") or out.name
-    # Note: a folder says what it was graded (or predicted) on; graded against another dataset or
-    # manifest, its scores would be replaced by a grading against gold it never saw.
+    benchmark.gradable(out)   # Note: first, so a mistyped folder is named before a dataset is read.
+    said = benchmark.settled(out, args.dataset, args.manifest)
     dataset = args.dataset or said.get("dataset") or data.DEFAULT_DATASET
-    if (was := said.get("dataset")) and data.dataset_id(dataset) != was:
-        raise ValueError(f"{out} is a run on dataset {was}, not {data.dataset_id(dataset)}, and a run never "
-                         f"mixes datasets; pass --dataset {was}, or grade a copy without its settings.json")
     manifest = args.manifest or said.get("manifest") or data.MANIFEST
-    if (was := said.get("manifest")) and manifest != was:
-        raise ValueError(f"{out} is a run on manifest {was}, not {manifest}, and a run never mixes "
-                         f"manifests; pass --manifest {was}, or grade a copy without its settings.json")
-    root, docs = data.read_manifest(dataset, manifest)
-    chosen = list(data.select(docs, args.suites))
-    if args.suites and (out / "summary.json").is_file():
-        logging.getLogger(__package__).warning(
-            "%s: grading only %s replaces its summary with these suites'; grade without --suites for the "
-            "whole manifest", out, ", ".join(args.suites))
-    summary = benchmark.grade(benchmark.Run(provider, {}, out), chosen, verdicts=args.verdicts,
-                              score_workers=args.score_workers, among=docs)
-    if "dataset" not in said:
-        # Note: written once a grading has finished, so the next grading of this folder is against
-        # the same dataset and manifest without being told, and a failed one leaves nothing behind.
-        commit = {"commit": root.name} if data._hf_dataset(dataset) is not None else {}
-        benchmark._write_json_atomic(path, said | {"dataset": data.dataset_id(dataset), **commit,
-                                                   "manifest": manifest})
-    json.dump(summary, sys.stdout, indent=2)
+    _, docs = data.read_manifest(dataset, manifest)
+    run = benchmark.Run(said.get("provider") or out.name, {}, out)
+    summary = benchmark.grade(run, docs, _say(args), settings=said, verdicts=args.verdicts,
+                              score_workers=args.score_workers)
+    if not run.records.is_dir():
+        # Note: only once grading succeeded, so a failed one leaves the folder as it was.
+        benchmark.declare(out, dataset, manifest, said)
+    json.dump(summary, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
-    return 0
+    return _bugs(args, {out.name: summary})
 
 
 def main(argv=None) -> int:
@@ -337,7 +320,7 @@ def main(argv=None) -> int:
 
     s = sub.add_parser("score", parents=[quiet], help="score one prediction against one ground truth")
     s.add_argument("--pred", required=True, help="the prediction, JSON")
-    s.add_argument("--gt", required=True, help="the ground truth, JSON")
+    s.add_argument("--gold", required=True, help="the ground truth, JSON")
     s.add_argument("--schema", required=True,
                    help="the JSON Schema the prediction was generated against")
     s.add_argument("--verdicts", action="store_true",
@@ -414,8 +397,6 @@ def main(argv=None) -> int:
     g.add_argument("--manifest", default=None,
                    help="which documents of the dataset: a parquet inside it. Default: the one the "
                         "folder's settings.json names, else manifest.parquet")
-    g.add_argument("--suites", nargs="+",
-                   help="grade only these suites; otherwise every document, and one with no prediction fails")
     g.add_argument("--score-workers", type=int, default=0, metavar="N",
                    help="processes used to grade. Default: one per core, capped at 8; 1 grades in this process")
     g.add_argument("--no-verdicts", dest="verdicts", action="store_false",
@@ -448,29 +429,25 @@ def main(argv=None) -> int:
     pl.set_defaults(fn=cmd_providers)
 
     args = ap.parse_args(argv)
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
-    root = logging.getLogger()
-    root.handlers[:] = [handler]
-    root.setLevel(logging.WARNING)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logging.getLogger().handlers[:] = [handler]
+    logging.getLogger().setLevel(logging.WARNING)
     logging.getLogger(__package__).setLevel(logging.WARNING if args.quiet else logging.INFO)
 
+    resume = args.cmd == "benchmark"
     try:
         return args.fn(args)
-    except (ValueError, FileNotFoundError) as exc:   # Note: a ManifestError is a ValueError.
+    except UsageError as exc:
         print(f"oeb {args.cmd}: {exc}", file=sys.stderr)
         return 1
-    except KeyboardInterrupt:
-        print(f"oeb {args.cmd}: interrupted; rerun to resume", file=sys.stderr)
-        return 130
-    except Exception as exc:
-        # Note: the harness's errors exist only once it is imported, which a command that met one did.
-        errors = sys.modules.get(f"{__package__}.harness.errors")
-        if errors is None or not isinstance(exc, errors.AccountFailure | errors.MissingCredential):
-            raise
-        resume = "; fix it and rerun to resume" if args.cmd == "benchmark" else ""
-        print(f"oeb {args.cmd}: {type(exc).__name__}: {exc}{resume}", file=sys.stderr)
+    except Stop as exc:
+        print(f"oeb {args.cmd}: {type(exc).__name__}: {exc}"
+              + ("; fix it and rerun to resume" if resume else ""), file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print(f"oeb {args.cmd}: interrupted" + ("; rerun to resume" if resume else ""), file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

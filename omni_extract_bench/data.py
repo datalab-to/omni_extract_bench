@@ -13,6 +13,7 @@ file and its gold are without the dataset beside it. The functions over a datase
     select(docs, suites, limit, ...)     the documents to run: by suite or id, sampled, limited
     ManifestError                        a manifest, or a row of one, that breaks the dataset's rules
     dataset_id(dataset)                  what a run's dataset is, whatever its revision
+    commit(dataset, root)                the commit a HuggingFace dataset was read at; None for a folder
 
 `dataset` is a folder's path or `hf://datasets/<org>/<name>[@<revision>]`.
 """
@@ -28,6 +29,8 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
+from .errors import UsageError
+
 log = logging.getLogger(__name__)
 
 REPO = "datalab-to/omni_extract_bench"
@@ -41,7 +44,7 @@ COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
 NO_SUITE = "other"          # the suite of a document whose manifest gives none (null or "")
 
 
-class ManifestError(ValueError):
+class ManifestError(UsageError):
     """A manifest, or a row of one, that breaks the dataset's rules; the message names it and the fix."""
 
 
@@ -72,14 +75,14 @@ def _hf_dataset(dataset: str | Path) -> tuple[str, str | None] | None:
     form = f"hf://datasets/<org>/<name>[@<revision>], e.g. {DEFAULT_DATASET}"
     s = str(dataset)
     if isinstance(dataset, Path) and s.startswith("hf:"):
-        raise ValueError(f"the dataset {s!r} was made a Path, which folds the '//' out of an "
+        raise UsageError(f"the dataset {s!r} was made a Path, which folds the '//' out of an "
                          f"address. Pass it as a str: {form}")
     if not s.startswith("hf://"):
         return None
     org, _, name = s.removeprefix(HF_PREFIX).partition("/")
     name, at, revision = name.partition("@")
     if not s.startswith(HF_PREFIX) or not org or not name or "/" in name or (at and not revision):
-        raise ValueError(f"{s!r} does not name a HuggingFace dataset. Write it as {form}")
+        raise UsageError(f"{s!r} does not name a HuggingFace dataset. Write it as {form}")
     return f"{org}/{name}", revision or None
 
 
@@ -89,6 +92,11 @@ def dataset_id(dataset: str | Path) -> str:
     if (at := _hf_dataset(dataset)) is not None:
         return f"{HF_PREFIX}{at[0]}"
     return str(Path(dataset).expanduser().resolve())
+
+
+def commit(dataset: str | Path, root: Path) -> str | None:
+    """The commit `dataset` was read at, its downloaded folder `root`'s name; None for a folder."""
+    return root.name if _hf_dataset(dataset) is not None else None
 
 
 def download_dataset(dataset: str | Path) -> Path:
@@ -105,8 +113,8 @@ def download_dataset(dataset: str | Path) -> Path:
         if not root.is_dir():
             hint = (f"; a Hugging Face dataset is written {HF_PREFIX}<org>/<name>, with two slashes"
                     if str(dataset).startswith("hf:") else "")
-            raise FileNotFoundError(f"no dataset folder at {root}; pass --dataset a dataset folder "
-                                    f"or {HF_PREFIX}<org>/<name>{hint}")
+            raise UsageError(f"no dataset folder at {root}; pass --dataset a dataset folder "
+                             f"or {HF_PREFIX}<org>/<name>{hint}")
         return root
     repo, revision = at
     from huggingface_hub import errors as hf_errors
@@ -121,13 +129,13 @@ def download_dataset(dataset: str | Path) -> Path:
             return Path(snapshot_download(repo, repo_type="dataset", revision=revision, max_workers=4))
         except (hf_errors.RepositoryNotFoundError, hf_errors.GatedRepoError,
                 hf_errors.RevisionNotFoundError) as exc:
-            raise ValueError(f"can't read dataset {dataset}: {type(exc).__name__}. Check the repo and "
+            raise UsageError(f"can't read dataset {dataset}: {type(exc).__name__}. Check the repo and "
                              "revision, and that you're logged in with access (huggingface-cli login)"
                              ) from None
         except hf_errors.HfHubHTTPError as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             if status in (401, 403):
-                raise ValueError(f"can't read dataset {dataset}: HTTP {status}. Log in with access to it "
+                raise UsageError(f"can't read dataset {dataset}: HTTP {status}. Log in with access to it "
                                  "(huggingface-cli login)") from None
             if attempt == DOWNLOAD_ATTEMPTS - 1: raise
         except Exception:
@@ -204,6 +212,8 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
         docs.append(Doc(doc_id=doc_id, suite=suite, doc_path=root / row["doc_path"],
                         gt_path=root / row["gt_path"], schema=schema,
                         extra={k: v for k, v in row.items() if k not in COLUMNS}))
+    if not docs:
+        raise ManifestError(f"the manifest {manifest} in {root} names no documents")
     # Note: ignoring case, because an id names files, and two ids that differ only in case name one file
     # on a case-insensitive disk (macOS, Windows).
     if twice := [i for i, k in collections.Counter(d.doc_id.casefold() for d in docs).items() if k > 1]:
@@ -212,27 +222,27 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
     return root, tuple(docs)
 
 
-def select(docs: Sequence[Doc], suites: Sequence[str] | None = None, limit: int = 0,
+def select(docs: Sequence[Doc], suites: Iterable[str] | None = None, limit: int = 0,
            sample: int = 0, only: Iterable[str] | None = None) -> tuple[Doc, ...]:
     """The documents of `docs` (a dataset's, from `read_manifest`) to run, in their order, filtered by
     suite and by `only` (doc ids, each of which must be among them), and limited.
 
     `sample` picks that many documents spread over every suite: suites in turn, each document evenly
     spaced within its suite, so a smoke test sees every kind of document and the same ones each time."""
-    _names(suites, "suites")
-    _names(only, "only")
-    for flag, k in (("limit", limit), ("sample", sample)):
-        if isinstance(k, bool) or not isinstance(k, int) or k < 0:
-            raise ValueError(f"{flag} is {k!r}, but it counts documents: a whole number, 0 for no limit")
-    only = None if only is None else frozenset(only)
+    suites, only = _names(suites, "suites") or None, _names(only, "only")
+    for name, n in (("limit", limit), ("sample", sample)):
+        if isinstance(n, bool) or not isinstance(n, int):
+            raise TypeError(f"{name} is a whole number, not {n!r}")
+        if n < 0:
+            raise UsageError(f"--{name} is {n}, but it counts documents, so it can't be negative; 0 is no limit")
     rows = tuple(docs)
     known = {r.suite for r in rows}
-    if bad := sorted(set(suites or ()) - known):
-        raise ValueError(f"unknown suites {bad}; the dataset's suites are {sorted(known)}")
-    rows = tuple(r for r in rows if not suites or r.suite in suites)
+    if suites is not None and (bad := sorted(suites - known)):
+        raise UsageError(f"unknown suites {bad}; the dataset's suites are {sorted(known)}")
+    rows = tuple(r for r in rows if suites is None or r.suite in suites)
     if only is not None:
         if bad := sorted(only - {r.doc_id for r in rows}):
-            raise ValueError(f"{len(bad)} of the documents asked for aren't in the dataset"
+            raise UsageError(f"{len(bad)} of the documents asked for aren't in the dataset"
                              f"{' (or its suites)' if suites else ''}, e.g. {bad[:3]}; nothing has been run")
         rows = tuple(r for r in rows if r.doc_id in only)
     if sample and rows:
@@ -246,10 +256,12 @@ def select(docs: Sequence[Doc], suites: Sequence[str] | None = None, limit: int 
     return rows[:limit] if limit else rows
 
 
-def _names(xs: Iterable[str] | None, what: str) -> None:
-    """Refuses a bare str where several names are expected: iterated, `"micro1"` is six one-letter names."""
+def _names(xs: Iterable[str] | None, what: str) -> frozenset[str] | None:
+    """`xs` as a set, read once (a generator is a one-pass iterable); a bare str is refused, since iterated it
+    is one-letter names."""
     if isinstance(xs, str):
-        raise TypeError(f"{what} is the str {xs!r}, but it takes several names; pass a list, e.g. [{xs!r}]")
+        raise TypeError(f"{what} is a list of names, not the string {xs!r}; pass [{xs!r}]")
+    return None if xs is None else frozenset(xs)
 
 
 def _inside(path: str, doc_id: str | None = None) -> bool:
