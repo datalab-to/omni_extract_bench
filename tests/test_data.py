@@ -94,3 +94,16 @@ def test_a_dataset_offline_and_uncached_is_refused_at_once(monkeypatch):
     with pytest.raises(UsageError, match="cache"):
         data.download_dataset("hf://datasets/someone/nowhere@nope")
     assert len(tries) == 1
+
+
+def test_a_manifest_given_whole_is_split_into_its_dataset_and_its_path():
+    """Before 1.0, --manifest was hf://datasets/<org>/<name>/<path>; it still works."""
+    hub = "hf://datasets/someone/theirs"
+    assert data.located(None, f"{hub}/manifests/s.parquet") == (hub, "manifests/s.parquet")
+    assert data.located(data.DEFAULT_DATASET, f"{hub}@v2/m.parquet") == (f"{hub}@v2", "m.parquet")
+    assert data.located(f"{hub}@v1", f"{hub}/m.parquet") == (f"{hub}@v1", "m.parquet"), "--dataset's revision"
+    assert data.located("ds", "manifest.parquet") == ("ds", "manifest.parquet"), "a path inside it stands"
+    with pytest.raises(data.ManifestError, match="someone/theirs"):
+        data.located("hf://datasets/other/one", f"{hub}/m.parquet")
+    with pytest.raises(data.ManifestError):
+        data.located(None, hub)

@@ -278,6 +278,7 @@ def plan(providers: Sequence[str], *, out: str | Path = Path("runs"), dataset: s
 
     `workers` is the documents in flight per adapter, shared by its runs: one number for every
     adapter, or a number per adapter (`_per_adapter`); 0, or an adapter left out, takes `WORKERS`."""
+    dataset, manifest = data.located(dataset, manifest)
     if isinstance(providers, str):
         raise TypeError(f"providers is a list of names, not the string {providers!r}; pass [{providers!r}]")
     if isinstance(workers, bool) or not isinstance(workers, int | Mapping):

@@ -163,6 +163,27 @@ def normal(manifest: str) -> str:
     return m.as_posix()
 
 
+def located(dataset: str | Path | None, manifest: str | None) -> tuple[str | Path | None, str | None]:
+    """`dataset` and `manifest`, with a manifest given whole (`hf://datasets/<org>/<name>[@<rev>]/<path>`)
+    split into its dataset and its path inside it; refuses one whose dataset isn't `dataset`.
+
+    Note: omni-extract-bench named a manifest this way before 1.0, and configs still do, so both packages
+    take it, with `dataset` left out or at its default."""
+    if manifest is None or not str(manifest).startswith(HF_PREFIX): return dataset, manifest
+    org, name, *path = str(manifest).removeprefix(HF_PREFIX).split("/")
+    at = f"{HF_PREFIX}{org}/{name}"
+    if not org or not name or not path or not path[-1]:
+        raise ManifestError(f"--manifest {manifest} names no manifest; write it as {HF_PREFIX}<org>/<name>/"
+                            "<path>, or pass --dataset and --manifest <path inside it>")
+    given = dataset is not None and str(dataset) != DEFAULT_DATASET
+    if given and dataset_id(dataset) != dataset_id(at):
+        raise ManifestError(f"--manifest {manifest} is in {at}, but --dataset is {dataset}; pass one of "
+                            "them, or --manifest as a path inside --dataset")
+    # Note: a revision in the manifest wins; otherwise --dataset's, which may name one, stands.
+    here = dataset if given and "@" not in name else at
+    return here, "/".join(path)
+
+
 def commit(dataset: str | Path, root: Path) -> str | None:
     """The commit `dataset` was read at, its downloaded folder `root`'s name; None for a folder."""
     return root.name if _hf_dataset(dataset) is not None else None

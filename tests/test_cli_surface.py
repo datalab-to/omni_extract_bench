@@ -191,11 +191,7 @@ _out = io.StringIO()
 with contextlib.redirect_stdout(_out):
     _, _err = _asked("y")
 check("...and the question on stderr, so stdout stays the summary", not _out.getvalue() and "proceed?" in _err)
-try:
-    _asked("n", tty=False)
-    check("no terminal and no -y is refused", False, "it went on")
-except cli.errors.UsageError as exc:
-    check("no terminal and no -y is refused", "-y" in str(exc), str(exc))
+check("no terminal: a scripted command goes ahead, without asking", _asked("n", tty=False)[0] is True)
 check("...and a closed terminal does not", _asked(EOFError)[0] is False)
 
 print(f"\n{'ALL CLI TESTS PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}")

@@ -116,13 +116,12 @@ def confirm_plan(plan) -> bool:
     """Show what the benchmark is about to do, and ask; `-y` / `--yes` skips this entirely. The plan and the
     question go to stderr, leaving stdout for the summaries.
 
-    Note: with no terminal to ask (a pipe, a notebook, CI), the run is refused rather than taken as consent:
-    it costs money, and a script says so once with `-y`."""
+    Note: with no terminal to ask (a pipe, a notebook, CI), it goes ahead: a command that was scripted was
+    meant to run, as 0.x did. `-y` says so explicitly."""
     from rich import console
 
     console.Console(stderr=True, highlight=False).print(plan)
-    if not sys.stdin.isatty():
-        raise errors.UsageError("no terminal to ask before calling vendors; pass -y to run")
+    if not sys.stdin.isatty(): return True
     sys.stderr.write("  proceed? [y/N] ")
     sys.stderr.flush()
     try:
@@ -222,6 +221,7 @@ def cmd_grade(args) -> int:
 
     out = pathlib.Path(args.run)
     benchmark.gradable(out)   # Note: first, so a mistyped folder is named before a dataset is read.
+    args.dataset, args.manifest = data.located(args.dataset, args.manifest)
     said = benchmark.settled(out, args.dataset, args.manifest)
     dataset = args.dataset or said.get("dataset") or data.DEFAULT_DATASET
     manifest = args.manifest or said.get("manifest") or data.MANIFEST
@@ -244,7 +244,8 @@ def cmd_check(args) -> int:
     from . import data
     from .scorers import field_matching
 
-    _, docs = data.read_manifest(args.dataset or data.DEFAULT_DATASET, args.manifest)
+    dataset, manifest = data.located(args.dataset, args.manifest)
+    _, docs = data.read_manifest(dataset or data.DEFAULT_DATASET, manifest)
     missing = [f"{d.doc_id} {col} {f}" for d in docs for col, f in (("doc_path", d.doc_path), ("gt_path", d.gt_path))
                if not f.is_file()]
     if missing:

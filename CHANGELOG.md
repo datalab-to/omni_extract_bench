@@ -133,6 +133,8 @@ Datasets:
   and tried again up to five times, each retry logged (a download that would fail the same way every
   time, offline with nothing cached among them, is refused at once), and `--manifest` is a relative path
   inside it (default: `manifest.parquet`). A dataset may hold several manifests;
+- a manifest given whole, `hf://datasets/<org>/<name>[@<revision>]/<path>`, as 0.x took it, still works:
+  `data.located` splits it into its dataset and its path (a disagreeing `--dataset` is refused);
 - a `doc_path` is a relative path inside the dataset to a file, any name, and documents may share one
   (one PDF asked with several schemas); a `gt_path` is a relative path inside the dataset named
   `<doc_id>.json`; a doc_id is a str and a filename, unique ignoring case; a schema is a non-empty JSON
@@ -157,7 +159,7 @@ The command line:
 - the closing hint counts only the documents `--retry-failed` would predict again;
 - `oeb benchmark -y`, and `--score-only`, which spends nothing, print the plan and don't ask; a declined
   plan prints `nothing run`; the question goes to stderr; with no terminal to ask (a pipe, a notebook,
-  CI), `oeb benchmark` refuses unless given `-y`; a bug of ours is a traceback and exits 1, as a
+  CI), `oeb benchmark` goes ahead without asking, as before; a bug of ours is a traceback and exits 1, as a
   `UsageError` or a `Stop` does; `--sample N` and `--docs FILE` (ids, one per line; blank lines and `#`
   comments skipped) choose documents;
 - `oeb grade <folder>` (new) grades a folder of predictions/<doc_id>.json, yours or a run's;

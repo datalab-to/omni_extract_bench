@@ -49,7 +49,7 @@ oeb benchmark \
 
 This will execute 4 different runs -- one for each pair (provider, settings).
 
-It shows the plan and asks before calling any vendor; with no terminal to ask (a pipe, a notebook, CI), pass `-y`, or it refuses.
+It shows the plan and asks before calling any vendor; with no terminal to ask (a pipe, a notebook, CI) it goes ahead without asking, so a script runs as written.
 
 `--dataset` picks the dataset (a folder on disk, or a HuggingFace dataset; ours by default), and `--manifest` picks which of its documents to run. For example, a 40-document subset of ours:
 

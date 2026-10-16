@@ -267,8 +267,8 @@ score only  false
   proceed? [y/N]
 ```
 
-The question goes to stderr. With no terminal to ask (a pipe, a notebook, CI), it refuses unless
-given `-y`, since a run costs money. With `-y`, or `--score-only`, which spends nothing, the plan is
+The question goes to stderr. With no terminal to ask (a pipe, a notebook, CI), it goes ahead
+without asking, so a script runs as written. With `-y`, or `--score-only`, which spends nothing, the plan is
 printed and the run goes on without asking; a declined plan prints `oeb benchmark: nothing run`. The execution looks like:
 
 ```
