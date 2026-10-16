@@ -91,3 +91,21 @@ unchanged unless a line below says otherwise.
   run's old predictions are graded against the new gold. Pass another `--out` to keep them apart.
 - A `Verdict`'s `verdict` field is `result`, and so is the key in `verdicts/<doc_id>.jsonl`. The
   scoring-code digest changes, so every run is graded again once; no provider is called.
+- `--workers` and `plan(workers=...)` are per adapter, as in omni-parse-bench: one number for every
+  adapter, or a JSON object of a number per adapter, `'{"reducto": 25, "llm_single_shot": 3}'`
+  (`llm_single_shot` is every OpenRouter model id). A key that isn't an adapter is refused, naming the
+  adapter it uses. `'reducto=25,datalab=40'` and `"*"` are gone.
+- A manifest's `doc_path` and `gt_path` must be paths inside the dataset named for their document
+  (`<doc_id>.<ext>`, and `<doc_id>.json` for the gold), and a doc id may appear once. An absolute
+  path is refused: a dataset is one folder.
+- `read_manifest` keeps the manifest's order; it sorted by suite and doc id. So `--limit N` takes the
+  manifest's first N.
+- `download_dataset` retries a failed download (5 attempts), and refuses a folder that doesn't exist.
+- `execute` grades what was predicted even when predicting stopped early, an account failure
+  included: a run's unattempted documents are `pending` in its summary.
+- `plan` refuses a run asked for twice and a negative `--limit`, `--sample`, `--workers` or
+  `--score-workers`; it used to merge the repeat.
+- `grade` refuses a folder with no `predictions/`, as `oeb grade` did.
+- `prepare` reads the manifest, so a broken one stops before anything is written.
+- `harness.out_name` is exported.
+- `predicted` and `read_scores` log a file they can't read.

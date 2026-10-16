@@ -62,7 +62,8 @@ from .errors import (AccountFailure, DialectError, MissingCredential, MissingDep
 # into a run. The scorer never imports this package, so scoring needs none of them.
 try:
     from .document import predict
-    from .registry import DEFAULT_TIMEOUT, PROVIDERS, adapter, add_adapter, resolve, settings_for
+    from .registry import (DEFAULT_TIMEOUT, PROVIDERS, adapter, add_adapter, out_name, resolve,
+                           settings_for)
 except ImportError as exc:
     # `exc.name` tells an SDK that is missing or incompatible apart from an import of ours that
     # broke; only the first is fixed by installing the extra.
@@ -79,5 +80,5 @@ __all__ = [
     "Extraction", "Cost",
     "VendorError", "VendorTimeout", "DialectError",
     "AccountFailure", "MissingCredential", "MissingDependency",
-    "PROVIDERS", "DEFAULT_TIMEOUT", "settings_for", "resolve",
+    "PROVIDERS", "DEFAULT_TIMEOUT", "settings_for", "resolve", "out_name",
 ]

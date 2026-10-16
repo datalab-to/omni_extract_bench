@@ -162,12 +162,12 @@ D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, config: (
     called.append(config.mode),
     Extraction(result={"a": config.mode}, cost=Cost(usd=0.1)))[1])
 
-B.execute(B.plan(["datalab"], out=out, score_workers=1, workers={"*": 1}))
+B.execute(B.plan(["datalab"], out=out, score_workers=1, workers=1))
 report("the stock run calls the vendor at its stock setting", called == ["balanced"] * 3,
        str(called))
 
 called.clear()
-B.execute(B.plan(["datalab"], out=out, score_workers=1, workers={"*": 1},
+B.execute(B.plan(["datalab"], out=out, score_workers=1, workers=1,
       options={"datalab": {"mode": "fast"}}))
 report("the steered run calls the vendor again, at the asked-for setting",
        called == ["fast"] * 3, f"{called} -- empty means it reused the stock records")
@@ -190,7 +190,7 @@ report("...and the record states what it was sent",
 print("\nA VENDOR'S OWN TIERS, COMPARED IN ONE INVOCATION")
 out2 = pathlib.Path(tempfile.mkdtemp())
 DS.download_dataset = lambda *_: out2
-summary = B.execute(B.plan(["datalab"], out=out2, score_workers=1, workers={"*": 1},
+summary = B.execute(B.plan(["datalab"], out=out2, score_workers=1, workers=1,
                 options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
 report("each configuration is its own row in the summary",
        sorted(summary) == sorted([named("datalab", mode="balanced"),
@@ -214,7 +214,7 @@ report("and there is no table across them to go stale",
        not (out2 / "summary.json").exists())
 
 DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs[:1]))
-narrow = B.execute(B.plan(["datalab"], out=out2, score_workers=1, workers={"*": 1},
+narrow = B.execute(B.plan(["datalab"], out=out2, score_workers=1, workers=1,
                options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
 DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs))
 kept = json.loads((out2 / named("datalab") / "summary.json").read_text())
@@ -237,7 +237,7 @@ def interrupted_on_the_second(*a, **k):
 
 B.grade = interrupted_on_the_second
 try:
-    B.execute(B.plan(["datalab"], out=out3, score_workers=1, workers={"*": 1},
+    B.execute(B.plan(["datalab"], out=out3, score_workers=1, workers=1,
           options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
     report("the interrupt reaches the caller", False, "it was swallowed")
 except KeyboardInterrupt:
@@ -447,12 +447,15 @@ report("three model ids share one budget, not one each",
 report("...while each still runs its own model, into its own directory",
        len([d for d in models.iterdir() if d.is_dir()]) == len(ids),
        str(sorted(d.name for d in models.iterdir() if d.is_dir())))
-report("a name people type still sets the cap",
-       B._workers_for(["openai/gpt-5.6-sol"], {"openai/gpt-5.6-sol": 2}) == 2)
-report("...and where several names in one group disagree, the smallest wins",
-       B._workers_for(ids, {"openai/gpt-5.6-sol": 2, "anthropic/claude-opus-5": 20}) == 2)
+report("the cap is set per adapter",
+       B._workers_for("llm_single_shot", B._per_adapter({"llm_single_shot": 2})) == 2)
+try:
+    B._per_adapter({"openai/gpt-5.6-sol": 2})
+    report("...and a model id is refused as a key, naming its adapter", False, "it was accepted")
+except ValueError as exc:
+    report("...and a model id is refused as a key, naming its adapter", "llm_single_shot" in str(exc), str(exc))
 report("...falling back to the adapter's own limit when nobody says",
-       B._workers_for(ids, None) == WORKERS["llm_single_shot"])
+       B._workers_for("llm_single_shot") == WORKERS["llm_single_shot"])
 
 print("\nAN ACCOUNT FAILURE IS ABOUT THE ACCOUNT, SO IT STOPS EVERY RUN OF THAT VENDOR")
 acct = pathlib.Path(tempfile.mkdtemp())

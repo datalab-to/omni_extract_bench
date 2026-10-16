@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import threading
+from collections.abc import Mapping
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import NamedTuple
@@ -139,9 +140,10 @@ def _head(run: Run) -> dict:
 def prepare(run: Run, dataset: str, timeout: float, manifest: str = data.MANIFEST) -> None:
     """The run's folder made, and what it asks written to its settings.json before it asks:
     provider, settings, dataset (and the commit of a HuggingFace one, the downloaded folder's name),
-    manifest and the timeout per document. `summary.json` comes after grading, which an interrupted
+    manifest and the timeout per document, whole. `summary.json` comes after grading, which an interrupted
     run never reaches."""
-    commit = data.download_dataset(dataset).name if data._hf_dataset(dataset) is not None else None
+    root, _ = data.read_manifest(dataset, manifest)
+    commit = root.name if data._hf_dataset(dataset) is not None else None
     run.predictions.mkdir(parents=True, exist_ok=True)
     run.records.mkdir(parents=True, exist_ok=True)
     _write_json_atomic(run.out / "settings.json", {
@@ -207,7 +209,11 @@ def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, score_workers: 
     counted in the summary's `pending`) when it was never attempted: the run keeps records, as a run
     our loop predicts does, and has neither a record nor a prediction for it. A folder of
     predictions you bring keeps no records, so a document missing from it is failed: it is your
-    submission."""
+    submission. A folder with no predictions/ is refused: it is most likely another one (another
+    option, another --out)."""
+    if not run.predictions.is_dir():
+        raise ValueError(f"no run at {run.out}: it has no predictions/ folder, which holds "
+                         "predictions/<doc_id>.json, one per document predicted. Check --out and --options")
     keeps = run.records.is_dir()
     attempted = [d for d in docs if not keeps or recorded(run, d.doc_id) is not None
                  or predicted(run, d.doc_id) is not None]
@@ -285,28 +291,36 @@ def _score_one(doc: data.Doc, *, run: Run, verdicts: bool = False) -> dict:
 def predicted(run: Run, doc_id: str) -> dict | None:
     """The document's prediction (`predictions/`), the extracted JSON object; None when it has none,
     or none readable as an object."""
+    path = run.predictions / f"{doc_id}.json"
     try:
-        got = json.loads((run.predictions / f"{doc_id}.json").read_text())
-    except (OSError, json.JSONDecodeError):
+        got = json.loads(path.read_text())
+    except FileNotFoundError:
         return None
-    return got if isinstance(got, dict) else None
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("%s isn't readable (%s); its document counts as not predicted", path, exc)
+        return None
+    if not isinstance(got, dict):
+        log.warning("%s isn't a JSON object; its document counts as not predicted", path)
+        return None
+    return got
 
 
 def read_scores(run: Run) -> list[dict]:
     """The run's score lines (scores.jsonl), in file order: one per graded document. A line that
-    doesn't parse is left out."""
+    doesn't parse is left out, and logged."""
+    path = run.out / "scores.jsonl"
     try:
-        text = (run.out / "scores.jsonl").read_text()
+        text = path.read_text()
     except OSError:
         return []
     out = []
-    for line in text.splitlines():
+    for n, line in enumerate(text.splitlines()):
         if not line.strip():
             continue
         try:
             out.append(json.loads(line))
         except json.JSONDecodeError:
-            continue
+            log.warning("%s: line %d isn't readable JSON; left out", path, n + 1)
     return out
 
 
@@ -334,17 +348,33 @@ WORKERS = {
 DEFAULT_WORKERS = 5
 
 
-def _workers_for(providers, requested: dict[str, int] | int | None) -> int:
-    """How many documents to have in flight at one vendor."""
-    from .harness.registry import resolve
+def _workers_for(adapter: str, requested: int | Mapping[str, int] = 0) -> int:
+    """Documents in flight at once for every run of this adapter (`registry.resolve`) together: what
+    was requested (one number for every adapter, or a number per adapter), else `WORKERS`."""
+    if isinstance(requested, Mapping): requested = requested.get(adapter, 0)
+    return requested or WORKERS.get(adapter, DEFAULT_WORKERS)
 
-    names = [providers] if isinstance(providers, str) else list(providers)
-    if isinstance(requested, int):
-        requested = {"*": requested} if requested else {}
-    requested = requested or {}
-    asked = [requested[n] for n in names if requested.get(n)]
-    return (min(asked) if asked else
-            requested.get("*") or WORKERS.get(resolve(names[0]), DEFAULT_WORKERS))
+
+def _per_adapter(workers: Mapping[str, int]) -> dict[str, int]:
+    """`--workers` as a number per adapter, checked. The limit is a vendor account's, shared by every
+    run of its adapter (every OpenRouter model id shares llm_single_shot's), so it is set per adapter,
+    never per provider or model."""
+    from .harness import registry
+
+    # Note: the adapters filed so far, which include every plugin a provider of this plan loaded;
+    # resolving every provider would load every plugin, and a broken one would stop any run.
+    adapters = {registry.resolve(n) for n in registry.ADAPTERS} | {"llm_single_shot"}
+    for key, n in workers.items():
+        if key not in adapters:
+            try:
+                a = registry.resolve(key)
+                hint = f"{key} uses the {a} adapter, whose pool all its runs share; write {{\"{a}\": {n}}}"
+            except ValueError:
+                hint = f"the adapters are {sorted(adapters)}"
+            raise ValueError(f"--workers is per adapter, and {key!r} isn't one: {hint}")
+        if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+            raise ValueError(f"--workers gives {key!r} {n!r}; documents at once is a whole number, 1 or more")
+    return dict(workers)
 
 
 def configurations(providers: list[str], options: dict | None = None) -> list[tuple[str, dict]]:
@@ -374,7 +404,7 @@ class Plan(NamedTuple):
     dataset: str
     manifest: str
     timeout: float
-    workers: dict[str, int] | int | None   # documents in flight per adapter, `_workers_for`
+    workers: int | dict[str, int]          # documents in flight per adapter, `_workers_for`
     score_workers: int
     verdicts: bool
     score_only: bool
@@ -384,19 +414,31 @@ class Plan(NamedTuple):
 def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path = data.DEFAULT_DATASET,
          manifest: str = data.MANIFEST, suites: list[str] | None = None, limit: int = 0,
          sample: int = 0, only: frozenset[str] | None = None,
-         timeout: float = 1800.0, workers: dict[str, int] | int | None = None,
+         timeout: float = 1800.0, workers: int | Mapping[str, int] = 0,
          score_workers: int = 0, verdicts: bool = True,
          score_only: bool = False, retry_failed: bool = False, options: dict | None = None) -> Plan:
     """Every run this invocation makes and the documents it covers, checked before any call: a
-    bad provider, option or `--out` fails here. Runs are deduplicated by folder."""
+    bad provider, option or `--out` fails here.
+
+    `workers` is the documents in flight per adapter, shared by its runs: one number for every
+    adapter, or a number per adapter (`_per_adapter`); 0, or an adapter left out, takes `WORKERS`."""
     from .harness.registry import out_name, resolve
 
+    counts = [("--limit", limit), ("--sample", sample), ("--score-workers", score_workers)]
+    if isinstance(workers, int): counts.append(("--workers", workers))
+    for flag, n in counts:
+        if n < 0: raise ValueError(f"{flag} is {n}, but it counts, so it can't be negative; 0 means no limit")
     for provider in providers:
         resolve(provider)
+    if isinstance(workers, Mapping): workers = _per_adapter(workers)
     runs = {}
     for provider, options_ in configurations(providers, options):
         name = out_name(provider, options_)
-        runs.setdefault(name, Run(provider, options_, Path(out) / name))
+        if name in runs:
+            raise ValueError(f"run {name} is asked for more than once: the same provider with the same "
+                             "settings (an option set to its default is the same setting); drop the "
+                             "repeat from --providers or --options")
+        runs[name] = Run(provider, options_, Path(out) / name)
     ident = data.dataset_id(dataset)
     for run in runs.values():
         # Note: a folder is named for provider and options, not dataset, so two datasets would
@@ -442,7 +484,7 @@ def predict_all(p: Plan) -> None:
 
     def drain(adapter: str, runs: list[Run], bars: Progress) -> None:
         """Every document of every run of one adapter, through its one pool."""
-        workers = _workers_for([r.provider for r in runs], p.workers)
+        workers = _workers_for(adapter, p.workers)
         bar = {r.out.name: bars.reporter(r.out.name) for r in runs}
         left, work = {}, []
         for r in runs:
@@ -545,10 +587,14 @@ def grade_all(p: Plan) -> dict[str, dict]:
 
 
 def execute(p: Plan) -> dict[str, dict]:
-    """Predict, then grade. Returns each run's summary, by run name."""
-    if not p.score_only:
-        predict_all(p)
-    return grade_all(p)
+    """Predict, then grade. Returns each run's summary, by run name. What was predicted is graded
+    even when predicting stopped early."""
+    try:
+        if not p.score_only:
+            predict_all(p)
+    finally:
+        summaries = grade_all(p)
+    return summaries
 
 
 def _settings_cell(asked: list[str]) -> Group:
@@ -602,7 +648,7 @@ def _plan_view(p: Plan) -> Group:
     table.add_column("predict", justify="right", no_wrap=True)
     table.add_column("grade", justify="right", no_wrap=True)
     for adapter, runs in by.items():
-        workers = _workers_for([r.provider for r in runs], p.workers)
+        workers = _workers_for(adapter, p.workers)
         for n, run in enumerate(runs):
             to_predict, to_grade = owed(p, run)
             to_predict = 0 if p.score_only else to_predict

@@ -18,10 +18,12 @@ file and its gold are without the dataset beside it. The functions over a datase
 """
 from __future__ import annotations
 
+import collections
 import dataclasses
 import functools
 import json
 import logging
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,7 @@ REPO = "datalab-to/omni_extract_bench"
 MANIFEST = "manifest.parquet"
 HF_PREFIX = "hf://datasets/"
 DEFAULT_DATASET = f"{HF_PREFIX}{REPO}"
+DOWNLOAD_ATTEMPTS = 5
 #: Written out rather than read off `Doc`: manifests on disk have this shape, and a field `Doc`
 #: grows later must not invalidate them.
 COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
@@ -97,18 +100,43 @@ def download_dataset(dataset: str | Path) -> Path:
     optimization for later.
     """
     if (at := _hf_dataset(dataset)) is None:
-        return Path(dataset).expanduser()
+        root = Path(dataset).expanduser()
+        if not root.is_dir():
+            raise FileNotFoundError(f"no dataset folder at {root}; pass --dataset a dataset folder "
+                                    f"or {HF_PREFIX}<org>/<name>")
+        return root
     repo, revision = at
+    from huggingface_hub import errors as hf_errors
     from huggingface_hub import snapshot_download
 
     log.info("downloading %s into the huggingface cache", dataset)
-    return Path(snapshot_download(repo, repo_type="dataset", revision=revision))
+    # Note: hundreds of files; the Hub drops some requests under that load, and a download picks up
+    # where the last left off, so it is simply tried again. A missing repo, revision or access is
+    # the same on every attempt, so it fails at once.
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        try:
+            return Path(snapshot_download(repo, repo_type="dataset", revision=revision, max_workers=4))
+        except (hf_errors.RepositoryNotFoundError, hf_errors.GatedRepoError,
+                hf_errors.RevisionNotFoundError) as exc:
+            raise ValueError(f"can't read dataset {dataset}: {type(exc).__name__}. Check the repo and "
+                             "revision, and that you're logged in with access (huggingface-cli login)"
+                             ) from None
+        except hf_errors.HfHubHTTPError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in (401, 403):
+                raise ValueError(f"can't read dataset {dataset}: HTTP {status}. Log in with access to it "
+                                 "(huggingface-cli login)") from None
+            if attempt == DOWNLOAD_ATTEMPTS - 1: raise
+        except Exception:
+            if attempt == DOWNLOAD_ATTEMPTS - 1: raise
+        time.sleep(30 * (attempt + 1))
+    raise AssertionError("unreachable")
 
 
 @functools.cache
 def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, tuple[Doc, ...]]:
     """The dataset's folder (`download_dataset`) and every document its manifest `manifest` (a path in
-    the dataset) names, checked, in (suite, doc_id) order, each with its file and gold as full paths.
+    the dataset) names, checked, in the manifest's order, each with its file and gold as full paths.
     Its columns must include `COLUMNS`; any other column is carried on each document's `extra`."""
     try:
         import pyarrow.parquet as pq
@@ -142,6 +170,10 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
             raise ManifestError(f"{path}: row {n} has doc_id {doc_id!r}, which is not a filename. "
                              f"It names this document's prediction, its record and its row in "
                              f"scores.jsonl, so it has to be one path component.")
+        if not _inside(row["doc_path"], doc_id) or not _inside(row["gt_path"], doc_id, ".json"):
+            raise ManifestError(f"{path}: row {n} ({doc_id}) has doc_path {row['doc_path']!r} and gt_path "
+                                f"{row['gt_path']!r}; each must be a path inside the dataset named for its "
+                                f"document, e.g. pdfs/{doc_id}.pdf and gold/{doc_id}.json")
         try:
             schema = json.loads(row["schema"])
         except (TypeError, json.JSONDecodeError) as exc:
@@ -150,7 +182,8 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
         docs.append(Doc(doc_id=doc_id, suite=row["suite"], doc_path=root / row["doc_path"],
                         gt_path=root / row["gt_path"], schema=schema,
                         extra={k: v for k, v in row.items() if k not in COLUMNS}))
-    docs.sort(key=lambda d: (d.suite, d.doc_id))
+    if twice := [i for i, k in collections.Counter(d.doc_id for d in docs).items() if k > 1]:
+        raise ManifestError(f"{path}: {len(twice)} doc ids are in the manifest more than once, e.g. {twice[:3]}")
     return root, tuple(docs)
 
 
@@ -180,6 +213,17 @@ def select(docs: Sequence[Doc], suites: Sequence[str] | None = None, limit: int 
         chosen = {r.doc_id for r in turns[:sample]}
         rows = tuple(r for r in rows if r.doc_id in chosen)
     return rows[:limit] if limit else rows
+
+
+def _inside(path: str, doc_id: str, suffix: str | None = None) -> bool:
+    """Whether `path` is relative, stays inside the dataset, and is named for the document:
+    `<doc_id>.<anything>`, or `<doc_id><suffix>`.
+
+    Note: the folder is free, so one dataset's documents can carry golds of several kinds, one
+    manifest each; the name is not, so a document can't point at another document's file."""
+    p = Path(path)
+    return (not p.is_absolute() and ".." not in p.parts and p.stem == doc_id
+            and (suffix is None or p.suffix == suffix))
 
 
 def _on_hub(dataset: str | Path, manifest: str) -> None:

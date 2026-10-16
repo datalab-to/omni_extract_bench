@@ -164,7 +164,7 @@ p = benchmark.plan(
   sample=0,               # N documents spread over every suite
   only=None,              # these doc ids only (a frozenset); each must be in the dataset
   timeout=1800.0,
-  workers=None,           # documents in flight per vendor
+  workers=0,              # documents in flight per adapter: N, or {adapter: N}
   score_workers=0,        # processes used to score
   verdicts=True,          # write verdicts; False to skip them
   score_only=False,       # score the predictions; call no vendor
@@ -286,7 +286,8 @@ a parquet file with one row per document, with columns:
 - `gt_path`
 - `schema`
 
-`doc_path` and `gt_path` are relative to the dataset's folder, wherever the manifest is in it.
+`doc_path` and `gt_path` are relative to the dataset's folder, wherever the manifest is in it, and
+named for their document: `pdfs/<doc_id>.pdf` and `gold/<doc_id>.json`, say. A doc id appears once.
 It is the same shape as [ours](https://huggingface.co/datasets/datalab-to/omni_extract_bench).
 
 With no `--dataset`, a run uses ours, `hf://datasets/datalab-to/omni_extract_bench`, and with no

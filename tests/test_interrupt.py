@@ -90,7 +90,7 @@ DS.download_dataset = lambda *_: out
 DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs))
 D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o:
     time.sleep(0.4) or Extraction(result={{"a": "x"}}, cost=Cost(usd=0.5)))
-B.execute(B.plan(["datalab", "reducto"], out=out, score_workers=1, workers={{"*": 2}}))
+B.execute(B.plan(["datalab", "reducto"], out=out, score_workers=1, workers=2))
 ''')
 work = pathlib.Path(tempfile.mkdtemp())
 proc = subprocess.Popen([sys.executable, str(script), str(work)],
@@ -174,17 +174,19 @@ D.adapter = as_adapter(broke_adapter)
 DS.download_dataset = lambda *_: acct
 DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(pair))
 try:
-    B.execute(B.plan(["datalab", "reducto"], out=acct, score_workers=1, workers={"*": 1}))
-    report("an account failure stops the run rather than publishing", False,
-           "run() returned a summary")
+    B.execute(B.plan(["datalab", "reducto"], out=acct, score_workers=1, workers=1))
+    report("an account failure stops the run, and says so", False, "execute returned normally")
 except AccountFailure:
-    report("an account failure stops the run rather than publishing", True)
+    report("an account failure stops the run, and says so", True)
 finally:
     V.adapter, DS.download_dataset, DS.read_manifest = saved_adapter, saved_fetch, saved_manifest
 report("the healthy vendor still ran every document", calls["reducto"] == 6,
        f"{calls['reducto']} of 6 -- a shared flag stops it after one")
-report("...and no run published a summary from a half-run corpus",
-       not list(acct.glob("*/summary.json")))
+_sums = {s.parent.name: json.loads(s.read_text()) for s in acct.glob("*/summary.json")}
+report("...and what was predicted is graded: the healthy run whole",
+       _sums.get(out_name("reducto"), {}).get("documents") == 6, str(_sums.get(out_name("reducto"))))
+report("...and the broke run's documents pending, so its summary doesn't claim to be whole",
+       _sums.get(out_name("datalab"), {}).get("pending") == 6, str(_sums.get(out_name("datalab"))))
 report("...while its predictions are on disk for --score-only",
        len(list((acct / out_name("reducto") / "predictions").glob("*.json"))) == 6)
 
@@ -216,6 +218,7 @@ paid = collections.Counter()
 D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o: (
     paid.update([prov]), Extraction(result={"a": "x"}, cost=Cost(usd=0.1)))[1])
 real_write_json = B._write_json_atomic
+DS.read_manifest = lambda *a, **k: (disk, tuple(twenty))
 B._write_json_atomic = lambda path, obj, **kw: (
     real_write_json(path, obj, **kw) if path.name == "settings.json"
     else (_ for _ in ()).throw(OSError("No space left on device")))
@@ -229,7 +232,7 @@ except OSError:
     report("a failed write stops the vendor", True)
 finally:
     B._write_json_atomic = real_write_json
-    D.adapter = saved_adapter
+    D.adapter, DS.read_manifest = saved_adapter, saved_manifest
 report("...after a couple of documents, not all twenty", paid["datalab"] <= 8,
        f"{paid['datalab']} of 20 paid for with nothing stored")
 

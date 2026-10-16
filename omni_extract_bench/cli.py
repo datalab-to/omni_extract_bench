@@ -147,35 +147,29 @@ def read_options(value: str | None, *, per_provider: bool = True) -> dict:
     return parsed
 
 
-def read_workers(value: str | None) -> dict[str, int]:
-    """`--workers` as `{provider: count}`, `"*"` being a bare number meaning all.
+def read_workers(value: str | None) -> int | dict[str, int]:
+    """`--workers` as one number for every adapter, or a JSON object of a number per adapter.
 
-        --workers 25                     -> {"*": 25}
-        --workers reducto=25,datalab=40  -> {"reducto": 25, "datalab": 40}
+        --workers 25                              -> 25
+        --workers '{"reducto": 25, "datalab": 40}' -> {"reducto": 25, "datalab": 40}
 
-    Per provider rather than one global number, because the right value is a fact about the
-    vendor: these are documents in flight at it, and a run naming several vendors has no one
-    number that fits them all.
-    """
+    Per adapter rather than one global number, because the right value is a fact about the vendor
+    account: these are documents in flight at it, and a run naming several vendors has no one number
+    that fits them all."""
     if not value:
-        return {}
-    if value.strip().isdigit():
-        return {"*": _count(value, value)}
-    out = {}
-    for part in value.split(","):
-        name, sep, count = part.partition("=")
-        if not sep:
-            raise ValueError(f"--workers: {part.strip()!r} is neither a number nor "
-                             f"NAME=COUNT, e.g. '25' or 'reducto=25,datalab=40'")
-        out[name.strip()] = _count(count, part)
-    return out
-
-
-def _count(text: str, shown: str) -> int:
-    """One `--workers` count: a whole number of documents, so at least one."""
-    if not text.strip().isdigit() or int(text) < 1:
-        raise ValueError(f"--workers: {shown.strip()!r} needs a count of 1 or more")
-    return int(text)
+        return 0
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        out = json.loads(value)
+    except json.JSONDecodeError:
+        raise ValueError(f"--workers is a number, or a JSON object like '{{\"datalab\": 20}}', "
+                         f"not {value!r}") from None
+    if isinstance(out, dict):
+        return out
+    raise ValueError(f"--workers must be a number or a JSON object, not {value!r}")
 
 
 def cmd_predict(args) -> int:
@@ -301,11 +295,10 @@ def main(argv=None) -> int:
                    help="a file of doc ids, one per line: run only these documents")
     b.add_argument("--timeout", type=float, default=1800,
                    help="seconds one document may take, the same for every vendor")
-    b.add_argument("--workers", metavar="N|NAME=N,...",
-                   help="documents in flight at one vendor -- one number for every provider, "
-                        "or per provider: 'reducto=25,datalab=40'. Model ids share one "
-                        "budget, being one OpenRouter key. Default: the harness's per-vendor "
-                        "limit")
+    b.add_argument("--workers", metavar="N|JSON",
+                   help="documents in flight per adapter, shared by its runs: N for every adapter, or "
+                        'a number per adapter, e.g. \'{"datalab": 40, "llm_single_shot": 3}\' '
+                        "(llm_single_shot: every OpenRouter model id; default: a table per vendor)")
     b.add_argument("--score-workers", type=int, default=0, metavar="N",
                    help="processes used to grade. Scoring is the CPU-bound half and is "
                         "independent per document. Default: one per core, capped at 8; "

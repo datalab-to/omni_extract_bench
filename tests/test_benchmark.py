@@ -186,11 +186,12 @@ def byo(tmp, how):
     `how` says."""
     corpus = tmp / "corpus"
     (corpus / "pdfs").mkdir(parents=True)
+    (corpus / "gold").mkdir()
     rows = []
     for i in range(2):
         pdf = corpus / "pdfs" / f"d{i}.pdf"
         pdf.write_bytes(b"%PDF")
-        gt = corpus / f"d{i}.gt.json"
+        gt = corpus / "gold" / f"d{i}.json"
         gt.write_text(json.dumps({"a": "x"}))
         rows.append({"doc_id": f"d{i}", "suite": "mine", "doc_path": how(pdf, corpus),
                      "gt_path": how(gt, corpus), "schema": json.dumps(BYO_SCHEMA)})
@@ -214,9 +215,30 @@ with _mock.patch.dict(sys.modules, {"huggingface_hub": None}):
            docs[0].schema == BYO_SCHEMA and docs[0].suite == "mine")
 
     tmp = Path(tempfile.mkdtemp())
-    _, docs = DS.read_manifest(byo(tmp, _absolute))
-    report("an absolute path is used as it is, whatever the root",
-           all(d.doc_path.exists() for d in docs), str([str(d.doc_path) for d in docs]))
+    try:
+        DS.read_manifest(byo(tmp, _absolute))
+        report("an absolute path is refused: a dataset is one folder", False, "it was accepted")
+    except DS.ManifestError as exc:
+        report("an absolute path is refused: a dataset is one folder", "inside the dataset" in str(exc), str(exc))
+    tmp = Path(tempfile.mkdtemp())
+    _named = byo(tmp, _relative)
+    _rows = _pq.read_table(_named / "manifest.parquet").to_pylist()
+    _rows[1]["gt_path"] = _rows[0]["gt_path"]
+    _pq.write_table(_pa.Table.from_pylist(_rows), _named / "manifest.parquet")
+    try:
+        DS.read_manifest(_named)
+        report("a row pointing at another document's file is refused", False, "it was accepted")
+    except DS.ManifestError as exc:
+        report("a row pointing at another document's file is refused", "d1" in str(exc), str(exc))
+    tmp = Path(tempfile.mkdtemp())
+    _twice = byo(tmp, _relative)
+    _rows = _pq.read_table(_twice / "manifest.parquet").to_pylist()
+    _pq.write_table(_pa.Table.from_pylist(_rows + _rows[:1]), _twice / "manifest.parquet")
+    try:
+        DS.read_manifest(_twice)
+        report("a doc id the manifest names twice is refused", False, "it was accepted")
+    except DS.ManifestError as exc:
+        report("a doc id the manifest names twice is refused", "more than once" in str(exc), str(exc))
 
     tmp = Path(tempfile.mkdtemp())
     _two = byo(tmp, _relative)
@@ -228,7 +250,7 @@ with _mock.patch.dict(sys.modules, {"huggingface_hub": None}):
 
 _exact = Path(tempfile.mkdtemp()) / "m.parquet"
 # "{}" is a valid doc_id, path and JSON, so the row is built from COLUMNS itself.
-_pq.write_table(_pa.Table.from_pylist([{c: "{}" for c in DS.COLUMNS}]), _exact)
+_pq.write_table(_pa.Table.from_pylist([{c: "{}" for c in DS.COLUMNS} | {"gt_path": "{}.json"}]), _exact)
 try:
     _, _only = DS.read_manifest(_exact.parent, _exact.name)
     report("a manifest of exactly COLUMNS is enough to read",
@@ -238,7 +260,7 @@ except Exception as exc:                                                       #
            f"{type(exc).__name__}: {exc}")
 
 _extra = Path(tempfile.mkdtemp()) / "m.parquet"
-_pq.write_table(_pa.Table.from_pylist([{**{c: "{}" for c in DS.COLUMNS}, "language": "tha"}]), _extra)
+_pq.write_table(_pa.Table.from_pylist([{**{c: "{}" for c in DS.COLUMNS}, "gt_path": "{}.json", "language": "tha"}]), _extra)
 _, (_one,) = DS.read_manifest(_extra.parent, _extra.name)
 report("a column of the dataset's own is carried on the document, not refused",
        dict(_one.extra) == {"language": "tha"}, str(dict(_one.extra)))
@@ -290,7 +312,7 @@ try:
     report("the check asks for the manifest, and the download for the whole dataset, at the revision",
            _asked == [(("someone/corpus", "manifests/nope.parquet"),
                        {"repo_type": "dataset", "revision": "v2"}),
-                      (("someone/corpus",), {"repo_type": "dataset", "revision": "v2"})],
+                      (("someone/corpus",), {"repo_type": "dataset", "revision": "v2", "max_workers": 4})],
            str(_asked))
     _hf.file_exists = lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
     DS._on_hub(DEFAULT_DATASET, DS.MANIFEST)
@@ -419,7 +441,8 @@ _pdf = TMP / "doc.pdf"
 _pdf.write_bytes(b"%PDF-1.4\n")
 _out = TMP / "sdk-run"
 _docs = [Doc(f"d{i}", "s", _pdf, root / "perfect.json", SCH) for i in range(6)]
-_saved = _vendor.adapter
+_saved, _saved_manifest = _vendor.adapter, DS.read_manifest
+DS.read_manifest = lambda *a, **k: (TMP, tuple(_docs))
 _vendor.adapter = lambda provider: (_ for _ in ()).throw(
     MissingDependency("the datalab adapter could not import what it needs"))
 try:
@@ -431,7 +454,7 @@ try:
 except MissingDependency:
     report("a missing SDK stops the run", True)
 finally:
-    _vendor.adapter = _saved
+    _vendor.adapter, DS.read_manifest = _saved, _saved_manifest
 report("nothing is written for it",
        not list((_out / "predictions").glob("*.json"))
        and not list((_out / "records").glob("*.json")),

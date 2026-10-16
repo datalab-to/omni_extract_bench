@@ -73,7 +73,7 @@ out = run(root, """
     print("import", outcome(lambda: adapter("broken")))
     print("contract", outcome(lambda: adapter("bare")))
     print("keys", *(registry.resolve(p) for p in ("agent-a", "agent-b", "my-datalab", "datalab")))
-    print("workers", benchmark._workers_for("my-datalab", None))
+    print("workers", benchmark._workers_for(registry.resolve("my-datalab")))
     import fake_adapter as m
     add_adapter("code-agent", m)
     print("added", "code-agent" in PROVIDERS, PROVIDERS == sorted(PROVIDERS))
