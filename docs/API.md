@@ -369,7 +369,8 @@ benchmark.grade(run, list(every))
   never shrinks a run's scores), fresh, writes `scores.jsonl` and `summary.json` whole, and
   returns the summary (`read_scores(run)` gives the lines). A document never attempted is
   pending; a recorded failure, or a missing prediction in a folder that keeps no records, is
-  failed.
+  failed. `score_workers` is the number of scoring processes (0: one per core, capped at 8), the
+  same name `plan` uses; `verdicts=False` skips the per-address verdict files.
 
 The folder is then exactly one `oeb benchmark` writes, so either can resume or grade it.
 

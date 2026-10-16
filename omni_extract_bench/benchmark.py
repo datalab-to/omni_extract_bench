@@ -192,7 +192,7 @@ def owed(p: Plan, run: Run) -> tuple[int, int]:
     return len(coming), to_grade
 
 
-def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, workers: int = 0,
+def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, score_workers: int = 0,
           progress=NULL) -> dict:
     """Grade every document of `docs` (usually the whole manifest, as `grade_all` passes it), fresh, and
     write scores.jsonl (one line each, in their order) and summary.json whole once grading finishes:
@@ -214,9 +214,9 @@ def grade(run: Run, docs: list[data.Doc], verdicts: bool = True, workers: int = 
     graded: dict[str, dict] = {}
     remaining = list(attempted)
     try:
-        if remaining and (workers or SCORE_WORKERS) > 1:
+        if remaining and (score_workers or SCORE_WORKERS) > 1:
             try:
-                with cf.ProcessPoolExecutor(max_workers=workers or SCORE_WORKERS) as pool:
+                with cf.ProcessPoolExecutor(max_workers=score_workers or SCORE_WORKERS) as pool:
                     futures = {pool.submit(one, doc): doc.doc_id for doc in remaining}
                     try:
                         for future in cf.as_completed(futures):
@@ -520,7 +520,7 @@ def grade_all(p: Plan) -> dict[str, dict]:
     with Progress([r.out.name for r in p.runs]) as bars:
         for run in p.runs:
             summary[run.out.name] = s = grade(run, list(every), verdicts=p.verdicts,
-                                              workers=p.score_workers,
+                                              score_workers=p.score_workers,
                                               progress=bars.reporter(run.out.name))
             log.info("%s: accuracy %.4f over %d suites, coverage %d/%d", run.out.name,
                      s["accuracy"], len(s["per_suite"]), s["scored"], s["documents"])

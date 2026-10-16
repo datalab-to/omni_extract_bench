@@ -446,7 +446,7 @@ _run = _mix.runs[0]
 for d in _mix.docs:
     (_run.predictions / f"{d.doc_id}.json").write_text(json.dumps({"a": "x"}))
 _docs = list(_mix.docs)
-_rows = graded(_run, _docs, workers=1)
+_rows = graded(_run, _docs, score_workers=1)
 report("every line says which scorer graded it", all(r["scorer"] == _bench.SCORER for r in _rows), str(_rows))
 
 
@@ -456,7 +456,7 @@ def _regraded(**kw):
     real = _bench._score_one
     _bench._score_one = lambda doc, **k: seen.append(doc.doc_id) or real(doc, **k)
     try:
-        grade(_run, _docs, workers=1, **kw)
+        grade(_run, _docs, score_workers=1, **kw)
     finally:
         _bench._score_one = real
     return seen
@@ -466,7 +466,7 @@ report("every grading grades every document again, with no vendor call: grading 
        _regraded() == [d.doc_id for d in _docs] and _regraded() == [d.doc_id for d in _docs])
 _docs[0].gt_path.write_text(json.dumps({"a": "y"}))
 report("so a changed gold reaches the next grading",
-       graded(_run, _docs, workers=1)[0]["accuracy"] == 0.0)
+       graded(_run, _docs, score_workers=1)[0]["accuracy"] == 0.0)
 
 print("\nA FOLDER OF YOUR OWN, FROM THE COMMAND LINE")
 import contextlib as _contextlib                                                # noqa: E402

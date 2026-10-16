@@ -197,10 +197,10 @@ for i in range(5):
     (narrow / "predictions" / f"d{i}.json").write_text(json.dumps({"a": "x"}))
     five.append(DS.Doc(f"d{i}", "s", narrow / "x.pdf", g,
                       {"type": "object", "properties": {"a": {"type": "string"}}}))
-B.grade(B.Run("datalab", {}, narrow), five, workers=1)
+B.grade(B.Run("datalab", {}, narrow), five, score_workers=1)
 lines = lambda: len((narrow / "scores.jsonl").read_text().strip().splitlines())   # noqa: E731
 report("a full run writes every row", lines() == 5, str(lines()))
-back = B.grade(B.Run("datalab", {}, narrow), five[:2], workers=1)
+back = B.grade(B.Run("datalab", {}, narrow), five[:2], score_workers=1)
 report("a narrowed grading's files are that grading's: the two it graded", lines() == 2, str(lines()))
 report("...and so is its summary", back["documents"] == 2, str(back["documents"]))
 
@@ -253,7 +253,7 @@ def failing_write(self, *a, **k):
 
 pathlib.Path.write_text = failing_write
 try:
-    B.grade(B.Run("datalab", {}, vd), some, workers=1, verdicts=True)
+    B.grade(B.Run("datalab", {}, vd), some, score_workers=1, verdicts=True)
 finally:
     pathlib.Path.write_text = real_write
 got = B.read_scores(B.Run("datalab", {}, vd))
@@ -286,7 +286,7 @@ def main():
         (out / "predictions" / f"d{{i:02d}}.json").write_text(
             json.dumps({{"rows": list(reversed(gt["rows"]))}}))
         docs.append(DS.Doc(f"d{{i:02d}}", "s", out / "x.pdf", g, schema))
-    B.grade(B.Run("datalab", {{}}, out), docs, workers=4)
+    B.grade(B.Run("datalab", {{}}, out), docs, score_workers=4)
 
 if __name__ == "__main__":
     main()
@@ -327,10 +327,10 @@ graded = []
 real_score_one = B._score_one
 B._score_one = lambda doc, **k: graded.append(doc.doc_id) or real_score_one(doc, **k)
 try:
-    B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=False)
+    B.grade(B.Run("datalab", {}, fresh), small, score_workers=1, verdicts=False)
     report("a first pass grades everything", len(graded) == 6, str(len(graded)))
 
-    graded.clear(); summary = B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=True)
+    graded.clear(); summary = B.grade(B.Run("datalab", {}, fresh), small, score_workers=1, verdicts=True)
     report("a second pass grades everything again: grading is fresh", len(graded) == 6, str(len(graded)))
     report("...and counts every row", summary["documents"] == 6, str(summary["documents"]))
 
@@ -338,7 +338,7 @@ try:
     lines = sj.read_text().splitlines()
     lines[2] = "{ this is not json"
     sj.write_text("\n".join(lines) + "\n")
-    graded.clear(); B.grade(B.Run("datalab", {}, fresh), small, workers=1, verdicts=True)
+    graded.clear(); B.grade(B.Run("datalab", {}, fresh), small, score_workers=1, verdicts=True)
     report("an unreadable line is written over by the next grading",
            len(graded) == 6 and len(B.read_scores(B.Run("datalab", {}, fresh))) == 6, str(graded))
 finally:

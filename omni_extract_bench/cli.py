@@ -247,7 +247,7 @@ def cmd_grade(args) -> int:
     provider = (json.loads(said.read_text()).get("provider") if said.exists() else None) or out.name
     _, docs = data.read_manifest(args.dataset or data.DEFAULT_DATASET, args.manifest)
     summary = benchmark.grade(benchmark.Run(provider, {}, out), list(data.select(docs, args.suites)),
-                              verdicts=args.verdicts, workers=args.score_workers)
+                              verdicts=args.verdicts, score_workers=args.score_workers)
     json.dump(summary, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0
