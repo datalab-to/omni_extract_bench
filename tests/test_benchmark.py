@@ -227,9 +227,17 @@ with _mock.patch.dict(sys.modules, {"huggingface_hub": None}):
     _pq.write_table(_pa.Table.from_pylist(_rows), _named / "manifest.parquet")
     try:
         DS.read_manifest(_named)
-        report("a row pointing at another document's file is refused", False, "it was accepted")
+        report("a row pointing at another document's gold is refused", False, "it was accepted")
     except DS.ManifestError as exc:
-        report("a row pointing at another document's file is refused", "d1" in str(exc), str(exc))
+        report("a row pointing at another document's gold is refused", "d1" in str(exc), str(exc))
+    tmp = Path(tempfile.mkdtemp())
+    _shared = byo(tmp, _relative)
+    _rows = _pq.read_table(_shared / "manifest.parquet").to_pylist()
+    _pq.write_table(_pa.Table.from_pylist([r | {"doc_path": "pdfs/d0.pdf"} for r in _rows]),
+                    _shared / "manifest.parquet")
+    _, docs = DS.read_manifest(_shared)
+    report("documents may share one input file, as one PDF asked with several schemas",
+           len(docs) == 2 and docs[0].doc_path == docs[1].doc_path)
     tmp = Path(tempfile.mkdtemp())
     _twice = byo(tmp, _relative)
     _rows = _pq.read_table(_twice / "manifest.parquet").to_pylist()

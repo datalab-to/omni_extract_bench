@@ -95,9 +95,10 @@ unchanged unless a line below says otherwise.
   adapter, or a JSON object of a number per adapter, `'{"reducto": 25, "llm_single_shot": 3}'`
   (`llm_single_shot` is every OpenRouter model id). A key that isn't an adapter is refused, naming the
   adapter it uses. `'reducto=25,datalab=40'` and `"*"` are gone.
-- A manifest's `doc_path` and `gt_path` must be paths inside the dataset named for their document
-  (`<doc_id>.<ext>`, and `<doc_id>.json` for the gold), and a doc id may appear once. An absolute
-  path is refused: a dataset is one folder.
+- A manifest's `doc_path` and `gt_path` must be relative paths inside the dataset; an absolute path is
+  refused, since a dataset is one folder. A gold is named for its document, `<doc_id>.json`, in any
+  folder; an input may have any name, and documents may share one (one PDF asked with several
+  schemas). A doc id may appear once.
 - `read_manifest` keeps the manifest's order; it sorted by suite and doc id. So `--limit N` takes the
   manifest's first N.
 - `download_dataset` retries a failed download (5 attempts), and refuses a folder that doesn't exist.

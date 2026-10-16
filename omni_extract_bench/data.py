@@ -170,10 +170,13 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
             raise ManifestError(f"{path}: row {n} has doc_id {doc_id!r}, which is not a filename. "
                              f"It names this document's prediction, its record and its row in "
                              f"scores.jsonl, so it has to be one path component.")
-        if not _inside(row["doc_path"], doc_id) or not _inside(row["gt_path"], doc_id, ".json"):
-            raise ManifestError(f"{path}: row {n} ({doc_id}) has doc_path {row['doc_path']!r} and gt_path "
-                                f"{row['gt_path']!r}; each must be a path inside the dataset named for its "
-                                f"document, e.g. pdfs/{doc_id}.pdf and gold/{doc_id}.json")
+        if not _inside(row["doc_path"]):
+            raise ManifestError(f"{path}: row {n} ({doc_id}) has doc_path {row['doc_path']!r}; it must be a "
+                                f"relative path inside the dataset, e.g. pdfs/{doc_id}.pdf")
+        if not _inside(row["gt_path"], doc_id):
+            raise ManifestError(f"{path}: row {n} ({doc_id}) has gt_path {row['gt_path']!r}; it must be a "
+                                f"relative path inside the dataset named for its document, "
+                                f"e.g. gold/{doc_id}.json")
         try:
             schema = json.loads(row["schema"])
         except (TypeError, json.JSONDecodeError) as exc:
@@ -215,15 +218,16 @@ def select(docs: Sequence[Doc], suites: Sequence[str] | None = None, limit: int 
     return rows[:limit] if limit else rows
 
 
-def _inside(path: str, doc_id: str, suffix: str | None = None) -> bool:
-    """Whether `path` is relative, stays inside the dataset, and is named for the document:
-    `<doc_id>.<anything>`, or `<doc_id><suffix>`.
+def _inside(path: str, doc_id: str | None = None) -> bool:
+    """Whether `path` is relative and stays inside the dataset, and, given `doc_id`, is a gold named
+    for it: `<doc_id>.json`.
 
-    Note: the folder is free, so one dataset's documents can carry golds of several kinds, one
-    manifest each; the name is not, so a document can't point at another document's file."""
+    Note: a gold is named for its document, in any folder, so one dataset's documents can carry golds
+    of several kinds, one manifest each, and no two documents share one. An input is not: several
+    documents may read one file, as when one PDF is asked with several schemas."""
     p = Path(path)
-    return (not p.is_absolute() and ".." not in p.parts and p.stem == doc_id
-            and (suffix is None or p.suffix == suffix))
+    return (not p.is_absolute() and ".." not in p.parts
+            and (doc_id is None or (p.stem == doc_id and p.suffix == ".json")))
 
 
 def _on_hub(dataset: str | Path, manifest: str) -> None:

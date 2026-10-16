@@ -287,7 +287,8 @@ a parquet file with one row per document, with columns:
 - `schema`
 
 `doc_path` and `gt_path` are relative to the dataset's folder, wherever the manifest is in it, and
-named for their document: `pdfs/<doc_id>.pdf` and `gold/<doc_id>.json`, say. A doc id appears once.
+a gold is named for its document, `<doc_id>.json`, in any folder. An input may have any name, and
+documents may share one, such as one PDF asked with several schemas. A doc id appears once.
 It is the same shape as [ours](https://huggingface.co/datasets/datalab-to/omni_extract_bench).
 
 With no `--dataset`, a run uses ours, `hf://datasets/datalab-to/omni_extract_bench`, and with no
