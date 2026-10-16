@@ -45,44 +45,14 @@ from .harness.errors import TRANSIENT_STATUSES
 from .progress import NULL, Progress
 from .scorers import field_matching as scorer
 
+# Note: documents in flight at one vendor, shared by every run of its adapter. A vendor's rate limit is
+# per account, so two datalab modes or ten OpenRouter models must not each get a full pool. What each
+# vendor tolerated in practice, not a published limit.
+WORKERS = {"datalab": 10, "reducto": 3, "llamaextract": 3, "azure_cu": 3, "llm_single_shot": 5, "mistral": 5,
+           "extend": 5}
+DEFAULT_WORKERS = 5
+SCORE_WORKERS = min(8, os.cpu_count() or 1)
 log = logging.getLogger(__name__)
-
-# The code a verdict depends on: a change to any of it is a new scorer.
-SCORING = ("scorers/field_matching/__init__.py", "scorers/field_matching/matching.py",
-           "scorers/field_matching/values.py", "scorers/field_matching/recognise.py")
-
-
-def scorer_version() -> str:
-    """The package's version and a digest of its scoring code, stamped on each score line: which scorer
-    graded it.
-
-    Note: the version alone is the same across every commit between releases, so it can't say the
-    scoring changed; the digest of the files that decide a verdict can. The version is kept for the
-    reader: which release graded a row.
-    """
-    try:
-        version = importlib.metadata.version("omni-extract-bench")
-    except importlib.metadata.PackageNotFoundError:
-        version = "unknown"
-    h = hashlib.sha256()
-    for name in SCORING:
-        h.update((Path(__file__).parent / name).read_bytes())
-    return f"{version}+{h.hexdigest()[:12]}"
-
-
-SCORER = scorer_version()
-
-
-def write_json(path: Path, obj: Any) -> None:
-    """Written whole, then moved into place, so a crash never leaves half a file."""
-    _write_text(path, json.dumps(obj, default=str, ensure_ascii=False, indent=2) + "\n")
-
-
-def _write_text(path: Path, text: str) -> None:
-    """`write_json` for any text."""
-    tmp = path.with_name(f".{path.name}.partial")
-    tmp.write_text(text)
-    os.replace(tmp, path)
 
 
 class Run(NamedTuple):
@@ -181,6 +151,16 @@ def recorded(run: Run, doc_id: str) -> dict | None:
     return got
 
 
+def predicted(run: Run, doc_id: str) -> dict | None:
+    """The document's prediction (`predictions/`), the extracted JSON object; None when it has none,
+    or none readable as an object. Quiet: `grade` says once how many it couldn't read."""
+    try:
+        got = json.loads((run.predictions / f"{doc_id}.json").read_text())
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return got if isinstance(got, dict) else None
+
+
 def needs(run: Run, doc: data.Doc, retry_failed: bool = False) -> bool:
     """True when the run has no readable record of the document (it was never attempted), or, with
     `retry_failed`, when its record is a failure that may not recur (`_retryable`: a timeout, an
@@ -229,259 +209,20 @@ def _tried(run: Run, doc_id: str, listed: frozenset[str]) -> bool:
     return f"{doc_id}.json" in listed or recorded(run, doc_id) is not None
 
 
-def owed(p: Plan, run: Run) -> tuple[int, int]:
-    """How many documents the run would predict, and then grade, by the rules `predict_all` and
-    `grade_all` follow: it predicts the plan's documents it has no record of, and grades every document of
-    the manifest it will have attempted (`_tried`; the rest are pending), or every document in a folder
-    without records/."""
-    coming = set() if p.score_only else {d.doc_id for d in p.docs if needs(run, d, p.retry_failed)}
-    _, every = data.read_manifest(p.dataset, p.manifest)
-    if p.score_only and not run.records.is_dir(): return 0, len(every)
-    listed = _listed(run)
-    return len(coming), sum(d.doc_id in coming or _tried(run, d.doc_id, listed) for d in every)
+class Plan(NamedTuple):
+    """One invocation: every run, the documents they cover, and how. `plan(...)` builds it, and
+    `describe(p)` says what `execute(p)` would do, with no vendor call."""
 
-
-def gradable(out: Path) -> None:
-    """Refuses a folder grading can't read: one that doesn't exist, or that holds no predictions/."""
-    if not out.is_dir():
-        raise UsageError(f"no folder at {out}; pass the folder holding predictions/<doc_id>.json")
-    if not (out / "predictions").is_dir():
-        hint = (f"; {out} looks like the predictions/ folder itself: pass its parent, {out.parent}"
-                if out.name == "predictions" else "")
-        raise UsageError(f"{out} has no predictions/ folder, so nothing was predicted there; a folder to "
-                         f"grade holds predictions/<doc_id>.json{hint}")
-
-
-def scorer_errors(summary: dict) -> int:
-    """Documents whose grading raised in our code (status `error`): a scorer bug, left out of the scores;
-    `oeb benchmark` and `oeb grade` exit 2 when there are any."""
-    return summary.get("errors", 0)
-
-
-def _closing(s: dict) -> str:
-    """A grading's one line: the headline, or why there is none, and how many documents were graded and
-    failed."""
-    why = (f" ({s['pending']} pending: a headline needs every document)" if s["pending"]
-           else " (no documents)")
-    head = f"headline {s['headline']:.3f}" if s["headline"] is not None else "headline —" + why
-    return (f"{s['run']}: {head}; {s['documents']} of {s['documents'] + s['pending']} documents graded, "
-            f"{s['failed']} failed"
-            + (f"; {e} errored in our code" if (e := scorer_errors(s)) else ""))
-
-
-def grade(run: Run, docs: Sequence[data.Doc], say: Callable[[str], None] = print, *,
-          settings: Mapping[str, Any] | None = None, verdicts: bool = True, score_workers: int = 0,
-          progress=NULL) -> dict:
-    """Grade the run's folder against `docs`, the manifest's (`grade_all` passes them), write its
-    verdicts/ (with `verdicts`), scores.jsonl and summary.json, and return the summary. `settings` is the
-    folder's settings.json as `oeb grade` will write it once grading succeeds; otherwise it is read from the
-    folder.
-
-    A document's prediction is `predictions/<doc_id>.json`, named exactly. A document never attempted
-    (`_tried`) in a folder that keeps records is pending; otherwise one with no usable prediction fails.
-    docs/API.md has the summary's fields."""
-    gradable(run.out)
-    said = _said(run.out) if settings is None else settings
-    partial = run.out / ".verdicts.partial"
-    lines, pending = _graded(run, docs, partial if verdicts else None, score_workers, progress)
-    summary = _summary(run, said, lines, pending)
-    shutil.rmtree(run.out / "verdicts", ignore_errors=True)
-    if partial.is_dir(): partial.rename(run.out / "verdicts")
-    _write_text(run.out / "scores.jsonl", "".join(json.dumps(x, default=str) + "\n" for x in lines))
-    # Note: last, so summary.json always stands beside the scores it summarizes.
-    write_json(run.out / "summary.json", summary)
-    _warn_unusable(run, docs, lines)
-    say(_closing(summary))
-    return summary
-
-
-def _graded(run: Run, docs: Sequence[data.Doc], verdicts: Path | None, score_workers: int,
-            progress) -> tuple[list[dict], list[data.Doc]]:
-    """The score lines of the documents the folder attempted (`_tried`), in their order, each verdict file
-    written into `verdicts` when given; and the documents pending."""
-    if verdicts is not None: shutil.rmtree(verdicts, ignore_errors=True)   # Note: an interrupted grading's.
-    keeps, listed = run.records.is_dir(), _listed(run)
-    attempted = [d for d in docs if not keeps or _tried(run, d.doc_id, listed)]
-    progress.start(len(attempted))
-    one = functools.partial(_score_one, run=run, verdicts=verdicts, listed=listed)
-    graded: dict[str, dict] = {}
-    remaining = list(attempted)
-    try:
-        if remaining and (score_workers or SCORE_WORKERS) > 1:
-            try:
-                with cf.ProcessPoolExecutor(max_workers=score_workers or SCORE_WORKERS) as pool:
-                    futures = {pool.submit(one, doc): doc.doc_id for doc in remaining}
-                    try:
-                        for future in cf.as_completed(futures):
-                            graded[futures[future]] = row = future.result()
-                            progress.record(error=row["status"] != "scored")
-                    except BaseException:
-                        pool.shutdown(wait=True, cancel_futures=True)
-                        raise
-                remaining = []
-            except BrokenProcessPool:
-                if graded:
-                    raise
-                log.warning("scoring pool stopped before any document was graded, so "
-                            "grading continues in this process. If that was a Ctrl-C, "
-                            "press it again; if it was not, put the call under "
-                            "`if __name__ == \"__main__\":` or pass score_workers=1.")
-        for doc in remaining:
-            graded[doc.doc_id] = row = one(doc)
-            progress.record(error=row["status"] != "scored")
-    finally:
-        progress.finish()
-    return [graded[d.doc_id] for d in attempted], [d for d in docs if d.doc_id not in graded]
-
-
-def _summary(run: Run, said: Mapping[str, Any], lines: list[dict], pending: list[data.Doc]) -> dict:
-    """`scorer.summarize` of the lines, beside what graded them, the pending count, and the cost; the
-    headline, overall and per suite, is None while any document there is pending: a run has one only once
-    it is finished."""
-    s = scorer.summarize(lines)
-    by = collections.Counter(d.suite for d in pending)
-    none = {k: v for k, v in scorer.summarize([]).items() if k != "per_suite"}   # a suite all pending
-    per = {k: s["per_suite"].get(k, none) | {"pending": by.get(k, 0)} for k in sorted({*s["per_suite"], *by})}
-    for k in by: per[k]["headline"] = None
-    costs = [c for x in lines if (c := (recorded(run, x["doc_id"]) or {}).get("cost"))]
-    credits = [c["credits"] for c in costs if c.get("credits") is not None]
-    return {"run": run.out.name, "provider": run.provider, "settings": said.get("settings", {}),
-            "scorer": SCORER, **s, "headline": None if pending else s["headline"], "per_suite": per,
-            "pending": len(pending), "usd": round(sum(c.get("usd") or 0 for c in costs), 4),
-            "credits": round(sum(credits), 4) if credits else None}
-
-
-#: The error of a line whose prediction is on disk but isn't a JSON object.
-UNREADABLE = "the prediction isn't readable as a JSON object"
-
-
-def _warn_unusable(run: Run, docs: Sequence[data.Doc], lines: list[dict]) -> None:
-    """Logs the predictions grading couldn't use: files named for no document of the manifest `docs` (left
-    out), and those that couldn't be read as a JSON object (graded as failed). A naming slip
-    (`<doc_id>.pdf.json`, another case) otherwise shows only as a lower coverage."""
-    names = {f"{d.doc_id}.json" for d in docs}
-    stray = sorted(n + ("/" if (run.predictions / n).is_dir() else "") for n in _listed(run) - names)
-    if stray:
-        log.warning("%s: %d files in predictions/ are named for no document of the manifest, so they were "
-                    "left out, e.g. %s; a prediction is predictions/<doc_id>.json, named exactly (case too)",
-                    run.out, len(stray), stray[:3])
-    if unread := [x["doc_id"] for x in lines if x.get("error") == UNREADABLE]:
-        log.warning("%s: %d predictions couldn't be read as a JSON object, so their documents were graded "
-                    "as failed, e.g. %s", run.out, len(unread), unread[:3])
-
-
-SCORE_WORKERS = min(8, os.cpu_count() or 1)
-
-
-def _score_one(doc: data.Doc, *, run: Run, verdicts: Path | None, listed: frozenset[str]) -> dict:
-    """Grade one prediction on disk and return its line. Module-level and picklable for the process pool;
-    one bad prediction is one line. Its verdicts are written into the folder `verdicts`,
-    when given; `listed`, predictions/'s file names, says by exact name whether it has a prediction.
-
-    A document fails (status `failed`) when its record says the call failed, or when it has no usable
-    prediction: a folder of predictions you bring is your submission, so a missing file counts against
-    coverage rather than being left out of it. A gold that can't be read (`scorer.GoldError`) is the
-    dataset's, so it is raised and stops the grading; any other grading that raises is ours (status
-    `error`), left out of the scores."""
-    row = {"run": run.out.name, "doc_id": doc.doc_id, "suite": doc.suite, "provider": run.provider,
-           "scorer": SCORER}
-    if failed := (recorded(run, doc.doc_id) or {}).get("error"):
-        return {**row, "status": "failed", "error": f"{failed['type']}: {failed['message']}"}
-    if f"{doc.doc_id}.json" not in listed:
-        return {**row, "status": "failed", "error": f"no prediction: predictions/{doc.doc_id}.json"}
-    if (pred := predicted(run, doc.doc_id)) is None:
-        return {**row, "status": "failed", "error": UNREADABLE}
-    if not pred:
-        return {**row, "status": "failed", "error": "empty prediction"}
-    gold = scorer.gold(doc)
-    try:
-        result = scorer.score(pred, gold, doc.schema, verdicts=verdicts is not None)
-        if verdicts is not None:
-            verdicts.mkdir(parents=True, exist_ok=True)
-            (verdicts / f"{doc.doc_id}.jsonl").write_text(
-                "\n".join(json.dumps(v._asdict(), default=str) for v in result.pop("verdicts")))
-    except Exception as exc:                            # noqa: BLE001 -- the message is the line
-        return {**row, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
-    return {**row, "status": "scored", **result}
-
-
-def predicted(run: Run, doc_id: str) -> dict | None:
-    """The document's prediction (`predictions/`), the extracted JSON object; None when it has none,
-    or none readable as an object. Quiet: `grade` says once how many it couldn't read."""
-    try:
-        got = json.loads((run.predictions / f"{doc_id}.json").read_text())
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    return got if isinstance(got, dict) else None
-
-
-def read_scores(run: Run) -> list[dict]:
-    """The run's score lines (scores.jsonl), in file order: one per graded document; [] for a run never
-    graded. A line that doesn't parse is left out, and logged. A folder that doesn't exist is refused: a
-    mistyped path isn't a run with no scores."""
-    if not run.out.is_dir():
-        raise UsageError(f"no folder at {run.out}; pass a run's folder, which holds scores.jsonl")
-    path = run.out / "scores.jsonl"
-    if not path.exists(): return []
-    out = []
-    for n, line in enumerate(path.read_text().splitlines()):
-        if not line.strip(): continue
-        try:
-            out.append(json.loads(line))
-        except json.JSONDecodeError:
-            log.warning("%s: line %d isn't readable JSON; left out", path, n + 1)
-    return out
-
-
-#: Documents in flight per adapter, keyed by adapter module so every OpenRouter model shares
-#: one budget. What each vendor tolerated in practice, not a published limit.
-WORKERS = {
-    "datalab": 10,
-    "reducto": 3,
-    "llamaextract": 3,
-    "azure_cu": 3,
-    "llm_single_shot": 5,
-    "mistral": 5,
-    "extend": 5,
-}
-
-DEFAULT_WORKERS = 5
-
-
-def _workers_for(adapter: str, requested: int | Mapping[str, int] = 0) -> int:
-    """Documents in flight at once for every run of this adapter (`registry.resolve`) together: what
-    was requested (one number for every adapter, or a number per adapter), else `WORKERS`."""
-    if isinstance(requested, Mapping): requested = requested.get(adapter, 0)
-    return requested or WORKERS.get(adapter, DEFAULT_WORKERS)
-
-
-def _per_adapter(workers: Mapping[str, int]) -> dict[str, int]:
-    """`--workers` as a number per adapter, checked. The limit is a vendor account's, shared by every
-    run of its adapter (every OpenRouter model id shares llm_single_shot's), so it is set per adapter,
-    never per provider or model."""
-    from .harness import registry
-
-    # Note: the adapters filed so far, which include every plugin a provider of this plan loaded;
-    # resolving every provider would load every plugin, and a broken one would stop any run.
-    adapters = registry.adapter_names()
-    for key, n in workers.items():
-        if key not in adapters:
-            try:
-                a = registry.resolve(key)
-                hint = f"{key} uses the {a} adapter, whose pool all its runs share; write {{\"{a}\": {n}}}"
-            except UsageError:
-                hint = f"the adapters are {sorted(adapters)}"
-            raise UsageError(f"--workers is per adapter, and {key!r} isn't one: {hint}")
-        if isinstance(n, bool) or not isinstance(n, int) or n < 1:
-            raise UsageError(f"--workers gives {key!r} {n!r}; documents at once is a whole number, 1 or more")
-    return dict(workers)
-
-
-def pools(p: Plan) -> dict[str, int]:
-    """Each adapter of the plan's runs (`registry.resolve`) and its documents in flight, shared by its runs."""
-    from .harness.registry import resolve
-
-    return {a: _workers_for(a, p.workers) for a in sorted({resolve(r.provider) for r in p.runs})}
+    runs: tuple[Run, ...]
+    docs: tuple[data.Doc, ...]
+    dataset: str
+    manifest: str
+    timeout: float
+    workers: int | dict[str, int]          # documents in flight per adapter, `_workers_for`
+    score_workers: int
+    verdicts: bool
+    score_only: bool
+    retry_failed: bool = False             # predict again documents whose recorded failure was transient
 
 
 def configurations(providers: list[str], options: dict | None = None) -> list[tuple[str, dict]]:
@@ -500,22 +241,6 @@ def configurations(providers: list[str], options: dict | None = None) -> list[tu
                              f"run at all. Give it options, or leave it out.")
         out += [(provider, one or {}) for one in (asked if isinstance(asked, list) else [asked])]
     return out
-
-
-class Plan(NamedTuple):
-    """One invocation: every run, the documents they cover, and how. `plan(...)` builds it, and
-    `describe(p)` says what `execute(p)` would do, with no vendor call."""
-
-    runs: tuple[Run, ...]
-    docs: tuple[data.Doc, ...]
-    dataset: str
-    manifest: str
-    timeout: float
-    workers: int | dict[str, int]          # documents in flight per adapter, `_workers_for`
-    score_workers: int
-    verdicts: bool
-    score_only: bool
-    retry_failed: bool = False             # predict again documents whose recorded failure was transient
 
 
 def plan(providers: Sequence[str], *, out: str | Path = Path("runs"), dataset: str | Path = data.DEFAULT_DATASET,
@@ -582,6 +307,61 @@ def _another_commit(r: Run, was: str | None, now: str | None) -> str | None:
     return (f"{r.out} was predicted at commit {was} of its dataset, and this is commit {now}: its "
             "predictions will be graded against this commit's gold. If the documents changed, pass another "
             "--out to predict them again")
+
+
+def pools(p: Plan) -> dict[str, int]:
+    """Each adapter of the plan's runs (`registry.resolve`) and its documents in flight, shared by its runs."""
+    from .harness.registry import resolve
+
+    return {a: _workers_for(a, p.workers) for a in sorted({resolve(r.provider) for r in p.runs})}
+
+
+def _workers_for(adapter: str, requested: int | Mapping[str, int] = 0) -> int:
+    """Documents in flight at once for every run of this adapter (`registry.resolve`) together: what
+    was requested (one number for every adapter, or a number per adapter), else `WORKERS`."""
+    if isinstance(requested, Mapping): requested = requested.get(adapter, 0)
+    return requested or WORKERS.get(adapter, DEFAULT_WORKERS)
+
+
+def _per_adapter(workers: Mapping[str, int]) -> dict[str, int]:
+    """`--workers` as a number per adapter, checked. The limit is a vendor account's, shared by every
+    run of its adapter (every OpenRouter model id shares llm_single_shot's), so it is set per adapter,
+    never per provider or model."""
+    from .harness import registry
+
+    # Note: the adapters filed so far, which include every plugin a provider of this plan loaded;
+    # resolving every provider would load every plugin, and a broken one would stop any run.
+    adapters = registry.adapter_names()
+    for key, n in workers.items():
+        if key not in adapters:
+            try:
+                a = registry.resolve(key)
+                hint = f"{key} uses the {a} adapter, whose pool all its runs share; write {{\"{a}\": {n}}}"
+            except UsageError:
+                hint = f"the adapters are {sorted(adapters)}"
+            raise UsageError(f"--workers is per adapter, and {key!r} isn't one: {hint}")
+        if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+            raise UsageError(f"--workers gives {key!r} {n!r}; documents at once is a whole number, 1 or more")
+    return dict(workers)
+
+
+def owed(p: Plan, run: Run) -> tuple[int, int]:
+    """How many documents the run would predict, and then grade, by the rules `predict_all` and
+    `grade_all` follow: it predicts the plan's documents it has no record of, and grades every document of
+    the manifest it will have attempted (`_tried`; the rest are pending), or every document in a folder
+    without records/."""
+    coming = set() if p.score_only else {d.doc_id for d in p.docs if needs(run, d, p.retry_failed)}
+    _, every = data.read_manifest(p.dataset, p.manifest)
+    if p.score_only and not run.records.is_dir(): return 0, len(every)
+    listed = _listed(run)
+    return len(coming), sum(d.doc_id in coming or _tried(run, d.doc_id, listed) for d in every)
+
+
+def describe(p: Plan) -> str:
+    """What `execute(p)` would do, as plain text (`progress.describe`), with no vendor call."""
+    from . import progress
+
+    return progress.describe(p)
 
 
 def predict_all(p: Plan) -> None:
@@ -684,6 +464,185 @@ def predict_all(p: Plan) -> None:
         raise failures[0]
 
 
+def gradable(out: Path) -> None:
+    """Refuses a folder grading can't read: one that doesn't exist, or that holds no predictions/."""
+    if not out.is_dir():
+        raise UsageError(f"no folder at {out}; pass the folder holding predictions/<doc_id>.json")
+    if not (out / "predictions").is_dir():
+        hint = (f"; {out} looks like the predictions/ folder itself: pass its parent, {out.parent}"
+                if out.name == "predictions" else "")
+        raise UsageError(f"{out} has no predictions/ folder, so nothing was predicted there; a folder to "
+                         f"grade holds predictions/<doc_id>.json{hint}")
+
+
+def grade(run: Run, docs: Sequence[data.Doc], say: Callable[[str], None] = print, *,
+          settings: Mapping[str, Any] | None = None, verdicts: bool = True, score_workers: int = 0,
+          progress=NULL) -> dict:
+    """Grade the run's folder against `docs`, the manifest's (`grade_all` passes them), write its
+    verdicts/ (with `verdicts`), scores.jsonl and summary.json, and return the summary. `settings` is the
+    folder's settings.json as `oeb grade` will write it once grading succeeds; otherwise it is read from the
+    folder.
+
+    A document's prediction is `predictions/<doc_id>.json`, named exactly. A document never attempted
+    (`_tried`) in a folder that keeps records is pending; otherwise one with no usable prediction fails.
+    docs/API.md has the summary's fields."""
+    gradable(run.out)
+    said = _said(run.out) if settings is None else settings
+    partial = run.out / ".verdicts.partial"
+    lines, pending = _graded(run, docs, partial if verdicts else None, score_workers, progress)
+    summary = _summary(run, said, lines, pending)
+    shutil.rmtree(run.out / "verdicts", ignore_errors=True)
+    if partial.is_dir(): partial.rename(run.out / "verdicts")
+    _write_text(run.out / "scores.jsonl", "".join(json.dumps(x, default=str) + "\n" for x in lines))
+    # Note: last, so summary.json always stands beside the scores it summarizes.
+    write_json(run.out / "summary.json", summary)
+    _warn_unusable(run, docs, lines)
+    say(_closing(summary))
+    return summary
+
+
+def _graded(run: Run, docs: Sequence[data.Doc], verdicts: Path | None, score_workers: int,
+            progress) -> tuple[list[dict], list[data.Doc]]:
+    """The score lines of the documents the folder attempted (`_tried`), in their order, each verdict file
+    written into `verdicts` when given; and the documents pending."""
+    if verdicts is not None: shutil.rmtree(verdicts, ignore_errors=True)   # Note: an interrupted grading's.
+    keeps, listed = run.records.is_dir(), _listed(run)
+    attempted = [d for d in docs if not keeps or _tried(run, d.doc_id, listed)]
+    progress.start(len(attempted))
+    one = functools.partial(_score_one, run=run, verdicts=verdicts, listed=listed)
+    graded: dict[str, dict] = {}
+    remaining = list(attempted)
+    try:
+        if remaining and (score_workers or SCORE_WORKERS) > 1:
+            try:
+                with cf.ProcessPoolExecutor(max_workers=score_workers or SCORE_WORKERS) as pool:
+                    futures = {pool.submit(one, doc): doc.doc_id for doc in remaining}
+                    try:
+                        for future in cf.as_completed(futures):
+                            graded[futures[future]] = row = future.result()
+                            progress.record(error=row["status"] != "scored")
+                    except BaseException:
+                        pool.shutdown(wait=True, cancel_futures=True)
+                        raise
+                remaining = []
+            except BrokenProcessPool:
+                if graded:
+                    raise
+                log.warning("scoring pool stopped before any document was graded, so "
+                            "grading continues in this process. If that was a Ctrl-C, "
+                            "press it again; if it was not, put the call under "
+                            "`if __name__ == \"__main__\":` or pass score_workers=1.")
+        for doc in remaining:
+            graded[doc.doc_id] = row = one(doc)
+            progress.record(error=row["status"] != "scored")
+    finally:
+        progress.finish()
+    return [graded[d.doc_id] for d in attempted], [d for d in docs if d.doc_id not in graded]
+
+
+def _score_one(doc: data.Doc, *, run: Run, verdicts: Path | None, listed: frozenset[str]) -> dict:
+    """Grade one prediction on disk and return its line. Module-level and picklable for the process pool;
+    one bad prediction is one line. Its verdicts are written into the folder `verdicts`,
+    when given; `listed`, predictions/'s file names, says by exact name whether it has a prediction.
+
+    A document fails (status `failed`) when its record says the call failed, or when it has no usable
+    prediction: a folder of predictions you bring is your submission, so a missing file counts against
+    coverage rather than being left out of it. A gold that can't be read (`scorer.GoldError`) is the
+    dataset's, so it is raised and stops the grading; any other grading that raises is ours (status
+    `error`), left out of the scores."""
+    row = {"run": run.out.name, "doc_id": doc.doc_id, "suite": doc.suite, "provider": run.provider,
+           "scorer": SCORER}
+    if failed := (recorded(run, doc.doc_id) or {}).get("error"):
+        return {**row, "status": "failed", "error": f"{failed['type']}: {failed['message']}"}
+    if f"{doc.doc_id}.json" not in listed:
+        return {**row, "status": "failed", "error": f"no prediction: predictions/{doc.doc_id}.json"}
+    if (pred := predicted(run, doc.doc_id)) is None:
+        return {**row, "status": "failed", "error": UNREADABLE}
+    if not pred:
+        return {**row, "status": "failed", "error": "empty prediction"}
+    gold = scorer.gold(doc)
+    try:
+        result = scorer.score(pred, gold, doc.schema, verdicts=verdicts is not None)
+        if verdicts is not None:
+            verdicts.mkdir(parents=True, exist_ok=True)
+            (verdicts / f"{doc.doc_id}.jsonl").write_text(
+                "\n".join(json.dumps(v._asdict(), default=str) for v in result.pop("verdicts")))
+    except Exception as exc:                            # noqa: BLE001 -- the message is the line
+        return {**row, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
+    return {**row, "status": "scored", **result}
+
+
+def _summary(run: Run, said: Mapping[str, Any], lines: list[dict], pending: list[data.Doc]) -> dict:
+    """`scorer.summarize` of the lines, beside what graded them, the pending count, and the cost; the
+    headline, overall and per suite, is None while any document there is pending: a run has one only once
+    it is finished."""
+    s = scorer.summarize(lines)
+    by = collections.Counter(d.suite for d in pending)
+    none = {k: v for k, v in scorer.summarize([]).items() if k != "per_suite"}   # a suite all pending
+    per = {k: s["per_suite"].get(k, none) | {"pending": by.get(k, 0)} for k in sorted({*s["per_suite"], *by})}
+    for k in by: per[k]["headline"] = None
+    costs = [c for x in lines if (c := (recorded(run, x["doc_id"]) or {}).get("cost"))]
+    credits = [c["credits"] for c in costs if c.get("credits") is not None]
+    return {"run": run.out.name, "provider": run.provider, "settings": said.get("settings", {}),
+            "scorer": SCORER, **s, "headline": None if pending else s["headline"], "per_suite": per,
+            "pending": len(pending), "usd": round(sum(c.get("usd") or 0 for c in costs), 4),
+            "credits": round(sum(credits), 4) if credits else None}
+
+
+def _closing(s: dict) -> str:
+    """A grading's one line: the headline, or why there is none, and how many documents were graded and
+    failed."""
+    why = (f" ({s['pending']} pending: a headline needs every document)" if s["pending"]
+           else " (no documents)")
+    head = f"headline {s['headline']:.3f}" if s["headline"] is not None else "headline —" + why
+    return (f"{s['run']}: {head}; {s['documents']} of {s['documents'] + s['pending']} documents graded, "
+            f"{s['failed']} failed"
+            + (f"; {e} errored in our code" if (e := scorer_errors(s)) else ""))
+
+
+#: The error of a line whose prediction is on disk but isn't a JSON object.
+UNREADABLE = "the prediction isn't readable as a JSON object"
+
+
+def _warn_unusable(run: Run, docs: Sequence[data.Doc], lines: list[dict]) -> None:
+    """Logs the predictions grading couldn't use: files named for no document of the manifest `docs` (left
+    out), and those that couldn't be read as a JSON object (graded as failed). A naming slip
+    (`<doc_id>.pdf.json`, another case) otherwise shows only as a lower coverage."""
+    names = {f"{d.doc_id}.json" for d in docs}
+    stray = sorted(n + ("/" if (run.predictions / n).is_dir() else "") for n in _listed(run) - names)
+    if stray:
+        log.warning("%s: %d files in predictions/ are named for no document of the manifest, so they were "
+                    "left out, e.g. %s; a prediction is predictions/<doc_id>.json, named exactly (case too)",
+                    run.out, len(stray), stray[:3])
+    if unread := [x["doc_id"] for x in lines if x.get("error") == UNREADABLE]:
+        log.warning("%s: %d predictions couldn't be read as a JSON object, so their documents were graded "
+                    "as failed, e.g. %s", run.out, len(unread), unread[:3])
+
+
+def scorer_errors(summary: dict) -> int:
+    """Documents whose grading raised in our code (status `error`): a scorer bug, left out of the scores;
+    `oeb benchmark` and `oeb grade` exit 2 when there are any."""
+    return summary.get("errors", 0)
+
+
+def read_scores(run: Run) -> list[dict]:
+    """The run's score lines (scores.jsonl), in file order: one per graded document; [] for a run never
+    graded. A line that doesn't parse is left out, and logged. A folder that doesn't exist is refused: a
+    mistyped path isn't a run with no scores."""
+    if not run.out.is_dir():
+        raise UsageError(f"no folder at {run.out}; pass a run's folder, which holds scores.jsonl")
+    path = run.out / "scores.jsonl"
+    if not path.exists(): return []
+    out = []
+    for n, line in enumerate(path.read_text().splitlines()):
+        if not line.strip(): continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            log.warning("%s: line %d isn't readable JSON; left out", path, n + 1)
+    return out
+
+
 def grade_all(p: Plan, say: Callable[[str], None] = print) -> dict[str, dict]:
     """`grade` each run of the plan over the whole manifest, serially, since grading saturates every core;
     their summaries by run name. A smaller invocation (`--suites`, `--limit`) never shrinks a run's scores:
@@ -715,8 +674,39 @@ def execute(p: Plan, say: Callable[[str], None] = print) -> dict[str, dict]:
     return grade_all(p, say)
 
 
-def describe(p: Plan) -> str:
-    """What `execute(p)` would do, as plain text (`progress.describe`), with no vendor call."""
-    from . import progress
+def write_json(path: Path, obj: Any) -> None:
+    """Written whole, then moved into place, so a crash never leaves half a file."""
+    _write_text(path, json.dumps(obj, default=str, ensure_ascii=False, indent=2) + "\n")
 
-    return progress.describe(p)
+
+def _write_text(path: Path, text: str) -> None:
+    """`write_json` for any text."""
+    tmp = path.with_name(f".{path.name}.partial")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+# The code a verdict depends on: a change to any of it is a new scorer.
+SCORING = ("scorers/field_matching/__init__.py", "scorers/field_matching/matching.py",
+           "scorers/field_matching/values.py", "scorers/field_matching/recognise.py")
+
+
+def scorer_version() -> str:
+    """The package's version and a digest of its scoring code, stamped on each score line: which scorer
+    graded it.
+
+    Note: the version alone is the same across every commit between releases, so it can't say the
+    scoring changed; the digest of the files that decide a verdict can. The version is kept for the
+    reader: which release graded a row.
+    """
+    try:
+        version = importlib.metadata.version("omni-extract-bench")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    h = hashlib.sha256()
+    for name in SCORING:
+        h.update((Path(__file__).parent / name).read_bytes())
+    return f"{version}+{h.hexdigest()[:12]}"
+
+
+SCORER = scorer_version()

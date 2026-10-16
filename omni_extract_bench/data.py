@@ -32,12 +32,13 @@ from typing import Any
 from .errors import UsageError
 
 log = logging.getLogger(__name__)
-
 REPO = "datalab-to/omni_extract_bench"
-MANIFEST = "manifest.parquet"
 HF_PREFIX = "hf://datasets/"
 DEFAULT_DATASET = f"{HF_PREFIX}{REPO}"
 DOWNLOAD_ATTEMPTS = 5
+MANIFEST = "manifest.parquet"
+
+
 #: Written out rather than read off `Doc`: manifests on disk have this shape, and a field `Doc`
 #: grows later must not invalidate them.
 COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
@@ -86,19 +87,6 @@ def _hf_dataset(dataset: str | Path) -> tuple[str, str | None] | None:
     return f"{org}/{name}", revision or None
 
 
-def dataset_id(dataset: str | Path) -> str:
-    """What a run's dataset is, whatever its revision: the repo of an `hf://` dataset, or a
-    folder's path."""
-    if (at := _hf_dataset(dataset)) is not None:
-        return f"{HF_PREFIX}{at[0]}"
-    return str(Path(dataset).expanduser().resolve())
-
-
-def commit(dataset: str | Path, root: Path) -> str | None:
-    """The commit `dataset` was read at, its downloaded folder `root`'s name; None for a folder."""
-    return root.name if _hf_dataset(dataset) is not None else None
-
-
 def download_dataset(dataset: str | Path) -> Path:
     """The dataset as a folder on disk: a folder as given, or a HuggingFace dataset downloaded whole,
     at one commit, into the HuggingFace cache, named for that commit. The cache is shared between every
@@ -142,6 +130,19 @@ def download_dataset(dataset: str | Path) -> Path:
             if attempt == DOWNLOAD_ATTEMPTS - 1: raise
         time.sleep(30 * (attempt + 1))
     raise AssertionError("unreachable")
+
+
+def dataset_id(dataset: str | Path) -> str:
+    """What a run's dataset is, whatever its revision: the repo of an `hf://` dataset, or a
+    folder's path."""
+    if (at := _hf_dataset(dataset)) is not None:
+        return f"{HF_PREFIX}{at[0]}"
+    return str(Path(dataset).expanduser().resolve())
+
+
+def commit(dataset: str | Path, root: Path) -> str | None:
+    """The commit `dataset` was read at, its downloaded folder `root`'s name; None for a folder."""
+    return root.name if _hf_dataset(dataset) is not None else None
 
 
 @functools.cache

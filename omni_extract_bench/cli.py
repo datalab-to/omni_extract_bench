@@ -24,6 +24,8 @@ import sys
 
 from .errors import Stop, UsageError
 
+EXAMPLE_MODELS = ("openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash")
+
 
 def read_object(path: str, flag: str) -> dict:
     """The JSON object in the file `path` that `flag` names."""
@@ -37,87 +39,6 @@ def read_object(path: str, flag: str) -> dict:
         raise UsageError(f"{flag} {path} holds a JSON {'null' if got is None else type(got).__name__}; it "
                          "must be a JSON object")
     return got
-
-
-def cmd_score(args) -> int:
-    from .scorers.field_matching import score
-
-    pred, gold, schema = (read_object(path, flag) for flag, path in (
-        ("--pred", args.pred), ("--gold", args.gold), ("--schema", args.schema)))
-    # Note: a bare --order-matters is every array, as the library's `order_matters=True`.
-    order = True if args.order_matters == [] else tuple(args.order_matters or ())
-    result = score(pred, gold, schema, order_matters=order, verdicts=args.verdicts)
-    if args.verdicts:
-        result["verdicts"] = [v._asdict() for v in result["verdicts"]]
-    json.dump(result, sys.stdout, indent=2, default=str)
-    sys.stdout.write("\n")
-    return 0
-
-
-EXAMPLE_MODELS = ("openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash")
-
-
-def cmd_providers(args) -> int:
-    """The names `--providers` accepts, or one provider's options in detail.
-
-        oeb providers            every name
-        oeb providers datalab    what `--options` takes for it, and what each is by default
-
-    ONE VERB, NOT TWO. The list is the question usually being asked and the options are a
-    follow-up about one entry -- printing every provider's defaults in the list drowned the
-    names. PIPED, IT IS STILL ONE COLUMN OF NAMES: the table is for a reader, and
-    `oeb providers | ...` gets the list it has always got.
-
-    The options come from the adapter's own `Config` -- its fields are the options and their
-    defaults -- so this cannot drift from what the adapter accepts.
-    """
-    import dataclasses
-
-    from rich import box
-    from rich.console import Console
-    from rich.table import Table
-
-    from .harness import PROVIDERS
-    from .harness.registry import config_for
-
-    console = Console()
-
-    if not args.provider:
-        if not console.is_terminal:
-            for provider in (*PROVIDERS, *EXAMPLE_MODELS):
-                print(provider)
-            return 0
-        table = Table(box=box.SIMPLE_HEAD, pad_edge=False, show_edge=False)
-        table.add_column("provider")
-        for provider in PROVIDERS:
-            table.add_row(provider)
-        table.add_section()
-        for model in EXAMPLE_MODELS:
-            table.add_row(model)
-        console.print(table)
-        print("\nthe three model ids are examples: any OpenRouter org/model id works.")
-        return 0
-
-    config = config_for(args.provider)
-    fields = dataclasses.fields(config)
-    if not fields:
-        console.print(f"{args.provider}: no options -- it takes the document and the schema "
-                      f"and nothing else")
-        return 0
-
-    table = Table(box=box.SIMPLE_HEAD, pad_edge=False, show_edge=False,
-                  title=args.provider, title_justify="left")
-    table.add_column("option")
-    table.add_column("default", overflow="fold")
-    for field in fields:
-        value = getattr(config, field.name)
-        table.add_row(field.name, "''" if value == "" else str(value))
-    console.print(table)
-    # Note: a model id's `model` is its name, which --options refuses, so the example is another field.
-    if example := next((f.name for f in fields if f.name != "model"), None):
-        print(f"\noeb benchmark --providers {args.provider} "
-              f"--options '{{\"{args.provider}\": {{\"{example}\": ...}}}}'")
-    return 0
 
 
 def read_options(value: str | None, *, per_provider: bool = True) -> dict:
@@ -182,15 +103,11 @@ def read_workers(value: str | None) -> int | dict[str, int]:
     raise UsageError(f"--workers must be a number or a JSON object, not {value!r}")
 
 
-def cmd_predict(args) -> int:
-    """One document through one vendor. The mirror of `oeb score`: files in, JSON out."""
-    from .harness import predict
-
-    record = predict(args.provider, args.doc, read_object(args.schema, "--schema"), timeout=args.timeout,
-                     **read_options(args.options, per_provider=False))
-    json.dump(record, sys.stdout, indent=2, default=str)
-    sys.stdout.write("\n")
-    return 1 if record.get("error") else 0
+def read_ids(path: pathlib.Path, flag: str) -> frozenset[str]:
+    """A file of ids, one per line; blank lines and `#` comments are skipped."""
+    if not path.is_file():
+        raise UsageError(f"{flag} {path}: no such file; it holds ids, one per line")
+    return frozenset(x for line in path.read_text().splitlines() if (x := line.split("#", 1)[0].strip()))
 
 
 def confirm_plan(plan) -> bool:
@@ -214,13 +131,6 @@ def confirm_plan(plan) -> bool:
         return False
 
 
-def read_ids(path: pathlib.Path, flag: str) -> frozenset[str]:
-    """A file of ids, one per line; blank lines and `#` comments are skipped."""
-    if not path.is_file():
-        raise UsageError(f"{flag} {path}: no such file; it holds ids, one per line")
-    return frozenset(x for line in path.read_text().splitlines() if (x := line.split("#", 1)[0].strip()))
-
-
 def _say(args):
     """Where a grading's closing line and advice go: stderr, or nowhere with `-q`."""
     return (lambda m: None) if args.quiet else (lambda m: print(m, file=sys.stderr))
@@ -235,6 +145,32 @@ def _bugs(args, summaries: dict[str, dict]) -> int:
           "documents (" + ", ".join(f"{k} {n}" for k, n in errored.items())
           + "); they are left out of the scores: report it with the run's scores.jsonl", file=sys.stderr)
     return 2
+
+
+def cmd_score(args) -> int:
+    from .scorers.field_matching import score
+
+    pred, gold, schema = (read_object(path, flag) for flag, path in (
+        ("--pred", args.pred), ("--gold", args.gold), ("--schema", args.schema)))
+    # Note: a bare --order-matters is every array, as the library's `order_matters=True`.
+    order = True if args.order_matters == [] else tuple(args.order_matters or ())
+    result = score(pred, gold, schema, order_matters=order, verdicts=args.verdicts)
+    if args.verdicts:
+        result["verdicts"] = [v._asdict() for v in result["verdicts"]]
+    json.dump(result, sys.stdout, indent=2, default=str)
+    sys.stdout.write("\n")
+    return 0
+
+
+def cmd_predict(args) -> int:
+    """One document through one vendor. The mirror of `oeb score`: files in, JSON out."""
+    from .harness import predict
+
+    record = predict(args.provider, args.doc, read_object(args.schema, "--schema"), timeout=args.timeout,
+                     **read_options(args.options, per_provider=False))
+    json.dump(record, sys.stdout, indent=2, default=str)
+    sys.stdout.write("\n")
+    return 1 if record.get("error") else 0
 
 
 def cmd_benchmark(args) -> int:
@@ -266,24 +202,6 @@ def cmd_benchmark(args) -> int:
     return _bugs(args, summaries)
 
 
-def cmd_check(args) -> int:
-    """`oeb check`: whether a dataset is one oeb can run, stopping at the first problem: its manifest
-    (`data.read_manifest`), every file the manifest names on disk, and every gold (`field_matching.check`).
-    It opens no input and runs no scorer; docs/API.md lists every rule."""
-    from . import data
-    from .scorers import field_matching
-
-    _, docs = data.read_manifest(args.dataset or data.DEFAULT_DATASET, args.manifest)
-    missing = [f"{d.doc_id} {col} {f}" for d in docs for col, f in (("doc_path", d.doc_path), ("gt_path", d.gt_path))
-               if not f.is_file()]
-    if missing:
-        raise UsageError(f"{len(missing)} files the manifest names don't exist, e.g. {'; '.join(missing[:3])}")
-    field_matching.check(docs)
-    print(json.dumps({"ok": True, "manifest": args.manifest, "documents": len(docs),
-                      "suites": len({d.suite for d in docs}), "inputs": len({d.doc_path for d in docs})}))
-    return 0
-
-
 def cmd_grade(args) -> int:
     """Grade a folder of predictions/<doc_id>.json, whatever made them, against its whole manifest, and
     print its summary. The folder's settings.json says its dataset and manifest; a folder of your own
@@ -305,6 +223,87 @@ def cmd_grade(args) -> int:
     json.dump(summary, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
     return _bugs(args, {out.name: summary})
+
+
+def cmd_check(args) -> int:
+    """`oeb check`: whether a dataset is one oeb can run, stopping at the first problem: its manifest
+    (`data.read_manifest`), every file the manifest names on disk, and every gold (`field_matching.check`).
+    It opens no input and runs no scorer; docs/API.md lists every rule."""
+    from . import data
+    from .scorers import field_matching
+
+    _, docs = data.read_manifest(args.dataset or data.DEFAULT_DATASET, args.manifest)
+    missing = [f"{d.doc_id} {col} {f}" for d in docs for col, f in (("doc_path", d.doc_path), ("gt_path", d.gt_path))
+               if not f.is_file()]
+    if missing:
+        raise UsageError(f"{len(missing)} files the manifest names don't exist, e.g. {'; '.join(missing[:3])}")
+    field_matching.check(docs)
+    print(json.dumps({"ok": True, "manifest": args.manifest, "documents": len(docs),
+                      "suites": len({d.suite for d in docs}), "inputs": len({d.doc_path for d in docs})}))
+    return 0
+
+
+def cmd_providers(args) -> int:
+    """The names `--providers` accepts, or one provider's options in detail.
+
+        oeb providers            every name
+        oeb providers datalab    what `--options` takes for it, and what each is by default
+
+    ONE VERB, NOT TWO. The list is the question usually being asked and the options are a
+    follow-up about one entry -- printing every provider's defaults in the list drowned the
+    names. PIPED, IT IS STILL ONE COLUMN OF NAMES: the table is for a reader, and
+    `oeb providers | ...` gets the list it has always got.
+
+    The options come from the adapter's own `Config` -- its fields are the options and their
+    defaults -- so this cannot drift from what the adapter accepts.
+    """
+    import dataclasses
+
+    from rich import box
+    from rich.console import Console
+    from rich.table import Table
+
+    from .harness import PROVIDERS
+    from .harness.registry import config_for
+
+    console = Console()
+
+    if not args.provider:
+        if not console.is_terminal:
+            for provider in (*PROVIDERS, *EXAMPLE_MODELS):
+                print(provider)
+            return 0
+        table = Table(box=box.SIMPLE_HEAD, pad_edge=False, show_edge=False)
+        table.add_column("provider")
+        for provider in PROVIDERS:
+            table.add_row(provider)
+        table.add_section()
+        for model in EXAMPLE_MODELS:
+            table.add_row(model)
+        console.print(table)
+        print("\nthe three model ids are examples: any OpenRouter org/model id works.")
+        return 0
+
+    config = config_for(args.provider)
+    fields = dataclasses.fields(config)
+    if not fields:
+        console.print(f"{args.provider}: no options -- it takes the document and the schema "
+                      f"and nothing else")
+        return 0
+
+    table = Table(box=box.SIMPLE_HEAD, pad_edge=False, show_edge=False,
+                  title=args.provider, title_justify="left")
+    table.add_column("option")
+    table.add_column("default", overflow="fold")
+    for field in fields:
+        value = getattr(config, field.name)
+        table.add_row(field.name, "''" if value == "" else str(value))
+    console.print(table)
+    # Note: a model id's `model` is its name, which --options refuses, so the example is another field.
+    if example := next((f.name for f in fields if f.name != "model"), None):
+        print(f"\noeb benchmark --providers {args.provider} "
+              f"--options '{{\"{args.provider}\": {{\"{example}\": ...}}}}'")
+    return 0
 
 
 def main(argv=None) -> int:
