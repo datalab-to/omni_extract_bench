@@ -38,6 +38,7 @@ DOWNLOAD_ATTEMPTS = 5
 #: Written out rather than read off `Doc`: manifests on disk have this shape, and a field `Doc`
 #: grows later must not invalidate them.
 COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
+NO_SUITE = "other"          # the suite of a document whose manifest gives none (null or "")
 
 
 class ManifestError(ValueError):
@@ -170,6 +171,9 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
             raise ManifestError(f"{path}: row {n} has doc_id {doc_id!r}, which is not a filename. "
                              f"It names this document's prediction, its record and its row in "
                              f"scores.jsonl, so it has to be one path component.")
+        if row["suite"] is not None and not isinstance(row["suite"], str):
+            raise ManifestError(f"{path}: row {n} ({doc_id}) has suite {row['suite']!r}; it must be a string, "
+                                f"or null for {NO_SUITE!r}")
         if not _inside(row["doc_path"]):
             raise ManifestError(f"{path}: row {n} ({doc_id}) has doc_path {row['doc_path']!r}; it must be a "
                                 f"relative path inside the dataset to a file, e.g. pdfs/{doc_id}.pdf")
@@ -182,7 +186,8 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
         except (TypeError, json.JSONDecodeError) as exc:
             raise ManifestError(f"{path}: row {n} ({doc_id}) has a schema column that is not "
                              f"JSON: {exc}") from None
-        docs.append(Doc(doc_id=doc_id, suite=row["suite"], doc_path=root / row["doc_path"],
+        suite = row["suite"] if (row["suite"] or "").strip() else NO_SUITE
+        docs.append(Doc(doc_id=doc_id, suite=suite, doc_path=root / row["doc_path"],
                         gt_path=root / row["gt_path"], schema=schema,
                         extra={k: v for k, v in row.items() if k not in COLUMNS}))
     # Note: ignoring case, because an id names files, and two ids that differ only in case name one file

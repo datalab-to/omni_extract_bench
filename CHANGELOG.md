@@ -114,3 +114,5 @@ unchanged unless a line below says otherwise.
 - `predicted` and `read_scores` log a file they can't read.
 - `oeb check` says whether a dataset is one oeb can run: its manifest, that every file it names
   exists, and that every gold is a JSON object (`field_matching.check`).
+- A document's suite may be null or empty, and is then `"other"` (`data.NO_SUITE`); any other
+  non-string is refused.

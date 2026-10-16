@@ -271,6 +271,14 @@ with _mock.patch.dict(sys.modules, {"huggingface_hub": None}):
             code = _cli.main(["check", "--dataset", str(corpus)])
         return code, out.getvalue(), err.getvalue()
 
+    for _suite, _read in ((None, "other"), ("", "other"), ("mine", "mine")):
+        _nosuite = byo(Path(tempfile.mkdtemp()), _relative)
+        _rows = _pq.read_table(_nosuite / "manifest.parquet").to_pylist()
+        _pq.write_table(_pa.Table.from_pylist([r | {"suite": _suite} for r in _rows]),
+                        _nosuite / "manifest.parquet")
+        report(f"a suite of {_suite!r} is read as {_read!r}",
+               {d.suite for d in DS.read_manifest(_nosuite)[1]} == {_read})
+
     _ok = byo(Path(tempfile.mkdtemp()), _relative)
     code, out, _ = _check(_ok)
     report("oeb check describes a dataset that can run",

@@ -234,8 +234,8 @@ def cmd_check(args) -> int:
     """`oeb check`: whether a dataset is one oeb can run. It checks, stopping at the first problem:
 
         1. the manifest, as `data.read_manifest` does: the columns doc_id, suite, doc_path, gt_path
-           and schema are there; each doc_id is a filename; each doc_path is a relative path inside
-           the dataset to a file (one with an extension); each gt_path is a relative path inside the
+           and schema are there; each doc_id is a filename; each suite is a string, or null for
+           "other"; each doc_path is a relative path inside the dataset to a file (one with an extension); each gt_path is a relative path inside the
            dataset named `<doc_id>.json`; each schema is JSON; and doc ids are unique, ignoring case;
         2. every doc_path and gt_path exists as a file; and
         3. every gold reads as a JSON object (`field_matching.check`).
