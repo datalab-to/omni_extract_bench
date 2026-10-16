@@ -187,6 +187,11 @@ summary["datalab-f46415c9"]["headline"] # the mean accuracy, a failure counting 
                                         # null while any document is pending
 ```
 
+`oeb benchmark` takes the same, as flags: `--providers`, `--out`, `--dataset`, `--manifest`, `--suites`,
+`--limit`, `--sample`, `--docs FILE` (for `only`), `--timeout` (seconds per document), `--workers` (N, or
+JSON `'{"datalab": 20}'`), `--score-workers`, `--no-verdicts`, `--score-only`, `--retry-failed`,
+`--options` (JSON, or a file of it), and `-y` / `--yes` to skip the question.
+
 ### The functions, by what they work on
 
 | | reading data (`data`) | predicting (`harness`, `benchmark`) | scoring (`scorer`, `benchmark`) |
@@ -339,6 +344,10 @@ With no `--dataset`, a run uses ours, `hf://datasets/datalab-to/omni_extract_ben
 oeb benchmark --providers datalab \
   --manifest manifests/sample40-predictive-across-vendors-2026-09-22.parquet
 ```
+
+A manifest may also be given whole, as before 1.0, naming its dataset too:
+`--manifest hf://datasets/datalab-to/omni_extract_bench/manifests/sample40-predictive-across-vendors-2026-09-22.parquet`
+is the same run (`data.located` splits it; a `--dataset` that names another dataset is refused).
 
 *Any HuggingFace dataset*, pinned to a revision with `@`. It is downloaded whole, at that
 revision, into the HuggingFace cache (ours is 0.9 GB), so its documents and gold are always one
