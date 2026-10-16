@@ -250,8 +250,8 @@ try:
     DS.read_manifest(_short.parent, _short.name)
     report("a manifest missing a column is refused", False, "it was accepted")
 except ValueError as exc:
-    report("a manifest missing a column names the column and the file",
-           "suite" in str(exc) and str(_short) in str(exc), str(exc))
+    report("a manifest missing a column names the column and the file, as a ManifestError",
+           isinstance(exc, DS.ManifestError) and "suite" in str(exc) and str(_short) in str(exc), str(exc))
 
 _bad_schema = Path(tempfile.mkdtemp()) / "m.parquet"
 _pq.write_table(_pa.Table.from_pylist(

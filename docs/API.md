@@ -190,7 +190,8 @@ top.
 
 The same names, in the same modules, as omni-parse-bench's (whose rows are pages, not documents).
 `data.read_manifest(dataset, manifest)` gives the dataset's folder and every document, each with
-its file and gold as full local paths; `data.select(docs, suites, limit)` picks the ones to run.
+its file and gold as full local paths (a manifest that breaks the dataset's rules raises
+`data.ManifestError`, naming what's wrong); `data.select(docs, suites, limit)` picks the ones to run.
 
 ### Two levels of data
 

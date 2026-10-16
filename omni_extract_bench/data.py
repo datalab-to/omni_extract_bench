@@ -11,6 +11,7 @@ file and its gold are without the dataset beside it. The functions over a datase
     download_dataset(dataset)            a local copy of the whole dataset; a local folder as it is
     read_manifest(dataset, manifest)     the folder and every document, checked
     select(docs, suites, limit)          the documents to run: by suite, limited
+    ManifestError                        a manifest, or a row of one, that breaks the dataset's rules
     dataset_id(dataset)                  what a run's dataset is, whatever its revision
 
 `dataset` is a folder's path or `hf://datasets/<org>/<name>[@<revision>]`.
@@ -34,6 +35,10 @@ DEFAULT_DATASET = f"{HF_PREFIX}{REPO}"
 #: Written out rather than read off `Doc`: manifests on disk have this shape, and a field `Doc`
 #: grows later must not invalidate them.
 COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
+
+
+class ManifestError(ValueError):
+    """A manifest, or a row of one, that breaks the dataset's rules; the message names it and the fix."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -116,7 +121,7 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
     root = download_dataset(dataset)
     path = root / manifest
     if not path.exists():
-        raise ValueError(
+        raise ManifestError(
             f"there is no manifest at {path}. It is a parquet file with one row per "
             f"document, as {', '.join(COLUMNS)}; ours is at "
             f"https://huggingface.co/datasets/{REPO}, and a corpus of your own follows the "
@@ -126,7 +131,7 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
     absent = [c for c in COLUMNS if c not in table.column_names]
     if absent:
         has = ", ".join(table.column_names) or "no columns"
-        raise ValueError(f"{path} has no {', '.join(absent)} column"
+        raise ManifestError(f"{path} has no {', '.join(absent)} column"
                          f"{'s' if len(absent) > 1 else ''}. A manifest names one document "
                          f"per row, as {', '.join(COLUMNS)}; this one has {has}.")
     docs = []
@@ -134,13 +139,13 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
         # A doc_id is a filename (`predictions/<doc_id>.json`); caught here, the row can be named.
         doc_id = row["doc_id"]
         if not doc_id or doc_id in (".", "..") or Path(doc_id).name != doc_id:
-            raise ValueError(f"{path}: row {n} has doc_id {doc_id!r}, which is not a filename. "
+            raise ManifestError(f"{path}: row {n} has doc_id {doc_id!r}, which is not a filename. "
                              f"It names this document's prediction, its record and its row in "
                              f"scores.jsonl, so it has to be one path component.")
         try:
             schema = json.loads(row["schema"])
         except (TypeError, json.JSONDecodeError) as exc:
-            raise ValueError(f"{path}: row {n} ({doc_id}) has a schema column that is not "
+            raise ManifestError(f"{path}: row {n} ({doc_id}) has a schema column that is not "
                              f"JSON: {exc}") from None
         docs.append(Doc(doc_id=doc_id, suite=row["suite"], doc_path=root / row["doc_path"],
                         gt_path=root / row["gt_path"], schema=schema,
@@ -177,7 +182,7 @@ def _on_hub(dataset: str | Path, manifest: str) -> None:
     except OSError:
         missing = False
     if missing:
-        raise ValueError(
+        raise ManifestError(
             f"there is no {manifest} in {dataset}, so there is nothing to benchmark. A dataset "
             f"holds one or more manifests, each following the same structure as ours at "
             f"https://huggingface.co/datasets/{REPO}. Name another with --manifest, or point "
