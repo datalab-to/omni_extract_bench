@@ -887,20 +887,20 @@ def score(pred: Any, gold: Any, schema: Any,
     f1 = (2 * precision * recall / (precision + recall)) if precision + recall else 0.0
     per_address: list[Verdict] = []
     if verdicts:
-        per_address = [Verdict(a, None, None, None, None, verdict="skipped_open_map")
+        per_address = [Verdict(a, None, None, None, None, result="skipped_open_map")
                        for a in skipped]
         for a in sorted(union, key=_reading_order):
             gold_canon = canon_key(gold_leaves[a]) if a in gold_leaves else None
             pred_canon = canon_key(pred_leaves[a]) if a in pred_leaves else None
             if a in shared:
-                verdict = "matched" if gold_canon == pred_canon else "misread"
+                result = "matched" if gold_canon == pred_canon else "misread"
             elif a in only_gold:
-                verdict = "unfound"
+                result = "unfound"
             else:
-                verdict = extra_kind[a]
+                result = extra_kind[a]
             per_address.append(Verdict(a, gold_leaves.get(a), pred_leaves.get(a),
                                        gold_canon=gold_canon, pred_canon=pred_canon,
-                                       verdict=verdict))
+                                       result=result))
 
     return {
         "accuracy": accuracy,
@@ -933,7 +933,7 @@ class Verdict(NamedTuple):
     pred_raw: Any   
     gold_canon: str 
     pred_canon: str 
-    verdict: str    
+    result: str     # matched, misread, unfound, an invented kind, or skipped_open_map
 
 
 

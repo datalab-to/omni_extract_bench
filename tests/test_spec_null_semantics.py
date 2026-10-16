@@ -158,7 +158,7 @@ MISSING = object()
 
 
 def verdicts(pred, gold, absent=lambda v: False):
-    return {_show(v.address): v.verdict
+    return {_show(v.address): v.result
             for v in _score_impl(pred, gold, A_S, verdicts=True, absent=absent)["verdicts"]}
 
 

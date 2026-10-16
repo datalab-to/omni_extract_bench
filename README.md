@@ -173,7 +173,7 @@ print(result["verdicts"][0]) # print the first verdict
 #       "pred_raw": "USD",
 #       "gold_canon": null,
 #       "pred_canon": "usd",
-#       "verdict": "invented_field"
+#       "result": "invented_field"
 #     }
 ```
 
@@ -204,7 +204,7 @@ On the example above, printing one line each:
       "pred_raw": "USD",
       "gold_canon": null,
       "pred_canon": "usd",
-      "verdict": "invented_field"
+      "result": "invented_field"
     },
     ...truncated for display
 ```

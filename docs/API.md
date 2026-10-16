@@ -666,7 +666,7 @@ four-provider run over our corpus is a couple of gigabytes. Pass `--no-verdicts`
 One line looks like this:
 
 ```json
-{"address": [["k", "line_items"], ["i", 0], ["k", "unit_price"]], "gold_raw": 12.5, "pred_raw": 12.05, "gold_canon": "12.5", "pred_canon": "12.05", "verdict": "misread"}
+{"address": [["k", "line_items"], ["i", 0], ["k", "unit_price"]], "gold_raw": 12.5, "pred_raw": 12.05, "gold_canon": "12.5", "pred_canon": "12.05", "result": "misread"}
 ```
 
 `address` is the path to the scalar, one step at a time: `["k", name]` walks into a key,

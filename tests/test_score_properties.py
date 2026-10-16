@@ -450,7 +450,7 @@ report("every address it found, it read correctly: the loss is entirely structur
        f"structure {rn['addresses_found']:.4f} x value {rn['addresses_read_right']:.4f}")
 
 verdicts = {"".join(f"[{st[1]!r}]" for st in k): v
-            for k, v in ((x.address, x.verdict) for x in
+            for k, v in ((x.address, x.result) for x in
                          explain(copy.deepcopy(NEST_PRED), copy.deepcopy(NEST_GOLD)))}
 expected = {
     "['segments'][1]['name']": "matched",
@@ -751,8 +751,8 @@ report("a skip is reported whichever side reaches the open map",
        f"gold-only {score({'invoice_no': 'INV-1'}, copy.deepcopy(OM_G), OM_SCH)['skipped_open_maps']}, "
        f"pred-only {score(copy.deepcopy(OM_G), {'invoice_no': 'INV-1'}, OM_SCH)['skipped_open_maps']}")
 report("explain shows the skipped subtree instead of letting it vanish",
-       [v.verdict for v in explain(copy.deepcopy(OM_G), copy.deepcopy(OM_G), OM_SCH)
-        if v.verdict.startswith("skipped")] == ["skipped_open_map"])
+       [v.result for v in explain(copy.deepcopy(OM_G), copy.deepcopy(OM_G), OM_SCH)
+        if v.result.startswith("skipped")] == ["skipped_open_map"])
 report("with no schema nothing is skipped, because nothing can be identified",
        score(copy.deepcopy(OM_G), copy.deepcopy(OM_G))["total"] == 3
        and score(copy.deepcopy(OM_G), copy.deepcopy(OM_G))["skipped_open_maps"] == [])

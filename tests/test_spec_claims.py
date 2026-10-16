@@ -148,13 +148,13 @@ report("...so 'charged once' would be wrong: it is charged for what it invents t
        cleared["invented_item"] > 0, f"invented_item {cleared['invented_item']}")
 
 print("\nSECTION 4 -- THE BUCKETS PARTITION EVERY ADDRESS (P16)")
-verdicts = [v for v in verdicts_of(PRED, GT, SCH) if not v.verdict.startswith("skipped")]
+verdicts = [v for v in verdicts_of(PRED, GT, SCH) if not v.result.startswith("skipped")]
 report("every address gets exactly one of the six verdicts",
        len(verdicts) == R["total"]
-       and {v.verdict for v in verdicts} <= {"matched", "misread", "unfound", "fabricated",
+       and {v.result for v in verdicts} <= {"matched", "misread", "unfound", "fabricated",
                                              "invented_item", "invented_field"},
        f"{len(verdicts)} verdicts vs total {R['total']}: "
-       f"{sorted({v.verdict for v in verdicts})}")
+       f"{sorted({v.result for v in verdicts})}")
 
 print("\nSECTION 4 -- matched_rows IS NOT ROW CORRECTNESS")
 CUR_S = {"properties": {"lines": {"type": "array", "items": {"properties": {

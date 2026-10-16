@@ -160,12 +160,12 @@ from omni_extract_bench.scorers.field_matching.values import states_nothing, can
 _SCH = {"type": "object", "properties": {
     "a": {"type": "string"}, "b": {"type": "string"}, "c": {"type": "string"},
     "g": {"type": "object", "additionalProperties": {"type": "string"}}}}
-_V = {v.verdict: v for v in verdicts_of({"a": "X", "c": "Z", "g": {"k": "v"}},
+_V = {v.result: v for v in verdicts_of({"a": "X", "c": "Z", "g": {"k": "v"}},
                                     {"a": "X", "b": "Y", "g": {"k": "v"}}, _SCH)}
 
 report("Verdict carries raw and canon for each side",
        Verdict._fields == ("address", "gold_raw", "pred_raw",
-                           "gold_canon", "pred_canon", "verdict"), f"{Verdict._fields}")
+                           "gold_canon", "pred_canon", "result"), f"{Verdict._fields}")
 report("a missing address has no pred side",
        _V["unfound"].pred_raw is None and _V["unfound"].pred_canon is None
        and _V["unfound"].gold_raw == "Y")
@@ -208,11 +208,11 @@ for _p, _g in _cases + [
             _carry.append(("pred", v.pred_raw, v.pred_canon, canon_key(v.pred_raw)))
         if v.gold_raw is not None and v.pred_raw is not None:
             want = "matched" if v.gold_canon == v.pred_canon else "misread"
-            if v.verdict != want:
-                _carry.append(("verdict", v.address, v.verdict, want))
+            if v.result != want:
+                _carry.append(("result", v.address, v.result, want))
 report("gold_canon/pred_canon are exactly canon_key of the raw values", not _carry,
        f"{_carry[:3]}")
-report("...and the verdict follows from comparing them", not [c for c in _carry if c[0] == "verdict"])
+report("...and the verdict follows from comparing them", not [c for c in _carry if c[0] == "result"])
 
 _m = _V["matched"]
 report("canon_trace explains a match between two raw forms",

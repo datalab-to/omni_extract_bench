@@ -309,7 +309,7 @@ report("an ordered array inside a skipped open map is simply never reached",
        score(copy.deepcopy(OM_D), copy.deepcopy(OM_D), OM_SCH,
                    [])["skipped_open_maps"] == ["bag"])
 report("explain reports positional verdicts for an ordered array",
-       [v.verdict for v in explain({"steps": ["b", "a"]}, {"steps": ["a", "b"]},
+       [v.result for v in explain({"steps": ["b", "a"]}, {"steps": ["a", "b"]},
                                       None, ["steps"])] == ["misread", "misread"])
 report("show and format_node agree except for the blanked indices",
        show(((KEY, "b"), (INDEX, 3), (KEY, "c"))) == "b[3].c"

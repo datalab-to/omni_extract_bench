@@ -82,7 +82,7 @@ for name, gold in (("lines", {"total": 1.0}),
                    ("lines", {"total": 1.0, "lines": [{"sku": "a"}]}),
                    ("ship_to", {"total": 1.0}),
                    ("ship_to", {"total": 1.0, "ship_to": {"city": "Paris"}})):
-    got = {show(v.address): v.verdict
+    got = {show(v.address): v.result
            for v in verdicts_of({"total": 1.0, name: "foo"}, gold, SCH)}
     report(f"`{name}: \"foo\"` against gold {gold} is fabricated",
            got.get(name) == "fabricated", f"got {got}")
@@ -106,7 +106,7 @@ for name, want in cases.items():
     report(f"{name} is {want}", got == want, f"got {got!r}")
 
 print("\nTHE `pN` LABEL IS LOAD-BEARING, SO PIN IT")
-labels = [v.address for v in verdicts_of(PRED, GT, SCH) if v.verdict == "invented_item"]
+labels = [v.address for v in verdicts_of(PRED, GT, SCH) if v.result == "invented_item"]
 report("an unpaired predicted row is labelled with a string index, not an integer",
        labels and all(any(k == INDEX and isinstance(x, str) for k, x in a) for a in labels),
        f"got {[show(a) for a in labels]}")
@@ -141,7 +141,7 @@ note("which is the whole reason accuracy and f1 differ")
 
 print("\nTHE COUNTS ARE THE VERDICT HISTOGRAM")
 import collections                                                          # noqa: E402
-hist = collections.Counter(v.verdict for v in verdicts_of(PRED, GT, SCH))
+hist = collections.Counter(v.result for v in verdicts_of(PRED, GT, SCH))
 report("score's counts equal explain's labels, so the two surfaces cannot drift",
        (r["matched"], r["misread"], r["unfound"], r["fabricated"],
         r["invented_item"], r["invented_field"])
@@ -286,7 +286,7 @@ for _ in range(600):
               and (not (r["matched"] + r["misread"] + r["unfound"])
                    or abs(r["recall"] - r["matched"]
                           / (r["matched"] + r["misread"] + r["unfound"])) < 1e-12))
-        hist = collections.Counter(v.verdict for v in verdicts_of(pr, g, sch))
+        hist = collections.Counter(v.result for v in verdicts_of(pr, g, sch))
         ok &= parts == (hist["matched"], hist["misread"], hist["unfound"],
                         hist["fabricated"], hist["invented_item"], hist["invented_field"])
         bad += not ok
