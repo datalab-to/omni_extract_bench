@@ -161,6 +161,8 @@ p = benchmark.plan(
   manifest="manifest.parquet",  # which documents: a parquet inside the dataset
   suites=None,            # limit to these suites
   limit=0,                # first N documents
+  sample=0,               # N documents spread over every suite
+  only=None,              # these doc ids only (a frozenset); each must be in the dataset
   timeout=1800.0,
   workers=None,           # documents in flight per vendor
   score_workers=0,        # processes used to score
@@ -191,7 +193,9 @@ top.
 The same names, in the same modules, as omni-parse-bench's (whose rows are pages, not documents).
 `data.read_manifest(dataset, manifest)` gives the dataset's folder and every document, each with
 its file and gold as full local paths (a manifest that breaks the dataset's rules raises
-`data.ManifestError`, naming what's wrong); `data.select(docs, suites, limit)` picks the ones to run.
+`data.ManifestError`, naming what's wrong); `data.select(docs, suites, limit, sample, only)` picks the ones to run: by suite (an unknown suite
+is refused), by doc id, `sample` documents spread over every suite (the same ones each time), then
+the first `limit`. On the command line, `--sample N` and `--docs FILE` (doc ids, one per line).
 
 ### Two levels of data
 
@@ -324,7 +328,7 @@ It's **resumable**, and safe to run twice.
 - Grading is fresh every time: every document of the manifest is graded again, which calls no
   vendor, and `scores.jsonl` and `summary.json` are written whole when it finishes. So a run's
   scores are always one grading's, a gold correction or a new scorer reaches a run on its next
-  grading, and `--suites` and `--limit` narrow what is predicted, never what is scored. An
+  grading, and `--suites`, `--limit`, `--sample` and `--docs` narrow what is predicted, never what is scored. An
   interrupted grading writes nothing; the last finished grading's files stand. Each line says
   which scoring code (`scorer`, the release and a digest of the scoring files) graded it.
 - A document is pending, not failed, when it was never attempted: no line, counted in the

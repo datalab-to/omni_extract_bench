@@ -486,8 +486,28 @@ _s = json.loads(_o.getvalue())
 report("oeb grade grades a folder of your own: the document left out fails, nothing is pending",
        _rc == 0 and (_s["documents"], _s["scored"], _s["pending"]) == (2, 1, 0), str(_s))
 with _contextlib.redirect_stdout(_io.StringIO()) as _o:
-    _cli.main(["grade", str(_mine), "--dataset", str(_ds), "--score-workers", "1", "--suites", "nope"])
-report("...and --suites grades only those suites", json.loads(_o.getvalue())["documents"] == 0)
+    _cli.main(["grade", str(_mine), "--dataset", str(_ds), "--score-workers", "1", "--suites", "mine"])
+report("...and --suites grades only those suites", json.loads(_o.getvalue())["documents"] == 2)
+try:
+    _cli.main(["grade", str(_mine), "--dataset", str(_ds), "--suites", "nope"])
+    report("...and an unknown suite is refused", False, "it was accepted")
+except ValueError as exc:
+    report("...and an unknown suite is refused, naming the dataset's suites", "mine" in str(exc), str(exc))
+
+print("\nCHOOSING THE DOCUMENTS")
+_many = [Doc(f"{s}{i}", s, TMP / "x.pdf", TMP / "g.json", {}) for s in ("a", "b", "c") for i in range(10)]
+_picked = DS.select(_many, sample=6)
+report("sample spreads over every suite", sorted({d.suite for d in _picked}) == ["a", "b", "c"]
+       and len(_picked) == 6, str([d.doc_id for d in _picked]))
+report("...the same documents every time", DS.select(_many, sample=6) == _picked)
+report("only keeps the documents asked for, in their order",
+       [d.doc_id for d in DS.select(_many, only=frozenset({"b3", "a1"}))] == ["a1", "b3"])
+try:
+    DS.select(_many, only=frozenset({"zz"}))
+    report("an id not in the dataset is refused", False, "it was accepted")
+except ValueError as exc:
+    report("an id not in the dataset is refused, naming it", "zz" in str(exc), str(exc))
+report("suites, then limit", [d.doc_id for d in DS.select(_many, suites=["c"], limit=2)] == ["c0", "c1"])
 
 print("\nA MISSING EXTRA SAYS WHAT TO INSTALL")
 import unittest.mock                                                       # noqa: E402

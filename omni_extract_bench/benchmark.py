@@ -383,6 +383,7 @@ class Plan(NamedTuple):
 
 def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path = data.DEFAULT_DATASET,
          manifest: str = data.MANIFEST, suites: list[str] | None = None, limit: int = 0,
+         sample: int = 0, only: frozenset[str] | None = None,
          timeout: float = 1800.0, workers: dict[str, int] | int | None = None,
          score_workers: int = 0, verdicts: bool = True,
          score_only: bool = False, retry_failed: bool = False, options: dict | None = None) -> Plan:
@@ -405,7 +406,7 @@ def plan(providers: list[str], *, out: Path = Path("runs"), dataset: str | Path 
             raise ValueError(f"{run.out} is a run on dataset {was}, not {ident}, and a run never "
                              f"mixes datasets; pass another --out, or --dataset {was}")
     _, every = data.read_manifest(dataset, manifest)
-    if not (docs := data.select(every, suites, limit)):
+    if not (docs := data.select(every, suites, limit, sample, only)):
         raise ValueError("no documents selected: check --suites and --limit")
     return Plan(tuple(runs.values()), tuple(docs), str(dataset), manifest, timeout,
                 workers, score_workers, verdicts, score_only, retry_failed)

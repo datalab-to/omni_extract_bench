@@ -10,7 +10,7 @@ file and its gold are without the dataset beside it. The functions over a datase
 
     download_dataset(dataset)            a local copy of the whole dataset; a local folder as it is
     read_manifest(dataset, manifest)     the folder and every document, checked
-    select(docs, suites, limit)          the documents to run: by suite, limited
+    select(docs, suites, limit, ...)     the documents to run: by suite or id, sampled, limited
     ManifestError                        a manifest, or a row of one, that breaks the dataset's rules
     dataset_id(dataset)                  what a run's dataset is, whatever its revision
 
@@ -154,11 +154,32 @@ def read_manifest(dataset: str | Path, manifest: str = MANIFEST) -> tuple[Path, 
     return root, tuple(docs)
 
 
-def select(docs: Sequence[Doc], suites: Sequence[str] | None = None, limit: int = 0) -> tuple[Doc, ...]:
-    """The documents of `docs` (a dataset's, from `read_manifest`) to run, in their order: those of
-    `suites`, if given, and the first `limit`, if given."""
-    out = tuple(d for d in docs if not suites or d.suite in suites)
-    return out[:limit] if limit else out
+def select(docs: Sequence[Doc], suites: Sequence[str] | None = None, limit: int = 0,
+           sample: int = 0, only: frozenset[str] | None = None) -> tuple[Doc, ...]:
+    """The documents of `docs` (a dataset's, from `read_manifest`) to run, in their order, filtered by
+    suite and by `only` (doc ids, each of which must be among them), and limited.
+
+    `sample` picks that many documents spread over every suite: suites in turn, each document evenly
+    spaced within its suite, so a smoke test sees every kind of document and the same ones each time."""
+    rows = tuple(docs)
+    known = {r.suite for r in rows}
+    if bad := sorted(set(suites or ()) - known):
+        raise ValueError(f"unknown suites {bad}; the dataset's suites are {sorted(known)}")
+    rows = tuple(r for r in rows if not suites or r.suite in suites)
+    if only is not None:
+        if bad := sorted(only - {r.doc_id for r in rows}):
+            raise ValueError(f"{len(bad)} of the documents asked for aren't in the dataset"
+                             f"{' (or its suites)' if suites else ''}, e.g. {bad[:3]}; nothing has been run")
+        rows = tuple(r for r in rows if r.doc_id in only)
+    if sample and rows:
+        by: dict[str, list] = {}
+        for r in rows: by.setdefault(r.suite, []).append(r)
+        k = -(-sample // len(by))
+        spread = [[xs[i * len(xs) // min(k, len(xs))] for i in range(min(k, len(xs)))] for xs in by.values()]
+        turns = [x for i in range(k) for xs in spread if i < len(xs) for x in [xs[i]]]
+        chosen = {r.doc_id for r in turns[:sample]}
+        rows = tuple(r for r in rows if r.doc_id in chosen)
+    return rows[:limit] if limit else rows
 
 
 def _on_hub(dataset: str | Path, manifest: str) -> None:

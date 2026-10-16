@@ -216,7 +216,9 @@ def cmd_benchmark(args) -> int:
     p = benchmark.plan(args.providers, out=args.out,
                        dataset=args.dataset or data.DEFAULT_DATASET,
                        manifest=args.manifest, suites=args.suites,
-                       limit=args.limit, timeout=args.timeout,
+                       limit=args.limit, sample=args.sample,
+                       only=frozenset(args.docs.read_text().split()) if args.docs else None,
+                       timeout=args.timeout,
                        workers=read_workers(args.workers),
                        score_workers=args.score_workers,
                        verdicts=args.verdicts,
@@ -292,6 +294,11 @@ def main(argv=None) -> int:
                         "paths resolve against the dataset's folder. Default: manifest.parquet")
     b.add_argument("--suites", nargs="+", help="limit to these suites")
     b.add_argument("--limit", type=int, default=0, help="first N documents; for a smoke test")
+    b.add_argument("--sample", type=int, default=0, metavar="N",
+                   help="N documents spread over every suite, the same ones each time; a smoke test "
+                        "that sees every kind of document")
+    b.add_argument("--docs", type=pathlib.Path, metavar="FILE",
+                   help="a file of doc ids, one per line: run only these documents")
     b.add_argument("--timeout", type=float, default=1800,
                    help="seconds one document may take, the same for every vendor")
     b.add_argument("--workers", metavar="N|NAME=N,...",
