@@ -15,7 +15,7 @@ import re
 import unicodedata
 from typing import Any, Callable, NamedTuple
 
-from .recognise import _asdate, _asdecimal, _astime, _round_fraction
+from . import recognise
 
 Json = Any
 
@@ -127,8 +127,8 @@ FOLDS: tuple[Fold, ...] = (
          "Unicode is reduced to its plainest form: accents drop (M\u00fcller reads as Muller), "
          "invisible characters like a zero-width space are removed, and anything Unicode "
          "considers a styled form of plain text is unstyled -- \u00b5g reads as ug, \ufb01le as file, "
-         "\uff46\uff55\uff4c\uff4c as full, \u216b as XII, \u00bd as 1/2 and 10\u00b2 as 102. The last of those is the one "
-         "to know about: a superscript is treated as an ordinary digit.",
+         "\uff46\uff55\uff4c\uff4c as full, \u216b as XII, \u00bd as 1/2 and 10\u00b2 as 102. The last of "
+         "those is the one to know about: a superscript is treated as an ordinary digit.",
          _f_accents),
     Fold("footnote marker",
          "A short [1] or [a] reference marker attached to a value is dropped -- but never when "
@@ -207,20 +207,20 @@ def _canon_key_unguarded(v, trace=None):
         if trace is not None:
             trace["route"] = "boolean"
         return _canon(v, trace and trace["changes"])
-    d = _asdecimal(v)
+    d = recognise._asdecimal(v)
     if d is not None:
-        q = _round_fraction(d)
+        q = recognise._round_fraction(d)
         if trace is not None:
             trace["route"] = "number"
         if q == q.to_integral_value():
             return _canon(int(q), trace and trace["changes"])
         return _canon(f"{q.normalize():f}", trace and trace["changes"])
-    d = _asdate(v)
+    d = recognise._asdate(v)
     if d:
         if trace is not None:
             trace["route"] = "date"
         return f"#d{d}"
-    t = _astime(v)
+    t = recognise._astime(v)
     if t:
         if trace is not None:
             trace["route"] = "time"

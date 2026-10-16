@@ -23,11 +23,7 @@ from pathlib import Path
 
 import httpx
 
-from ..budget import Budget, PollRetry
-
-from ..contract import Cost, Extraction
-
-from ..errors import MissingCredential, VendorError
+from .. import budget, contract, errors
 
 DEFAULT_BASE_URL = "https://www.datalab.to"
 
@@ -73,7 +69,7 @@ def prepare_schema(schema: dict) -> dict:
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
-            config: Config = Config()) -> Extraction:
+            config: Config = Config()) -> contract.Extraction:
     """POST the document, poll until it is done, return the extraction and what it cost.
 
     Raises rather than returning a failure: this function ran the poll loop, so it is the only
@@ -83,14 +79,14 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     """
     key = os.environ.get("DATALAB_API_KEY")
     if not key:
-        raise MissingCredential("DATALAB_API_KEY is not set")
+        raise errors.MissingCredential("DATALAB_API_KEY is not set")
 
-    budget = Budget(timeout)
+    deadline = budget.Budget(timeout)
     base_url = config.base_url.rstrip("/")
-    cost: Cost = Cost()
+    cost: contract.Cost = contract.Cost()
     polls = 0
 
-    def read_cost(body: dict) -> Cost | None:
+    def read_cost(body: dict) -> contract.Cost | None:
         """The cost the vendor stated, or None if this response does not say.
 
         Returns the SOURCE as well as the figure, because the two fields below are different
@@ -101,7 +97,7 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
         for field, value in (("cost_breakdown.final_cost_cents",
                               (body.get("cost_breakdown") or {}).get("final_cost_cents")),
                              ("total_cost", body.get("total_cost"))):
-            found = Cost.reported(value, field, cents=True)
+            found = contract.Cost.reported(value, field, cents=True)
             if found.usd is not None:
                 return found
         return None
@@ -114,28 +110,28 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                 data={"page_schema": json.dumps(schema),
                       "extraction_mode": config.mode, "output_format": "json"})
         if resp.status_code != 200:
-            raise VendorError(f"HTTP {resp.status_code}: {resp.text[:300]}",
-                              status=resp.status_code, body=resp.text)
+            raise errors.VendorError(f"HTTP {resp.status_code}: {resp.text[:300]}",
+                                     status=resp.status_code, body=resp.text)
         request_id = resp.json().get("request_id")
         if not request_id:
-            raise VendorError(f"no request_id in the response: {resp.text[:200]}",
-                              status=resp.status_code, body=resp.text)
+            raise errors.VendorError(f"no request_id in the response: {resp.text[:200]}",
+                                     status=resp.status_code, body=resp.text)
 
         url = f"{base_url}/api/v1/extract/{request_id}"
-        retry = PollRetry(budget)
+        retry = budget.PollRetry(deadline)
         while True:
-            budget.check(f"request {request_id} was still running after {polls} polls")
+            deadline.check(f"request {request_id} was still running after {polls} polls")
             try:
                 r = client.get(url)
             except httpx.TransportError as exc:
                 if retry.again():
                     continue
-                raise VendorError(f"polling failed: {exc}"[:300], status=None) from None
+                raise errors.VendorUnreachable(f"polling failed: {exc}"[:300]) from None
             if r.status_code != 200:
                 if retry.again(r.status_code):
                     continue
-                raise VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
-                                  status=r.status_code, body=r.text)
+                raise errors.VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
+                                         status=r.status_code, body=r.text)
             retry.ok()
             polls += 1
             body = r.json()
@@ -144,8 +140,8 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                 cost = found
             status = body.get("status")
             if status == "error":
-                raise VendorError(f"vendor reported failure: {str(body.get('error'))[:300]}",
-                                  status=200, body=r.text)
+                raise errors.VendorError(f"vendor reported failure: {str(body.get('error'))[:300]}",
+                                         status=200, body=r.text)
             if status == "complete":
                 if cost.usd is None:
                     try:
@@ -156,9 +152,9 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                         pass
                 extraction = body.get("extraction_schema_json")
                 if extraction is None:
-                    raise VendorError("status complete but no extraction_schema_json",
-                                      status=200, body=r.text)
-                return Extraction(
+                    raise errors.VendorError("status complete but no extraction_schema_json",
+                                             status=200, body=r.text)
+                return contract.Extraction(
                     result=json.loads(extraction) if isinstance(extraction, str) else extraction,
                     raw=body,
                     cost=cost,

@@ -36,7 +36,7 @@ from omni_extract_bench import cli  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 HANDLERS = tuple(sorted(n for n in dir(cli) if n.startswith("cmd_")))
-VERBS = ("score", "benchmark", "providers", "predict")
+VERBS = ("score", "benchmark", "grade", "providers", "predict")
 FAILS = []
 
 
@@ -80,9 +80,11 @@ def parse(argv):
 
 
 INVOCATIONS = {
-    "score": (["score", "--gt", "g.json", "--pred", "p.json",
+    "score": (["score", "--gold", "g.json", "--pred", "p.json",
                "--schema", "s.json"], "cmd_score"),
     "benchmark": (["benchmark", "--providers", "datalab"], "cmd_benchmark"),
+    "grade": (["grade", "mine/"], "cmd_grade"),
+    "check": (["check"], "cmd_check"),
     "providers": (["providers"], "cmd_providers"),
     "predict": (["predict", "--provider", "datalab", "--doc", "d.pdf",
                  "--schema", "s.json"], "cmd_predict"),
@@ -145,7 +147,7 @@ check("every cmd_* handler has an invocation in this file", not unchecked,
 
 import logging                                                          # noqa: E402
 
-parse(["score", "--gt", "g.json", "--pred", "p.json", "--schema", "s.json"])
+parse(["score", "--gold", "g.json", "--pred", "p.json", "--schema", "s.json"])
 for lib in ("httpx", "openai._base_client", "urllib3", "a_library_added_next_year"):
     check(f"{lib} does not narrate at INFO",
           logging.getLogger(lib).getEffectiveLevel() > logging.INFO)
@@ -185,8 +187,11 @@ for answer, want in (("y", True), ("yes", True), ("Y", True),
     got, _ = _asked(answer)
     check(f"a terminal answering {answer!r} -> {want}", got is want, str(got))
 check("the plan is shown before the question", "benchmark: 1 run" in _asked("y")[1])
-check("...on stderr, so stdout stays the summary", _asked("y")[1].strip() == "benchmark: 1 run")
-check("no terminal proceeds without asking", _asked("n", tty=False)[0] is True)
+_out = io.StringIO()
+with contextlib.redirect_stdout(_out):
+    _, _err = _asked("y")
+check("...and the question on stderr, so stdout stays the summary", not _out.getvalue() and "proceed?" in _err)
+check("no terminal: a scripted command goes ahead, without asking", _asked("n", tty=False)[0] is True)
 check("...and a closed terminal does not", _asked(EOFError)[0] is False)
 
 print(f"\n{'ALL CLI TESTS PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}")

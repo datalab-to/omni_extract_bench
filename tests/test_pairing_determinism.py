@@ -31,7 +31,7 @@ import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from tests.approximate import approximate                  # noqa: E402
-from omni_extract_bench.metric import (                                     # noqa: E402
+from omni_extract_bench.scorers.field_matching import (                                     # noqa: E402
     KEY, Row, _content_key, _extract_rows_at, flatten, score)
 
 FAILS = []

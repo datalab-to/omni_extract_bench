@@ -3,8 +3,8 @@
 
 import numpy as _np
 import scipy.sparse as _sp
-from scipy.optimize import linear_sum_assignment as _lsa
-from scipy.sparse.csgraph import min_weight_full_bipartite_matching as _sparse_lsa
+from scipy import optimize
+from scipy.sparse import csgraph
 
 MAX_EXACT = 20000
 MAX_CELLS = 250 * 10**6
@@ -49,7 +49,7 @@ def sparse_pairs(pred_rows, gt_rows, weights):
     whole reason `_greedy` exists. When the weights are sparse they are 50 MB instead, and
     scipy's sparse assignment solves them exactly.
 
-    **The escape columns are what make it the same problem.** `_sparse_lsa` finds a FULL
+    **The escape columns are what make it the same problem.** The sparse solver finds a FULL
     matching: every row on the smaller side must be assigned. This metric must be free to
     leave a row unpaired -- pairing two rows that share nothing is not a match -- and forcing
     a full matching answers a different, worse question. On a 2x2 where one row can only reach
@@ -67,7 +67,7 @@ def sparse_pairs(pred_rows, gt_rows, weights):
         return [], list(pred_rows), list(gt_rows)
     escape = _sp.csr_matrix((_np.ones(n), (_np.arange(n), _np.arange(n))), shape=(n, n))
     aug = _sp.hstack([W.astype(_np.float64) * (n + m + 1), escape], format="csr")
-    rows, cols = _sparse_lsa(aug, maximize=True)
+    rows, cols = csgraph.min_weight_full_bipartite_matching(aug, maximize=True)
 
     rows, cols = rows[cols < m], cols[cols < m]
     if len(rows):
@@ -109,7 +109,7 @@ def optimal_pairs(pred_rows, gt_rows, weight, weights=None):
             row = cost[ia]
             for jb, b in enumerate(B):
                 row[jb] = -(weight(a, b) if not transposed else weight(b, a))
-    rows, cols = _lsa(cost)
+    rows, cols = optimize.linear_sum_assignment(cost)
     assign = [-1] * len(A)
     for ia, jb in zip(rows.tolist(), cols.tolist()):
         assign[ia] = jb

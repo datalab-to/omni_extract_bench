@@ -24,7 +24,7 @@ import sys as _sys
 
 _ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 _sys.path.insert(0, _ROOT)
-import omni_extract_bench.metric as sc                                       # noqa: E402
+import omni_extract_bench.scorers.field_matching as sc                                       # noqa: E402
 
 FAILS = []
 

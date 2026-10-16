@@ -37,13 +37,7 @@ from pathlib import Path
 
 import openai
 
-from ..responses import parse_model_json
-
-from ..budget import Budget
-
-from ..contract import Cost, Extraction
-
-from ..errors import MissingCredential, VendorError
+from .. import budget, contract, errors, responses
 
 SYSTEM_PROMPT = """\
 You are a document data extraction system. You will be given a PDF document \
@@ -109,7 +103,7 @@ def prepare_schema(schema: dict) -> dict:
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
-            config: Config) -> Extraction:
+            config: Config) -> contract.Extraction:
     """One completion with the schema as `response_format`, retried only for a bad ANSWER.
 
     The loop here raises the temperature after a reply that would not parse, was empty of
@@ -120,9 +114,9 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     """
     key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if not key:
-        raise MissingCredential("OPENROUTER_API_KEY (or OPENAI_API_KEY) must be set")
+        raise errors.MissingCredential("OPENROUTER_API_KEY (or OPENAI_API_KEY) must be set")
 
-    budget = Budget(timeout)
+    deadline = budget.Budget(timeout)
     model = config.model
     max_output_tokens = config.max_output_tokens
     client = openai.OpenAI(base_url=config.base_url, api_key=key)
@@ -141,8 +135,8 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     temperature, last, calls = 0.0, None, []
     for attempt in range(config.attempts):
         if attempt:
-            time.sleep(min((2 ** attempt) + random.uniform(0, 1), budget.remaining()))
-        budget.check(f"after {attempt} attempt(s) that produced no usable answer")
+            time.sleep(min((2 ** attempt) + random.uniform(0, 1), deadline.remaining()))
+        deadline.check(f"after {attempt} attempt(s) that produced no usable answer")
         try:
             resp = client.chat.completions.create(
                 model=model, messages=messages,
@@ -150,14 +144,16 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
                                  "json_schema": {"name": "extraction", "schema": schema,
                                                  "strict": False}},
                 max_tokens=max_output_tokens, temperature=temperature,
-                timeout=budget.remaining(),
+                timeout=deadline.remaining(),
                 extra_body={"usage": {"include": True}},
             )
         except openai.APIStatusError as exc:
-            raise VendorError(f"{type(exc).__name__}: {exc}"[:300],
-                              status=getattr(exc, "status_code", None)) from None
+            raise errors.VendorError(f"{type(exc).__name__}: {exc}"[:300],
+                                     status=getattr(exc, "status_code", None)) from None
+        except openai.APIConnectionError as exc:
+            raise errors.VendorUnreachable(f"{type(exc).__name__}: {exc}"[:300]) from None
         except openai.APIError as exc:
-            raise VendorError(f"{type(exc).__name__}: {exc}"[:300]) from None
+            raise errors.VendorError(f"{type(exc).__name__}: {exc}"[:300]) from None
 
         usage = resp.usage.model_dump() if getattr(resp, "usage", None) else {}
         calls.append({"usage": usage, "model": getattr(resp, "model", None)})
@@ -172,26 +168,26 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
         choice = choices[0]
         text = getattr(getattr(choice, "message", None), "content", None)
         if choice.finish_reason == "length":
-            raise VendorError(f"truncated at max_tokens={max_output_tokens} "
-                              f"({model}'s published ceiling)", status=200)
+            raise errors.VendorError(f"truncated at max_tokens={max_output_tokens} "
+                                     f"({model}'s published ceiling)", status=200)
         if not text:
-            raise VendorError("empty completion", status=200)
-        parsed = parse_model_json(text)
+            raise errors.VendorError("empty completion", status=200)
+        parsed = responses.parse_model_json(text)
         if parsed is None:
             last = f"not JSON, even allowing a code fence: {text[:120]!r}"
             calls[-1]["text"] = text
             temperature = min(temperature + 0.1, 1.0)
             continue
         if isinstance(parsed, dict) and parsed:
-            return Extraction(
+            return contract.Extraction(
                 result=parsed,
                 raw={"calls": calls, "finish_reason": choice.finish_reason,
                      "max_output_tokens": max_output_tokens, "model": model},
-                cost=Cost.reported(usage.get("cost"), "usage.cost",
-                                   tokens_in=usage.get("prompt_tokens"),
-                                   tokens_out=usage.get("completion_tokens")))
+                cost=contract.Cost.reported(usage.get("cost"), "usage.cost",
+                                            tokens_in=usage.get("prompt_tokens"),
+                                            tokens_out=usage.get("completion_tokens")))
         last = f"model returned {type(parsed).__name__}, not an object"
 
-    raise VendorError(f"all {config.attempts} attempts returned an unusable answer: {last}",
-                      status=200, body=json.dumps({"calls": calls, "model": model})[:4000])
+    raise errors.VendorError(f"all {config.attempts} attempts returned an unusable answer: {last}",
+                             status=200, body=json.dumps({"calls": calls, "model": model})[:4000])
 

@@ -25,7 +25,7 @@ out which predicted row goes with which gold row; renumber, and scoring is set a
 ## 2. Comparing one value
 
 Deterministic and type-directed. No model participates. `canon_key` in
-`omni_extract_bench/values.py` is the single comparison rule, used by leaf scoring and row
+`omni_extract_bench/scorers/field_matching/values.py` is the single comparison rule, used by leaf scoring and row
 pairing alike, so the two cannot disagree.
 
 | gold type | rule |
@@ -87,7 +87,7 @@ in `order_matters` makes its index an address again; §8 covers what that trades
 
 ## 4. What is reported
 
-Every address falls into exactly one bucket. These are the verdicts `explain()` returns and
+Every address falls into exactly one bucket. These are the verdicts `score(..., verdicts=True)` returns and
 the counts `score()` reports:
 
 | bucket | meaning |
@@ -108,7 +108,7 @@ contributes a value per column while one invented field contributes one.
     gold      = matched + misread + unfound
     total     = matched + misread + unfound + fabricated + invented_item + invented_field
 
-    accuracy   = 100 · matched / total       how much you recovered, net of inventions
+    accuracy   = matched / total             how much you recovered, net of inventions
     precision  = matched / asserted          how much of what you said was true
     recall     = matched / gold              how much you recovered, inventions ignored
 
@@ -168,6 +168,12 @@ are not comparable to default ones.
 
 Asserted by `tests/test_spec_null_semantics.py`.
 
+**A field's provenance is not a value.** A prediction's key ending in `_citations` or `_meta` whose
+base name is a sibling in the same object (`total_citations` beside `total`) is dropped before
+scoring, for every vendor alike: it says where a value came from, not a fact the schema asked for, so
+it is never charged as an invented field. A real field that merely ends the same way survives
+(`regulatory_citations` stays unless `regulatory` sits beside it).
+
 ### 5.1 Rendering is folded; content is not
 
 `17 APR 2020` and `2020-04-17` compare equal. `NIKE, Inc.` and `Nike` do not. The test is not
@@ -192,7 +198,7 @@ each tightening is a score change that has to be paid for.
 
 ### 5.4 Reading a comparison back
 
-`explain()` returns both sides twice, raw and canonical, so a reader can see *why* two values
+`score(..., verdicts=True)` returns both sides twice, raw and canonical, so a reader can see *why* two values
 counted as equal without recomputing the rule and risking a second opinion about equality.
 
 ## 6. Ground truth adjustments
@@ -210,8 +216,8 @@ weightings compose: every value carries `1/total` inside its document, so a valu
 **inversely proportional to the size of the document holding it**.
 
 > **Not done for you.** `score` scores one document, and the UNIFIED step is the caller's to
-> take. `benchmark.summarise` goes as far as SUBJECT and no further: `summary.json` carries the
-> mean over documents at the top and the same block per suite, and the mean of those four is
+> take. `field_matching.summarize` goes as far as SUBJECT and no further: `summary.json` carries the
+> mean over documents at the top and the same block per suite, and the mean of the suites' means is
 > the line it deliberately does not write. Averaging `accuracy` across a corpus gives the flat
 > mean over documents that this section says must not happen -- group by subset, take the mean
 > within each, then take the mean of those. A leaderboard that skips that step is not UNIFIED,

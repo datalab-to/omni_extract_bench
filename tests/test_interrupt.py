@@ -2,8 +2,8 @@
 """Ctrl-C stops the run, and leaves it resumable.
 
 THE SUBTLETY THAT MAKES THIS WORTH A TEST. Python delivers a KeyboardInterrupt to the MAIN
-thread. Providers run concurrently, so `ProviderRun.predict` is in a worker -- where a
-`except KeyboardInterrupt` can never fire. The handler has to be in `run`, on the main thread,
+thread. Adapters run concurrently, so each adapter's `drain` is in a worker -- where a
+`except KeyboardInterrupt` can never fire. The handler has to be in `predict_all`, on the main thread,
 and it has to set a flag every provider shares; otherwise the interrupt escapes into
 `ThreadPoolExecutor.__exit__`, which waits for every provider to work through the whole corpus.
 Measured on a toy two-level pool that is 8.1s against 0.0s, and on the real corpus it is hours:
@@ -31,6 +31,8 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
+from omni_extract_bench.scorers import field_matching as scorer                # noqa: E402
+import omni_extract_bench.data as DS
 from omni_extract_bench.harness.registry import out_name  # noqa: E402
 
 FAILS = []
@@ -43,27 +45,7 @@ def report(name, cond, detail=""):
         FAILS.append(name)
 
 
-print("\nA STOP ALREADY SET MEANS NOTHING IS CALLED")
 out = pathlib.Path(tempfile.mkdtemp())
-docs = []
-for i in range(5):
-    gt = out / f"g{i}.json"; gt.write_text("{}")
-    pdf = out / f"p{i}.pdf"; pdf.write_bytes(b"%PDF")
-    docs.append(B.Doc(f"d{i}", "s", pdf, gt, {"type": "object"}))
-
-called = []
-_real_predict = B.predict
-B.predict = lambda *a, **k: called.append(1) or {"result": {"a": 1}, "cost": {}}
-try:
-    already = threading.Event()
-    already.set()
-    B.ProviderRun("datalab", [B.Run("datalab", "datalab", {}, out)], 2)\
-     .predict(docs, timeout=5, stop=already)
-finally:
-    B.predict = _real_predict
-report("no vendor call is made", called == [], f"{len(called)} calls")
-report("...and nothing is written, so every document stays resumable",
-       not list((out / "records").glob("*.json")))
 
 print("\nAND A REAL SIGINT STOPS A RUN, ON A DOCUMENT BOUNDARY")
 script = out / "run_it.py"
@@ -72,6 +54,7 @@ import sys, json, pathlib, signal, time, types
 signal.signal(signal.SIGINT, signal.default_int_handler)
 sys.path.insert(0, {str(ROOT)!r})
 import omni_extract_bench.benchmark as B
+import omni_extract_bench.data as DS
 import omni_extract_bench.harness.document as D
 import omni_extract_bench.harness.registry as V
 
@@ -101,13 +84,13 @@ docs = []
 for i in range(40):
     g = out / f"g{{i}}.json"; g.write_text(json.dumps({{"a": "x"}}))
     p = out / f"p{{i}}.pdf"; p.write_bytes(b"%PDF")
-    docs.append(B.Doc(f"d{{i:02d}}", "s", p, g, {{"type": "object",
+    docs.append(DS.Doc(f"d{{i:02d}}", "s", p, g, {{"type": "object",
                 "properties": {{"a": {{"type": "string"}}}}}}))
-B.fetch = lambda *_: out
-B.read_manifest = lambda *a, **k: docs
+DS.download_dataset = lambda *_: out
+DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs))
 D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o:
     time.sleep(0.4) or Extraction(result={{"a": "x"}}, cost=Cost(usd=0.5)))
-B.run(["datalab", "reducto"], out=out, score_workers=1, predict_workers={{"*": 2}})
+B.execute(B.plan(["datalab", "reducto"], out=out, score_workers=1, workers=2))
 ''')
 work = pathlib.Path(tempfile.mkdtemp())
 proc = subprocess.Popen([sys.executable, str(script), str(work)],
@@ -138,7 +121,7 @@ for provider in ("datalab", "reducto"):
     report(f"{provider}: every record has its prediction beside it",
            not (set(done) - have), f"orphans: {sorted(set(done) - have)}")
     report(f"{provider}: every record parses, so none is re-run for being corrupt",
-           all(not B.needs_run(recs / f"{d}.json") for d in done))
+           all(B.recorded(B.Run(provider, {}, run), d) is not None for d in done))
 
 report("no half-written file survives anywhere",
        not list(work.rglob("*.partial*")), str(list(work.rglob("*.partial*"))))
@@ -172,7 +155,7 @@ pair = []
 for i in range(6):
     g = acct / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     pdf = acct / f"p{i}.pdf"; pdf.write_bytes(b"%PDF")
-    pair.append(B.Doc(f"d{i}", "s", pdf, g, {"type": "object",
+    pair.append(DS.Doc(f"d{i}", "s", pdf, g, {"type": "object",
                                              "properties": {"a": {"type": "string"}}}))
 calls = collections.Counter()
 
@@ -186,47 +169,42 @@ def broke_adapter(prov):
     return extract
 
 
-saved_adapter, saved_fetch, saved_manifest = D.adapter, B.fetch, B.read_manifest
+saved_adapter, saved_fetch, saved_manifest = D.adapter, DS.download_dataset, DS.read_manifest
 D.adapter = as_adapter(broke_adapter)
-B.fetch = lambda *_: acct
-B.read_manifest = lambda *a, **k: pair
+DS.download_dataset = lambda *_: acct
+DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(pair))
 try:
-    B.run(["datalab", "reducto"], out=acct, score_workers=1, predict_workers={"*": 1})
-    report("an account failure stops the run rather than publishing", False,
-           "run() returned a summary")
+    B.execute(B.plan(["datalab", "reducto"], out=acct, score_workers=1, workers=1))
+    report("an account failure stops the run, and says so", False, "execute returned normally")
 except AccountFailure:
-    report("an account failure stops the run rather than publishing", True)
+    report("an account failure stops the run, and says so", True)
 finally:
-    V.adapter, B.fetch, B.read_manifest = saved_adapter, saved_fetch, saved_manifest
+    V.adapter, DS.download_dataset, DS.read_manifest = saved_adapter, saved_fetch, saved_manifest
 report("the healthy vendor still ran every document", calls["reducto"] == 6,
        f"{calls['reducto']} of 6 -- a shared flag stops it after one")
-report("...and no run published a summary from a half-run corpus",
-       not list(acct.glob("*/summary.json")))
+_sums = {s.parent.name: json.loads(s.read_text()) for s in acct.glob("*/summary.json")}
+report("...and what was predicted is graded: the healthy run whole",
+       _sums.get(out_name("reducto"), {}).get("documents") == 6, str(_sums.get(out_name("reducto"))))
+report("...and the broke run's documents pending, so its summary doesn't claim to be whole",
+       _sums.get(out_name("datalab"), {}).get("pending") == 6, str(_sums.get(out_name("datalab"))))
 report("...while its predictions are on disk for --score-only",
        len(list((acct / out_name("reducto") / "predictions").glob("*.json"))) == 6)
 
-print("\nA NARROWED RUN DOES NOT TRUNCATE THE SCORES FILE")
+print("\nA GRADING WRITES WHAT IT GRADED, WHOLE")
 narrow = pathlib.Path(tempfile.mkdtemp())
 (narrow / "predictions").mkdir()
 five = []
 for i in range(5):
     g = narrow / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     (narrow / "predictions" / f"d{i}.json").write_text(json.dumps({"a": "x"}))
-    five.append(B.Doc(f"d{i}", "s", narrow / "x.pdf", g,
+    five.append(DS.Doc(f"d{i}", "s", narrow / "x.pdf", g,
                       {"type": "object", "properties": {"a": {"type": "string"}}}))
-B.Run("v", "v", {}, narrow).score(five, workers=1)
+B.grade(B.Run("datalab", {}, narrow), five, score_workers=1)
 lines = lambda: len((narrow / "scores.jsonl").read_text().strip().splitlines())   # noqa: E731
 report("a full run writes every row", lines() == 5, str(lines()))
-B.Run("v", "v", {}, narrow).score(five[:2], workers=1)
-report("a narrowed run keeps the rows it did not select", lines() == 5, str(lines()))
-B.Run("v", "v", {}, narrow).score(five[:2], workers=1, rescore=True)
-report("...and so does a narrowed rescore", lines() == 5, str(lines()))
-
-back = B.Run("v", "v", {}, narrow).score(five[:2], workers=1)
-report("the return value is this run's selection, not the file",
-       [r["doc_id"] for r in back] == ["d0", "d1"], str([r["doc_id"] for r in back]))
-report("...so the summary counts what was asked for",
-       B.summarise(back)["documents"] == 2, str(B.summarise(back)["documents"]))
+back = B.grade(B.Run("datalab", {}, narrow), five[:2], score_workers=1)
+report("a narrowed grading's files are that grading's: the two it graded", lines() == 2, str(lines()))
+report("...and so is its summary", back["documents"] == 2, str(back["documents"]))
 
 print("\nA FULL DISK STOPS THE VENDOR INSTEAD OF BUYING THE REST")
 disk = pathlib.Path(tempfile.mkdtemp())
@@ -234,23 +212,27 @@ twenty = []
 for i in range(20):
     g = disk / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     pdf = disk / f"p{i}.pdf"; pdf.write_bytes(b"%PDF")
-    twenty.append(B.Doc(f"d{i}", "s", pdf, g,
+    twenty.append(DS.Doc(f"d{i}", "s", pdf, g,
                         {"type": "object", "properties": {"a": {"type": "string"}}}))
 paid = collections.Counter()
 D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, **o: (
     paid.update([prov]), Extraction(result={"a": "x"}, cost=Cost(usd=0.1)))[1])
-real_write_json = B.write_json_atomic
-B.write_json_atomic = lambda path, obj, **kw: (
-    (_ for _ in ()).throw(OSError("No space left on device")))
+real_write_json = B.write_json
+DS.read_manifest = lambda *a, **k: (disk, tuple(twenty))
+B.write_json = lambda path, obj, **kw: (
+    real_write_json(path, obj, **kw) if path.name == "settings.json"
+    else (_ for _ in ()).throw(OSError("No space left on device")))
 try:
-    B.ProviderRun("datalab", [B.Run("datalab", "datalab", {}, disk / "x")], 4)\
-     .predict(twenty, timeout=5)
+    B.predict_all(B.Plan(runs=(B.Run("datalab", {}, disk / "x"),), docs=tuple(twenty),
+                         dataset=str(disk), manifest="manifest.parquet", timeout=5,
+                         workers=4, score_workers=1, verdicts=True,
+                         score_only=False))
     report("a failed write stops the vendor", False, "it returned normally")
 except OSError:
     report("a failed write stops the vendor", True)
 finally:
-    B.write_json_atomic = real_write_json
-    D.adapter = saved_adapter
+    B.write_json = real_write_json
+    D.adapter, DS.read_manifest = saved_adapter, saved_manifest
 report("...after a couple of documents, not all twenty", paid["datalab"] <= 8,
        f"{paid['datalab']} of 20 paid for with nothing stored")
 
@@ -261,7 +243,7 @@ some = []
 for i in range(5):
     g = vd / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     (vd / "predictions" / f"d{i}.json").write_text(json.dumps({"a": "x"}))
-    some.append(B.Doc(f"d{i}", "s", vd / "x.pdf", g,
+    some.append(DS.Doc(f"d{i}", "s", vd / "x.pdf", g,
                       {"type": "object", "properties": {"a": {"type": "string"}}}))
 real_write = pathlib.Path.write_text
 
@@ -274,15 +256,14 @@ def failing_write(self, *a, **k):
 
 pathlib.Path.write_text = failing_write
 try:
-    got = B.Run("v", "v", {}, vd).score(some, workers=1, verdicts=True)
+    B.grade(B.Run("datalab", {}, vd), some, score_workers=1, verdicts=True)
+    report("a grading that can't write its verdicts stops", False, "it returned normally")
+except OSError:
+    report("a grading that can't write its verdicts stops, not a row passed off as the vendor's", True)
 finally:
     pathlib.Path.write_text = real_write
-report("the other four documents survive", sum(r["status"] == "scored" for r in got) == 4,
-       str([r["status"] for r in got]))
-report("the failing one is a row, not an escape",
-       sum(r["status"] == "error" for r in got) == 1)
-report("...and the file holds all five", 
-       len((vd / "scores.jsonl").read_text().strip().splitlines()) == 5)
+report("...and writes nothing: no scores, no summary, no verdicts half-made",
+       not any((vd / f).exists() for f in ("scores.jsonl", "summary.json", "verdicts", ".verdicts.partial")))
 
 print("\nAND AN INTERRUPT WHILE SCORING KEEPS WHAT IT GRADED")
 score_script = out / "score_it.py"
@@ -291,6 +272,7 @@ import sys, json, pathlib, signal
 signal.signal(signal.SIGINT, signal.default_int_handler)
 sys.path.insert(0, {str(ROOT)!r})
 import omni_extract_bench.benchmark as B
+import omni_extract_bench.data as DS
 
 def main():
     out = pathlib.Path(sys.argv[1])
@@ -304,8 +286,8 @@ def main():
         g = out / f"g{{i}}.json"; g.write_text(json.dumps(gt))
         (out / "predictions" / f"d{{i:02d}}.json").write_text(
             json.dumps({{"rows": list(reversed(gt["rows"]))}}))
-        docs.append(B.Doc(f"d{{i:02d}}", "s", out / "x.pdf", g, schema))
-    B.Run("v", "v", {{}}, out).score(docs, workers=4)
+        docs.append(DS.Doc(f"d{{i:02d}}", "s", out / "x.pdf", g, schema))
+    B.grade(B.Run("datalab", {{}}, out), docs, score_workers=4)
 
 if __name__ == "__main__":
     main()
@@ -324,8 +306,8 @@ except subprocess.TimeoutExpired:
 sj = work2 / "scores.jsonl"
 kept = [json.loads(l) for l in sj.read_text().splitlines() if l.strip()] if sj.exists() else []
 report("scoring stops promptly", stopped < 10, f"{stopped:.1f}s after the signal")
-report("what was graded is written, not discarded", 0 < len(kept) < 60,
-       f"{len(kept)} of 60 rows -- 0 means the work was thrown away")
+report("an interrupted grading writes nothing: the next one starts over, fresh", kept == [],
+       f"{len(kept)} of 60 rows")
 report("every kept row is a finished score, never a partial one",
        all(r.get("status") == "scored" and "accuracy" in r for r in kept))
 report("the file is still in document order",
@@ -340,37 +322,28 @@ small = []
 for i in range(6):
     g = fresh / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     (fresh / "predictions" / f"d{i}.json").write_text(json.dumps({"a": "x"}))
-    small.append(B.Doc(f"d{i}", "s", fresh / "x.pdf", g, schema))
+    small.append(DS.Doc(f"d{i}", "s", fresh / "x.pdf", g, schema))
 
 graded = []
-real_score_one = B.score_one
-B.score_one = lambda doc, **k: graded.append(doc.doc_id) or real_score_one(doc, **k)
+real_score_one = B._score_one
+B._score_one = lambda doc, **k: graded.append(doc.doc_id) or real_score_one(doc, **k)
 try:
-    # Explicit, because the last two checks are about rows that have no verdicts.
-    B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=False)
+    B.grade(B.Run("datalab", {}, fresh), small, score_workers=1, verdicts=False)
     report("a first pass grades everything", len(graded) == 6, str(len(graded)))
 
-    graded.clear(); rows = B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=False)
-    report("a second pass grades nothing", graded == [], str(graded))
-    report("...and still returns every row", len(rows) == 6, str(len(rows)))
-
-    graded.clear()
-    B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=False, rescore=True)
-    report("rescore=True grades everything again", len(graded) == 6, str(len(graded)))
-
-    graded.clear(); B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=True)
-    report("asking for verdicts re-grades rows that have none", len(graded) == 6, str(len(graded)))
-    graded.clear(); B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=True)
-    report("...and those rows are reusable once they do", graded == [], str(graded))
+    graded.clear(); summary = B.grade(B.Run("datalab", {}, fresh), small, score_workers=1, verdicts=True)
+    report("a second pass grades everything again: grading is fresh", len(graded) == 6, str(len(graded)))
+    report("...and counts every row", summary["documents"] == 6, str(summary["documents"]))
 
     sj = fresh / "scores.jsonl"
     lines = sj.read_text().splitlines()
     lines[2] = "{ this is not json"
     sj.write_text("\n".join(lines) + "\n")
-    graded.clear(); B.Run("v", "v", {}, fresh).score(small, workers=1, verdicts=True)
-    report("an unreadable row costs one document, not the file", len(graded) == 1, str(graded))
+    graded.clear(); B.grade(B.Run("datalab", {}, fresh), small, score_workers=1, verdicts=True)
+    report("an unreadable line is written over by the next grading",
+           len(graded) == 6 and len(B.read_scores(B.Run("datalab", {}, fresh))) == 6, str(graded))
 finally:
-    B.score_one = real_score_one
+    B._score_one = real_score_one
 
 print("\nAND THE SCORES FILE IS WRITTEN ATOMICALLY")
 report("no .partial survives a write", not list(fresh.glob("*.partial*")))

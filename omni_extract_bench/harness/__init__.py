@@ -1,6 +1,6 @@
 """Everything that is not the scorer: producing predictions.
 
-The package above this one is the metric. `metric.py` reaches exactly `matching`, `prepare`,
+The package above this one is the metric. `scorers/field_matching` reaches exactly `matching`, `prepare`,
 `recognise` and `values` -- `tests/test_score_standalone.py` fails if that ever widens --
 so a score cannot come to depend on a transport, a vendor dialect, or an envelope convention.
 
@@ -35,6 +35,7 @@ THE SURFACE
                                      and the evidence for it in one dict
     Extraction, Cost                 what an adapter hands back
     VendorError, VendorTimeout       a failure of the call; `.transient` decides a retry
+    VendorUnreachable                within the call; `benchmark.needs` decides a later one
     DialectError                     the schema would not shape for this vendor; no call made
     AccountFailure                   raised, never returned: not a fact about a document
     MissingCredential                likewise: an unset API key
@@ -56,13 +57,14 @@ calls, which is what it cost once.
 
 from .contract import Adapter, Cost, Extraction
 from .errors import (AccountFailure, DialectError, MissingCredential, MissingDependency,
-                     VendorError, VendorTimeout)
+                     VendorError, VendorTimeout, VendorUnreachable)
 
 # Vendor SDKs are checked once, at import: one message naming the extra, not a failure hours
 # into a run. The scorer never imports this package, so scoring needs none of them.
 try:
     from .document import predict
-    from .registry import DEFAULT_TIMEOUT, PROVIDERS, adapter, add_adapter, resolve, settings_for
+    from .registry import (DEFAULT_TIMEOUT, PROVIDERS, adapter, add_adapter, out_name, resolve,
+                           settings_for)
 except ImportError as exc:
     # `exc.name` tells an SDK that is missing or incompatible apart from an import of ours that
     # broke; only the first is fixed by installing the extra.
@@ -77,7 +79,7 @@ except ImportError as exc:
 __all__ = [
     "predict", "adapter", "add_adapter", "Adapter",
     "Extraction", "Cost",
-    "VendorError", "VendorTimeout", "DialectError",
+    "VendorError", "VendorTimeout", "VendorUnreachable", "DialectError",
     "AccountFailure", "MissingCredential", "MissingDependency",
-    "PROVIDERS", "DEFAULT_TIMEOUT", "settings_for", "resolve",
+    "PROVIDERS", "DEFAULT_TIMEOUT", "settings_for", "resolve", "out_name",
 ]

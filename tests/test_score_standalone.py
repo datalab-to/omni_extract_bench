@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The scoring path is a closed set of two modules, and `canon_key` has one definition.
 
-This test used to say "`metric.py` must not depend on `grading.py`", so that deleting the old
+This test used to say "`scorer.py` must not depend on `grading.py`", so that deleting the old
 paired walker would stay a one-line change rather than an archaeology exercise. That worked:
 `grading.py` and the vendored upstream grader are both gone, and this file is what
 kept the path clear enough to remove them in one go.
@@ -11,7 +11,7 @@ What it guards now is the state that made the removal possible, so it cannot qui
   * scoring reaches exactly `matching` and `values` -- no CLI, no capture, no vendor
     tree, nothing that would drag a transport or a provider into a score;
   * no second grader comes back. Any module whose name says it grades is a second answer to
-    "what is the score", and this repo scores through `metric.py` alone;
+    "what is the score", and this repo scores through `scorer.py` alone;
   * `canon_key` is importable from exactly one place. Two definitions of "are these equal?"
     that must agree eventually will not -- it has happened twice here, and `values.py`'s
     docstring records both.
@@ -27,6 +27,7 @@ _ROOT = Path(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 _sys.path.insert(0, str(_ROOT))
 
 PKG = _ROOT / "omni_extract_bench"
+FM = PKG / "scorers" / "field_matching"   # the one scorer: imports inside it resolve here
 SCORING_PATH = {"matching", "values", "recognise"}
 FAILS = []
 
@@ -65,7 +66,7 @@ def imports_of(path):
                     candidates.append(a.name.split(".", 1)[1])
         for c in candidates:
             rel = c.replace(".", "/")
-            if (PKG / f"{rel}.py").exists() or (PKG / rel / "__init__.py").exists():
+            if (FM / f"{rel}.py").exists() or (FM / rel / "__init__.py").exists():
                 out.add(c)
     return out
 
@@ -74,7 +75,7 @@ def closure(start):
     seen, stack = set(), list(start)
     while stack:
         mod = stack.pop()
-        path = PKG / f"{mod.replace('.', '/')}.py"
+        path = FM / f"{mod.replace('.', '/')}.py"
         if mod in seen or not path.exists():
             continue
         seen.add(mod)
@@ -83,28 +84,28 @@ def closure(start):
 
 
 print("\nTHE SCORING PATH IS CLOSED")
-direct = imports_of(PKG / "metric.py")
+direct = imports_of(FM / "__init__.py")
 reach = closure(direct)
-report("metric.py imports nothing outside the scoring path",
+report("the scorer imports nothing outside the scoring path",
        direct <= SCORING_PATH, f"imports {sorted(direct)}")
 report("...and the closure is exactly the scoring path, nothing wider",
        reach == SCORING_PATH, f"closure {sorted(reach)}")
-note(f"metric.py reaches {sorted(direct)} directly; `recognise` arrives through `values`")
+note(f"the scorer reaches {sorted(direct)} directly; `recognise` arrives through `values`")
 report("values.py, the shared layer, stays below the scorer",
-       "score" not in imports_of(PKG / "values.py"),
-       f"values imports {sorted(imports_of(PKG / 'values.py'))}")
+       "score" not in imports_of(FM / "values.py"),
+       f"values imports {sorted(imports_of(FM / 'values.py'))}")
 report("recognise.py depends on nothing in the package (is this text a date / a number)",
-       not imports_of(PKG / "recognise.py"),
-       f"recognise imports {sorted(imports_of(PKG / 'recognise.py'))}")
+       not imports_of(FM / "recognise.py"),
+       f"recognise imports {sorted(imports_of(FM / 'recognise.py'))}")
 report("values.py reaches recognise and nothing else",
-       imports_of(PKG / "values.py") == {"recognise"},
-       f"values imports {sorted(imports_of(PKG / 'values.py'))}")
+       imports_of(FM / "values.py") == {"recognise"},
+       f"values imports {sorted(imports_of(FM / 'values.py'))}")
 report("nothing the scorer reaches lives under harness/",
        not any(m.startswith("harness") for m in reach),
        f"closure {sorted(reach)}")
 
 print("\nTHE TWO SCHEMA QUESTIONS THE SCORER ASKS")
-from omni_extract_bench.metric import is_open_map, unwrap_schema       # noqa: E402
+from omni_extract_bench.scorers.field_matching import is_open_map, unwrap_schema       # noqa: E402
 for _br in ("anyOf", "oneOf", "allOf"):
     report(f"{_br} resolves to the non-null branch",
            unwrap_schema({_br: [{"type": "null"}, {"type": "string"}]}) == {"type": "string"},
@@ -123,25 +124,27 @@ report("...and through a union branch",
 print("\nTHERE IS EXACTLY ONE GRADER")
 graders = sorted(p.relative_to(PKG).as_posix() for p in PKG.rglob("*.py")
                  if "grad" in p.stem.lower() or "scor" in p.stem.lower())
-report("no module is named for scoring; the metric is metric.py", graders == [],
-       f"found {graders}")
+scorers = sorted(p.name for p in (PKG / "scorers").iterdir() if p.is_dir() and not p.name.startswith("_"))
+report("one scorer package, scorers/field_matching, and no module named for scoring",
+       scorers == ["field_matching"] and graders == [], f"scorers {scorers}, modules {graders}")
 defines = sorted(p.relative_to(PKG).as_posix() for p in PKG.rglob("*.py")
-                 if p.name != "metric.py" and "\ndef score(" in p.read_text())
+                 if p != FM / "__init__.py" and "\ndef score(" in p.read_text())
 report("nothing else defines a score", not defines, f"a second grader in {defines}")
 report("no vendored grader tree", not (PKG / "vendor").exists(),
        "omni_extract_bench/vendor/ is back")
 
 print("\nAND canon_key COMES FROM EXACTLY ONE PLACE")
 import omni_extract_bench as pkg                                        # noqa: E402
-from omni_extract_bench import metric, values                           # noqa: E402
+from omni_extract_bench.scorers import field_matching as scorer             # noqa: E402
+from omni_extract_bench.scorers.field_matching import values                 # noqa: E402
 
 report("the package exports the function, not the module",
-       pkg.score is metric.score and callable(pkg.score))
-report("values.canon_key is the one definition",
-       metric.canon_key is values.canon_key and pkg.canon_key is values.canon_key)
-report("...and so is cmp_leaf", metric.cmp_leaf is values.cmp_leaf)
+       pkg.score is scorer.score and callable(pkg.score))
+report("values.canon_key is the one definition: the scorer holds no other",
+       callable(values.canon_key) and not hasattr(scorer, "canon_key"))
+report("...and so is cmp_leaf", callable(values.cmp_leaf) and not hasattr(scorer, "cmp_leaf"))
 
-print(f"\n{'metric.py IS STANDALONE' if not FAILS else 'FAILURES:'}")
+print(f"\n{'THE SCORER IS STANDALONE' if not FAILS else 'FAILURES:'}")
 for f in FAILS:
     print(f"   {f}")
 _sys.exit(1 if FAILS else 0)

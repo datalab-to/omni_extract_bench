@@ -17,11 +17,11 @@ import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from tests.approximate import approximate                  # noqa: E402
-from omni_extract_bench.metric import (                             # noqa: E402
+from omni_extract_bench.scorers.field_matching import (                             # noqa: E402
     INDEX, KEY, flatten, show, score, node_key,
     format_node, _find_arrays)
 
-from omni_extract_bench.metric import score as _score_impl          # noqa: E402
+from omni_extract_bench.scorers.field_matching import score as _score_impl          # noqa: E402
 
 
 def _schema_from(doc):
@@ -172,9 +172,9 @@ import importlib.util as _ilu                                              # noq
 _spec = _ilu.spec_from_file_location(
     "omni_extract_bench._score_second_copy",
     _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
-                  "omni_extract_bench", "metric.py"))
+                  "omni_extract_bench", "scorers", "field_matching", "__init__.py"))
 _copy = _ilu.module_from_spec(_spec)
-_copy.__package__ = "omni_extract_bench"
+_copy.__package__ = "omni_extract_bench.scorers.field_matching"
 _sys.modules[_spec.name] = _copy
 _spec.loader.exec_module(_copy)
 
@@ -309,7 +309,7 @@ report("an ordered array inside a skipped open map is simply never reached",
        score(copy.deepcopy(OM_D), copy.deepcopy(OM_D), OM_SCH,
                    [])["skipped_open_maps"] == ["bag"])
 report("explain reports positional verdicts for an ordered array",
-       [v.verdict for v in explain({"steps": ["b", "a"]}, {"steps": ["a", "b"]},
+       [v.result for v in explain({"steps": ["b", "a"]}, {"steps": ["a", "b"]},
                                       None, ["steps"])] == ["misread", "misread"])
 report("show and format_node agree except for the blanked indices",
        show(((KEY, "b"), (INDEX, 3), (KEY, "c"))) == "b[3].c"

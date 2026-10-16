@@ -28,15 +28,16 @@ same problem one level down:
         _worth_if_paired(book A, book B)             are these the same book?
             _best_pairing(A.chapters, B.chapters)    only the chapters can say
 """
-__all__ = ["score", "Verdict",
+__all__ = ["score", "gold", "check", "summarize", "Verdict", "GoldError",
            "node_key", "show", "format_node", "KEY", "INDEX"]
 
 import collections
 from collections.abc import Callable, Hashable, Iterable
 from typing import Any, Literal, NamedTuple
 
+from ... import errors
 from . import matching as OM
-from .values import canon_key, cmp_leaf, states_nothing
+from . import values
 
 Json = Any
 
@@ -160,6 +161,10 @@ def resolve_refs(schema, root=None, depth=0, max_depth=12):
     no type. Inlining changes nothing semantically. Recursive definitions stop at ``max_depth``
     rather than expanding forever.
     """
+    # TODO(paul): `depth` counts nesting levels (each dict and list), not $ref expansions, so a
+    # non-recursive $ref nested 7 or more object levels deep survives inlining, and `score` reports it
+    # as recursive; a dangling $ref (`#/defs/nope`) gets the same "recursive" message. Count only
+    # expansions toward `max_depth`, and name an unresolvable ref.
     if root is None:
         root = schema
     if depth > max_depth or not isinstance(schema, (dict, list)):
@@ -236,7 +241,7 @@ def _reading_order(address: Address) -> tuple:
 
 def flatten(node: Any, schema: Any = None, prefix: Address = (),
             skipped: list[Address] | None = None,
-            absent: Callable[[Any], bool] = states_nothing) -> Leaves:
+            absent: Callable[[Any], bool] = values.states_nothing) -> Leaves:
     """Give every value in one document an address.
 
     Only one document. This never looks at the other one.
@@ -437,7 +442,7 @@ class Row(NamedTuple):
         for a, v in leaves.items():
             cut = next((i for i, s in enumerate(a) if s[0] == INDEX), None)
             if cut is None or (ordered and node_key(address + a[:cut]) in ordered):
-                named[a] = canon_key(v)
+                named[a] = values.canon_key(v)
             else:
                 grouped.setdefault(a[:cut], {}).setdefault(a[cut][1], {})[a[cut + 1:]] = v
         arrays = {array_path: {i: cls.at(sub, address + array_path + ((INDEX, i),), ordered)
@@ -805,28 +810,32 @@ def _resolve_order(order_matters: bool | Iterable[str], schema: Any,
                 f"inside matrix."
             )
         if name not in known:
-            near = sorted(known) or ["<this document has no arrays>"]
-            raise ValueError(
+            near = sorted(known)
+            raise errors.UsageError(
                 f"order_matters names {name!r}, which is not an array here. "
-                f"Arrays available: {', '.join(repr(n) for n in near[:12])}"
-                + (f" (and {len(near) - 12} more)" if len(near) > 12 else "")
+                + (f"Arrays available: {', '.join(repr(n) for n in near[:12])}"
+                   + (f" (and {len(near) - 12} more)" if len(near) > 12 else "")
+                   if near else "This document has no arrays.")
             )
         out |= known[name]
     return frozenset(out)
 
 
-def score(pred: Any, gt: Any, schema: Any,
+def score(pred: Any, gold: Any, schema: Any,
           order_matters: bool | Iterable[str] = (), verdicts: bool = False,
-          absent: Callable[[Any], bool] = states_nothing) -> dict:
+          absent: Callable[[Any], bool] = values.states_nothing) -> dict:
     """Score one prediction against one ground truth.
 
     `absent` decides which values state nothing, and so get no address on either side. The
     default drops `null`, `""`, `[]` and `{}`; `lambda v: False` makes each one a value the
     prediction must reproduce. Scores under different `absent`s are not comparable.
     """
-    if gt is not None and not isinstance(gt, dict):
+    if pred is not None and not isinstance(pred, dict):
+        raise TypeError(f"the prediction must be a JSON object, the extraction, or None for no answer; "
+                        f"got a {type(pred).__name__}")
+    if gold is not None and not isinstance(gold, dict):
         raise TypeError(
-            f"ground truth must be a JSON object, got {type(gt).__name__}. A schema whose root "
+            f"ground truth must be a JSON object, got {type(gold).__name__}. A schema whose root "
             f"is an array cannot be sent to the vendors this benchmark measures -- OpenAI's "
             f"structured outputs rejects one outright -- so a document shaped like this was "
             f"never asked for. Wrap it in an object, on both sides."
@@ -848,12 +857,12 @@ def score(pred: Any, gt: Any, schema: Any,
             "ref would be graded, while the same object written inline is skipped -- so this "
             "schema cannot be scored consistently. Flatten the recursion first."
         )
-    raw_gt, pred_raw = gt or {}, pred or {}
-    gt = prep_ground_truth(raw_gt)
+    raw_gt, pred_raw = gold or {}, pred or {}
+    gold = prep_ground_truth(raw_gt)
     pred = prep_prediction(pred_raw)
-    ordered = _resolve_order(order_matters, schema, (raw_gt, pred_raw, gt, pred))
+    ordered = _resolve_order(order_matters, schema, (raw_gt, pred_raw, gold, pred))
     found_open: list[Address] = []
-    gold_leaves = flatten(gt, schema, skipped=found_open, absent=absent)
+    gold_leaves = flatten(gold, schema, skipped=found_open, absent=absent)
     pred_leaves, inexact = align(
         gold_leaves, flatten(pred, schema, skipped=found_open, absent=absent), ordered)
     skipped = sorted(set(found_open), key=_reading_order)
@@ -861,7 +870,7 @@ def score(pred: Any, gt: Any, schema: Any,
     only_gold = set(gold_leaves) - shared
     only_pred = set(pred_leaves) - shared
     union = shared | only_gold | only_pred
-    matched = sum(1 for a in shared if cmp_leaf(pred_leaves[a], gold_leaves[a]) >= 1.0)
+    matched = sum(1 for a in shared if values.cmp_leaf(pred_leaves[a], gold_leaves[a]) >= 1.0)
     misread = len(shared) - matched
     unfound = len(only_gold)
     slots = _schema_nodes(schema)
@@ -887,20 +896,20 @@ def score(pred: Any, gt: Any, schema: Any,
     f1 = (2 * precision * recall / (precision + recall)) if precision + recall else 0.0
     per_address: list[Verdict] = []
     if verdicts:
-        per_address = [Verdict(a, None, None, None, None, verdict="skipped_open_map")
+        per_address = [Verdict(a, None, None, None, None, result="skipped_open_map")
                        for a in skipped]
         for a in sorted(union, key=_reading_order):
-            gold_canon = canon_key(gold_leaves[a]) if a in gold_leaves else None
-            pred_canon = canon_key(pred_leaves[a]) if a in pred_leaves else None
+            gold_canon = values.canon_key(gold_leaves[a]) if a in gold_leaves else None
+            pred_canon = values.canon_key(pred_leaves[a]) if a in pred_leaves else None
             if a in shared:
-                verdict = "matched" if gold_canon == pred_canon else "misread"
+                result = "matched" if gold_canon == pred_canon else "misread"
             elif a in only_gold:
-                verdict = "unfound"
+                result = "unfound"
             else:
-                verdict = extra_kind[a]
+                result = extra_kind[a]
             per_address.append(Verdict(a, gold_leaves.get(a), pred_leaves.get(a),
                                        gold_canon=gold_canon, pred_canon=pred_canon,
-                                       verdict=verdict))
+                                       result=result))
 
     return {
         "accuracy": accuracy,
@@ -933,8 +942,85 @@ class Verdict(NamedTuple):
     pred_raw: Any   
     gold_canon: str 
     pred_canon: str 
-    verdict: str    
+    result: str     # matched, misread, unfound, an invented kind, or skipped_open_map
 
+
+
+def gold(doc: Any) -> dict:
+    """A document's ground truth, the extraction, from its gold file (`doc.gt_path`, a `data.Doc`'s); a
+    `GoldError` naming the document when the file can't be read or isn't a JSON object."""
+    import json
+    from pathlib import Path
+
+    try:
+        g = json.loads(Path(doc.gt_path).read_text())
+    except (OSError, ValueError) as exc:
+        raise GoldError(f"{doc.doc_id}: its gold {doc.gt_path} can't be read: {exc}") from None
+    if isinstance(g, dict): return g
+    kind = "null" if g is None else type(g).__name__
+    raise GoldError(f"{doc.doc_id}: its gold {doc.gt_path} is a JSON {kind}; it must be a JSON object, the "
+                    "extraction")
+
+
+class GoldError(errors.UsageError):
+    """A gold file that can't be read, or isn't the extraction, a JSON object; the message names its document."""
+
+
+def check(docs: Iterable[Any]) -> None:
+    """Raises a `GoldError` naming the first document of `docs` (a manifest's, `data.read_manifest`)
+    whose gold file can't be read, isn't JSON, or isn't a JSON object, the one shape `score` takes.
+    What `oeb check` runs.
+
+    It does not check a gold against its schema, nor that the scorer can read a schema: finding out
+    means scoring, which costs as much as grading, and grading names a document that fails."""
+    if hasattr(docs, "gt_path"):
+        raise TypeError("check takes the documents, an iterable of them; for one, pass [doc]")
+    for d in docs: gold(d)
+
+
+ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
+
+
+def summarize(lines: Iterable[dict]) -> dict:
+    """A run's score lines (scores.jsonl's, one per document) as one summary (`_over`), over every line and
+    then per suite, each suite in the same shape. A line carries its document's suite, so the lines are all
+    it needs. A line's status is `scored` or `failed` (no usable prediction)."""
+    lines = list(lines)
+    if bad := next((x for x in lines if not isinstance(x, dict) or "suite" not in x or "status" not in x), None):
+        raise ValueError(f"summarize takes score lines, each with its document's suite and status, as "
+                         f"scores.jsonl holds (benchmark.read_scores); got {bad!r:.120}. score()'s result "
+                         "is one line's numbers, without them")
+    by_suite: dict[str, list[dict]] = collections.defaultdict(list)
+    for x in lines:
+        by_suite[x["suite"]].append(x)
+    return {**_over(lines), "per_suite": {s: _over(v) for s, v in sorted(by_suite.items())}}
+
+
+def _over(lines: list[dict]) -> dict:
+    """How a set of documents went: the headline, the counts, coverage, the three metrics over the scored
+    documents, and where the errors were.
+
+    Note: `headline` counts a failed document as 0, so a system can't rank higher by failing on its
+    hard documents; `accuracy` is over the scored ones, and `headline` is `accuracy * coverage`. It is
+    None for no documents, since there is no number to compare, and the metrics over the scored are None
+    when none was scored: 0.0 would read as everything wrong (and a 0.0 rate as nothing wrong)."""
+    scored = [x for x in lines if x["status"] == "scored"]
+
+    def mean(of) -> float | None:
+        return sum(of(x) for x in scored) / len(scored) if scored else None
+
+    return {
+        "headline": sum(x["accuracy"] for x in scored) / len(lines) if lines else None,
+        "documents": len(lines),
+        "scored": len(scored),
+        "failed": len(lines) - len(scored),
+        "coverage": len(scored) / len(lines) if lines else None,
+        "accuracy": mean(lambda x: x["accuracy"]),
+        "precision": mean(lambda x: x["precision"]),
+        "recall": mean(lambda x: x["recall"]),
+        **{f"{e}_rate": mean(lambda x, e=e: x[e] / x["total"] if x["total"] else 0.0)
+           for e in ERRORS},
+    }
 
 if __name__ == "__main__":
     import doctest

@@ -16,7 +16,7 @@ import os as _os
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.values import canon_key, cmp_leaf                  # noqa: E402
+from omni_extract_bench.scorers.field_matching.values import canon_key, cmp_leaf                  # noqa: E402
 
 FAILS = []
 
@@ -150,22 +150,22 @@ for f in FAILS:
     print(f"   {f}")
 
 print("\nA VERDICT CARRIES BOTH FORMS, AND `None` MEANS ONE THING")
-from omni_extract_bench.metric import score, show, Verdict            # noqa: E402
+from omni_extract_bench.scorers.field_matching import score, show, Verdict            # noqa: E402
 
 def verdicts_of(pred, gt, schema):
     """Per-address verdicts. `score` is the only entry point; the list comes off it."""
     return score(pred, gt, schema, verdicts=True)["verdicts"]
-from omni_extract_bench.values import states_nothing, canon_trace, canon_key    # noqa: E402
+from omni_extract_bench.scorers.field_matching.values import states_nothing, canon_trace, canon_key    # noqa: E402
 
 _SCH = {"type": "object", "properties": {
     "a": {"type": "string"}, "b": {"type": "string"}, "c": {"type": "string"},
     "g": {"type": "object", "additionalProperties": {"type": "string"}}}}
-_V = {v.verdict: v for v in verdicts_of({"a": "X", "c": "Z", "g": {"k": "v"}},
+_V = {v.result: v for v in verdicts_of({"a": "X", "c": "Z", "g": {"k": "v"}},
                                     {"a": "X", "b": "Y", "g": {"k": "v"}}, _SCH)}
 
 report("Verdict carries raw and canon for each side",
        Verdict._fields == ("address", "gold_raw", "pred_raw",
-                           "gold_canon", "pred_canon", "verdict"), f"{Verdict._fields}")
+                           "gold_canon", "pred_canon", "result"), f"{Verdict._fields}")
 report("a missing address has no pred side",
        _V["unfound"].pred_raw is None and _V["unfound"].pred_canon is None
        and _V["unfound"].gold_raw == "Y")
@@ -208,11 +208,11 @@ for _p, _g in _cases + [
             _carry.append(("pred", v.pred_raw, v.pred_canon, canon_key(v.pred_raw)))
         if v.gold_raw is not None and v.pred_raw is not None:
             want = "matched" if v.gold_canon == v.pred_canon else "misread"
-            if v.verdict != want:
-                _carry.append(("verdict", v.address, v.verdict, want))
+            if v.result != want:
+                _carry.append(("result", v.address, v.result, want))
 report("gold_canon/pred_canon are exactly canon_key of the raw values", not _carry,
        f"{_carry[:3]}")
-report("...and the verdict follows from comparing them", not [c for c in _carry if c[0] == "verdict"])
+report("...and the verdict follows from comparing them", not [c for c in _carry if c[0] == "result"])
 
 _m = _V["matched"]
 report("canon_trace explains a match between two raw forms",
@@ -226,7 +226,7 @@ report("canon_trace agrees with the Verdict on every raw value it carries",
 
 
 print("\nA NUMBER TOO ABSURD TO BE PRINTED IS COMPARED AS TEXT")
-from omni_extract_bench.recognise import _asdecimal, _fraction_places   # noqa: E402
+from omni_extract_bench.scorers.field_matching.recognise import _asdecimal, _fraction_places   # noqa: E402
 from decimal import Decimal                                             # noqa: E402
 
 for _v in ("1.0e1000000000", "-1.0e1000000000", "1e400", "nan", "inf", "-inf", "NaN"):

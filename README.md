@@ -49,11 +49,13 @@ oeb benchmark \
 
 This will execute 4 different runs -- one for each pair (provider, settings).
 
-`--manifest` picks the documents: a parquet on disk, or one in a HuggingFace dataset. For example, a 40-document subset of ours:
+It shows the plan and asks before calling any vendor; with no terminal to ask (a pipe, a notebook, CI) it goes ahead without asking, so a script runs as written.
+
+`--dataset` picks the dataset (a folder on disk, or a HuggingFace dataset; ours by default), and `--manifest` picks which of its documents to run. For example, a 40-document subset of ours:
 
 ```bash
 oeb benchmark --providers datalab --out runs/ \
-  --manifest hf://datasets/datalab-to/omni_extract_bench/manifests/sample40-predictive-across-vendors-2026-09-22.parquet
+  --manifest manifests/sample40-predictive-across-vendors-2026-09-22.parquet
 ```
 
 See [`docs/API.md`](./docs/API.md) for more details on what `oeb benchmark` writes and **how you can run on your own benchmark dataset**.
@@ -133,7 +135,7 @@ or from the command line.
 
 
 ```bash
-oeb score --pred pred.json --gt gold.json --schema schema.json
+oeb score --pred pred.json --gold gold.json --schema schema.json
 ```
 
 ```json
@@ -167,20 +169,14 @@ Return with verdicts to dive deeper into exact places where the model failed.
 
 result = score(prediction, ground_truth, schema, verdicts=True)
 print(result["verdicts"][0]) # print the first verdict
-# {
-#       "address": [["k", "currency"]],
-#       "gold_raw": null,
-#       "pred_raw": "USD",
-#       "gold_canon": null,
-#       "pred_canon": "usd",
-#       "verdict": "invented_field"
-#     }
+# Verdict(address=(('k', 'currency'),), gold_raw=None, pred_raw='USD', gold_canon=None,
+#         pred_canon='usd', result='invented_field')
 ```
 
 From the cli.
 
 ```bash
-oeb score --pred pred.json --gt gold.json --schema schema.json --verdicts
+oeb score --pred pred.json --gold gold.json --schema schema.json --verdicts
 ```
 
 On the example above, printing one line each:
@@ -204,7 +200,7 @@ On the example above, printing one line each:
       "pred_raw": "USD",
       "gold_canon": null,
       "pred_canon": "usd",
-      "verdict": "invented_field"
+      "result": "invented_field"
     },
     ...truncated for display
 ```

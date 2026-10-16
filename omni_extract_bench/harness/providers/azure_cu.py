@@ -30,11 +30,7 @@ from pathlib import Path
 
 import httpx
 
-from ..budget import Budget, PollRetry
-
-from ..contract import Cost, Extraction
-
-from ..errors import MissingCredential, VendorError
+from .. import budget, contract, errors
 
 API_VERSION = "2025-05-01-preview"
 DEFAULT_COMPLETION_MODEL = "gpt-4.1-mini"
@@ -154,7 +150,7 @@ def analyzer_id(fields: dict, completion_model: str, api_version: str) -> str:
     return f"oeb-{hashlib.sha256(spelled.encode()).hexdigest()[:16]}"
 
 
-def _ensure_analyzer(client, analyzer: str, fields: dict, config: Config, budget) -> None:
+def _ensure_analyzer(client, analyzer: str, fields: dict, config: Config, deadline) -> None:
     """Create the analyzer once per process, not once per thread.
 
     KEYED BY (endpoint, analyzer) -- the cache is process-wide and an analyzer lives inside one
@@ -165,7 +161,7 @@ def _ensure_analyzer(client, analyzer: str, fields: dict, config: Config, budget
     analyzer EXISTS, not that it is READY -- so a thread that lost the race would skip the
     readiness wait below and analyse against an analyzer still provisioning. Checking the cache
     without holding anything is what let several threads reach the PUT at once, and widening
-    `--predict-workers` makes that likelier rather than rarer.
+    `--workers` makes that likelier rather than rarer.
 
     Threads that block here are waiting for something they need anyway, and the wait is bounded
     by the holding document's own budget.
@@ -182,33 +178,33 @@ def _ensure_analyzer(client, analyzer: str, fields: dict, config: Config, budget
                   "fieldSchema": fields})
         if r.status_code != 409:
             if r.status_code >= 400:
-                raise VendorError(f"creating analyzer: HTTP {r.status_code}: {r.text[:300]}",
-                                  status=r.status_code, body=r.text)
+                raise errors.VendorError(f"creating analyzer: HTTP {r.status_code}: {r.text[:300]}",
+                                         status=r.status_code, body=r.text)
             if r.headers.get("Operation-Location"):
-                _await(client, r.headers["Operation-Location"], budget=budget,
+                _await(client, r.headers["Operation-Location"], deadline=deadline,
                        poll_interval=config.poll_interval, want_result=False)
         _ANALYZERS[(config.endpoint, analyzer)] = analyzer
 
 
-def _await(client, op_url: str, *, budget, poll_interval: float, want_result: bool):
+def _await(client, op_url: str, *, deadline, poll_interval: float, want_result: bool):
     """Poll one operation. Takes the DOCUMENT's budget, not a fresh timeout: this is
     called twice per document -- once for the analyzer, once for the analysis -- and with
     a timeout each it gave azure-cu two full budgets where every other vendor got one."""
     polls = 0
-    retry = PollRetry(budget)
+    retry = budget.PollRetry(deadline)
     while True:
-        budget.check(f"still analysing after {polls} polls")
+        deadline.check(f"still analysing after {polls} polls")
         try:
             r = client.get(op_url)
         except httpx.TransportError as exc:
             if retry.again():
                 continue
-            raise VendorError(f"polling failed: {exc}"[:300], status=None) from None
+            raise errors.VendorUnreachable(f"polling failed: {exc}"[:300]) from None
         if r.status_code >= 400:
             if retry.again(r.status_code):
                 continue
-            raise VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
-                              status=r.status_code, body=r.text)
+            raise errors.VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
+                                     status=r.status_code, body=r.text)
         retry.ok()
         polls += 1
         body = r.json()
@@ -216,13 +212,13 @@ def _await(client, op_url: str, *, budget, poll_interval: float, want_result: bo
         if status in _TERMINAL_OK:
             return body if want_result else True
         if status in _TERMINAL_BAD:
-            raise VendorError(f"azure-cu {status}: {json.dumps(body.get('error') or {})[:300]}",
-                              status=200, body=r.text)
+            raise errors.VendorError(f"azure-cu {status}: {json.dumps(body.get('error') or {})[:300]}",
+                                     status=200, body=r.text)
         time.sleep(poll_interval)
 
 
 def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
-            config: Config = Config()) -> Extraction:
+            config: Config = Config()) -> contract.Extraction:
     """Create (or reuse) an analyzer for this field schema, analyse the document, poll for it.
 
     `schema` here is already the Azure `fieldSchema` -- `DIALECT` is applied by the caller, so
@@ -234,36 +230,36 @@ def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
     endpoint = config.endpoint
     key = os.environ.get("AZURE_CU_KEY")
     if not endpoint or not key:
-        raise MissingCredential(
+        raise errors.MissingCredential(
             "azure-cu needs AZURE_CU_KEY in the environment and an endpoint in its options:\n"
             "    --options '{\"azure-cu\": {\"endpoint\": "
             "\"https://<resource>.cognitiveservices.azure.com\"}}'")
-    budget = Budget(timeout)
+    deadline = budget.Budget(timeout)
 
     with httpx.Client(headers={"Ocp-Apim-Subscription-Key": key}, timeout=120) as client:
         analyzer = analyzer_id(schema, config.completion_model, config.api_version)
-        _ensure_analyzer(client, analyzer, schema, config, budget)
+        _ensure_analyzer(client, analyzer, schema, config, deadline)
         r = client.post(f"{endpoint}/contentunderstanding/analyzers/{analyzer}:analyze"
                         f"?api-version={config.api_version}",
                         content=pdf.read_bytes(),
                         headers={"Content-Type": "application/octet-stream"})
         if r.status_code >= 400:
-            raise VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
-                              status=r.status_code, body=r.text)
+            raise errors.VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
+                                     status=r.status_code, body=r.text)
         op = r.headers.get("Operation-Location")
         if not op:
-            raise VendorError("no Operation-Location header on :analyze",
-                              status=r.status_code, body=r.text)
+            raise errors.VendorError("no Operation-Location header on :analyze",
+                                     status=r.status_code, body=r.text)
 
-        body = _await(client, op, budget=budget, poll_interval=config.poll_interval,
+        body = _await(client, op, deadline=deadline, poll_interval=config.poll_interval,
                       want_result=True)
 
     contents = ((body or {}).get("result") or {}).get("contents") or []
     if not contents:
-        raise VendorError("analysis returned no contents", status=200,
-                          body=json.dumps(body)[:300])
-    return Extraction(result=fields_to_dict(contents[0].get("fields") or {}),
-                      raw=body,
-                      cost=Cost(),
-                      job_id=analyzer)
+        raise errors.VendorError("analysis returned no contents", status=200,
+                                 body=json.dumps(body)[:300])
+    return contract.Extraction(result=fields_to_dict(contents[0].get("fields") or {}),
+                               raw=body,
+                               cost=contract.Cost(),
+                               job_id=analyzer)
 

@@ -2,12 +2,13 @@
 """A RUN IS A PROVIDER PLUS ITS OPTIONS, and each one is stored on its own.
 
 `--options` changes what is measured. When it did not change WHERE the answer was stored,
-`needs_run` found the other configuration's records and skipped every document -- so a run
+`needs` found the other configuration's records and skipped every document -- so a run
 that asked for `mode=fast` reported `balanced` results and never called the vendor at all.
 A silently wrong number, arrived at by a resume doing its job.
 
 Run: python3 tests/test_run_layout.py
 """
+import contextlib
 import dataclasses
 import io
 import json
@@ -22,6 +23,7 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import omni_extract_bench.benchmark as B                                       # noqa: E402
+import omni_extract_bench.data as DS
 import omni_extract_bench.harness.document as D
 import omni_extract_bench.harness.registry as V                                  # noqa: E402
 
@@ -151,22 +153,22 @@ docs = []
 for i in range(3):
     g = out / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     pdf = out / f"p{i}.pdf"; pdf.write_bytes(b"%PDF")
-    docs.append(B.Doc(f"d{i}", "s", pdf, g,
+    docs.append(DS.Doc(f"d{i}", "s", pdf, g,
                       {"type": "object", "properties": {"a": {"type": "string"}}}))
-B.fetch = lambda *_: out
-B.read_manifest = lambda *a, **k: docs
+DS.download_dataset = lambda *_: out
+DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs))
 called = []
 D.adapter = as_adapter(lambda prov: lambda pdf, schema, *, timeout, config: (
     called.append(config.mode),
     Extraction(result={"a": config.mode}, cost=Cost(usd=0.1)))[1])
 
-B.run(["datalab"], out=out, score_workers=1, predict_workers={"*": 1})
+B.execute(B.plan(["datalab"], out=out, score_workers=1, workers=1))
 report("the stock run calls the vendor at its stock setting", called == ["balanced"] * 3,
        str(called))
 
 called.clear()
-B.run(["datalab"], out=out, score_workers=1, predict_workers={"*": 1},
-      options={"datalab": {"mode": "fast"}})
+B.execute(B.plan(["datalab"], out=out, score_workers=1, workers=1,
+      options={"datalab": {"mode": "fast"}}))
 report("the steered run calls the vendor again, at the asked-for setting",
        called == ["fast"] * 3, f"{called} -- empty means it reused the stock records")
 steered_dir = named("datalab", mode="fast")
@@ -187,9 +189,9 @@ report("...and the record states what it was sent",
 
 print("\nA VENDOR'S OWN TIERS, COMPARED IN ONE INVOCATION")
 out2 = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda *_: out2
-summary = B.run(["datalab"], out=out2, score_workers=1, predict_workers={"*": 1},
-                options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+DS.download_dataset = lambda *_: out2
+summary = B.execute(B.plan(["datalab"], out=out2, score_workers=1, workers=1,
+                options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
 report("each configuration is its own row in the summary",
        sorted(summary) == sorted([named("datalab", mode="balanced"),
                                   named("datalab", mode="accurate")]),
@@ -211,39 +213,37 @@ for one in summary.values():
 report("and there is no table across them to go stale",
        not (out2 / "summary.json").exists())
 
-B.read_manifest = lambda *a, **k: docs[:1]
-narrow = B.run(["datalab"], out=out2, score_workers=1, predict_workers={"*": 1},
-               options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
-B.read_manifest = lambda *a, **k: docs
+DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs[:1]))
+narrow = B.execute(B.plan(["datalab"], out=out2, score_workers=1, workers=1,
+               options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
+DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(docs))
 kept = json.loads((out2 / named("datalab") / "summary.json").read_text())
-report("a narrowed resume leaves the directory's own summary whole",
-       kept["documents"] == len(docs), f'{kept["documents"]} of {len(docs)}')
-report("...while the return value answers what this invocation ran",
-       narrow[named("datalab")]["documents"] == 1,
-       str(narrow[named("datalab")]["documents"]))
+report("a narrowed run's summary is that grading's, of what it ran",
+       kept["documents"] == 1 and narrow[named("datalab")]["documents"] == 1,
+       f'{kept["documents"]}, {narrow[named("datalab")]["documents"]}')
 
 print("\nAND A RUN THAT IS GRADED SURVIVES THE ONE AFTER IT NOT BEING")
 out3 = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda *_: out3
-real_score, graded = B.Run.score, {"n": 0}
+DS.download_dataset = lambda *_: out3
+real_grade, graded = B.grade, {"n": 0}
 
 
-def interrupted_on_the_second(self, *a, **k):
+def interrupted_on_the_second(*a, **k):
     graded["n"] += 1
     if graded["n"] == 2:
         raise KeyboardInterrupt
-    return real_score(self, *a, **k)
+    return real_grade(*a, **k)
 
 
-B.Run.score = interrupted_on_the_second
+B.grade = interrupted_on_the_second
 try:
-    B.run(["datalab"], out=out3, score_workers=1, predict_workers={"*": 1},
-          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+    B.execute(B.plan(["datalab"], out=out3, score_workers=1, workers=1,
+          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
     report("the interrupt reaches the caller", False, "it was swallowed")
 except KeyboardInterrupt:
     report("the interrupt reaches the caller", True)
 finally:
-    B.Run.score = real_score
+    B.grade = real_grade
 
 first, second = named("datalab", mode="balanced"), named("datalab", mode="accurate")
 report("the run that finished grading published its row",
@@ -256,12 +256,12 @@ print("\nA RUN IS A PROVIDER PLUS ITS OPTIONS, AND THE CAP IS STILL THE VENDOR'S
 for bad in ({"datalb": {"mode": "accurate"}},
             {"reducto": {"agentic_table_mode": "default"}}):
     try:
-        B.plan(["datalab"], bad)
+        B.configurations(["datalab"], bad)
         report(f"--options {list(bad)[0]!r} is refused", False, "it was accepted")
     except ValueError as exc:
         report(f"--options {list(bad)[0]!r} is refused", "silently ignored" in str(exc))
 try:
-    B.plan(["datalab"], {"datalab": []})
+    B.configurations(["datalab"], {"datalab": []})
     report("an empty option list is refused", False, "it was accepted")
 except ValueError as exc:
     report("an empty option list is refused", "would not run at all" in str(exc))
@@ -275,10 +275,10 @@ many = []
 for i in range(20):
     g = wide / f"g{i}.json"; g.write_text(json.dumps({"a": "x"}))
     pdf = wide / f"p{i}.pdf"; pdf.write_bytes(b"%PDF")
-    many.append(B.Doc(f"d{i}", "s", pdf, g,
+    many.append(DS.Doc(f"d{i}", "s", pdf, g,
                       {"type": "object", "properties": {"a": {"type": "string"}}}))
-B.fetch = lambda *_: wide
-B.read_manifest = lambda *a, **k: many
+DS.download_dataset = lambda *_: wide
+DS.read_manifest = lambda *a, **k: (DS.download_dataset(), tuple(many))
 live = {"n": 0, "peak": 0}
 guard = _threading.Lock()
 
@@ -296,8 +296,8 @@ def counting(prov):
 
 
 D.adapter = as_adapter(counting)
-B.run(["datalab"], out=wide, score_workers=1,
-      options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+B.execute(B.plan(["datalab"], out=wide, score_workers=1,
+      options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
 report("two runs of one vendor share its concurrency cap, not double it",
        live["peak"] <= WORKERS["datalab"],
        f'peak {live["peak"]} in flight against a cap of {WORKERS["datalab"]}')
@@ -307,50 +307,50 @@ report("...and the whole cap is in use, not half of it each",
        f'{WORKERS["datalab"] // 2}')
 
 print("\nAND SAYS WHAT A RESUME WOULD COST, BEFORE IT COSTS IT")
-from omni_extract_bench.benchmark import BenchmarkRun                          # noqa: E402
+from omni_extract_bench.harness.registry import resolve                        # noqa: E402
 from rich.console import Console                                               # noqa: E402
 
 seen_dir = pathlib.Path(tempfile.mkdtemp())
-plan = BenchmarkRun(["datalab"], out=seen_dir,
-                    options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
-report("the plan is available before anything is fetched or called",
-       len(plan.runs) == 2 and len(plan.providers) == 1
-       and plan.providers[0].adapter == "datalab", repr(plan))
+plan = B.plan(["datalab"], out=seen_dir,
+              options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+plan = plan._replace(docs=tuple(docs))
+report("the plan is made before anything is called",
+       len(plan.runs) == 2 and {resolve(r.provider) for r in plan.runs} == {"datalab"},
+       repr(plan.runs))
 report("...and two model ids land under one adapter, on one budget",
-       len(BenchmarkRun(["openai/gpt-5.6-sol", "anthropic/claude-opus-5"]).providers) == 1)
-report("a bad option is refused by the constructor, before any download",
-       _refused(lambda: BenchmarkRun(["datalab"], options={"datalb": {"mode": "fast"}})))
+       len({resolve(r.provider)
+            for r in B.plan(["openai/gpt-5.6-sol", "anthropic/claude-opus-5"]).runs}) == 1)
+report("a bad option is refused when the plan is made",
+       _refused(lambda: B.plan(["datalab"], options={"datalb": {"mode": "fast"}})))
 
 bal, acc = plan.runs
 bal.records.mkdir(parents=True, exist_ok=True)
+bal.predictions.mkdir(parents=True, exist_ok=True)
 for d in docs[:2]:
-    B.write_json_atomic(bal.records / f"{d.doc_id}.json", {"done": True})
+    B.record(bal, d.doc_id, {"result": {"a": "x"}, "error": None})
 (bal.out).mkdir(parents=True, exist_ok=True)
 (bal.out / "scores.jsonl").write_text(
-    "".join(json.dumps({"doc_id": d.doc_id, "suite": "s", "status": "scored"}) + "\n"
-            for d in docs))
+    "".join(json.dumps({"doc_id": d.doc_id, "suite": "s", "status": "scored", "scorer": B.SCORER})
+            + "\n" for d in docs))
 # A graded document is a row AND its verdicts, because that is what grading writes by default.
 (bal.out / "verdicts").mkdir(parents=True, exist_ok=True)
 for d in docs:
     (bal.out / "verdicts" / f"{d.doc_id}.jsonl").write_text("")
-report("a run counts what it would still predict, and still grade",
-       bal.outstanding(docs) == (len(docs) - 2, 0), str(bal.outstanding(docs)))
+report("a run counts what it would still predict, and grades every document: grading is fresh",
+       B.owed(plan, bal) == (len(docs) - 2, len(docs)), str(B.owed(plan, bal)))
 report("...a run with nothing on disk owes everything",
-       acc.outstanding(docs) == (len(docs), len(docs)), str(acc.outstanding(docs)))
-report("--rescore owes every grade again, however many are on disk",
-       bal.outstanding(docs, rescore=True) == (len(docs) - 2, len(docs)),
-       str(bal.outstanding(docs, rescore=True)))
-stated = plan.describe(docs)
+       B.owed(plan, acc) == (len(docs), len(docs)), str(B.owed(plan, acc)))
+stated = B.describe(plan)
 row = next(line for line in stated.splitlines() if named("datalab") in line)
 cells = [c.strip() for c in row.split("\u2502")]
 report("the plan states it per run, once the corpus is known",
-       cells[-3:-1] == [str(len(docs) - 2), "0"], row)
+       cells[-3:-1] == [str(len(docs) - 2), str(len(docs))], row)
 report("...and nothing is cut off, whatever the widest cell is",
        "\u2026" not in stated, stated)
 
 print("\nAND ASKS BEFORE IT SPENDS")
 ask = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda *_: ask
+DS.download_dataset = lambda *_: ask
 D.adapter = as_adapter(counting)
 shown, called = [], {"n": 0}
 
@@ -365,11 +365,18 @@ def counting_adapter(prov):
 
 
 D.adapter = as_adapter(counting_adapter)
-declined = B.BenchmarkRun(["datalab"], out=ask, score_workers=1,
-                          predict_workers={"*": 1}).execute(
-    confirm=lambda plan: (shown.append(plan), False)[1])
+from omni_extract_bench import cli                                            # noqa: E402
+
+_ask = ["benchmark", "--providers", "datalab", "--out", str(ask), "--score-workers", "1",
+        "--workers", "1"]
+_real_confirm = cli.confirm_plan
+cli.confirm_plan = lambda view: (shown.append(view), False)[1]
+try:
+    declined = cli.main(_ask)
+finally:
+    cli.confirm_plan = _real_confirm
 report("a declined plan calls no vendor at all", called["n"] == 0, f'{called["n"]} calls')
-report("...and gives back nothing rather than a half summary", declined == {})
+report("...and exits 1, with nothing to print", declined == 1)
 # The callback gets a rich renderable, not text; rendered here to read it back.
 def as_text(renderable):
     console = Console(file=io.StringIO(), width=100, no_color=True)
@@ -383,16 +390,20 @@ report("...having shown what it would have done",
 report("...and wrote no summary.json", not list(ask.glob("*/summary.json")))
 
 called["n"] = 0
-accepted = B.BenchmarkRun(["datalab"], out=ask, score_workers=1,
-                          predict_workers={"*": 1}).execute(confirm=lambda plan: True)
-report("an approved plan runs", called["n"] == len(B.read_manifest()) and len(accepted) == 1,
-       f'{called["n"]} calls, {len(accepted)} rows')
+cli.confirm_plan = lambda view: True
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        accepted = cli.main(_ask)
+finally:
+    cli.confirm_plan = _real_confirm
+report("an approved plan runs", called["n"] == len(DS.read_manifest()[1]) and accepted == 0,
+       f'{called["n"]} calls, exit {accepted}')
 
 print("\nEACH RUN IS TIMED FOR ITSELF, NOT FOR THE QUEUE IT SHARES")
 from omni_extract_bench.progress import Progress                               # noqa: E402
 
 timed = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda *_: timed
+DS.download_dataset = lambda *_: timed
 landed = {}
 _t0 = _time.monotonic()
 
@@ -412,8 +423,8 @@ _exit, elapsed = Progress.__exit__, {}
 Progress.__exit__ = lambda self, *a: ([elapsed.setdefault(n, s.elapsed)
                                        for n, s in self.stats.items()], _exit(self, *a))[1]
 try:
-    B.run(["datalab"], out=timed, score_workers=1,
-          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+    B.execute(B.plan(["datalab"], out=timed, score_workers=1,
+          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
 finally:
     Progress.__exit__ = _exit
 quick, slow = named("datalab", mode="balanced"), named("datalab", mode="accurate")
@@ -425,11 +436,11 @@ report("...and it matches when its last document actually landed",
 
 print("\nAND THE CAP BELONGS TO THE SERVICE, NOT TO THE NAME YOU TYPED")
 models = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda *_: models
+DS.download_dataset = lambda *_: models
 live["n"] = live["peak"] = 0
 D.adapter = as_adapter(counting)
 ids = ["openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash"]
-B.run(ids, out=models, score_workers=1)
+B.execute(B.plan(ids, out=models, score_workers=1))
 report("three model ids share one budget, not one each",
        live["peak"] <= WORKERS["llm_single_shot"],
        f'peak {live["peak"]} against a cap of {WORKERS["llm_single_shot"]}; '
@@ -437,16 +448,19 @@ report("three model ids share one budget, not one each",
 report("...while each still runs its own model, into its own directory",
        len([d for d in models.iterdir() if d.is_dir()]) == len(ids),
        str(sorted(d.name for d in models.iterdir() if d.is_dir())))
-report("a name people type still sets the cap",
-       B.workers_for(["openai/gpt-5.6-sol"], {"openai/gpt-5.6-sol": 2}) == 2)
-report("...and where several names in one group disagree, the smallest wins",
-       B.workers_for(ids, {"openai/gpt-5.6-sol": 2, "anthropic/claude-opus-5": 20}) == 2)
+report("the cap is set per adapter",
+       B._workers_for("llm_single_shot", B._per_adapter({"llm_single_shot": 2})) == 2)
+try:
+    B._per_adapter({"openai/gpt-5.6-sol": 2})
+    report("...and a model id is refused as a key, naming its adapter", False, "it was accepted")
+except ValueError as exc:
+    report("...and a model id is refused as a key, naming its adapter", "llm_single_shot" in str(exc), str(exc))
 report("...falling back to the adapter's own limit when nobody says",
-       B.workers_for(ids, None) == WORKERS["llm_single_shot"])
+       B._workers_for("llm_single_shot") == WORKERS["llm_single_shot"])
 
 print("\nAN ACCOUNT FAILURE IS ABOUT THE ACCOUNT, SO IT STOPS EVERY RUN OF THAT VENDOR")
 acct = pathlib.Path(tempfile.mkdtemp())
-B.fetch = lambda *_: acct
+DS.download_dataset = lambda *_: acct
 tried = []
 
 
@@ -460,8 +474,8 @@ def broke(prov):
 
 D.adapter = as_adapter(broke)
 try:
-    B.run(["datalab"], out=acct, score_workers=1,
-          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]})
+    B.execute(B.plan(["datalab"], out=acct, score_workers=1,
+          options={"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}))
     report("the account failure reaches the caller", False, "it was swallowed")
 except AccountFailure:
     report("the account failure reaches the caller", True)

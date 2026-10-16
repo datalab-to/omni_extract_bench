@@ -13,12 +13,15 @@ indistinguishable from the maxed-out one the benchmark claims to publish.
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import hashlib
 import json
 import re
+import typing
 from importlib import metadata
 from types import ModuleType
 
+from .. import errors as base_errors
 from .providers import (azure_cu, datalab, extend, llamaextract, llm_single_shot, mistral,
                         reducto)
 
@@ -70,9 +73,9 @@ def adapter(provider: str):
             exc.add_note(f"while loading adapter {provider!r} from package {ep.dist.name!r}")
             raise
     if provider not in ADAPTERS:
-        raise ValueError(f"unknown provider {provider!r}. Known vendors: "
-                         f"{', '.join(PROVIDERS)}. Any OpenRouter model id also works, "
-                         f"e.g. openai/gpt-5.6-sol")
+        raise base_errors.UsageError(f"unknown provider {provider!r}. Known vendors: "
+                                     f"{', '.join(PROVIDERS)}. Any OpenRouter model id also works, "
+                                     f"e.g. openai/gpt-5.6-sol")
     return ADAPTERS[provider]
 
 
@@ -90,11 +93,22 @@ def add_adapter(provider: str, module: ModuleType, *, replace: bool = False) -> 
 
 
 def resolve(provider: str) -> str:
-    """This adapter's module name -- what `WORKERS` is keyed by, and what groups the runs of
-    one adapter together however many model ids reached it."""
-    name = adapter(provider).__name__
-    # Note: only our own modules are shortened; two outside ones may end in the same word.
-    return name.rsplit(".", 1)[-1] if name.startswith(f"{__package__}.providers.") else name
+    """This adapter's name -- what `WORKERS` and `--workers` are keyed by, and what groups the runs of
+    one adapter together however many model ids reached it: one of ours by its module's short name
+    (`llm_single_shot` for every model id), one added in code or by a package by the name it was
+    filed under."""
+    return _name(provider, adapter(provider))
+
+
+def adapter_names() -> frozenset[str]:
+    """`resolve`'s name for every adapter filed so far, and `llm_single_shot`, every model id's."""
+    return frozenset(_name(p, m) for p, m in ADAPTERS.items()) | {"llm_single_shot"}
+
+
+def _name(provider: str, module: ModuleType) -> str:
+    """`resolve`'s name for the adapter `module`, filed under `provider`."""
+    name = module.__name__
+    return name.rsplit(".", 1)[-1] if name.startswith(f"{__package__}.providers.") else provider
 
 
 def out_name(provider: str, options: dict | None = None) -> str:
@@ -102,13 +116,13 @@ def out_name(provider: str, options: dict | None = None) -> str:
 
     THE NAME IS A FUNCTION OF THE SETTINGS, ALL OF THEM, so a directory holds one
     configuration and two configurations never share one -- `runs/datalab-f46415c9` and
-    `runs/datalab-01a72762` are the balanced and the accurate run, and `needs_run` cannot hand
+    `runs/datalab-01a72762` are the balanced and the accurate run, and `benchmark.needs` cannot hand
     either the other's records. Naming what a run merely CHANGED about the defaults would tie
     the name to the defaults, and they move: the day a vendor's maximum tier moves with them,
     two tiers land in one directory and average into one published number.
 
     The digest is not readable, and nothing here tries to make it so. WHAT A RUN WAS ASKED IS
-    WRITTEN INTO THE RUN, by `benchmark.run`, as `settings.json` -- beside the answers, where
+    WRITTEN INTO THE RUN, by `benchmark.prepare`, as `settings.json` -- beside the answers, where
     there is no width budget to select fields against.
 
     `openai/gpt-5.6-sol` would otherwise nest, and a `:batch` suffix is not a filename on every
@@ -135,16 +149,51 @@ def config_for(provider: str, options: dict | None = None):
     options = options or {}
     if MODEL_SEPARATOR in provider:
         if "model" in options:
-            raise ValueError(
+            raise base_errors.UsageError(
                 f"{provider}: `model` is the provider name, not an option -- otherwise the "
                 f"run would be stored and published under a model it did not use. Run the "
                 f"one you want: --providers {options['model']}")
         options = {**options, "model": provider}
+    fields = [f.name for f in dataclasses.fields(config_type)]
+    if unknown := sorted(set(options) - set(fields)):
+        near = difflib.get_close_matches(unknown[0], fields, n=1)
+        raise base_errors.UsageError(f"{provider} has no option {unknown[0]!r}"
+                                     + (f" (did you mean {near[0]!r}?)" if near else "")
+                                     + f"; its options are: {', '.join(fields) or '(none)'}")
+    for k, v in options.items():
+        # Note: NaN and infinity are no JSON, and a run's settings are written as JSON.
+        if not _finite(v):
+            raise base_errors.UsageError(f"{provider}: option {k} is {v!r}; give a finite number")
+    return config_type(**_typed(provider, config_type, options))
+
+
+def _finite(value) -> bool:
+    """Whether `value` is JSON without NaN or infinity anywhere in it."""
     try:
-        return config_type(**options)
-    except TypeError as exc:
-        known = ", ".join(f.name for f in dataclasses.fields(config_type)) or "(none)"
-        raise ValueError(f"{provider}: {exc}. Its options are: {known}") from None
+        json.dumps(value, allow_nan=False, default=str)
+    except ValueError:
+        return False
+    return True
+
+
+def _typed(provider: str, config_type: type, options: dict) -> dict:
+    """`options` with each value given as its `Config` field's type: a whole number for a float field
+    becomes a float, so `{"delay": 0}` and the default `0.0` name one run; a value of another simple
+    type is refused, naming the option. A field typed otherwise (a union, a list) is passed as given."""
+    try:
+        hints = typing.get_type_hints(config_type)
+    except Exception:  # noqa: BLE001 -- a plugin's annotations may not resolve; then nothing is checked
+        return options
+    out = dict(options)
+    for k, v in options.items():
+        t = hints.get(k)
+        if t not in (str, int, float, bool): continue
+        if t is float and isinstance(v, int) and not isinstance(v, bool):
+            out[k] = float(v)
+        elif not isinstance(v, t) or (t is not bool and isinstance(v, bool)):
+            raise base_errors.UsageError(f"{provider}: option {k} is {v!r}, a {type(v).__name__}; it takes a "
+                                         f"{t.__name__}")
+    return out
 
 
 def settings_for(provider: str, options: dict | None = None) -> dict:

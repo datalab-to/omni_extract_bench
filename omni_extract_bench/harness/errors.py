@@ -6,11 +6,13 @@ condition once drifted apart and left 91 predictions unretried while 18 identica
 `AccountFailure`, `MissingCredential` and `MissingDependency` are RAISED, never returned.
 None is a fact about a document -- each is identical for every document in the corpus -- so a
 returned one would be written down as a settled answer that no resume re-attempts. One vendor
-marked 174 documents "failed" in 60 seconds after a credit ceiling.
+marked 174 documents "failed" in 60 seconds after a credit ceiling. Each is a `Stop`.
 """
 from __future__ import annotations
 
-TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
+from .. import errors as base_errors
+
+TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 523, 524})
 
 
 class VendorError(RuntimeError):
@@ -61,7 +63,21 @@ class VendorTimeout(VendorError):
         return False
 
 
-class AccountFailure(RuntimeError):
+class VendorUnreachable(VendorError):
+    """The vendor couldn't be reached, or its answer didn't come back: a network fault, with no HTTP
+    status.
+
+    Not `transient` within a call: a poll that fails may leave a job running at the vendor, and asking
+    again from the upload would buy the extraction twice. But it is no answer about the document, so
+    `--retry-failed` predicts it again (`benchmark.needs`), as it does a timeout.
+    """
+
+    @property
+    def transient(self) -> bool:
+        return False
+
+
+class AccountFailure(base_errors.Stop):
     """The account cannot pay. NOT a fact about the document, so it stops the run.
 
     One vendor marked 174 documents "failed" in 60 seconds after hitting a credit ceiling,
@@ -69,7 +85,7 @@ class AccountFailure(RuntimeError):
     """
 
 
-class MissingCredential(RuntimeError):
+class MissingCredential(base_errors.Stop):
     """A vendor's API key is not in the environment.
 
     Ours to fix and identical for every document, so it is raised past the runner rather than
@@ -78,5 +94,5 @@ class MissingCredential(RuntimeError):
     """
 
 
-class MissingDependency(ImportError):
+class MissingDependency(ImportError, base_errors.Stop):
     """An adapter could not import its SDK. Ours to fix, and identical for every document."""

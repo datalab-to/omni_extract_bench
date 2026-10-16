@@ -25,7 +25,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from omni_extract_bench import matching as _matching                         # noqa: E402
+from omni_extract_bench.scorers.field_matching import matching as _matching                         # noqa: E402
 
 TINY = (8, 64, 64)
 

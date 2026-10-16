@@ -73,7 +73,7 @@ out = run(root, """
     print("import", outcome(lambda: adapter("broken")))
     print("contract", outcome(lambda: adapter("bare")))
     print("keys", *(registry.resolve(p) for p in ("agent-a", "agent-b", "my-datalab", "datalab")))
-    print("workers", benchmark.workers_for("my-datalab", None))
+    print("workers", benchmark._workers_for(registry.resolve("my-datalab")))
     import fake_adapter as m
     add_adapter("code-agent", m)
     print("added", "code-agent" in PROVIDERS, PROVIDERS == sorted(PROVIDERS))
@@ -90,8 +90,8 @@ report("an import failure keeps its error, noting provider and package",
        "not_installed" in got.get("import", "") and "from package 'fakepkg'" in got["import"], out)
 report("a module missing contract names is refused, naming them",
        "TypeError" in got.get("contract", "") and "prepare_schema, extract" in got["contract"], out)
-report("modules that end alike get separate keys, and no built-in's cap",
-       got.get("keys") == "pkg_a.adapter pkg_b.adapter pkg_a.datalab datalab"
+report("an outside adapter is keyed by the name it was filed under, and gets no built-in's cap",
+       got.get("keys") == "agent-a agent-b my-datalab datalab"
        and got.get("workers") == "5", out)
 report("add_adapter lists the name in PROVIDERS, kept sorted", got.get("added") == "True True", out)
 report("add_adapter refuses a built-in's or a plugin's name",
