@@ -123,6 +123,30 @@ report("...and the same settings always mean the same name", was_stock == now_pi
 report("...however the defaults moved around them", was_pinned == now_stock,
        f"{was_pinned} vs {now_stock}")
 
+print("\nNOR ON WHERE A MODEL SERVER ANSWERS")
+def _served():
+    module = types.ModuleType("fake_served")
+
+    @dataclasses.dataclass(frozen=True)
+    class Config:
+        base_url: str = dataclasses.field(default="http://127.0.0.1:8001", metadata={"names_run": False})
+        dpi: int = 96
+
+    module.Config = Config
+    module.prepare_schema = lambda schema: schema
+    module.extract = lambda *a, **k: None
+    return lambda provider: module
+
+
+try:
+    V.adapter = _served()
+    here, there = named("served"), named("served", base_url="http://10.0.0.7:8001")
+    steered = named("served", dpi=300)
+finally:
+    V.adapter = _real_adapter
+report("a field marked names_run=False doesn't change the name", here == there, f"{here} vs {there}")
+report("...while every other field still does", steered != here, f"{steered} vs {here}")
+
 print("\nAND THE NAME DOES NOT DEPEND ON HOW IT WAS WRITTEN")
 report("option order does not change it",
        named("datalab", mode="fast", poll_interval=2.5)

@@ -128,8 +128,15 @@ def out_name(provider: str, options: dict | None = None) -> str:
     `openai/gpt-5.6-sol` would otherwise nest, and a `:batch` suffix is not a filename on every
     filesystem, so the provider half is spelled out and sanitised too. Two ids that sanitise
     alike still differ: the model is one of the settings the digest covers.
+
+    A `Config` field marked `metadata={"names_run": False}` is left out, as in omni-parse-bench: where a
+    model server answers (a new address each time it starts) doesn't change what was run, so a resumed
+    run keeps its name. `settings.json` still records it.
     """
-    spelled = json.dumps(settings_for(provider, options), sort_keys=True, default=str)
+    config = config_for(provider, options)
+    named = {f.name for f in dataclasses.fields(config) if f.metadata.get("names_run", True)}
+    kept = {k: v for k, v in settings_for(provider, options).items() if k in named}
+    spelled = json.dumps(kept, sort_keys=True, default=str)
     digest = hashlib.sha256(spelled.encode()).hexdigest()[:8]
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", provider.replace(MODEL_SEPARATOR, "__"))
     return f"{name}-{digest}"
