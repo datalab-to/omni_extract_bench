@@ -1,11 +1,27 @@
+"""Extend adapter: upload, submit an extract run with the schema inline, poll it to a terminal state.
+
+Extend validates schemas strictly, so `prepare_schema` restates the schema in its dialect
+(`to_strict_dialect`) and aliases the names it reserves (`RESERVED`); `read` restores them.
+
+Auth: EXTEND_API_KEY, and EXTEND_WORKSPACE_ID when the key reaches several workspaces.
+
+    oeb run --providers extend
+"""
 from __future__ import annotations
-import dataclasses, json, os, time
+
+import dataclasses
+import json
+import os
+import time
 from pathlib import Path
+from typing import Any, ClassVar
+
 import httpx
+from omni_bench_core import adapter, errors
 
 from ...scorers import field_matching
+from .. import contract
 from .. import schema as SCHEMA
-from .. import budget, contract, errors
 
 BASE = "https://api.extend.ai"
 API_VERSION = "2026-02-09"
@@ -14,17 +30,6 @@ ARRAY_STRATEGY = "large_array_max_context"
 POLL_S = 5
 DEFAULT_TIMEOUT_S = 1800.0
 TERMINAL = {"PROCESSED", "COMPLETED", "FAILED", "CANCELLED", "ERROR"}
-
-
-@dataclasses.dataclass(frozen=True)
-class Config:
-    """What extend can be asked, and what it is asked at its maximum tier."""
-
-    array_strategy: str = dataclasses.field(
-        default=ARRAY_STRATEGY,
-        metadata={"help": "MAX array extraction; this corpus is array-heavy"})
-    api_version: str = API_VERSION
-    base_url: str = BASE
 
 
 def headers(key: str, api_version: str = API_VERSION) -> dict:
@@ -40,8 +45,9 @@ def upload(c: httpx.Client, pdf: Path, base_url: str = BASE) -> str:
                files={"file": (pdf.name, pdf.read_bytes(), "application/pdf")}, timeout=300)
     if r.status_code >= 400:
         raise RuntimeError(f"upload HTTP {r.status_code}: {r.text[:300]}")
-    b = r.json()
-    fid = (b.get("file") or {}).get("id") or b.get("id")
+    with adapter.reading("the uploaded file's id"):
+        b = r.json()
+        fid = (b.get("file") or {}).get("id") or b.get("id")
     if not fid:
         raise RuntimeError(f"upload: no file id in {r.text[:200]}")
     return fid
@@ -52,12 +58,13 @@ def submit(c: httpx.Client, file_id: str, schema: dict, base_url: str = BASE,
     """Submit an extraction run against the current API.
 
     The schema goes inline in `config`, which is what the current API version is for. The old
-    one needed a saved processor to hang a schema on, so this adapter fetched any EXTRACT
+    one needed a saved processor to hang a schema on, so this adapter fetched any extract
     processor from the workspace and passed its id -- a wasted round trip per document, and a
     hard failure on an account that happens to have no processor saved. `submit` had already
     stopped using it.
 
-    `advancedOptions.arrayStrategy` selects MAX array extraction.
+    `advancedOptions.arrayStrategy` selects the large-array, maximum-context strategy
+    (`large_array_max_context`).
     """
     body = {"file": {"id": file_id},
             "config": {"schema": schema,
@@ -65,9 +72,10 @@ def submit(c: httpx.Client, file_id: str, schema: dict, base_url: str = BASE,
     r = c.post(f"{base_url}/extract_runs", json=body, timeout=120)
     if r.status_code >= 400:
         raise RuntimeError(f"extract_runs HTTP {r.status_code}: {r.text[:400]}")
-    b = r.json()
-    run = b.get("extractRun") or b.get("processorRun") or b.get("run") or b
-    rid = run.get("id")
+    with adapter.reading("the run's id"):
+        b = r.json()
+        run = b.get("extractRun") or b.get("processorRun") or b.get("run") or b
+        rid = run.get("id")
     if not rid:
         raise RuntimeError(f"extract_runs: no run id in {r.text[:250]}")
     return rid
@@ -75,7 +83,7 @@ def submit(c: httpx.Client, file_id: str, schema: dict, base_url: str = BASE,
 
 def poll(c: httpx.Client, run_id: str, deadline, base_url: str = BASE) -> dict:
     polls = 0
-    retry = budget.PollRetry(deadline)
+    retry = adapter.PollRetry(deadline)
     while True:
         deadline.check(f"run {run_id} was still processing after {polls} polls")
         try:
@@ -89,11 +97,12 @@ def poll(c: httpx.Client, run_id: str, deadline, base_url: str = BASE) -> dict:
                 continue
             raise errors.VendorError(f"poll HTTP {r.status_code}: {r.text[:250]}",
                                      status=r.status_code, body=r.text)
-        retry.ok()
+        retry.reset()
         polls += 1
-        b = r.json()
-        run = b.get("extractRun") or b.get("processorRun") or b.get("run") or b
-        st = str(run.get("status", "")).upper()
+        with adapter.reading("the run's status"):
+            b = r.json()
+            run = b.get("extractRun") or b.get("processorRun") or b.get("run") or b
+            st = str(run.get("status", "")).upper()
         if st in TERMINAL:
             return run
         time.sleep(POLL_S)
@@ -116,50 +125,65 @@ def extraction_of(run: dict):
     return None, None
 
 
-def extract(pdf: Path, schema: dict, *, timeout: float = DEFAULT_TIMEOUT_S,
-            config: Config = Config()) -> contract.Extraction:
-    """Get a generic processor, upload, submit a run, poll it to a terminal state.
+@dataclasses.dataclass(frozen=True)
+class Extend(contract.Extractor):
+    """Extend's extract runs, with its large-array, maximum-context strategy, because this corpus is
+    array-heavy."""
 
-    Extend does not report a per-document cost, so `cost.usd` is None and the record says
-    `billed_out_of_band` rather than inventing a figure from a price list.
-    """
-    key = os.environ.get("EXTEND_API_KEY")
-    if not key:
-        raise errors.MissingCredential("EXTEND_API_KEY is not set")
+    name: ClassVar[str] = "extend"
+    workers: ClassVar[int] = 5
+    array_strategy: str = dataclasses.field(
+        default=ARRAY_STRATEGY, metadata={"help": "large-array, maximum-context extraction; this corpus is array-heavy"})
+    api_version: str = API_VERSION
+    base_url: str = BASE
 
-    deadline = budget.Budget(timeout)
-    with httpx.Client(headers=headers(key, config.api_version), timeout=120) as c:
-        try:
-            file_id = upload(c, pdf, config.base_url)
-            run_id = submit(c, file_id, schema, config.base_url, config.array_strategy)
-        except httpx.HTTPStatusError as exc:
-            raise errors.VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
-                                     status=exc.response.status_code,
-                                     body=exc.response.text) from None
-        except RuntimeError as exc:
-            raise errors.VendorError(str(exc)[:300], status=200) from None
-        run = poll(c, run_id, deadline, config.base_url)
+    def prepare_schema(self, schema: dict) -> dict:
+        """The schema Extend is sent: reserved names aliased, $refs inlined, strict dialect."""
+        return to_strict_dialect(
+            field_matching.resolve_refs(rename_reserved(schema), max_depth=SCHEMA.MAX_REF_DEPTH))
 
-    status = str(run.get("status", "")).upper()
-    payload, envelope_path = extraction_of(run)
-    result = restore_reserved(payload)
-    if not isinstance(result, dict) or not result:
-        raise errors.VendorError(f"run finished {status} with no extraction: {json.dumps(run)[:300]}",
-                                 status=200)
-    usage = run.get("usage") or {}
-    credits = usage.get("totalCredits", usage.get("credits"))
-    return contract.Extraction(result=result,
-                               raw={**{k: v for k, v in run.items()
-                              if k not in ("output", "result", "edited")},
-                           "envelope_path": envelope_path},
-                               cost=contract.Cost(credits=credits if isinstance(credits, (int, float))
-                                        and not isinstance(credits, bool) else None,
-                                         source="usage.totalCredits" if credits is not None else None),
-                               job_id=run_id)
+    def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
+        """Upload, submit a run, poll it to a terminal state.
+
+        Extend does not report a per-document cost, so `cost.usd` is None rather than a figure invented
+        from a price list.
+        """
+        key = os.environ.get("EXTEND_API_KEY")
+        if not key:
+            raise errors.MissingCredential("EXTEND_API_KEY is not set")
+
+        deadline = adapter.Budget(timeout)
+        with httpx.Client(headers=headers(key, self.api_version), timeout=120) as c:
+            try:
+                file_id = upload(c, pdf, self.base_url)
+                run_id = submit(c, file_id, schema, self.base_url, self.array_strategy)
+            except httpx.HTTPStatusError as exc:
+                raise errors.VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
+                                         status=exc.response.status_code, body=exc.response.text) from None
+            except RuntimeError as exc:
+                raise errors.VendorError(str(exc)[:300], status=200) from None
+            run = poll(c, run_id, deadline, self.base_url)
+        with adapter.reading("the run's cost"):
+            usage = run.get("usage") or {}
+            credits = usage.get("totalCredits", usage.get("credits"))
+        return adapter.Call(raw=run,
+                            cost=adapter.Cost(credits=credits if isinstance(credits, (int, float))
+                                              and not isinstance(credits, bool) else None,
+                                              source="usage.totalCredits" if credits is not None else None),
+                            job_id=run_id)
+
+    def read(self, raw: Any, q: contract.Question) -> dict:
+        """The extraction in `output.value`, with the reserved names restored."""
+        payload, _ = extraction_of(raw if isinstance(raw, dict) else {})
+        found = restore_reserved(payload)
+        if not isinstance(found, dict) or not found:
+            status = str(raw.get("status", "")).upper() if isinstance(raw, dict) else "?"
+            raise ValueError(f"run finished {status} with no extraction: {json.dumps(raw)[:300]}")
+        return found
 
 
 #: Extend reserves `id`. `rename_reserved` (in `prepare_schema`) and `restore_reserved` (in
-#: `extract`) both read this mapping; drop one and drop the other.
+#: `read`) both read this mapping; drop one and drop the other.
 RESERVED = {"id": "id__"}
 
 
@@ -208,12 +232,12 @@ def collapse_nullable_union(node):
 def to_strict_dialect(node, in_items=False, allowed=STRICT_ALLOWED_KEYS):
     """Reshape for a vendor that validates strictly and requires nullable properties.
 
-    Three rules, and they differ BY POSITION -- the detail that makes this worth writing down,
-    because applying nullability everywhere fixes properties and breaks array items at once:
+    Three rules, and they differ by position. That is the detail worth writing down, because applying
+    nullability everywhere fixes properties and breaks array items at once:
 
-      * keys       an allowlist (see ``STRICT_ALLOWED_KEYS``)
-      * properties must be nullable: ``["string", "null"]``, and enums must include ``null``
-      * items      must be a BARE type: a ``["string","null"]`` union is rejected here
+      * keys: an allowlist (see ``STRICT_ALLOWED_KEYS``);
+      * properties: must be nullable, ``["string", "null"]``, and enums must include ``null``; and
+      * items: must be a bare type; a ``["string","null"]`` union is rejected here.
 
     Modelled on Extend's validator; useful for any vendor with the same shape of constraints.
     """
@@ -258,12 +282,6 @@ def to_strict_dialect(node, in_items=False, allowed=STRICT_ALLOWED_KEYS):
     if isinstance(out.get("enum"), list) and None not in out["enum"]:
         out["enum"] = list(out["enum"]) + [None]
     return out
-
-
-def prepare_schema(schema):
-    """The schema Extend is sent: reserved names aliased, $refs inlined, strict dialect."""
-    return to_strict_dialect(
-        field_matching.resolve_refs(rename_reserved(schema), max_depth=SCHEMA.MAX_REF_DEPTH))
 
 
 def restore_reserved(obj):

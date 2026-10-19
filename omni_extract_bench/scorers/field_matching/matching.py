@@ -18,7 +18,7 @@ def _exact_ok(n, m, positives=None):
 
     Args:
         n, m: the two sides' element counts, in either order.
-        positives: an UPPER bound on the pairs that can carry positive weight, or None if the
+        positives: an upper bound on the pairs that can carry positive weight, or None if the
             caller did not compute one. Only consulted between `MAX_CELLS` and
             `MAX_CELLS_DENSE`, where the two paths have to be compared rather than assumed.
 
@@ -43,13 +43,13 @@ def _exact_ok(n, m, positives=None):
 
 
 def sparse_pairs(pred_rows, gt_rows, weights):
-    """Maximum-weight pairing from a SPARSE weight matrix, exactly, without a dense one.
+    """Maximum-weight pairing from a sparse weight matrix, exactly, without a dense one.
 
     The dense solver needs n*m float64 -- 5.7 GB on the largest array here -- which is the
     whole reason `_greedy` exists. When the weights are sparse they are 50 MB instead, and
     scipy's sparse assignment solves them exactly.
 
-    **The escape columns are what make it the same problem.** The sparse solver finds a FULL
+    The escape columns are what make it the same problem. The sparse solver finds a full
     matching: every row on the smaller side must be assigned. This metric must be free to
     leave a row unpaired -- pairing two rows that share nothing is not a match -- and forcing
     a full matching answers a different, worse question. On a 2x2 where one row can only reach
@@ -57,7 +57,7 @@ def sparse_pairs(pred_rows, gt_rows, weights):
 
     So every row is given its own private column, worth less than any real edge can be: real
     weights are scaled by `n + m + 1`, escapes are worth 1, and a matching's escapes can never
-    outweigh a single real unit. Taking an escape IS being unmatched. It costs `n` further
+    outweigh a single real unit. Taking an escape is being unmatched. It costs `n` further
     entries, so the sparsity that made this possible survives.
     """
     n, m = weights.shape

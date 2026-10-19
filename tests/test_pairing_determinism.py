@@ -1,25 +1,10 @@
 #!/usr/bin/env python3
-"""Reordering rows must not change a single reported number.
+"""Reordering rows must not change any reported number, the error split included.
 
-Row order is the thing this benchmark most insists does not matter: a vendor that emits a
-table bottom-to-top has not made a mistake, and `align` exists to renumber its rows onto the
-ground truth's. The score has always had that property. The DIAGNOSTICS did not.
-
-The cause is that several assignments can be equally optimal. `matched * scale + shared`
-pins the optimal VALUE -- so accuracy, precision, recall and f1 are the same whichever
-assignment wins -- but it does not pin WHICH rows got paired, and the false-assertion split
-reads exactly that. An unpaired predicted row is an invented item; the same row paired is a
-handful of invented fields. Before the fix, 35 of 600 random row-documents reported a
-different split when the prediction's rows were shuffled, and 11 when the gold's were.
-
-The fix is to sort both sides by a canonical content key before solving, so the solver is
-handed the identical problem however the rows arrived. This file is the reason that cannot
-quietly stop working. It checks the property at depth 3, because the key is recursive and a
-key that accidentally read positions would still pass at depth 1.
-
-Two things here are deliberately NOT invariant, and are asserted to move:
-  - an array the caller declared `order_matters`, where the index IS content
-  - nothing else
+Several pairings can be equally good. They give the same accuracy, but not always the same split of false
+assertions into invented items and invented fields, so both sides are sorted by a content key before pairing.
+This checks it at depth 3, because the key is recursive. The one thing allowed to move is an array the caller
+declared `order_matters`.
 
 Run: python3 tests/test_pairing_determinism.py
 """
@@ -31,8 +16,10 @@ import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from tests.approximate import approximate                  # noqa: E402
-from omni_extract_bench.scorers.field_matching import (                                     # noqa: E402
-    KEY, Row, _content_key, _extract_rows_at, flatten, score)
+from omni_extract_bench.scorers.field_matching.documents import KEY  # noqa: E402
+from omni_extract_bench.scorers.field_matching.compare import score  # noqa: E402
+from omni_extract_bench.scorers.field_matching.pairing import Row, _content_key, _extract_rows_at  # noqa: E402
+from omni_extract_bench.scorers.field_matching.documents import flatten  # noqa: E402
 
 FAILS = []
 
@@ -97,7 +84,7 @@ def disagreement(gold, pred, variants, schema, **kw):
     return moved, base
 
 
-print("EVERY REPORTED FIELD SURVIVES REORDERING THE ROWS")
+print("Every reported field survives reordering the rows")
 rng = random.Random(17)
 moved_pred, moved_gold = set(), set()
 for _ in range(120):
@@ -115,7 +102,7 @@ report("permuting the PREDICTION's rows moves nothing", not moved_pred, str(sort
 report("permuting the GOLD's rows moves nothing", not moved_gold, str(sorted(moved_gold)))
 note("before the content-key sort: 35/600 and 11/600 documents moved fabricated/invented_item")
 
-print("\nAND SURVIVES IT AT EVERY DEPTH, NOT JUST THE TOP ONE")
+print("\nAnd survives it at every depth, not just the top one")
 rng = random.Random(23)
 moved_deep = set()
 for _ in range(60):
@@ -128,7 +115,7 @@ report("rows, their nested items, and the parts inside those -- all reorderable"
        not moved_deep, str(sorted(moved_deep)))
 note("the key is recursive; one that read positions would still have passed at depth 1")
 
-print("\nINCLUDING WHEN THE ARRAY IS TOO BIG TO SOLVE EXACTLY")
+print("\nIncluding when the array is too big to solve exactly")
 rng = random.Random(29)
 with approximate():
     moved_greedy = set()
@@ -142,7 +129,7 @@ with approximate():
 report("the greedy path is order-independent too", not moved_greedy, str(sorted(moved_greedy)))
 note("greedy breaks its own ties on position, which is canonical once the rows are sorted")
 
-print("\nBUT AN ORDERED ARRAY IS SUPPOSED TO MOVE -- THERE THE INDEX IS THE ADDRESS")
+print("\nBut an ordered array is supposed to move -- there the index is the address")
 rng = random.Random(31)
 ordered_moved = 0
 for _ in range(60):
@@ -155,7 +142,7 @@ report("declaring the inner array ordered makes reordering it a real change",
        ordered_moved > 0, f"{ordered_moved}/60 documents moved")
 note("a fix that froze these too would be a bug, not a stronger guarantee")
 
-print("\nTHE CONTENT KEY IS READ OFF STRUCTURE, NOT OFF A RENDERED ADDRESS")
+print("\nThe content key is read off structure, not off a rendered address")
 one = _extract_rows_at(flatten({"r": [{"a.b": 1}]}), ((KEY, "r"),), frozenset())[0]
 two = _extract_rows_at(flatten({"r": [{"a": {"b": 1}}]}), ((KEY, "r"),), frozenset())[0]
 report("a field named 'a.b' and a nested a->b do not collide",
@@ -175,7 +162,7 @@ report("every Row is built with its key; the empty default never reaches the sor
        Row.at(flatten({"a": 1}), (), frozenset()).key != ()
        and _content_key({}, {}) == ((), ()))
 
-print("\nTHE DOCUMENT THAT EXPOSED IT, PINNED")
+print("\nThe document that exposed it, pinned")
 gold = [{"c": 2, "a": 0, "d": 1, "e": 1}, {"b": 1}]
 pred = [{"e": 1, "a": 0, "c": 1, "b": 1}, {"b": 0, "e": 2, "d": 1}]
 a = score({"r": pred}, {"r": gold}, FLAT)
@@ -186,7 +173,7 @@ report("two pairings weigh the same; the reported split no longer depends on whi
 report("...and the accuracy was never the thing that moved",
        a["accuracy"] == b["accuracy"] == 0.2222222222222222)
 
-print(f"\n{'PAIRING IS ORDER-INDEPENDENT' if not FAILS else 'FAILURES:'}")
+print(f"\n{'Pairing is order-independent' if not FAILS else 'Failures:'}")
 for f in FAILS:
     print(f"   {f}")
 _sys.exit(1 if FAILS else 0)

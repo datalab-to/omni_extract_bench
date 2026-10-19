@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
-"""Property-based tests for the metric spec (METRIC_SPEC.md P1..P23), against `scorer.py`.
+"""The metric spec's properties (METRIC_SPEC.md P1 to P23), checked on generated documents.
 
-Generative, not example-based: random nested documents are built and perturbed, so the
-properties are checked over a space of shapes rather than a handful of cases I happened to
-think of. Deterministic seeds — a failure is always reproducible.
-
-This file was written against the paired walker that `scorer.py` replaced, and was pointed at
-`scorer.py` when that walker was deleted. Worth knowing, because the spec's property table had
-until then been asserted only against an implementation the benchmark no longer ran: the
-properties passed unchanged, but they had never been checked against the scorer that produces
-the published numbers.
-
-One property did not survive the move. P18c asserted `pair_object_keys`, an internal of the
-walker; the path scorer has no key-pairing step, because an object key IS the address. It is
-noted in place rather than quietly dropped.
+Random nested documents are built and changed, with fixed seeds, so a failure always reproduces. P18c, which
+asserted an internal of the old scorer, has no counterpart in the current one and is noted in place.
 
 Run: python3 tests/test_metric_properties.py
 """
@@ -23,7 +12,7 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench.scorers.field_matching import matching as OM         # noqa: E402
 from tests.approximate import approximate                  # noqa: E402
-from omni_extract_bench.scorers.field_matching import score as _grade   # noqa: E402
+from omni_extract_bench.scorers.field_matching.compare import score as _grade  # noqa: E402
 from omni_extract_bench.scorers.field_matching.values import canon_key, cmp_leaf   # noqa: E402
 
 
@@ -31,8 +20,8 @@ def _schema_from(doc):
     """Derive a schema from gold, so these property tests stay about scoring.
 
     `score.score` requires one -- without it an `additionalProperties` subtree cannot be
-    found, and a fabricated value cannot be told from an invented one. Deriving it from GOLD
-    alone is deliberate: a key the PREDICTION invented genuinely is not a slot the model was
+    found, and a fabricated value cannot be told from an invented one. Deriving it from gold
+    alone is deliberate: a key the prediction invented genuinely is not a slot the model was
     offered.
     """
     if isinstance(doc, dict):
@@ -84,7 +73,7 @@ def rand_row(rnd, nf=None):
 def rand_doc(rnd, depth=0):
     """Generate a document.
 
-    The array shapes here are load-bearing. This generator used to emit ONLY homogeneous
+    The array shapes here are load-bearing. This generator used to emit only homogeneous
     arrays of dicts, so three defects in the array branch -- mixed arrays silently dropping
     their scalar elements, arrays of arrays compared by string repr, and shape disagreement
     erasing one side's leaves -- were invisible to every property below. A generator that
@@ -111,7 +100,7 @@ def rand_doc(rnd, depth=0):
 
 
 def reshape(node, rnd):
-    """Perturb a document's SHAPE, not its values: swap a container for another kind.
+    """Perturb a document's shape, not its values: swap a container for another kind.
 
     This is the mutation no existing test performed. A vendor really does return `{}` where
     gold has `[]`, or a bare string where gold has an array, and the scorer's answer used to
@@ -132,7 +121,7 @@ def reshape(node, rnd):
 
 
 def gold_leaf_paths(node, prefix=()):
-    """Every gold leaf path, enumerated WITHOUT consulting the prediction.
+    """Every gold leaf path, enumerated without consulting the prediction.
 
     An independent count is the point: it is the one denominator the scorer cannot influence,
     so comparing against it catches erasure that self-referential properties (P11) cannot.
@@ -446,7 +435,7 @@ report("P23 an open map reaches neither numerator nor denominator, and is counte
              f"got {r_om['matched']}/{r_om['total']}, "
              f"skipped={r_om['skipped_open_maps']}"))
 
-print(f"\n{'ALL METRIC PROPERTIES HOLD' if not FAILS else 'FAILURES:'}")
+print(f"\n{'All metric properties hold' if not FAILS else 'Failures:'}")
 for f in FAILS:
     print(f"   {f}")
 sys.exit(1 if FAILS else 0)

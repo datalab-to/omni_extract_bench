@@ -1,95 +1,89 @@
-"""What an adapter returns, and how it reports a failure.
+"""What an extraction adapter is: `Question`, what every system is sent, and `Extractor`, the base class.
 
-A leaf module: it imports nothing from this package, so every adapter and the runner above
-them can share these without a cycle.
-
-`Adapter` states the contract every vendor module satisfies. It is stated THERE and nowhere
-else, including here -- two copies of a contract are two things to keep in step.
-
-One rule about `Config` that `Adapter` cannot express in a type: a field must hold what the
-vendor is actually SENT. A `None` that `extract` later resolves into a real value is a setting
-the record cannot state -- it writes down `None` while the vendor was handed 128000. Resolve
-it in `__post_init__`, where the Config still says it.
+An extraction adapter is an omni-bench-core adapter whose input is a `Question`, a PDF and the schema to extract
+against. `Extractor`'s docstring says how to write one.
 """
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
-from typing import Any, NamedTuple, Protocol
+from typing import Any, NamedTuple
+
+from omni_bench_core import adapter, errors
+
+from . import responses
 
 
-class Adapter(Protocol):
-    """What every module in `providers/` provides. `registry.ADAPTERS` holds one of each.
+class Question(NamedTuple):
+    """What every system is sent for one document: the PDF, and the schema after `Extract.input` has
+    applied the benchmark's conventions and removed its own annotations."""
 
-    Three names, and nothing else is looked up on an adapter:
-
-        Config          a frozen dataclass; its fields are what the vendor can be asked, and
-                        the one declaration `--options`, `oeb providers` and
-                        `run_manifest.settings` all read
-        prepare_schema  the JSON Schema -> whatever this vendor's API takes
-        extract         make the call, parse the answer, return it; RAISE failures from where
-                        they happen rather than returning them
-
-    `prepare_schema` is separate from `extract` so that ONE value is both what `extract`
-    receives and what the record stores: an adapter that reshaped privately inside `extract`
-    left the record naming a schema the vendor never saw. Identity is a real answer here --
-    three vendors take a JSON Schema as written and say so with a one-line function, rather
-    than by omitting one and being defaulted.
-
-    Structural, not inherited: an adapter is a module, and a module cannot subclass. Nothing
-    enforces this at runtime -- it is the contract in one place, and `tests/` checks it.
-    """
-
-    Config: type
-
-    def prepare_schema(self, schema: dict) -> dict: ...
-
-    def extract(self, pdf: Path, schema: dict, *, timeout: float, config) -> Extraction: ...
+    pdf: Path
+    schema: dict
 
 
-class Cost(NamedTuple):
-    """What the vendor said this document cost. `usd` is None where it does not say.
+class DialectError(errors.VendorError):
+    """The schema could not be reshaped into what this vendor accepts, so no call was made.
 
-    `source` names the field it was read from, so a figure can be checked against the vendor's
-    own response rather than trusted. Credits are never converted to dollars: the rate is
-    contract-specific, so a credits figure is reported as itself or not at all. A guessed cost
-    sitting in the same column as a measured one is how a cost comparison becomes fiction.
-    """
+    It is the document's answer, not a stop, because it is a fact about one document's schema. It is never
+    transient: the same schema reshapes the same way every time."""
 
-    usd: float | None = None
-    source: str | None = None
-    tokens_in: int | None = None
-    tokens_out: int | None = None
-    credits: float | None = None
-
-    @classmethod
-    def reported(cls, value, source: str, *, cents: bool = False, **extra) -> "Cost":
-        """A cost the vendor stated, or an empty `Cost` if it did not say.
-
-        One definition of "is this a figure?", because three adapters had their own and they
-        had already drifted: `isinstance(True, int)` is True in Python, so a JSON `true` in a
-        cost field reads as a number, and only one of the copies excluded it.
-
-        `cents=True` converts, once, here. Reporting cents as dollars overstates by 100x, and
-        a cost table never recovers from that.
-        """
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            return cls(**extra)
-        return cls(usd=round(float(value) / (100.0 if cents else 1.0), 6), source=source, **extra)
+    @property
+    def transient(self) -> bool:
+        return False
 
 
-class Extraction(NamedTuple):
-    """One document's answer, and the evidence for it.
+@dataclasses.dataclass(frozen=True)
+class Extractor(adapter.Adapter[Question]):
+    """An extraction vendor. Write `extract`, and `prepare_schema` and `read` when the vendor needs them.
 
-    `raw` is the vendor's response as received, before our parsing. It is kept because the
-    expensive mistake is a PARSER bug: with only the parsed value stored, fixing the parser
-    means paying for every call again -- that cost 166 of them once. With `raw`, it means
-    re-reading a file.
+    `call` does three things, in order:
 
-    Only the response that carried the answer, not every call made getting there: an adapter
-    makes its own calls, so it can say what it got and count its own polls.
-    """
+    1. reshapes the schema with `prepare_schema`. A failure here is a `DialectError`, recorded as the
+       document's answer with the schema it couldn't reshape;
+    2. calls `extract`. A failure it raises carries the reshaped schema, so the record says what the vendor
+       was asked even when it refused; and
+    3. fills in the cost from the vendor's response when `extract` didn't say (`responses.cost_from_response`).
 
-    result: dict
-    raw: Any = None
-    cost: Cost = Cost()
-    job_id: str | None = None
+    The schema as sent is kept in the record (`Call.sent`), so the record says what the vendor was asked.
+    Whether a failure is the account's is omni-bench-core's default (`Adapter.account_failure`), which knows the
+    phrases these vendors use."""
+
+    def prepare_schema(self, schema: dict) -> dict:
+        """The schema in the form this vendor's API takes. By default the schema as it is.
+
+        It may change how a constraint is written, never what is asked for: resolving a $ref or
+        collapsing a nullable union is fine, removing a field is not."""
+        return schema
+
+    def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
+        """Sends the document and the reshaped schema, and returns the vendor's answer as received.
+        Raise a failure (`errors.VendorError` or one of its kinds) rather than returning an empty answer."""
+        raise NotImplementedError(f"{type(self).__name__} has no extract(pdf, schema, *, timeout) -> adapter.Call")
+
+    def call(self, q: Question, *, timeout: float) -> adapter.Call:
+        try:
+            sent = self.prepare_schema(q.schema)
+        except Exception as exc:  # noqa: BLE001 -- a reshaping may raise anything; it is this document's answer
+            raise DialectError(f"{self.name} could not shape this schema: {type(exc).__name__}: {exc}"[:400],
+                               sent=q.schema) from None
+        try:
+            got = self.extract(q.pdf, sent, timeout=timeout)
+        except errors.VendorError as exc:
+            if exc.sent is None: exc.sent = sent
+            raise
+        if got.cost.usd is None and got.cost.credits is None:
+            usd, field = responses.cost_from_response(got.raw)
+            if usd is not None: got = got._replace(cost=adapter.Cost(usd=usd, source=field))
+        return got._replace(sent=sent)
+
+    def read(self, raw: Any, q: Question) -> dict:
+        """The extraction in the answer. By default `raw["extraction"]`, which must be a non-empty JSON
+        object; an adapter whose answer holds it elsewhere overrides this."""
+        return extraction(raw.get("extraction") if isinstance(raw, dict) else None)
+
+
+def extraction(x: Any) -> dict:
+    """`x` when it is a non-empty JSON object, the extraction; ValueError, saying what it is, otherwise."""
+    if isinstance(x, dict) and x: return x
+    raise ValueError(f"the answer holds no extraction, a non-empty JSON object; it holds {str(x)[:120]}")

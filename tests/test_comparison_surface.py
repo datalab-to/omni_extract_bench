@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""Exactly which value differences are free, and which are not.
+"""Which value differences are free, and which are not: the two lists in METRIC_SPEC section 2, asserted, so
+the spec can't promise a fold the code doesn't do.
 
-METRIC_SPEC section 2 prints two lists: format differences the comparator folds, and ones
-that look like formatting to a person but score as disagreements. Both lists are asserted
-here, so the spec cannot promise a fold the code does not do -- which it did, until this file
-existed. It claimed "any disagreement the grader reports is a real one", and six plausible
-format differences say otherwise.
-
-The second list is the interesting one: it is a list of candidate SCORER gaps. If a provider's
-misses look like formatting, look here before blaming the vendor.
+The second list, differences that look like formatting but score as disagreements, is a list of candidate
+scorer gaps: look here before blaming a vendor for misses that look like formatting.
 
 Run: python3 tests/test_comparison_surface.py
 """
@@ -63,17 +58,17 @@ CHARGED = [
     ("yes", True, "'yes' as a boolean"),
 ]
 
-print("\nFORMAT DIFFERENCES THE COMPARATOR FOLDS")
+print("\nFormat differences the comparator folds")
 for a, b, why in FOLDED:
     report(f"{why}: {a!r} == {b!r}", cmp_leaf(a, b) >= 1.0)
 
-print("\nAND THE ONES IT DOES NOT -- CANDIDATE SCORER GAPS, NOT VENDOR ERRORS")
+print("\nAnd the ones it does not -- candidate scorer gaps, not vendor errors")
 for a, b, why in CHARGED:
     report(f"{why}: {a!r} != {b!r}", cmp_leaf(a, b) < 1.0,
            "this now folds -- update METRIC_SPEC section 2, it lists this as charged")
 note("if one of these starts folding, the spec's second list is stale, not this test")
 
-print("\nA TIMESTAMP AT MIDNIGHT IS A DATE; ANY OTHER TIME IS A TIME")
+print("\nA timestamp at midnight is a date; any other time is a time")
 report("midnight folds to the date, so a vendor spelling a date as a timestamp is not charged",
        cmp_leaf("2024-10-31T00:00:00Z", "2024-10-31") >= 1.0)
 report("a real time of day is kept, so two different times still differ",
@@ -89,12 +84,12 @@ report("nothing that merely contains digits is swallowed as a date",
        str([canon_key(x) for x in ("Q1", "1/2", "2-3-13", "12:00", "2024", "1.2.3")]))
 note("the offset is dropped rather than converted: extraction reads the printed wall clock")
 
-print("\nPRECISION BELONGS TO THE FRACTION, NOT TO THE WHOLE NUMBER")
-report("the same printed rate at two precisions matches -- the case leniency is FOR",
+print("\nPrecision belongs to the fraction, not to the whole number")
+report("the same printed rate at two precisions matches -- the case leniency is for",
        cmp_leaf(33.33333333, 33.3333333) >= 1.0)
 report("...and a fraction agreeing to 7 figures matches however small it is",
        cmp_leaf(0.12345678, 0.12345679) >= 1.0 and cmp_leaf(0.052500001, 0.0525) >= 1.0)
-report("cents are compared at EVERY magnitude",
+report("cents are compared at every magnitude",
        all(cmp_leaf(a, b) < 1.0 for a, b in
            ((12345.67, 12345.68), (123456.78, 123456.79),
             (1234567.89, 1234567.91), ("12222222.78", "12222222.79"))),
@@ -105,12 +100,12 @@ report("...while the fraction stays lenient at those same magnitudes",
        "this is the pairing a whole-number rule could not express")
 report("a ten-millionth apart is a difference, not a reformatting a model would make",
        cmp_leaf(1.0, 1.0000001) < 1.0)
-report("rounding the fraction CAN carry into the integer part -- that is what rounding is",
+report("rounding the fraction can carry into the integer part -- that is what rounding is",
        cmp_leaf("1.9999999999", 2) >= 1.0, f"1.9999999999 keys as {canon_key('1.9999999999')!r}")
 report("...but the integer part is never a rounding target, so it cannot be eroded",
        cmp_leaf("0.99999994", "1.00000004") < 1.0,
        f"{canon_key('0.99999994')!r} vs {canon_key('1.00000004')!r}")
-report("every FORMATTING difference folds by PARSING, independently of the rounding",
+report("every formatting difference folds by parsing, independently of the rounding",
        all(cmp_leaf(a, b) >= 1.0 for a, b in
            ((5, "5.00"), (1, "1.0"), (1234.5, "1234.50"),
             (1234.56, "$1,234.56"), (12.34, "12.34%"), (-1234.56, "(1,234.56)"))))
@@ -119,13 +114,13 @@ report("and no collision is introduced across the decimal point",
        f"{canon_key(1234.5)!r} vs {canon_key(12345)!r}")
 note("rounding is a bucket, not a tolerance: a comparison cannot be written as a key")
 
-print("\nSIGN VALUE IS NEVER FREE, HOWEVER THE SIGN IS SPELLED")
+print("\nSign value is never free, however the sign is spelled")
 report("every negative spelling folds to the same key",
        len({canon_key(x) for x in ("(98.2)", "-98.2", "−98.2", "98.2-")}) == 1)
 report("...and a disagreement about the sign is a mismatch",
        cmp_leaf(98.2, -98.2) < 1.0)
 
-print("\nAN ID KEYS THE SAME WHETHER IT ARRIVES AS AN INTEGER OR A FLOAT")
+print("\nAn ID keys the same whether it arrives as an integer or a float")
 report("the same ID as an int and as a float agree",
        cmp_leaf(8303911426, 8303911426.0) >= 1.0
        and cmp_leaf(8303911426, "8303911426.0") >= 1.0,
@@ -138,19 +133,20 @@ report("...and the integral-float rule does not disturb decimals",
        and cmp_leaf(1234.5, "1234.50") >= 1.0 and cmp_leaf(1234.5, 1234.6) < 1.0)
 note("only values containing a '.' are parsed at all -- that is the whole ID protection")
 
-print("\nID-LIKE INTEGERS STAY EXACT")
+print("\nID-like integers stay exact")
 report("one digit different in an account number is a mismatch",
        cmp_leaf("8303911426", "8303511426") < 1.0)
 report("...and an integer is never rounded into a neighbour",
        cmp_leaf(1234567891, 1234567892) < 1.0)
 note("only values containing a '.' are parsed as decimals, so IDs cannot be fuzzed")
 
-print(f"\n{'COMPARISON SURFACE IS AS DOCUMENTED' if not FAILS else 'FAILURES:'}")
+print(f"\n{'Comparison surface is as documented' if not FAILS else 'Failures:'}")
 for f in FAILS:
     print(f"   {f}")
 
-print("\nA VERDICT CARRIES BOTH FORMS, AND `None` MEANS ONE THING")
-from omni_extract_bench.scorers.field_matching import score, show, Verdict            # noqa: E402
+print("\nA verdict carries both forms, and `None` means one thing")
+from omni_extract_bench.scorers.field_matching.compare import score, Verdict  # noqa: E402
+from omni_extract_bench.scorers.field_matching.documents import show            # noqa: E402
 
 def verdicts_of(pred, gt, schema):
     """Per-address verdicts. `score` is the only entry point; the list comes off it."""
@@ -225,7 +221,7 @@ report("canon_trace agrees with the Verdict on every raw value it carries",
            if r is not None))
 
 
-print("\nA NUMBER TOO ABSURD TO BE PRINTED IS COMPARED AS TEXT")
+print("\nA number too absurd to be printed is compared as text")
 from omni_extract_bench.scorers.field_matching.recognise import _asdecimal, _fraction_places   # noqa: E402
 from decimal import Decimal                                             # noqa: E402
 
@@ -239,7 +235,7 @@ report("...and such a value still produces a short key, promptly",
 note("they fall through to text comparison, which is exact and cheap. The failure this")
 note("prevents is a hang, not a wrong answer, so it cannot be caught by a score check.")
 
-print("\nPRECISION IS A PROPERTY OF THE FRACTION, NOT OF THE NUMBER")
+print("\nPrecision is a property of the fraction, not of the number")
 for _v, _want, _why in (("0.5", 7, "no leading zeros, 7 places"),
                         ("0.0025", 9, "two leading zeros, so 7 significant digits start later"),
                         ("9825.000082185", 11, "a wide integer part spends none of the budget"),

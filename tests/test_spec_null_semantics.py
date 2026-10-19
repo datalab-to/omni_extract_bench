@@ -2,9 +2,9 @@
 import os as _os
 import sys
 sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.scorers.field_matching import score
+from omni_extract_bench.scorers.field_matching.compare import score  # noqa: E402
 
-from omni_extract_bench.scorers.field_matching import score as _score_impl          # noqa: E402
+from omni_extract_bench.scorers.field_matching.compare import score as _score_impl  # noqa: E402
 
 
 def _schema_from(doc):
@@ -73,7 +73,7 @@ print(f"  gold all-null row omitted      {round(score({'r':[{'k':'x'}]}, drop_g)
 print(f"  pred all-null row invented     "
       f"{round(score({'r':[{'k':'x'},{'k':None,'v':None}]}, {'r':[{'k':'x'}]})['accuracy'],3)}  want 1.0")
 
-print("\nABSTENTION IS MEASURABLE (section 5)")
+print("\nAbstention is measurable (section 5)")
 NN = 20
 AB_S = {"properties": {"lines": {"type": "array", "items": {"properties": {
     "sku": {"type": "string"}, "note": {"type": "string"}}}}}}
@@ -110,7 +110,7 @@ if not all(c[1] for c in checks):
     sys.exit(1)
 
 
-print("\nTHE EMPTY STRING SCORES AS AN ABSENCE (section 5)")
+print("\nThe empty string scores as an absence (section 5)")
 ES_S = {"properties": {"a": {"type": "string"}, "b": {"type": "string"}}}
 es_gold = {"a": "keep", "b": None}
 spellings = {spelling: score(pred, es_gold, ES_S) for spelling, pred in (
@@ -147,7 +147,7 @@ for name, passed in es_checks:
 if not all(c[1] for c in es_checks):
     sys.exit(1)
 
-print("\nabsent= REPLACES THE JUDGEMENT; lambda v: False MAKES EVERY EMPTY A VALUE")
+print("\nabsent= replaces the judgement; lambda v: False makes every empty a value")
 A_S = {"type": "object", "properties": {
     "b": {"type": ["string", "null"]},
     "tags": {"type": "array", "items": {"type": "string"}},
@@ -162,7 +162,7 @@ def verdicts(pred, gold, absent=lambda v: False):
             for v in _score_impl(pred, gold, A_S, verdicts=True, absent=absent)["verdicts"]}
 
 
-from omni_extract_bench.scorers.field_matching import show as _show                     # noqa: E402
+from omni_extract_bench.scorers.field_matching.documents import show as _show                     # noqa: E402
 
 field_cases = [  # (key, gold, pred, want)
     ("b", None, None, {"b": "matched"}),

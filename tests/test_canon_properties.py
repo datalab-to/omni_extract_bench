@@ -1,47 +1,16 @@
 #!/usr/bin/env python3
-"""What `canon_key` must and must not fold, stated as properties.
+"""What `canon_key` must and must not fold. It should fold exactly the difference between two faithful
+transcriptions of the same ink, and nothing more:
 
-Normalisation exists for one purpose: to absorb the difference between two faithful
-transcriptions of the same ink, and nothing else. A model reads a value off a page; a human
-wrote the ground truth from the same page; the two spell it differently. Everything
-`canon_key` folds should be that difference, and nothing it folds should be more.
+    P1  no false merges: values a document could use for different things get different keys
+    P2  no false splits: two faithful transcriptions of the same value get the same key
+    P3  the fallback is the floor: the string path, which gets every value nothing else recognised, must be
+        the most conservative fold
+    P4  the key depends on the value alone, not on the field, the document or a config
 
-Four properties follow, and this file is each of them written down.
-
-P1  NO FALSE MERGES.  If a document could plausibly contain both values IN THE SAME FIELD
-    MEANING DIFFERENT THINGS, their keys must differ. That phrasing is the operational test
-    and it settles cases quickly: no document distinguishes `1,000` from `1000` as different
-    amounts, so fold; a document absolutely can carry `INV-007` and `INV-7` as different
-    invoices, so do not.
-
-P2  NO FALSE SPLITS.  If both values are faithful transcriptions of the same ink, the keys
-    must be equal. `ACME CORP` and `Acme Corp`; `Inst itutional` and `Institutional`.
-
-P1 and P2 pull against each other and that tension IS the design. A table that only checked
-one direction would be satisfied by a function that folds everything, or nothing.
-
-P3  THE FALLBACK IS THE FLOOR.  `canon_key` tries number, then date, then timestamp, then
-    falls through to the string path. The fallback receives every value no recogniser claimed
-    -- INCLUDING malformed ones -- so it must be the most conservative transform available.
-    Today it is the most aggressive, which is backwards: failing to parse as a date currently
-    earns a value the heaviest mangling in the system. Every collision in KNOWN_COLLISIONS
-    reached it that way.
-
-P4  THE KEY IS A FUNCTION OF THE VALUE ALONE.  Not of the field, the document, or a config.
-    This is what per-field scoring rules were rejected to preserve; see METRIC_SPEC 5.2.
-
-Two lists hold the P1 violations that exist today, and the difference between them matters.
-
-ACCEPTED_LENIENCY is leniency we CHOSE. Punctuation folds from anywhere, which merges
-`5.2.1.5` with `5215`; we kept that because measuring the corpus said the fold recovers 1,607
-genuine matches and credits no wrong value even once. This is a benchmark of extraction, not
-of punctuation, and where the evidence is one-sided the models get the benefit of the doubt.
-
-KNOWN_COLLISIONS is debt nobody chose. The test asserts that set has not GROWN, and tells you
-when one is fixed so it can be promoted into MUST_DIFFER.
-
-Both are listed rather than absent, and that IS the point: a silent merge is invisible in a
-score, and the reason 140 of these went unnoticed in the corpus is that nothing was looking.
+P1 violations that exist today are listed, not hidden: ACCEPTED_LENIENCY holds the ones we chose (punctuation
+folds from anywhere, which recovers 1,607 real matches and credits no wrong value), and KNOWN_COLLISIONS the
+ones nobody chose; the test fails if that list grows.
 
 Run: python3 tests/test_canon_properties.py
 """
@@ -166,12 +135,12 @@ KNOWN_COLLISIONS = [
     ('malformed date', '2025-01-2025', '20250120 25'),
 ]
 
-print("\nP2  TWO SPELLINGS OF ONE FACT AGREE")
+print("\nP2  Two spellings of one fact agree")
 split = [(n, a, b) for n, a, b in MUST_MATCH if canon_key(a) != canon_key(b)]
 report(f"all {len(MUST_MATCH)} fold as they should", not split,
        "; ".join(f"{n}: {a!r} != {b!r}" for n, a, b, in split))
 
-print("\nP1  VALUES A DOCUMENT COULD TELL APART DO NOT AGREE")
+print("\nP1  Values a document could tell apart do not agree")
 merged = [(n, a, b) for n, a, b in MUST_DIFFER if canon_key(a) == canon_key(b)]
 report(f"all {len(MUST_DIFFER)} stay distinct", not merged,
        "; ".join(f"{n}: {a!r} == {b!r}" for n, a, b in merged))
@@ -189,7 +158,7 @@ fixed = [(n, a, b) for n, a, b in KNOWN_COLLISIONS if canon_key(a) != canon_key(
 report(f"no new collisions beyond the {len(KNOWN_COLLISIONS)} recorded",
        len(still_broken) <= len(KNOWN_COLLISIONS))
 if fixed:
-    print(f"  ---   {len(fixed)} KNOWN COLLISION(S) NOW FIXED — promote to MUST_DIFFER:")
+    print(f"  ---   {len(fixed)} known collision(s) now fixed — promote to must_differ:")
     for n, a, b in fixed:
         print(f"          {n}: {a!r} vs {b!r}")
 note(f"{len(still_broken)} of {len(KNOWN_COLLISIONS)} still collide; "
@@ -206,7 +175,7 @@ report("a number keys the same alone as it does with a unit attached",
        f"{canon_key('1.000 notes')!r} vs {canon_key('1,000 notes')!r}")
 note("commas are untouched by that rule: they strip alone and embedded, as they always did.")
 
-print("\nP1b  A FOLD MAY TRIM A VALUE, NEVER CONSUME IT")
+print("\nP1b  A fold may trim a value, never consume it")
 from omni_extract_bench.scorers.field_matching.values import states_nothing                    # noqa: E402
 
 PUNCT = "-.,/()[]{}\"'`~!@#$%^&*_+=|\\:;?<> \t"
@@ -226,7 +195,7 @@ keys = [(v, canon_key(v)) for v in (*structural, [], {})]
 report("each kind of structurally empty value keys as itself",
        keys == [*structural.items(), ([], "#EMPTY_LIST"), ({}, "#EMPTY_OBJECT")], str(keys))
 note("by default none of them is scored; `score(..., absent=...)` decides (METRIC_SPEC 5).")
-note("`()` and the STRING \"null\" are content a model chose to emit, so they assert.")
+note("`()` and the string \"null\" are content a model chose to emit, so they assert.")
 
 import itertools as _it, unicodedata as _ud                             # noqa: E402
 _PUNCT = "-.,/()[]{}\"'`~!@#$%^&*_+=|\\:;?<>" + " \t\n"
@@ -250,7 +219,7 @@ note("this is a search, not a list -- every 1- and 2-char string over the punctu
 note("folds touch, 20k random longer ones, every Unicode codepoint under 0x2FFF in a")
 note("strippable category, and the overflow scalars. Verified separately on all 17.7M")
 note("gold and prediction leaves in the corpus: zero.")
-note("It also holds BY CONSTRUCTION: canon_key has exactly two paths returning '', the")
+note("It also holds by construction: canon_key has exactly two paths returning '', the")
 note("structural-absence branch and a fallback that cannot be empty unless str(v) is all")
 note("whitespace -- which the first branch already caught. A new fold cannot reintroduce it.")
 
@@ -258,16 +227,16 @@ for a, b in (("( )", "()"), (". . .", "..."), ("- -", "--")):
     report(f"the fallback still folds whitespace: {a!r} == {b!r}",
            canon_key(a) == canon_key(b), f"{canon_key(a)!r} vs {canon_key(b)!r}")
 
-print("\nP3  THE FALLBACK IS THE FLOOR")
+print("\nP3  The fallback is the floor")
 report("a recognised date never reaches the string path",
        str(canon_key("2025-01-25")).startswith("#d"), f"{canon_key('2025-01-25')!r}")
 report("a malformed date does not become a valid one",
        canon_key("2025-01-2025") != canon_key("2025-01-25"))
-note("recognition, not type, is what protects a value: anything date-SHAPED that fails to")
+note("recognition, not type, is what protects a value: anything date-shaped that fails to")
 note("parse gets the full string treatment. `2025-01-2025` is milled to '2025012025', which")
 note("is also what the unrelated string `20250120 25` becomes -- see KNOWN_COLLISIONS.")
 
-print("\nP5  THE PIPELINE IS ENUMERABLE, AND SAYS WHY")
+print("\nP5  The pipeline is enumerable, and says why")
 from omni_extract_bench.scorers.field_matching.values import FOLDS, canon_trace                # noqa: E402
 _names = [f.name for f in FOLDS]
 report("`accents` runs before `typography`",
@@ -349,7 +318,7 @@ report("the trace agrees with canon_key on every MUST_MATCH and MUST_DIFFER valu
        all(canon_trace(v).canon == canon_key(v)
            for _n, a, b in MUST_MATCH + MUST_DIFFER for v in (a, b)))
 
-print("\nP4  THE KEY IS A FUNCTION OF THE VALUE ALONE")
+print("\nP4  The key is a function of the value alone")
 import inspect                                                          # noqa: E402
 sig = inspect.signature(canon_key)
 report("canon_key takes exactly one argument", len(sig.parameters) == 1,
@@ -358,7 +327,7 @@ report("...and is deterministic across calls",
        all(canon_key(v) == canon_key(v)
            for v in ("Acme", 5.0, "2024-01-15", None, "", "INV-007")))
 
-print("\nGENERATED: DISTINCT IDENTIFIERS KEEP DISTINCT KEYS")
+print("\nGenerated: distinct identifiers keep distinct keys")
 rnd = random.Random(11)
 for label, mint in (
     ("zero-padded ids",  lambda i: f"INV-{i:05d}"),
@@ -372,7 +341,7 @@ for label, mint in (
            len(keys) == uniq, f"{uniq - len(keys)} collided, e.g. "
            f"{[v for v in vals if sum(1 for w in vals if canon_key(w) == canon_key(v)) > 1][:4]}")
 
-print(f"\n{'CANON PROPERTIES HOLD' if not FAILS else 'FAILURES:'}")
+print(f"\n{'Canon properties hold' if not FAILS else 'Failures:'}")
 for f in FAILS:
     print(f"   {f}")
 _sys.exit(1 if FAILS else 0)

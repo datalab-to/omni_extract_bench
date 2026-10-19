@@ -1,23 +1,12 @@
 #!/usr/bin/env python3
-"""Shrink the exactness budget so the greedy fallback engages.
-
-    from tests.approximate import approximate
+"""Shrinks the exactness budget, so the greedy pairing fallback is used on small arrays.
 
     with approximate():
         result = score(pred, gt, schema)     # took the greedy path
     assert result["matching_exact"] is False
 
-The greedy path is reachable for real -- three documents in the corpus take it -- but the
-ceiling is 20,000 rows, and building an array that size in a test costs minutes for no extra
-coverage. This exercises the property that an approximate score ANNOUNCES ITSELF, without
-paying for the array.
-
-HERE RATHER THAN IN `matching`, because it is a test's business and not the grader's. It lived
-there as `force_approximate()` and was called by nothing the package ships.
-
-All THREE budgets have to come down together. `MAX_CELLS_DENSE` is the ceiling above which
-exact is refused however sparse the alternative looks, so leaving it alone lets the density
-comparison route the block back to exact and this stops forcing anything.
+The greedy path is real (three documents in the corpus take it), but only above 20,000 rows. All three
+budgets come down together: leaving `MAX_CELLS_DENSE` alone would send the block back to the exact path.
 """
 import contextlib
 import os

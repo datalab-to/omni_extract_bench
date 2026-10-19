@@ -26,19 +26,19 @@ uv pip install 'omni-extract-bench[benchmark]'    # + packages to orchestrate an
 
 ## Run our benchmark with one line
 
-We provide orchestration to run our benchmark around our core primitives: `predict` and `score`. Run the benchmark (limit to 1 document here). It's **resumable** so you can stop and reinvoke to resume at any point.
+The benchmark runs on [omni-bench-core](https://github.com/datalab-to/omni-bench), which sends each document to each system, saves each answer, and grades the answers. Run it here on 1 document. It's **resumable**: stop it, run the same command again, and it resumes without paying again for what was answered.
 
 **!!NOTE!!**: this will cost money and you will need your API keys set.
 
 ```bash
-oeb benchmark --out runs/ --limit 1 \
+oeb run --out runs/ --limit 1 \
     --providers datalab reducto extend llamaextract
 ```
 
 You can also specify settings per provider. For example:
 
 ```bash
-oeb benchmark \
+oeb run \
   --providers datalab reducto \
   --limit 1 \
   --options '{"datalab":  [{"mode": "balanced"}, {"mode": "accurate"}],
@@ -54,11 +54,11 @@ It shows the plan and asks before calling any vendor; with no terminal to ask (a
 `--dataset` picks the dataset (a folder on disk, or a HuggingFace dataset; ours by default), and `--manifest` picks which of its documents to run. For example, a 40-document subset of ours:
 
 ```bash
-oeb benchmark --providers datalab --out runs/ \
+oeb run --providers datalab --out runs/ \
   --manifest manifests/sample40-predictive-across-vendors-2026-09-22.parquet
 ```
 
-See [`docs/API.md`](./docs/API.md) for more details on what `oeb benchmark` writes and **how you can run on your own benchmark dataset**.
+See [`docs/API.md`](./docs/API.md) for more details on what `oeb run` writes and **how you can run on your own benchmark dataset**.
 
 ## Score
 
@@ -225,26 +225,36 @@ Predict using our provider harnesses.
 uv pip install 'omni-extract-bench[harness]'
 ```
 
-```python
-from omni_extract_bench.harness import predict
+Each vendor is an adapter class; `harness.system` makes one from a provider name and its options. omni-bench-core's `predict` sends one document under the same rules a run uses (one time budget, retries, failures recorded) and returns its record.
 
-record = predict("datalab", "invoice.pdf", schema)
-record["result"]
+```python
+from pathlib import Path
+
+from omni_bench_core import adapter
+from omni_extract_bench import harness
+from omni_extract_bench.harness import contract
+
+datalab = harness.system("datalab", {"mode": "accurate"})
+record = adapter.predict(datalab, contract.Question(Path("invoice.pdf"), schema))
+record["output"]
 record["raw"]
 record["cost"]
 ```
+
+This sends the schema as you give it. `oeb run` and `oeb predict` first apply the benchmark's conventions to
+the schema (`task.Extract().input`), so use `oeb predict` to send exactly what a run sends.
 
 Score directly from the predictions.
 
 ```python
 from omni_extract_bench import score
-score(record["result"], gold, schema)
+score(record["output"], gold, schema)
 ```
 
-You can also use the cli:
+You can also use the cli, which prints the record as JSON and exits 1 when the call failed:
 
 ```bash
-oeb predict --provider datalab --doc invoice.pdf --schema schema.json
+oeb predict --provider datalab --doc invoice.pdf --schema schema.json --options '{"mode": "accurate"}'
 ```
 
 

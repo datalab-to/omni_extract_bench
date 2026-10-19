@@ -3,7 +3,7 @@ name = "omni-extract-bench"
 version = "1.0.0rc1"
 description = "One scorer for document-extraction benchmarks: leaf value accuracy with optimal row matching."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Datalab" }]
 keywords = ["benchmark", "document-extraction", "evaluation", "ocr", "structured-extraction"]
@@ -13,6 +13,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "omni-bench-core",
     "scipy>=1.13.1",
 ]
 
@@ -26,7 +27,6 @@ harness = [
     "httpx>=0.27",
     "requests>=2.31",
     "openai>=1.0",
-    "rich>=13.0",
 ]
 
 # Running the published benchmark end to end: `benchmark.py` fetches the corpus from
@@ -46,6 +46,9 @@ test = [
     "pytest>=8.0",
     "pytest-xdist>=3.5",
 ]
+
+[tool.uv.sources]
+omni-bench-core = { path = "../omni-bench-core", editable = true }
 
 [project.urls]
 Homepage = "https://github.com/datalab-to/omni_extract_bench"

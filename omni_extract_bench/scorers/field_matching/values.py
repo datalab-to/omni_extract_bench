@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""When are two values the same value.
+"""When two values are the same value.
 
-`canon_key` is the single answer. Both callers that need it -- leaf scoring and row pairing --
-go through it. Do not add a second: the two implementations this replaced diverged twice in
-production, once scoring a correct extraction 50.0 and once taking a provider's recall to
-0.000 across two subsets.
-
-Reading order: FOLDS (the named rules) -> run_folds (driver) -> canon_key (entry point) ->
-canon_trace (the same run, narrated) -> cmp_leaf -> states_nothing.
+`canon_key` is the one answer, used by both leaf scoring and row pairing; do not add a second, because two
+copies once disagreed. Read it in this order: `FOLDS` (the named rules), `run_folds`, `canon_key`,
+`canon_trace` (the same run, explained), `cmp_leaf` and `states_nothing`.
 """
 from __future__ import annotations
 
@@ -140,7 +136,7 @@ FOLDS: tuple[Fold, ...] = (
          "FRACTION SLASH that \u00bd decomposes into.",
          _f_typography),
     Fold("list marker",
-         "A bullet at the START of a value is the page's formatting, not the value: "
+         "A bullet at the start of a value is the page's formatting, not the value: "
          "\u2022 Maintain a safe work environment is the same answer as Maintain a safe work "
          "environment. A bullet anywhere else is kept, in case it separates two things.",
          _f_list_marker),
@@ -151,7 +147,7 @@ FOLDS: tuple[Fold, ...] = (
          _f_dash),
     Fold("punctuation",
          "Whitespace, commas and hyphens are removed from anywhere, so PO BOX 125 matches "
-         "P.O. BOX 125 and 31-1440073 matches 311440073. Periods go too, EXCEPT a single one "
+         "P.O. BOX 125 and 31-1440073 matches 311440073. Periods go too, except a single one "
          "between digits, which is a decimal point and is kept: 1.5 mg is not 15 mg. Two or "
          "more are separators rather than decimal points, so 1.000.000 matches 1,000,000 and "
          "512.784.7407 matches 512-784-7407.", _f_punctuation),
@@ -163,7 +159,7 @@ FOLDS: tuple[Fold, ...] = (
 
 
 def run_folds(v: Json, record: list | None = None) -> str:
-    """Fold cosmetic noise in ONE value -- never real content.
+    """Folds away cosmetic noise in one value, never real content.
 
     The driver, and nothing else: the rules live in `FOLDS`, one named function each, so they
     can be listed, explained and pointed at from a UI rather than read out of one long
@@ -251,7 +247,7 @@ def canon_key(v):
 
 
 def _canon_key_guarded(v, trace=None):
-    """`canon_key`, with an optional recorder. ONE implementation, so a trace can never
+    """`canon_key`, with an optional recorder. There is one implementation, so a trace can never
     describe a comparison the scorer did not make."""
     if states_nothing(v):
         if trace is not None:
@@ -292,7 +288,7 @@ def canon_trace(v) -> Trace:
     """`canon_key`, plus every step that changed the value and a sentence about each.
 
     The scorer never calls this -- `canon_key` is the hot path and stays a single pass. This
-    exists so a reader can be shown WHY two values matched, in terms they can disagree with:
+    exists so a reader can be shown why two values matched, in terms they can disagree with:
 
     >>> t = canon_trace("31-1440073")
     >>> t.canon
@@ -300,7 +296,7 @@ def canon_trace(v) -> Trace:
     >>> [c.step for c in t.changes]
     ['punctuation']
     >>> print(t.changes[0].why)
-    Whitespace, commas and hyphens are removed from anywhere, so PO BOX 125 matches P.O. BOX 125 and 31-1440073 matches 311440073. Periods go too, EXCEPT a single one between digits, which is a decimal point and is kept: 1.5 mg is not 15 mg. Two or more are separators rather than decimal points, so 1.000.000 matches 1,000,000 and 512.784.7407 matches 512-784-7407.
+    Whitespace, commas and hyphens are removed from anywhere, so PO BOX 125 matches P.O. BOX 125 and 31-1440073 matches 311440073. Periods go too, except a single one between digits, which is a decimal point and is kept: 1.5 mg is not 15 mg. Two or more are separators rather than decimal points, so 1.000.000 matches 1,000,000 and 512.784.7407 matches 512-784-7407.
 
     A value can also take a non-text route, in which case no fold ran at all:
 
@@ -323,7 +319,7 @@ def states_nothing(value) -> bool:
     """Does this value make no claim about the document?
 
     A page can print "N/A" but cannot print emptiness, so "" is what a blank cell becomes in
-    JSON -- the same thing `null` means. Placeholder WORDS are not included: they are ink, and
+    JSON -- the same thing `null` means. Placeholder words are not included: they are ink, and
     appear as real gold values 24,980 times. METRIC_SPEC section 5.
 
     Applied to both documents, so a vendor's house style cannot move its score.

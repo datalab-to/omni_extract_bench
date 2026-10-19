@@ -14,7 +14,7 @@ import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from omni_extract_bench.scorers.field_matching import matching as OM                              # noqa: E402
-from omni_extract_bench.scorers.field_matching import score                                 # noqa: E402
+from omni_extract_bench.scorers.field_matching.compare import score  # noqa: E402
 
 def verdicts_of(pred, gt, schema):
     """Per-address verdicts. `score` is the only entry point; the list comes off it."""
@@ -39,7 +39,7 @@ PRED = {"n": "INV", "t": 999.0, "d": 5.0, "z": "x",
         "lines": [{"sku": "a", "qty": 1}, {"sku": "zz", "qty": 9}]}
 R = score(PRED, GT, SCH)
 
-print("\nTHE DOCUMENT REFERS TO SECTIONS THAT EXIST")
+print("\nThe document refers to sections that exist")
 import re                                                                   # noqa: E402
 from pathlib import Path as _P                                              # noqa: E402
 
@@ -53,7 +53,7 @@ broken = [(i, int(m.group(1)))
 report(f"every cross-reference points at a real section ({len(heads)} sections)",
        not broken, f"broken: {broken}")
 
-print("\nAND CITES NO FILE THAT IS NOT HERE")
+print("\nAnd cites no file that is not here")
 cited = {m.group(1) for line in SPEC for m in re.finditer(r"`([\w/]+\.(?:py|md))`", line)}
 root = _P(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 missing = sorted(c for c in cited
@@ -64,7 +64,7 @@ missing = sorted(c for c in cited
 report("every .py or .md file the spec names in backticks exists",
        not missing, f"missing: {missing}")
 
-print("\nSECTION 3 -- THE EXACTNESS BUDGET")
+print("\nSection 3 -- the exactness budget")
 report("MAX_CELLS is 250 million, as the spec states",
        OM.MAX_CELLS == 250 * 10**6, f"got {OM.MAX_CELLS}")
 report("MAX_EXACT is 20 000 on the smaller dimension",
@@ -74,7 +74,7 @@ report("the corpus's largest array (6881 rows) is ~19% of the cap, so it solves 
        18.5 <= pct <= 19.5 and 6881 ** 2 <= OM.MAX_CELLS and 6881 <= OM.MAX_EXACT,
        f"6881^2 = {6881**2} = {pct:.1f}% of {OM.MAX_CELLS}")
 
-print("\nSECTION 4 -- EVERY KEY THE SPEC NAMES EXISTS")
+print("\nSection 4 -- every key the spec names exists")
 named = ["matched", "misread", "unfound", "fabricated", "invented_item", "invented_field",
          "asserted", "total", "accuracy", "precision", "recall", "f1",
          "addresses_found", "addresses_read_right", "gt_rows", "pred_rows", "matched_rows", "matching_exact",
@@ -83,7 +83,7 @@ report("all 20 reported keys are present, and nothing else is",
        sorted(R) == sorted(named),
        f"missing {sorted(set(named) - set(R))}, extra {sorted(set(R) - set(named))}")
 
-print("\nSECTION 4 -- THE FORMULAS")
+print("\nSection 4 -- the formulas")
 report("asserted = matched + misread + fabricated + invented_item + invented_field",
        R["asserted"] == R["matched"] + R["misread"] + R["fabricated"]
        + R["invented_item"] + R["invented_field"])
@@ -106,7 +106,7 @@ report("read_right = matched / (matched + misread)",
 report("addresses_found * addresses_read_right = accuracy",
        abs(R["addresses_found"] * R["addresses_read_right"] - R["accuracy"]) < 1e-12)
 
-print("\nSECTION 4 -- WHEN accuracy AND f1 AGREE")
+print("\nSection 4 -- when accuracy and f1 agree")
 AF_S = {"properties": {k: {"type": "number"} for k in "abc"}}
 rows = {
     "perfect":            ({"a": 1, "b": 2},         {"a": 1, "b": 2}, 1.0000, 1.0000),
@@ -130,11 +130,11 @@ for lbl, (pred, gold, _a, _f) in rows.items():
     agree.append((lbl, same_addresses == matches))
 report("they agree exactly when both documents use the same set of addresses",
        all(ok for _l, ok in agree), str(agree))
-report("...and a misread is NOT what splits them",
+report("...and a misread is not what splits them",
        abs(score({"a": 1, "b": 99}, {"a": 1, "b": 2}, AF_S)["accuracy"]
            - score({"a": 1, "b": 99}, {"a": 1, "b": 2}, AF_S)["f1"]) < 1e-12)
 
-print("\nSECTION 3 -- CLEARING THE PAIRING BAR DOES NOT MAKE A ROW FREE")
+print("\nSection 3 -- clearing the pairing bar does not make a row free")
 BAR_S = {"properties": {"lines": {"type": "array", "items": {"properties": {
     "sku": {"type": "string"},
     "tags": {"type": "array", "items": {"type": "string"}}}}}}}
@@ -147,7 +147,7 @@ report("a row that clears the bar can still enlarge the denominator",
 report("...so 'charged once' would be wrong: it is charged for what it invents too",
        cleared["invented_item"] > 0, f"invented_item {cleared['invented_item']}")
 
-print("\nSECTION 4 -- THE BUCKETS PARTITION EVERY ADDRESS (P16)")
+print("\nSection 4 -- the buckets partition every address (P16)")
 verdicts = [v for v in verdicts_of(PRED, GT, SCH) if not v.result.startswith("skipped")]
 report("every address gets exactly one of the six verdicts",
        len(verdicts) == R["total"]
@@ -156,7 +156,7 @@ report("every address gets exactly one of the six verdicts",
        f"{len(verdicts)} verdicts vs total {R['total']}: "
        f"{sorted({v.result for v in verdicts})}")
 
-print("\nSECTION 4 -- matched_rows IS NOT ROW CORRECTNESS")
+print("\nSection 4 -- matched_rows is not row correctness")
 CUR_S = {"properties": {"lines": {"type": "array", "items": {"properties": {
     "cur": {"type": "string"}, "sku": {"type": "string"}}}}}}
 cur = score({"lines": [{"cur": "USD", "sku": "q"}, {"cur": "USD", "sku": "r"}]},
@@ -165,7 +165,7 @@ report("a value repeated on every row pairs rows whose content is entirely wrong
        cur["matched_rows"] == 2 and cur["accuracy"] == 0.5,
        f"matched_rows {cur['matched_rows']}, accuracy {cur['accuracy']}")
 
-print("\nSECTION 9 -- P18 AND P19")
+print("\nSection 9 -- P18 and P19")
 try:
     score(PRED, GT, SCH, order_matters=["nope"])
     report("P18: an order_matters name fitting no array raises", False, "no error")
@@ -177,7 +177,7 @@ try:
 except TypeError:
     report("P19: a score without a schema raises", True)
 
-print(f"\n{'SPEC CLAIMS HOLD' if not FAILS else 'FAILURES:'}")
+print(f"\n{'Spec claims hold' if not FAILS else 'Failures:'}")
 for f in FAILS:
     print(f"   {f}")
 _sys.exit(1 if FAILS else 0)
