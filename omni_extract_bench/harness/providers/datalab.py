@@ -68,17 +68,15 @@ class Datalab(contract.Extractor):
                         data={"page_schema": json.dumps(schema),
                               "extraction_mode": self.mode, "output_format": "json"})
                 except httpx.TransportError as exc:
-                    # Note: a network fault on the upload is this document's failure, not a bug: no job was made.
-                    raise errors.VendorUnreachable(f"the upload didn't reach Datalab: {type(exc).__name__}: {exc}"
-                                                   ) from None
+                    raise contract.unreachable("the upload didn't reach Datalab", exc) from exc
             if resp.status_code != 200:
-                raise errors.VendorError(f"HTTP {resp.status_code}: {resp.text[:300]}",
-                                         status=resp.status_code, body=resp.text)
+                raise errors.SystemFailed(f"HTTP {resp.status_code}: {resp.text}",
+                                          status=resp.status_code, body=resp.text)
             with adapter.reading("the request id"):
                 request_id = resp.json().get("request_id")
             if not request_id:
-                raise errors.VendorError(f"no request_id in the response: {resp.text[:200]}",
-                                         status=resp.status_code, body=resp.text)
+                raise errors.SystemFailed(f"no request_id in the response: {resp.text}",
+                                          status=resp.status_code, body=resp.text)
 
             url = f"{base_url}/api/v1/extract/{request_id}"
             retry = adapter.PollRetry(deadline)
@@ -89,12 +87,12 @@ class Datalab(contract.Extractor):
                 except httpx.TransportError as exc:
                     if retry.again():
                         continue
-                    raise errors.VendorUnreachable(f"polling failed: {exc}"[:300]) from None
+                    raise contract.unreachable("polling failed", exc) from exc
                 if r.status_code != 200:
                     if retry.again(r.status_code):
                         continue
-                    raise errors.VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
-                                             status=r.status_code, body=r.text)
+                    raise errors.SystemFailed(f"HTTP {r.status_code}: {r.text}",
+                                              status=r.status_code, body=r.text)
                 retry.reset()
                 polls += 1
                 with adapter.reading("the request's status and cost"):
@@ -103,8 +101,8 @@ class Datalab(contract.Extractor):
                         cost = found
                     status = body.get("status")
                 if status == "error":
-                    raise errors.VendorError(f"vendor reported failure: {str(body.get('error'))[:300]}",
-                                             status=200, body=r.text, cost=cost)
+                    raise errors.SystemFailed(f"vendor reported failure: {str(body.get('error'))}",
+                                              status=200, body=r.text, cost=cost)
                 if status == "complete":
                     if cost.usd is None:
                         try:
@@ -120,8 +118,10 @@ class Datalab(contract.Extractor):
         """The extraction in `extraction_schema_json`, which the API sends as a JSON string or an object."""
         x = raw.get("extraction_schema_json") if isinstance(raw, dict) else None
         if x is None:
-            raise ValueError("status complete but no extraction_schema_json")
-        return contract.extraction(json.loads(x) if isinstance(x, str) else x)
+            raise errors.SystemFailed("status complete but no extraction_schema_json")
+        with adapter.reading("extraction_schema_json"):
+            x = json.loads(x) if isinstance(x, str) else x
+        return contract.extraction(x)
 
 
 def cost_of(body: dict) -> adapter.Cost | None:

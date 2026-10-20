@@ -19,7 +19,7 @@ from omni_extract_bench.harness.schema import strip_benchmark_keys as strip_benc
 from omni_extract_bench.scorers.field_matching.documents import resolve_refs as deref  # noqa: E402
 from omni_bench_core import adapter as _adapter  # noqa: E402
 from omni_bench_core import errors as _errors  # noqa: E402
-from omni_bench_core.errors import VendorError  # noqa: E402
+from omni_bench_core.errors import SystemFailed  # noqa: E402
 from omni_extract_bench.harness import contract as _contract  # noqa: E402
 
 FAILS = []
@@ -108,10 +108,10 @@ check("a schema with no $ref is unchanged", deref(SAMPLE) == SAMPLE)
 
 print("\n[4] retry classification -- a 400 is an answer, a 429 is not")
 for status in (429, 500, 502, 503, 504):
-    check(f"{status} is transient", VendorError("x", status=status).transient)
+    check(f"{status} is transient", SystemFailed("x", status=status).transient)
 for status in (200, 400, 401, 404, 422):
     check(f"{status} is not transient -- it is an answer",
-          not VendorError("x", status=status).transient)
+          not SystemFailed("x", status=status).transient)
 
 
 @_dataclasses.dataclass(frozen=True)
@@ -121,7 +121,7 @@ class _Fails(_contract.Extractor):
     message: str = ""
 
     def extract(self, pdf, schema, *, timeout):
-        raise VendorError(self.message, status=400)
+        raise SystemFailed(self.message, status=400)
 
 
 def _account_failure(message):
@@ -134,7 +134,7 @@ def _account_failure(message):
     return False
 
 
-check("402 is an account failure", _Fails().account_failure(VendorError("no credit", status=402)))
+check("402 is an account failure", _Fails().account_failure(SystemFailed("no credit", status=402)))
 check("credit ceiling wording is an account failure",
       _account_failure("you have exceeded the maximum number of credits"))
 check("a 400 is not an account failure", not _account_failure("schema invalid"))
@@ -275,15 +275,16 @@ _SEEN = {}
 class _Spy(_contract.Extractor):
     """A stand-in adapter that reshapes like llamaextract, records what it was sent, and stops."""
 
-    explode: bool = False
+    explode: str = ""   # "dialect": a schema the vendor can't express; "bug": a reshaping that crashes
 
     def prepare_schema(self, schema):
-        if self.explode: raise KeyError(type([]))
+        if self.explode == "dialect": raise _contract.DialectError("this vendor has no way to write a tuple")
+        if self.explode == "bug": raise KeyError(type([]))
         return llamaextract.LlamaExtract().prepare_schema(schema)
 
     def extract(self, pdf, schema, *, timeout):
         _SEEN["schema"] = schema
-        raise VendorError("stopped before the network", status=400)
+        raise SystemFailed("stopped before the network", status=400)
 
 
 def _predict_with(spy, schema):
@@ -379,19 +380,26 @@ check("each endpoint gets its own analyzer created",
 azure_cu._ANALYZERS.clear()
 
 
-print("\n[5c] a dialect that raises costs one document, not the run")
+print("\n[5c] a schema the dialect can't express costs one document; a crashing dialect stops the run")
 
 
-_bad = _predict_with(_Spy(explode=True), _copy.deepcopy(_ANNOTATED))
-check("a raising prepare_schema is returned, not raised", isinstance(_bad, dict))
+_bad = _predict_with(_Spy(explode="dialect"), _copy.deepcopy(_ANNOTATED))
+check("a DialectError from prepare_schema is returned, not raised", isinstance(_bad, dict))
 check("it is named as a DialectError", _bad["error"]["type"] == "DialectError", str(_bad["error"]))
 check("it is not transient -- the same schema shapes the same way every time",
       _bad["error"]["transient"] is False)
 check("the vendor was never called", "schema" not in _SEEN)
-check("the cause is named, not just the type", "KeyError" in _bad["error"]["message"])
+check("its traceback names where it was raised", "prepare_schema" in _bad["error"]["traceback"])
 check("the record keeps the schema it couldn't reshape, so the input is still readable",
       "amt" in json.dumps(_bad["sent"]))
 check("benchmark-only keys are still stripped from it", "evaluation_config" not in json.dumps(_bad["sent"]))
+try:
+    _predict_with(_Spy(explode="bug"), _copy.deepcopy(_ANNOTATED))
+    _crashed = None
+except KeyError as _exc:
+    _crashed = _exc
+check("any other exception from prepare_schema is a bug, raised rather than counted 0", _crashed is not None)
+check("and the vendor was never called", "schema" not in _SEEN)
 
 
 print("\n[5d] every adapter is an Extractor, and a model id is the one LLM adapter")

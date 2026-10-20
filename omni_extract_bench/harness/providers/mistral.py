@@ -50,10 +50,13 @@ class Mistral(contract.Extractor):
                 "type": "json_schema",
                 "json_schema": {"name": "extraction", "schema": schema, "strict": False}},
         }
-        r = httpx.post(URL, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                       json=body, timeout=timeout)
+        try:
+            r = httpx.post(URL, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                           json=body, timeout=timeout)
+        except httpx.TransportError as exc:
+            raise contract.unreachable("submitting the document", exc) from exc
         if r.status_code >= 400:
-            raise errors.VendorError(f"HTTP {r.status_code}: {r.text[:300]}", status=r.status_code, body=r.text)
+            raise errors.SystemFailed(f"HTTP {r.status_code}: {r.text}", status=r.status_code, body=r.text)
         with adapter.reading("the response and its cost"):
             payload = r.json()
             usage = payload.get("usage_info") or {}
@@ -64,9 +67,7 @@ class Mistral(contract.Extractor):
         """The extraction in `document_annotation`, a JSON string."""
         annotation = raw.get("document_annotation") if isinstance(raw, dict) else None
         if annotation is None:
-            raise ValueError("the response has no document_annotation")
-        try:
+            raise errors.SystemFailed("the response has no document_annotation")
+        with adapter.reading("document_annotation"):
             parsed = json.loads(annotation) if isinstance(annotation, str) else annotation
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"document_annotation is not JSON: {exc}") from None
         return contract.extraction(parsed)

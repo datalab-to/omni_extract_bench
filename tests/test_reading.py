@@ -1,38 +1,41 @@
 """The line between a system's failure and our bug: an answer is read inside `omni_bench_core.adapter.reading`.
 
 Inside `reading`, an answer that can't be read fails one document and the run goes on. Anywhere else in an
-adapter's call, an exception is a bug, and stops the run. So every place that reads what a system sent back
-while calling it (a job id, a status, a cost) must sit inside `reading`.
+adapter's `call` or `read`, an exception is a bug, and stops the run. So every place that reads what a system
+sent back (a job id, a status, a cost, the extraction's JSON) must sit inside `reading`.
 
-The guard walks each provider module from the functions that call a system (`extract` and `call`) through
-the module's own helpers they call. In those it fails on:
+The guard walks each provider module from the functions that call or read a system (`extract`, `call` and
+`read`) through the module's own helpers they call. In those it fails on:
 
 - a `.json()` or `json.loads(...)` call outside a `reading` block; and
 - a subscript of a name bound from an answer (`.json()`, `json.loads`, or a helper that returns one, such
   as llamaextract's `_req`) outside a `reading` block.
 
-It is a guard, not a type checker: reading the extraction itself is `read`'s job, where the core already
-makes any failure the document's.
+It is a guard, not a type checker: a missing field that `read` checks for and raises `errors.SystemFailed`
+about is as explicit as `reading`, and isn't looked for.
 """
 from __future__ import annotations
 
 import ast
+import json
 import dataclasses
 from pathlib import Path
 
 import pytest
 
-pytest.importorskip("httpx")
+httpx = pytest.importorskip("httpx")
 pytest.importorskip("openai")
+REAL_CLIENT = httpx.Client
 
 from omni_bench_core import adapter as core  # noqa: E402
+from omni_bench_core import errors  # noqa: E402
 
 from omni_extract_bench import harness  # noqa: E402
 from omni_extract_bench.harness import contract  # noqa: E402
 
 PROVIDERS = Path(harness.__file__).parent / "providers"
 MODULES = sorted(p for p in PROVIDERS.glob("*.py") if p.name != "__init__.py")
-ROOTS = {"extract", "call"}                               # the methods that call a system
+ROOTS = {"extract", "call", "read"}                       # the methods that call or read a system
 ANSWERS = {"json", "loads", "_req", "_poll", "poll", "_await"}   # calls whose result is a system's answer
 
 
@@ -120,3 +123,73 @@ def test_a_bug_outside_reading_stops_the_run(tmp_path):
     (pdf := tmp_path / "d.pdf").write_bytes(b"%PDF")
     with pytest.raises(KeyError):
         core.predict(Answers(careful=False), contract.Question(pdf, {"type": "object"}))
+
+
+OPTIONS = {"azure-cu": {"endpoint": "https://x.example"}, "llm_single_shot": {"model": "openai/gpt-5.6-sol"}}
+UNUSABLE = [None, [], {}, {"status": "completed"}, {"result": ["not", "objects"]},
+            {"extraction_schema_json": "{not json"}, {"document_annotation": "{not json"}]
+
+
+@pytest.mark.parametrize("raw", UNUSABLE, ids=repr)
+@pytest.mark.parametrize("cls", harness.SHIPPED, ids=[c.name for c in harness.SHIPPED])
+def test_every_shipped_read_says_an_unusable_answer_is_the_systems_failure(cls, raw, tmp_path):
+    with pytest.raises(errors.SystemFailed):
+        cls(**OPTIONS.get(cls.name, {})).read(raw, contract.Question(tmp_path / "d.pdf", {"type": "object"}))
+
+
+def test_azures_malformed_nested_field_counts_zero(tmp_path):
+    raw = {"result": {"contents": [{"fields": {"a": {"valueObject": ["not", "an", "object"]}}}]}}
+    with pytest.raises(errors.SystemFailed, match="the first content's fields"):
+        harness.ADAPTERS["azure-cu"](endpoint="https://x.example").read(raw, contract.Question(tmp_path / "d.pdf", {}))
+
+
+def extend_vendor(monkeypatch, submit):
+    """Extend's adapter against a fake Extend whose submit is `submit(request)`, a response or a raise. It
+    answers each run with the gold of tests.folders.dataset, {"a": "x"}."""
+    from omni_extract_bench.harness.providers import extend
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/files/upload": return httpx.Response(200, json={"id": "f1"})
+        if request.url.path == "/extract_runs": return submit(request)
+        return httpx.Response(200, json={"id": "r1", "status": "PROCESSED", "output": {"value": {"a": "x"}}})
+
+    monkeypatch.setattr(extend.httpx, "Client", lambda **kw: REAL_CLIENT(transport=httpx.MockTransport(handle), **kw))
+    monkeypatch.setenv("EXTEND_API_KEY", "test")
+
+
+def test_a_transport_error_in_submit_is_recorded_unreachable_and_retried_by_retry_failed(tmp_path, monkeypatch):
+    from omni_extract_bench import benchmark
+    from tests.folders import dataset
+
+    def lost(request):
+        raise httpx.ReadError("connection reset by peer")
+
+    b = benchmark.default(dataset(tmp_path / "ds"))
+    extend_vendor(monkeypatch, lost)
+    g = b.run(harness.system("extend"), tmp_path / "runs")
+    assert g["scorers"]["field_matching"]["failed"] == 2, g
+    rec = json.loads(next((tmp_path / "runs").glob("*/records/d0.json")).read_text())
+    assert rec["error"]["type"] == "SystemUnreachable" and "ReadError" in rec["error"]["traceback"], rec["error"]
+    extend_vendor(monkeypatch, lambda request: httpx.Response(200, json={"id": "r1"}))
+    g = b.run(harness.system("extend"), tmp_path / "runs", retry_failed=True)
+    assert g["scorers"]["field_matching"]["headline"] == 1.0, g
+
+
+def test_a_client_timeout_in_submit_is_a_timeout(tmp_path, monkeypatch):
+    def slow(request):
+        raise httpx.ReadTimeout("timed out")
+
+    extend_vendor(monkeypatch, slow)
+    (pdf := tmp_path / "d.pdf").write_bytes(b"%PDF")
+    rec = core.predict(harness.system("extend"), contract.Question(pdf, {"type": "object"}))
+    assert rec["error"]["type"] == "SystemTimeout", rec["error"]
+
+
+def test_a_refused_connection_to_a_vendor_still_stops_the_run(tmp_path, monkeypatch):
+    def refused(request):
+        raise httpx.ConnectError("[Errno 61] Connection refused") from ConnectionRefusedError(61, "Connection refused")
+
+    extend_vendor(monkeypatch, refused)
+    (pdf := tmp_path / "d.pdf").write_bytes(b"%PDF")
+    with pytest.raises(errors.Stop, match="connection was refused"):
+        core.predict(harness.system("extend"), contract.Question(pdf, {"type": "object"}))

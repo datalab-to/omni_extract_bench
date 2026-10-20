@@ -52,10 +52,10 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
         return Gold(gold(row), row.schema)
 
     def prediction(self, output: Any) -> dict[str, Any]:
-        """The extraction; ValueError when it isn't a JSON object, so the document fails."""
+        """The extraction; `errors.SystemFailed` when it isn't a JSON object, so the document fails."""
         if not isinstance(output, dict):
-            raise ValueError(f"the prediction isn't a JSON object; it holds a JSON "
-                             f"{'null' if output is None else type(output).__name__}")
+            raise errors.SystemFailed(f"the prediction isn't a JSON object; it holds a JSON "
+                                      f"{'null' if output is None else type(output).__name__}")
         return output
 
     def score(self, pred: dict[str, Any], gold: Gold) -> scorer.Score:

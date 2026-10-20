@@ -44,12 +44,12 @@ def upload(c: httpx.Client, pdf: Path, base_url: str = BASE) -> str:
     r = c.post(f"{base_url}/files/upload",
                files={"file": (pdf.name, pdf.read_bytes(), "application/pdf")}, timeout=300)
     if r.status_code >= 400:
-        raise RuntimeError(f"upload HTTP {r.status_code}: {r.text[:300]}")
+        raise errors.SystemFailed(f"upload HTTP {r.status_code}: {r.text}", status=r.status_code, body=r.text)
     with adapter.reading("the uploaded file's id"):
         b = r.json()
         fid = (b.get("file") or {}).get("id") or b.get("id")
     if not fid:
-        raise RuntimeError(f"upload: no file id in {r.text[:200]}")
+        raise errors.SystemFailed(f"upload: no file id in {r.text}", status=r.status_code, body=r.text)
     return fid
 
 
@@ -71,13 +71,14 @@ def submit(c: httpx.Client, file_id: str, schema: dict, base_url: str = BASE,
                        "advancedOptions": {"arrayStrategy": {"type": array_strategy}}}}
     r = c.post(f"{base_url}/extract_runs", json=body, timeout=120)
     if r.status_code >= 400:
-        raise RuntimeError(f"extract_runs HTTP {r.status_code}: {r.text[:400]}")
+        raise errors.SystemFailed(f"extract_runs HTTP {r.status_code}: {r.text}", status=r.status_code,
+                                  body=r.text)
     with adapter.reading("the run's id"):
         b = r.json()
         run = b.get("extractRun") or b.get("processorRun") or b.get("run") or b
         rid = run.get("id")
     if not rid:
-        raise RuntimeError(f"extract_runs: no run id in {r.text[:250]}")
+        raise errors.SystemFailed(f"extract_runs: no run id in {r.text}", status=r.status_code, body=r.text)
     return rid
 
 
@@ -91,12 +92,12 @@ def poll(c: httpx.Client, run_id: str, deadline, base_url: str = BASE) -> dict:
         except httpx.TransportError as exc:
             if retry.again():
                 continue
-            raise errors.VendorUnreachable(f"polling failed: {exc}"[:300]) from None
+            raise contract.unreachable("polling failed", exc) from exc
         if r.status_code >= 400:
             if retry.again(r.status_code):
                 continue
-            raise errors.VendorError(f"poll HTTP {r.status_code}: {r.text[:250]}",
-                                     status=r.status_code, body=r.text)
+            raise errors.SystemFailed(f"poll HTTP {r.status_code}: {r.text}",
+                                      status=r.status_code, body=r.text)
         retry.reset()
         polls += 1
         with adapter.reading("the run's status"):
@@ -156,11 +157,8 @@ class Extend(contract.Extractor):
             try:
                 file_id = upload(c, pdf, self.base_url)
                 run_id = submit(c, file_id, schema, self.base_url, self.array_strategy)
-            except httpx.HTTPStatusError as exc:
-                raise errors.VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
-                                         status=exc.response.status_code, body=exc.response.text) from None
-            except RuntimeError as exc:
-                raise errors.VendorError(str(exc)[:300], status=200) from None
+            except httpx.TransportError as exc:
+                raise contract.unreachable("submitting the document", exc) from exc
             run = poll(c, run_id, deadline, self.base_url)
         with adapter.reading("the run's cost"):
             usage = run.get("usage") or {}
@@ -177,7 +175,7 @@ class Extend(contract.Extractor):
         found = restore_reserved(payload)
         if not isinstance(found, dict) or not found:
             status = str(raw.get("status", "")).upper() if isinstance(raw, dict) else "?"
-            raise ValueError(f"run finished {status} with no extraction: {json.dumps(raw)[:300]}")
+            raise errors.SystemFailed(f"run finished {status} with no extraction: {json.dumps(raw)}")
         return found
 
 

@@ -45,7 +45,7 @@ def _server_duration(client: httpx.Client, api_key: str, job_id: str) -> float |
     It is best effort, and it never raises. The extraction is already finished and paid for by the
     time this is called, so a cosmetic field must not be able to discard it -- `raise_for_status`
     here used to throw `httpx.HTTPStatusError` straight past `predict`, which catches
-    `VendorError` only. A job that has scrolled past `_JOBS_PAGE` simply has no duration.
+    `SystemFailed` only. A job that has scrolled past `_JOBS_PAGE` simply has no duration.
     """
     try:
         r = client.get(
@@ -75,7 +75,7 @@ def _upload(client: httpx.Client, api_key: str, pdf: Path) -> str:
     with adapter.reading("the uploaded file's id"):
         file_id = r.json().get("file_id")
     if not file_id:
-        raise RuntimeError(f"upload {pdf.name}: no file_id: {r.text[:300]}")
+        raise errors.SystemFailed(f"upload {pdf.name}: no file_id: {r.text}", status=r.status_code, body=r.text)
     return file_id
 
 
@@ -110,11 +110,12 @@ def _submit(client: httpx.Client, api_key: str, payload: dict) -> str:
         timeout=120,
     )
     if r.status_code >= 400:
-        raise RuntimeError(f"extract_async HTTP {r.status_code}: {r.text[:400]}")
+        raise errors.SystemFailed(f"extract_async HTTP {r.status_code}: {r.text}", status=r.status_code,
+                                  body=r.text)
     with adapter.reading("the job's id"):
         job_id = r.json().get("job_id")
     if not job_id:
-        raise RuntimeError(f"extract_async: no job_id: {r.text[:300]}")
+        raise errors.SystemFailed(f"extract_async: no job_id: {r.text}", status=r.status_code, body=r.text)
     return job_id
 
 
@@ -134,14 +135,14 @@ def _poll(client: httpx.Client, api_key: str, job_id: str, interval: int,
         except httpx.HTTPStatusError as exc:
             if retry.again(exc.response.status_code):
                 continue
-            raise errors.VendorError(f"poll HTTP {exc.response.status_code}: "
-                                     f"{exc.response.text[:250]}",
-                                     status=exc.response.status_code,
-                                     body=exc.response.text) from None
+            raise errors.SystemFailed(f"poll HTTP {exc.response.status_code}: "
+                                      f"{exc.response.text}",
+                                      status=exc.response.status_code,
+                                      body=exc.response.text) from exc
         except httpx.TransportError as exc:
             if retry.again():
                 continue
-            raise errors.VendorUnreachable(f"polling failed: {exc}"[:300]) from None
+            raise contract.unreachable("polling failed", exc) from exc
         retry.reset()
         polls += 1
         with adapter.reading("the job's status"):
@@ -184,10 +185,10 @@ class Reducto(contract.Extractor):
                 job_id = _submit(client, key, _build_payload(
                     file_id, schema, self.system_prompt, self.deep_extract_model, self.agentic_table_mode))
             except httpx.HTTPStatusError as exc:
-                raise errors.VendorError(f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
-                                         status=exc.response.status_code, body=exc.response.text) from None
-            except RuntimeError as exc:
-                raise errors.VendorError(str(exc)[:300], status=200) from None
+                raise errors.SystemFailed(f"HTTP {exc.response.status_code}: {exc.response.text}",
+                                          status=exc.response.status_code, body=exc.response.text) from exc
+            except httpx.TransportError as exc:
+                raise contract.unreachable("submitting the document", exc) from exc
             body = _poll(client, key, job_id, self.poll_interval, deadline)
             latency_s = _server_duration(client, key, job_id)
 
@@ -196,7 +197,7 @@ class Reducto(contract.Extractor):
             usage = dict((body.get("result") or {}).get("usage") or {})
             credits = usage.get("credits")
         if status != "Completed":
-            raise errors.VendorError(f"reducto {status}: {json.dumps(body)[:300]}", status=200)
+            raise errors.SystemFailed(f"reducto {status}: {json.dumps(body)}", status=200)
         return adapter.Call(raw={**body, "latency_s": latency_s},
                             cost=adapter.Cost(credits=credits if isinstance(credits, (int, float))
                                               and not isinstance(credits, bool) else None,
@@ -206,8 +207,9 @@ class Reducto(contract.Extractor):
     def read(self, raw: Any, q: contract.Question) -> dict:
         """The extraction in `result.result`. Reducto may answer with a list, one entry per extraction
         pass, which `responses.as_object` merges."""
-        resp = (raw.get("result") or {}) if isinstance(raw, dict) else {}
-        found = responses.as_object(resp.get("result", resp))
+        with adapter.reading("the job's result"):
+            resp = (raw.get("result") or {}) if isinstance(raw, dict) else {}
+            found = responses.as_object(resp.get("result", resp))
         if found is None:
-            raise ValueError(f"completed with no extraction: {json.dumps(raw)[:300]}")
+            raise errors.SystemFailed(f"completed with no extraction: {json.dumps(raw)}")
         return found

@@ -112,13 +112,15 @@ def _req(
         with urllib.request.urlopen(req, timeout=120) as resp:
             with adapter.reading(f"the answer to {method} {url.split('?')[0]}"):
                 return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
+    except urllib.error.HTTPError as exc:
         try:
-            body = e.read().decode("utf-8", "replace")[:600]
+            body = exc.read().decode("utf-8", "replace")
         except Exception:  # noqa: BLE001
             body = "<body unavailable>"
-        raise errors.VendorError(f"HTTP {e.code} {method} {url.split('?')[0]}: {body}",
-                                 status=e.code, body=body) from None
+        raise errors.SystemFailed(f"HTTP {exc.code} {method} {url.split('?')[0]}: {body}",
+                                  status=exc.code, body=body) from exc
+    except OSError as exc:   # a URLError, or a timeout reading the answer
+        raise contract.unreachable(f"{method} {url.split('?')[0]}", exc) from exc
 
 
 def _project_id(key: str) -> str:
@@ -218,14 +220,10 @@ class LlamaExtract(contract.Extractor):
             deadline.check(f"job {job_id} was still running server-side after {polls} polls")
             try:
                 body = _req("GET", f"{BASE}/api/v2/extract/{job_id}?project_id={project_id}&expand=metadata", key)
-            except errors.VendorError as exc:
+            except errors.SystemFailed as exc:
                 if retry.again(exc.status):
                     continue
                 raise
-            except (urllib.error.URLError, OSError, ValueError) as exc:
-                if retry.again():
-                    continue
-                raise errors.VendorError(f"job {job_id}: polling failed repeatedly: {exc}"[:300], status=None) from None
             retry.reset()
             polls += 1
             with adapter.reading("the job's status"):
@@ -238,7 +236,7 @@ class LlamaExtract(contract.Extractor):
             message = body.get("error_message")
             start, end = _dt(body.get("created_at")), _dt(body.get("updated_at"))
         if status in ("FAILED", "ERROR", "CANCELLED"):
-            raise errors.VendorError(f"LlamaExtract {status}: {message}", status=200)
+            raise errors.SystemFailed(f"LlamaExtract {status}: {message}", status=200)
         return adapter.Call(
             raw={**body, "tier": self.tier,
                  "server_latency_s": round((end - start).total_seconds(), 2) if start and end else None},

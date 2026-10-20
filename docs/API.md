@@ -254,17 +254,61 @@ finds it.
 set it, or `--workers`), so anything it shares between calls, such as a client or a cache, must be safe to
 use from several threads.
 
+One rule decides what an exception does, in `extract`, `prepare_schema`, `read` and a scorer's `prediction`
+alike ([The rules](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#the-rules)): a document
+counts 0 only when code says, on purpose, that the system failed, by raising `errors.SystemFailed`. Any other
+exception stops the run and prints its traceback.
+
 What `extract` raises decides what happens to the run:
 
-- `errors.VendorError(message, status=...)`, or one of its kinds (`VendorTimeout`, `VendorUnreachable`):
-  the vendor failed on this document. It is recorded and counts 0, and a 429 or 5xx status is retried first;
+- `errors.SystemFailed(message, status=...)`, or one of its kinds (`SystemTimeout`, `SystemUnreachable`):
+  the vendor failed on this document. It is recorded with its traceback and counts 0, and a 429 or 5xx status
+  is retried first. Read the fields of the vendor's answer you need while calling (a job id, a status, a cost)
+  inside `adapter.reading("what it is")`, which turns a `ValueError`, `KeyError`, `IndexError`, `TypeError` or
+  `AttributeError` raised inside into a `SystemFailed` saying what couldn't be read. A request that got no
+  answer (a connection error, a client timeout) is `raise contract.unreachable("what was sent", exc) from exc`:
+  a `SystemTimeout` for a timeout, a `SystemUnreachable` otherwise, which `--retry-failed` tries again. Raise
+  it `from exc`, and don't cut its message: the record keeps the traceback underneath, and cuts the message
+  itself;
 - `errors.Stop(message)`, or one of its kinds (`AccountFailure`, `MissingCredential`): the run can't go on
-  for any document. Say in the message what to fix. A 401 or 402 `VendorError` already stops the run as an
+  for any document. Say in the message what to fix. A 401 or 402 `SystemFailed` already stops the run as an
   `AccountFailure`, and a missing key in `keys` stops it before any call; and
 - anything else: a bug in your adapter. The run stops, and prints the whole traceback, whose code it is, and
   the versions a bug report needs. `oeb predict` does the same.
 
-A refused connection stops the run too, whether it is raised as it is or as the cause of a `VendorError`:
+`prepare_schema` raises `contract.DialectError`, a `SystemFailed`, for a schema the vendor's dialect can't
+express. The document is recorded as failed, with the schema it couldn't reshape, and no call is made. Anything
+else it raises is a bug, and stops the run before any call.
+
+`read` takes the raw answer and returns the extraction:
+
+- raise `errors.SystemFailed` for an answer that holds no usable extraction (a missing field, an LLM's broken
+  JSON). `contract.extraction(x)` does it for anything but a non-empty JSON object, and `adapter.reading` does
+  it for a malformed answer read inside it. The document is recorded as `Unreadable`, counts 0, and keeps its
+  raw answer; and
+- anything else is a bug in `read`. The record is saved with its raw answer and `"unread": true`, and the run
+  stops. Running the same command again after the fix reads every unread answer with no call, before
+  predicting the rest.
+
+For a vendor whose answer holds the extraction as a JSON string under `result`:
+
+```python
+import json
+
+from omni_bench_core import adapter, errors
+
+
+@dataclasses.dataclass(frozen=True)
+class Stringly(Mine):
+    def read(self, raw, q):
+        if not isinstance(raw, dict) or "result" not in raw:
+            raise errors.SystemFailed(f"the answer has no result: {json.dumps(raw)[:300]}")
+        with adapter.reading("result, a JSON string"):
+            x = json.loads(raw["result"])
+        return contract.extraction(x)
+```
+
+A refused connection stops the run too, whether it is raised as it is or as the cause of a `SystemFailed`:
 nothing listens at the address, so every document would fail the same way. This is what you see when a
 server you host isn't running; start it (or fix its `base_url`) and run the same command again.
 
@@ -370,6 +414,11 @@ if __name__ == "__main__":
     b.grade("runs/datalab-1a2b3c4d")          # a run you already have: graded again, with no call
 ```
 
+A scorer can also write `prediction(output)`, which reads what it needs of a document's prediction. Raise
+`errors.SystemFailed` there for a prediction it can't use: that document counts 0, and its line in
+scores.jsonl has the message and `traceback`. Field matching does this for a prediction that isn't a JSON
+object. Anything else `prediction` raises is a bug, and stops grading.
+
 The scorers are not part of a run's question, so the runs you already have keep their folders, and `grade`
 adds a `keys_found/` folder beside `field_matching/`. The `oeb` command grades with field matching only.
 omni-bench-core's [overview](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#scorer)
@@ -420,13 +469,19 @@ A record, `records/<doc_id>.json`, holds:
 - `raw`: the vendor's answer as received, kept so that a fixed `read` can read it again with no call
   (`Benchmark.reread`);
 - `sent`: the schema as the vendor was sent it, kept on a failure too;
-- `error`: null, or the failure's `type`, `status`, `transient` (whether a retry could help) and `message`;
+- `error`: null, or the failure's `type` (`SystemFailed`, or a kind of it: `SystemTimeout`,
+  `SystemUnreachable`, `Unreadable`, `DialectError`), `status`, `transient` (whether a retry could help),
+  `message` and `traceback`. The traceback is of where the failure was raised, and of what it was raised from
+  (an answer read inside `adapter.reading`), so it shows which line decided the vendor failed, and whether the
+  vendor's answer changed or the reading is wrong;
 - `cost`: `usd` and `credits` as the vendor reported them (a failed call's too, when it was billed),
   `source` (the response field the cost was read from), `tokens_in`, `tokens_out`, `wall_s` (the seconds
   the document took) and `attempts`;
 - `job_id`: the vendor's id for the job, when it made one;
-- `timeout_s`: the seconds this document was given; and
-- `captured_at`: when the answer was recorded.
+- `timeout_s`: the seconds this document was given;
+- `captured_at`: when the answer was recorded; and
+- `unread`: true when `read` raised a bug on this answer. Such a record has its `raw` answer, no `output` and no
+  `error`; the document isn't finished, and running the same command again reads it with no call.
 
 A summary holds what omni-bench-core adds to every summary (`scorer`, `options`, `run`, `rows`, `failed`,
 `coverage`, `headline_is`, and `partial` when graded with `--partial`), then field matching's own numbers

@@ -94,7 +94,7 @@ class LLMSingleShot(contract.Extractor):
 
         The loop here raises the temperature after a reply that would not parse, had no choices, or was not an
         object: it tries to get a usable answer out of a model that gave a malformed one. Transport failures
-        are not retried here: a rate limit or a 5xx becomes a `VendorError` with its status, and omni-bench-core's
+        are not retried here: a rate limit or a 5xx becomes a `SystemFailed` with its status, and omni-bench-core's
         retry decides, so the two loops can't multiply into 12 attempts on one document.
 
         Three cases are handled on purpose, because getting them wrong decides a vendor's score:
@@ -140,12 +140,14 @@ class LLMSingleShot(contract.Extractor):
                     extra_body={"usage": {"include": True}},
                 )
             except openai.APIStatusError as exc:
-                raise errors.VendorError(f"{type(exc).__name__}: {exc}"[:300],
-                                         status=getattr(exc, "status_code", None)) from None
+                raise errors.SystemFailed(f"{type(exc).__name__}: {exc}",
+                                          status=getattr(exc, "status_code", None)) from exc
+            except openai.APITimeoutError as exc:
+                raise errors.SystemTimeout(f"{type(exc).__name__}: {exc}") from exc
             except openai.APIConnectionError as exc:
-                raise errors.VendorUnreachable(f"{type(exc).__name__}: {exc}"[:300]) from None
+                raise errors.SystemUnreachable(f"{type(exc).__name__}: {exc}") from exc
             except openai.APIError as exc:
-                raise errors.VendorError(f"{type(exc).__name__}: {exc}"[:300]) from None
+                raise errors.SystemFailed(f"{type(exc).__name__}: {exc}") from exc
 
             with adapter.reading("the completion's usage"):
                 usage = resp.usage.model_dump() if getattr(resp, "usage", None) else {}
@@ -158,7 +160,7 @@ class LLMSingleShot(contract.Extractor):
             if not choices:
                 err = getattr(resp, "error", None) or {}
                 last = str((err.get("message") if isinstance(err, dict) else err)
-                           or "provider returned no choices")[:300]
+                           or "provider returned no choices")
                 temperature = min(temperature + 0.1, 1.0)
                 continue
 
@@ -167,13 +169,13 @@ class LLMSingleShot(contract.Extractor):
                 text = getattr(getattr(choice, "message", None), "content", None)
                 finish = getattr(choice, "finish_reason", None)
             if finish == "length":
-                raise errors.VendorError(f"truncated at max_tokens={max_output_tokens} "
-                                         f"({model}'s published ceiling)", status=200, cost=adapter.Cost.total(costs))
+                raise errors.SystemFailed(f"truncated at max_tokens={max_output_tokens} "
+                                          f"({model}'s published ceiling)", status=200, cost=adapter.Cost.total(costs))
             if not text:
-                raise errors.VendorError("empty completion", status=200, cost=adapter.Cost.total(costs))
+                raise errors.SystemFailed("empty completion", status=200, cost=adapter.Cost.total(costs))
             parsed = responses.parse_model_json(text)
             if parsed is None:
-                last = f"not JSON, even allowing a code fence: {text[:120]!r}"
+                last = f"not JSON, even allowing a code fence: {text!r}"
                 calls[-1]["text"] = text
                 temperature = min(temperature + 0.1, 1.0)
                 continue
@@ -184,6 +186,6 @@ class LLMSingleShot(contract.Extractor):
                     cost=adapter.Cost.total(costs))
             last = f"model returned {type(parsed).__name__}, not an object"
 
-        raise errors.VendorError(f"all {self.attempts} attempts returned an unusable answer: {last}",
-                                 status=200, body=json.dumps({"calls": calls, "model": model})[:4000],
-                                 cost=adapter.Cost.total(costs))
+        raise errors.SystemFailed(f"all {self.attempts} attempts returned an unusable answer: {last}",
+                                  status=200, body=json.dumps({"calls": calls, "model": model}),
+                                  cost=adapter.Cost.total(costs))

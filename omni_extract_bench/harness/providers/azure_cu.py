@@ -113,17 +113,20 @@ def _ensure_analyzer(client, analyzer: str, fields: dict, config: AzureCU, deadl
     with _ANALYZER_LOCK:
         if (config.endpoint, analyzer) in _ANALYZERS:
             return
-        r = client.put(
-            f"{config.endpoint}/contentunderstanding/analyzers/{analyzer}"
-            f"?api-version={config.api_version}",
-            json={"baseAnalyzerId": "prebuilt-documentAnalyzer",
-                  "config": {"returnDetails": False,
-                             "completion": config.completion_model},
-                  "fieldSchema": fields})
+        try:
+            r = client.put(
+                f"{config.endpoint}/contentunderstanding/analyzers/{analyzer}"
+                f"?api-version={config.api_version}",
+                json={"baseAnalyzerId": "prebuilt-documentAnalyzer",
+                      "config": {"returnDetails": False,
+                                 "completion": config.completion_model},
+                      "fieldSchema": fields})
+        except httpx.TransportError as exc:
+            raise contract.unreachable("creating the analyzer", exc) from exc
         if r.status_code != 409:
             if r.status_code >= 400:
-                raise errors.VendorError(f"creating analyzer: HTTP {r.status_code}: {r.text[:300]}",
-                                         status=r.status_code, body=r.text)
+                raise errors.SystemFailed(f"creating analyzer: HTTP {r.status_code}: {r.text}",
+                                          status=r.status_code, body=r.text)
             if r.headers.get("Operation-Location"):
                 _await(client, r.headers["Operation-Location"], deadline=deadline,
                        poll_interval=config.poll_interval, want_result=False)
@@ -143,12 +146,12 @@ def _await(client, op_url: str, *, deadline, poll_interval: float, want_result: 
         except httpx.TransportError as exc:
             if retry.again():
                 continue
-            raise errors.VendorUnreachable(f"polling failed: {exc}"[:300]) from None
+            raise contract.unreachable("polling failed", exc) from exc
         if r.status_code >= 400:
             if retry.again(r.status_code):
                 continue
-            raise errors.VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
-                                     status=r.status_code, body=r.text)
+            raise errors.SystemFailed(f"HTTP {r.status_code}: {r.text}",
+                                      status=r.status_code, body=r.text)
         retry.reset()
         polls += 1
         with adapter.reading("the analysis's status"):
@@ -157,8 +160,8 @@ def _await(client, op_url: str, *, deadline, poll_interval: float, want_result: 
         if status in _TERMINAL_OK:
             return body if want_result else True
         if status in _TERMINAL_BAD:
-            raise errors.VendorError(f"azure-cu {status}: {json.dumps(body.get('error') or {})[:300]}",
-                                     status=200, body=r.text)
+            raise errors.SystemFailed(f"azure-cu {status}: {json.dumps(body.get('error') or {})}",
+                                      status=200, body=r.text)
         time.sleep(poll_interval)
 
 
@@ -216,24 +219,28 @@ class AzureCU(contract.Extractor):
         with httpx.Client(headers={"Ocp-Apim-Subscription-Key": key}, timeout=120) as client:
             analyzer = analyzer_id(schema, self.completion_model, self.api_version)
             _ensure_analyzer(client, analyzer, schema, self, deadline)
-            r = client.post(f"{endpoint}/contentunderstanding/analyzers/{analyzer}:analyze"
-                            f"?api-version={self.api_version}",
-                            content=pdf.read_bytes(), headers={"Content-Type": "application/octet-stream"})
+            try:
+                r = client.post(f"{endpoint}/contentunderstanding/analyzers/{analyzer}:analyze"
+                                f"?api-version={self.api_version}",
+                                content=pdf.read_bytes(), headers={"Content-Type": "application/octet-stream"})
+            except httpx.TransportError as exc:
+                raise contract.unreachable("submitting the document", exc) from exc
             if r.status_code >= 400:
-                raise errors.VendorError(f"HTTP {r.status_code}: {r.text[:300]}", status=r.status_code, body=r.text)
+                raise errors.SystemFailed(f"HTTP {r.status_code}: {r.text}", status=r.status_code, body=r.text)
             op = r.headers.get("Operation-Location")
             if not op:
-                raise errors.VendorError("no Operation-Location header on :analyze", status=r.status_code, body=r.text)
+                raise errors.SystemFailed("no Operation-Location header on :analyze", status=r.status_code, body=r.text)
             body = _await(client, op, deadline=deadline, poll_interval=self.poll_interval, want_result=True)
         with adapter.reading("the analysis's contents"):
             done = bool(((body or {}).get("result") or {}).get("contents"))
         if not done:
-            raise errors.VendorError("analysis returned no contents", status=200, body=json.dumps(body)[:300])
+            raise errors.SystemFailed("analysis returned no contents", status=200, body=json.dumps(body))
         return adapter.Call(raw=body, job_id=analyzer)
 
     def read(self, raw: Any, q: contract.Question) -> dict:
         """The first content's fields, unwrapped to plain values."""
-        contents = ((raw or {}).get("result") or {}).get("contents") or []
-        if not contents:
-            raise ValueError("analysis returned no contents")
-        return fields_to_dict(contents[0].get("fields") or {})
+        with adapter.reading("the first content's fields"):
+            contents = ((raw or {}).get("result") or {}).get("contents") or []
+            if not contents:
+                raise errors.SystemFailed("analysis returned no contents")
+            return fields_to_dict(contents[0].get("fields") or {})

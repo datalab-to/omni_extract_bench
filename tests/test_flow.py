@@ -40,7 +40,7 @@ class GoldEcho(contract.Extractor):
 
     def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
         with LOCK: CALLS.append(pdf.stem)
-        if pdf.stem in self.refuse: raise errors.VendorError("refused", status=400)
+        if pdf.stem in self.refuse: raise errors.SystemFailed("refused", status=400)
         return adapter.Call(raw={"extraction": json.loads((pdf.parent.parent / "gold" / f"{pdf.stem}.json").read_text())})
 
 
@@ -51,7 +51,7 @@ class Broke(GoldEcho):
     name: ClassVar[str] = "broke"
 
     def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
-        raise errors.VendorError("out of credits", status=402)
+        raise errors.SystemFailed("out of credits", status=402)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -72,7 +72,29 @@ class Offline(GoldEcho):
     name: ClassVar[str] = "offline"
 
     def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
-        raise errors.VendorUnreachable("ConnectError") from ConnectionRefusedError(61, "Connection refused")
+        raise errors.SystemUnreachable("ConnectError") from ConnectionRefusedError(61, "Connection refused")
+
+
+READ_FIXED = threading.Event()
+
+
+@dataclasses.dataclass(frozen=True)
+class ReadBug(GoldEcho):
+    """`GoldEcho` with a bug in `read` until `READ_FIXED` is set, so a run with the fix is the same command."""
+
+    name: ClassVar[str] = "read-bug"
+
+    def read(self, raw, q):
+        if not READ_FIXED.is_set(): return raw["no such field"]
+        return super().read(raw, q)
+
+
+@dataclasses.dataclass(frozen=True)
+class CrashingPrediction(field_matching.FieldMatching):
+    """Field matching with a bug in `prediction`."""
+
+    def prediction(self, output):
+        return output["no such field"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -103,6 +125,51 @@ def test_a_refused_document_counts_as_zero(tmp_path):
     s = g["scorers"]["field_matching"]
     assert s["failed"] == 1 and s["headline"] == 0.5 and s["accuracy"] == 1.0, s
     assert s["per_suite"]["s"]["headline"] == 0.5 and s["per_suite"]["s"]["rows"] == 2, s
+
+
+def test_a_bug_in_read_stops_the_run_and_the_same_command_reads_the_kept_answer_with_no_call(tmp_path):
+    b = benchmark.default(dataset(tmp_path / "ds"))
+    READ_FIXED.clear()
+    CALLS.clear()
+    with pytest.raises(errors.Bug, match="ReadBug raised KeyError while reading the answer"):
+        b.run(ReadBug(), tmp_path / "runs", workers=1)
+    [folder] = (tmp_path / "runs").iterdir()
+    kept = {f.stem: json.loads(f.read_text()) for f in (folder / "records").glob("*.json")}
+    assert kept and all(r["unread"] is True and r["output"] is None and r["error"] is None and r["raw"]
+                        for r in kept.values()), kept
+    CALLS.clear()
+    READ_FIXED.set()
+    try:
+        g = b.run(ReadBug(), tmp_path / "runs", workers=1)
+    finally:
+        READ_FIXED.clear()
+    assert not set(CALLS) & set(kept), f"a kept answer was paid for again: {CALLS}"
+    assert g["run"] == folder.name and g["scorers"]["field_matching"]["headline"] == 1.0, g
+    for id in kept:
+        rec = json.loads((folder / "records" / f"{id}.json").read_text())
+        assert "unread" not in rec and rec["output"] == {"a": "x"}, rec
+
+
+def test_an_unusable_prediction_counts_zero_with_its_traceback(tmp_path):
+    ds = dataset(tmp_path / "ds")
+    mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}, "d1.json": ["not", "an", "object"]})
+    s = benchmark.default(ds).grade(mine)["scorers"]["field_matching"]
+    assert s["failed"] == 1 and s["headline"] == 0.5, s
+    lines = {x["id"]: x for x in map(json.loads, (mine / "field_matching" / "scores.jsonl").read_text().splitlines())}
+    assert "isn't a JSON object" in json.dumps(lines["d1"]), lines["d1"]
+    assert "SystemFailed" in lines["d1"]["traceback"] and "prediction" in lines["d1"]["traceback"], lines["d1"]
+
+
+def test_an_unexpected_exception_in_prediction_stops_grading(tmp_path):
+    from omni_bench_core import benchmark as core_benchmark
+
+    from omni_extract_bench import task
+
+    ds = dataset(tmp_path / "ds")
+    mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}, "d1.json": {"a": "x"}})
+    b = core_benchmark.Benchmark(task.Extract(), ds, [CrashingPrediction()])
+    with pytest.raises(errors.Bug, match="CrashingPrediction raised KeyError while reading the prediction"):
+        b.grade(mine)
 
 
 def test_a_limit_is_its_own_run_graded_over_its_own_rows(tmp_path):
@@ -187,7 +254,7 @@ def test_oeb_grade_refuses_a_run_with_a_lost_document_unless_partial(tmp_path, c
     run = tmp_path / "runs" / name
     for sub in ("records", "predictions"): (run / sub / "d1.json").unlink()
     code, _, err = oeb(capsys, "grade", str(run))
-    assert code == 1 and "never predicted: d1" in err, err
+    assert code == 1 and "never predicted" in err and "d1" in err, err
     code, out, err = oeb(capsys, "grade", str(run), "--partial")
     assert code == 0 and json.loads(out)["scorers"]["field_matching"]["partial"]["no_answer"] == ["d1"], err
 

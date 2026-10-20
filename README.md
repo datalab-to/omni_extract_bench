@@ -79,7 +79,12 @@ Each run is a folder under `--out`, named after everything that changes its answ
 
 The timeout isn't one of them. To give documents that timed out more time, run the same command again with a longer `--timeout` and `--retry-failed`: it uses the same folder, and each document's record keeps the timeout it was run with.
 
-A run is graded only when it is finished: every document has an answer or a recorded failure. A document the system failed on counts as 0. When the system stops the run (its key is refused, its account is out of credits, its adapter has a bug), the command exits 1 saying why, and running it again resumes.
+A run is graded only when it is finished: every document has an answer or a recorded failure. One rule decides what counts as 0 ([The rules](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#the-rules) in omni-bench-core's overview):
+
+- a document counts 0 only when code says, on purpose, that the system failed, by raising `errors.SystemFailed` (or one of its kinds, `SystemTimeout`, `SystemUnreachable` and `Unreadable`). Its record keeps the message and the traceback of where it was raised; and
+- any other exception stops the run and prints its traceback. It is a bug in an adapter or a scorer, not a failure of the system.
+
+When the run stops (its key is refused, its account is out of credits, an adapter or a scorer has a bug), the command exits 1 saying why, and running it again resumes. An answer that `read` crashed on is kept, unread, and running the same command again after the fix reads it with no call.
 
 To grade a run again, or a folder of your own predictions (`predictions/<doc_id>.json`):
 
