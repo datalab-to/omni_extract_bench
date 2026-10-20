@@ -13,7 +13,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "omni-bench-core",
+    "omni-bench-core>=0.1.0,<0.2",
     "scipy>=1.13.1",
 ]
 
