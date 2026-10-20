@@ -44,7 +44,6 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
     documents whose prediction or gold changed. Keeping scores is safe because scoring is deterministic."""
 
     name: ClassVar[str] = "field_matching"
-    headline_field: ClassVar[str] = "accuracy"
     workers: ClassVar[int] = min(8, os.cpu_count() or 1)
     cache: ClassVar[bool] = True
 
@@ -62,34 +61,36 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
         got = compare.score(pred, gold.extraction, gold.schema, verdicts=True)
         return scorer.Score(got, [v._asdict() for v in got.pop("verdicts")])
 
+    def row_fields(self, row: data.Doc) -> dict[str, Any]:
+        return {"suite": row.suite}
+
     def summarize(self, lines: Sequence[scorer.Line]) -> scorer.Summary:
-        """`summarize`, without the counts omni-bench-core adds itself (`rows`, `failed`, `coverage`). Its
-        headline is the accuracy over the scored documents, 0 when none was, which omni-bench-core multiplies by
-        coverage."""
-        s = summarize(lines)
-        return {**{k: v for k, v in s.items() if k not in ("rows", "failed", "coverage")},
-                "headline": s["accuracy"] or 0.0}
+        """The scored documents' metrics (`metrics`), overall and per suite; `rows` is how many were scored. Its
+        headline is their accuracy, which omni-bench-core multiplies by coverage, so a failed document counts
+        as 0."""
+        by_suite: dict[str, list[dict]] = collections.defaultdict(list)
+        for x in lines:
+            by_suite[x["row"]["suite"]].append(x)
+        m = metrics(lines)
+        return {"headline": m["accuracy"], "headline_is": "accuracy", "rows": len(lines), **m,
+                "per_suite": {s: {"rows": len(v), **metrics(v)} for s, v in sorted(by_suite.items())}}
 
 
 def gold(doc: Any) -> dict:
     """A document's ground truth, the extraction, from its gold file (`doc.gt_path`, a `data.Doc`'s); a
-    `GoldError` naming the document when the file can't be read or isn't a JSON object."""
+    `ValueError` naming the document when the file can't be read or isn't a JSON object."""
     try:
         g = json.loads(Path(doc.gt_path).read_text())
     except (OSError, ValueError) as exc:
-        raise GoldError(f"{doc.doc_id}: its gold {doc.gt_path} can't be read: {exc}") from None
+        raise ValueError(f"{doc.doc_id}: its gold {doc.gt_path} can't be read: {exc}") from None
     if isinstance(g, dict): return g
     kind = "null" if g is None else type(g).__name__
-    raise GoldError(f"{doc.doc_id}: its gold {doc.gt_path} is a JSON {kind}; it must be a JSON object, the "
-                    "extraction")
-
-
-class GoldError(errors.UsageError):
-    """A gold file that can't be read, or isn't the extraction, a JSON object; the message names its document."""
+    raise ValueError(f"{doc.doc_id}: its gold {doc.gt_path} is a JSON {kind}; it must be a JSON object, the "
+                     "extraction")
 
 
 def check(docs: Iterable[Any]) -> None:
-    """Raises a `GoldError` naming the first document of `docs` (a manifest's, `data.read_manifest`)
+    """Raises a `ValueError` naming the first document of `docs` (a manifest's, `data.read_manifest`)
     whose gold file can't be read, isn't JSON, or isn't a JSON object, the one shape `score` takes.
     What `oeb check` runs.
 
@@ -104,19 +105,21 @@ ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
 
 
 def summarize(lines: Iterable[dict]) -> dict:
-    """A run's score lines (scores.jsonl's, one per document) as one summary (`_over`), over every line and
-    then per suite, each suite in the same shape. A line carries its document's suite, so the lines are all
-    it needs. A line's status is `scored` or `failed` (no usable prediction)."""
+    """A run's score lines (scores.jsonl's, one per document, failed ones included) as one summary (`_over`),
+    over every line and then per suite, each suite in the same shape. A line carries its document's suite
+    (under `row`), so the lines are all it needs. A line's status is `scored` or `failed` (no usable
+    prediction)."""
     lines = list(lines)
     if not lines:
         raise ValueError("summarize takes at least one score line; there is nothing to summarize")
-    if bad := next((x for x in lines if not isinstance(x, dict) or "suite" not in x or "status" not in x), None):
-        raise ValueError(f"summarize takes score lines, each with its document's suite and status, as "
-                         f"scores.jsonl holds; got {bad!r:.120}. score()'s result "
+    if bad := next((x for x in lines if not isinstance(x, dict) or "suite" not in x.get("row", {})
+                    or "status" not in x), None):
+        raise ValueError(f"summarize takes score lines, each with its status and its document's suite under row, "
+                         f"as scores.jsonl holds; got {bad!r:.120}. score()'s result "
                          "is one line's numbers, without them")
     by_suite: dict[str, list[dict]] = collections.defaultdict(list)
     for x in lines:
-        by_suite[x["suite"]].append(x)
+        by_suite[x["row"]["suite"]].append(x)
     return {**_over(lines), "per_suite": {s: _over(v) for s, v in sorted(by_suite.items())}}
 
 
@@ -129,19 +132,27 @@ def _over(lines: list[dict]) -> dict:
     metrics over the scored are None when none was scored: 0.0 would read as everything wrong (and a 0.0
     rate as nothing wrong)."""
     scored = [x for x in lines if x["status"] == "scored"]
-
-    def mean(of) -> float | None:
-        return sum(of(x) for x in scored) / len(scored) if scored else None
-
+    m = metrics(scored) if scored else {k: None for k in ("accuracy", "precision", "recall",
+                                                           *(f"{e}_rate" for e in ERRORS))}
     return {
         "headline": sum(x["accuracy"] for x in scored) / len(lines),
         "rows": len(lines),
         "scored": len(scored),
         "failed": len(lines) - len(scored),
         "coverage": len(scored) / len(lines),
+        **m,
+    }
+
+
+def metrics(scored: Sequence[dict]) -> dict:
+    """The mean accuracy, precision and recall of a non-empty set of scored documents' lines, and the mean rate
+    of each kind of error (`ERRORS`)."""
+    def mean(of) -> float:
+        return sum(of(x) for x in scored) / len(scored)
+
+    return {
         "accuracy": mean(lambda x: x["accuracy"]),
         "precision": mean(lambda x: x["precision"]),
         "recall": mean(lambda x: x["recall"]),
-        **{f"{e}_rate": mean(lambda x, e=e: x[e] / x["total"] if x["total"] else 0.0)
-           for e in ERRORS},
+        **{f"{e}_rate": mean(lambda x, e=e: x[e] / x["total"] if x["total"] else 0.0) for e in ERRORS},
     }

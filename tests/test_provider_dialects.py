@@ -129,7 +129,7 @@ def _account_failure(message):
     try:
         _adapter.predict(_Fails(message=message), _contract.Question(pathlib.Path(__file__), {"type": "object"}),
                          timeout=5)
-    except _errors.AccountFailure:
+    except PermissionError:
         return True
     return False
 

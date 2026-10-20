@@ -198,9 +198,9 @@ class AzureCU(contract.Extractor):
         """Normalise here, so the options hold what the URLs are actually built from. An empty endpoint is
         refused here, so a run without one stops before any call."""
         if not self.endpoint.strip():
-            raise errors.UsageError("azure-cu has no endpoint, the Azure resource to analyse against; give it in "
-                                    "its options: --options '{\"azure-cu\": {\"endpoint\": "
-                                    "\"https://<resource>.cognitiveservices.azure.com\"}}'")
+            raise ValueError("azure-cu has no endpoint, the Azure resource to analyse against; give it in "
+                             "its options: --options '{\"azure-cu\": {\"endpoint\": "
+                             "\"https://<resource>.cognitiveservices.azure.com\"}}'")
         object.__setattr__(self, "endpoint", self.endpoint.rstrip("/"))
 
     def prepare_schema(self, schema: dict) -> dict:

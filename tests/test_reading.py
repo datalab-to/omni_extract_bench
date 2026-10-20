@@ -191,5 +191,6 @@ def test_a_refused_connection_to_a_vendor_still_stops_the_run(tmp_path, monkeypa
 
     extend_vendor(monkeypatch, refused)
     (pdf := tmp_path / "d.pdf").write_bytes(b"%PDF")
-    with pytest.raises(errors.Stop, match="connection was refused"):
+    with pytest.raises(errors.SystemUnreachable) as got:     # raised as it is, with a note saying what to do
         core.predict(harness.system("extend"), contract.Question(pdf, {"type": "object"}))
+    assert "connection was refused" in got.value.__notes__[0], got.value.__notes__

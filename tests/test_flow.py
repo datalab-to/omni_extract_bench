@@ -23,7 +23,7 @@ from omni_bench_core import adapter, errors
 from omni_extract_bench import benchmark, cli, harness
 from omni_extract_bench.harness import contract
 from omni_extract_bench.scorers import field_matching
-from tests.folders import SCHEMA, dataset, oeb, predictions
+from tests.folders import SCHEMA, dataset, oeb, predictions, raised
 
 ROOT = Path(__file__).resolve().parent.parent
 CALLS: list[str] = []
@@ -110,7 +110,7 @@ def test_gold_echo_scores_one_and_a_resumed_run_calls_nothing(tmp_path):
     g = b.run(GoldEcho(), tmp_path / "runs")
     name, s = g["run"], g["scorers"]["field_matching"]
     assert s["headline"] == 1.0 and s["rows"] == 2 and s["failed"] == 0, s
-    assert s["headline_is"] == "accuracy × coverage" and "partial" not in s and "documents" not in s, s
+    assert s["scored"]["headline_is"] == "accuracy" and "partial" not in s and "documents" not in s, s
     folder = tmp_path / "runs" / name
     assert (folder / "field_matching" / "details" / "d0.jsonl").exists()
     rec = json.loads((folder / "records" / "d0.json").read_text())
@@ -123,16 +123,18 @@ def test_gold_echo_scores_one_and_a_resumed_run_calls_nothing(tmp_path):
 def test_a_refused_document_counts_as_zero(tmp_path):
     g = benchmark.default(dataset(tmp_path / "ds")).run(GoldEcho(refuse=("d1",)), tmp_path / "runs")
     s = g["scorers"]["field_matching"]
-    assert s["failed"] == 1 and s["headline"] == 0.5 and s["accuracy"] == 1.0, s
-    assert s["per_suite"]["s"]["headline"] == 0.5 and s["per_suite"]["s"]["rows"] == 2, s
+    assert s["failed"] == 1 and s["headline"] == 0.5 and s["scored"]["accuracy"] == 1.0, s
+    # the breakdown is over the scored documents only; the failed one is counted at the top
+    assert s["scored"]["per_suite"]["s"]["accuracy"] == 1.0 and s["scored"]["per_suite"]["s"]["rows"] == 1, s
 
 
 def test_a_bug_in_read_stops_the_run_and_the_same_command_reads_the_kept_answer_with_no_call(tmp_path):
     b = benchmark.default(dataset(tmp_path / "ds"))
     READ_FIXED.clear()
     CALLS.clear()
-    with pytest.raises(errors.Bug, match="ReadBug raised KeyError while reading the answer"):
+    with pytest.raises(KeyError) as got:
         b.run(ReadBug(), tmp_path / "runs", workers=1)
+    assert "ReadBug raised this while reading the answer" in got.value.__notes__[0], got.value.__notes__
     [folder] = (tmp_path / "runs").iterdir()
     kept = {f.stem: json.loads(f.read_text()) for f in (folder / "records").glob("*.json")}
     assert kept and all(r["unread"] is True and r["output"] is None and r["error"] is None and r["raw"]
@@ -168,8 +170,9 @@ def test_an_unexpected_exception_in_prediction_stops_grading(tmp_path):
     ds = dataset(tmp_path / "ds")
     mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}, "d1.json": {"a": "x"}})
     b = core_benchmark.Benchmark(task.Extract(), ds, [CrashingPrediction()])
-    with pytest.raises(errors.Bug, match="CrashingPrediction raised KeyError while reading the prediction"):
+    with pytest.raises(KeyError) as got:
         b.grade(mine)
+    assert got.value.__notes__ == ["CrashingPrediction raised this while reading the prediction of d0"], got.value
 
 
 def test_a_limit_is_its_own_run_graded_over_its_own_rows(tmp_path):
@@ -191,9 +194,9 @@ def test_the_schema_is_sent_without_benchmark_keys(tmp_path):
 def test_a_model_id_is_the_llm_adapter_and_names_its_folder():
     a = harness.system("openai/gpt-5.6-sol", {"attempts": 2})
     assert a.model == "openai/gpt-5.6-sol" and a.label == "openai__gpt-5.6-sol"
-    with pytest.raises(errors.UsageError, match="provider name"):
+    with pytest.raises(ValueError, match="provider name"):
         harness.system("openai/gpt-5.6-sol", {"model": "other/one"})
-    with pytest.raises(errors.UsageError, match="unknown system"):
+    with pytest.raises(ValueError, match="unknown system"):
         harness.system("nope")
 
 
@@ -229,15 +232,14 @@ def test_oeb_run_grade_and_score(tmp_path, capsys, monkeypatch):
                          "--schema", str(tmp_path / "s.json"))
     assert code == 0 and json.loads(out)["accuracy"] == 1.0 and json.loads(out)["gold_rows"] == 0
 
-    code, _, err = oeb(capsys, "run", "--system", "nope", "--dataset", str(ds), "-y")
-    assert code == 1 and err.startswith("oeb run: unknown system")
+    assert raised(ValueError, capsys, "run", "--system", "nope", "--dataset", str(ds), "-y").startswith("unknown system")
 
 
 def test_oeb_grade_refuses_an_unfinished_folder_unless_partial(tmp_path, capsys):
     ds = dataset(tmp_path / "ds")
     mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}})
-    code, out, err = oeb(capsys, "grade", str(mine), "--dataset", str(ds))
-    assert code == 1 and out == "" and "isn't finished" in err and "d1" in err and "--partial" in err, err
+    err = raised(ValueError, capsys, "grade", str(mine), "--dataset", str(ds))
+    assert "isn't finished" in err and "d1" in err and "--partial" in err, err
     assert not (mine / "settings.json").exists()
     code, out, err = oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--partial")
     s = json.loads(out)["scorers"]["field_matching"]
@@ -253,15 +255,15 @@ def test_oeb_grade_refuses_a_run_with_a_lost_document_unless_partial(tmp_path, c
     name = json.loads(out)["run"]
     run = tmp_path / "runs" / name
     for sub in ("records", "predictions"): (run / sub / "d1.json").unlink()
-    code, _, err = oeb(capsys, "grade", str(run))
-    assert code == 1 and "never predicted" in err and "d1" in err, err
+    err = raised(ValueError, capsys, "grade", str(run))
+    assert "never predicted" in err and "d1" in err, err
     code, out, err = oeb(capsys, "grade", str(run), "--partial")
     assert code == 0 and json.loads(out)["scorers"]["field_matching"]["partial"]["e.g."] == ["d1"], err
 
 
-def test_oeb_run_prints_an_unfinished_refusal_and_exits_one(tmp_path, capsys, monkeypatch):
-    """A document the scorer couldn't score leaves the run unfinished: no grading is printed, the refusal is
-    said, and the exit code is 1."""
+def test_oeb_run_raises_an_unfinished_refusal(tmp_path, capsys, monkeypatch):
+    """A document the scorer couldn't score leaves the run unfinished: no grading is printed, and the refusal is
+    raised, a `ValueError`."""
     def score(self, pred, gold):
         raise errors.Unscored("no judge")
 
@@ -271,9 +273,9 @@ def test_oeb_run_prints_an_unfinished_refusal_and_exits_one(tmp_path, capsys, mo
     monkeypatch.setattr(field_matching.FieldMatching, "workers", 1)
     monkeypatch.setattr(field_matching.FieldMatching, "cache", False)
     monkeypatch.setattr(field_matching.FieldMatching, "score", score)
-    code, out, err = oeb(capsys, "run", "--system", "gold-echo", "--dataset", str(ds), "--out",
-                         str(tmp_path / "runs"), "-y")
-    assert code == 1 and out == "" and "not scored (no judge)" in err, err
+    err = raised(ValueError, capsys, "run", "--system", "gold-echo", "--dataset", str(ds), "--out",
+                 str(tmp_path / "runs"), "-y")
+    assert "not scored (no judge)" in err, err
 
 
 def test_a_missing_key_is_refused_before_any_call(tmp_path, capsys, monkeypatch):
@@ -281,13 +283,13 @@ def test_a_missing_key_is_refused_before_any_call(tmp_path, capsys, monkeypatch)
     monkeypatch.delenv("OEB_TEST_NEVER_SET_KEY", raising=False)
     monkeypatch.setitem(harness.ADAPTERS, "keyed-echo", KeyedEcho)
     CALLS.clear()
-    code, out, err = oeb(capsys, "run", "--system", "keyed-echo", "--dataset", str(ds), "--out",
-                         str(tmp_path / "runs"), "-y")
-    assert code == 1 and out == "" and CALLS == [] and not (tmp_path / "runs").exists(), err
+    err = raised(ValueError, capsys, "run", "--system", "keyed-echo", "--dataset", str(ds), "--out",
+                 str(tmp_path / "runs"), "-y")
+    assert CALLS == [] and not (tmp_path / "runs").exists(), err
     assert "export OEB_TEST_NEVER_SET_KEY=..." in err, err
-    code, out, err = oeb(capsys, "predict", "--system", "keyed-echo", "--doc", str(ds / "pdfs" / "d0.pdf"),
-                         "--schema", str(ds / "gold" / "d0.json"))
-    assert code == 1 and CALLS == [] and "export OEB_TEST_NEVER_SET_KEY=..." in err, err
+    err = raised(ValueError, capsys, "predict", "--system", "keyed-echo", "--doc", str(ds / "pdfs" / "d0.pdf"),
+                 "--schema", str(ds / "gold" / "d0.json"))
+    assert CALLS == [] and "export OEB_TEST_NEVER_SET_KEY=..." in err, err
 
 
 def test_oeb_predict_prints_the_record_and_fails_on_a_failed_one(tmp_path, capsys, monkeypatch):
@@ -303,22 +305,21 @@ def test_oeb_predict_prints_the_record_and_fails_on_a_failed_one(tmp_path, capsy
                            "--schema", str(tmp_path / "s.json"), "--options", options)
         rec = json.loads(out)
         assert code == 1 and rec["error"]["status"] == 400 and rec["sent"] == SCHEMA, options
-    code, _, err = oeb(capsys, "predict", "--system", "gold-echo", "--doc", str(ds / "pdfs" / "d0.pdf"),
-                       "--schema", str(tmp_path / "s.json"), "--options", '{"gold-echo": [{}, {}]}')
-    assert code == 1 and "one set of options" in err, err
-    code, _, err = oeb(capsys, "predict", "--system", "gold-echo", "--doc", str(tmp_path / "no.pdf"),
-                       "--schema", str(tmp_path / "s.json"))
-    assert code == 1 and "no such file" in err
+    err = raised(ValueError, capsys, "predict", "--system", "gold-echo", "--doc", str(ds / "pdfs" / "d0.pdf"),
+                 "--schema", str(tmp_path / "s.json"), "--options", '{"gold-echo": [{}, {}]}')
+    assert "one set of options" in err, err
+    err = raised(ValueError, capsys, "predict", "--system", "gold-echo", "--doc", str(tmp_path / "no.pdf"),
+                 "--schema", str(tmp_path / "s.json"))
+    assert "no such file" in err
 
 
 def test_oeb_check_counts_a_good_dataset_and_names_a_missing_file(tmp_path, capsys):
     ds = dataset(tmp_path / "ds")
     code, out, err = oeb(capsys, "check", "--dataset", str(ds))
     got = json.loads(out)
-    assert code == 0 and (got["rows"], got["suites"]) == (2, 1), err
+    assert code == 0 and got["rows"] == 2 and "suites" not in got, err
     (ds / "pdfs" / "d1.pdf").unlink()
-    code, _, err = oeb(capsys, "check", "--dataset", str(ds))
-    assert code == 1 and "d1" in err
+    assert "d1" in raised(ValueError, capsys, "check", "--dataset", str(ds))
 
 
 def test_oeb_run_only_predicts_and_grades_only_those(tmp_path, capsys, monkeypatch):
@@ -427,9 +428,9 @@ def test_oeb_run_takes_one_system_and_its_options_bare(tmp_path, capsys, monkeyp
         assert code == 0 and g["scorers"]["field_matching"]["headline"] == 0.5 and "deprecated" not in err, err
         names.append(g["run"])
     assert names[0] == names[1] and len(list((tmp_path / "runs").iterdir())) == 1, names
-    code, _, err = oeb(capsys, "run", "--system", "gold-echo", "--options", '{"gold-echo": [{}, {}]}',
-                       "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
-    assert code == 1 and "one set of options" in err, err
+    err = raised(ValueError, capsys, "run", "--system", "gold-echo", "--options", '{"gold-echo": [{}, {}]}',
+                 "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
+    assert "one set of options" in err, err
 
 
 @pytest.mark.parametrize("flag", ["--system", "--systems", "--providers"])
@@ -437,16 +438,14 @@ def test_several_systems_are_refused_with_one_command_per_system(tmp_path, capsy
     ds = dataset(tmp_path / "ds")
     monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
     CALLS.clear()
-    code, out, err = oeb(capsys, "run", flag, "gold-echo", "openai/gpt-5.6-sol", "--sample", "1", "--options",
-                         '{"gold-echo": {"refuse": ["d1"]}}', "--dataset", str(ds), "--out", str(tmp_path / "runs"),
-                         "-y")
-    assert code == 1 and out == "" and "deprecated" not in err, err
+    err = raised(ValueError, capsys, "run", flag, "gold-echo", "openai/gpt-5.6-sol", "--sample", "1", "--options",
+                 '{"gold-echo": {"refuse": ["d1"]}}', "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
     assert err == (
-        "oeb run: a run is one system, but 2 were given (gold-echo, openai/gpt-5.6-sol). Run one command per system:\n"
+        "a run is one system, but 2 were given (gold-echo, openai/gpt-5.6-sol). Run one command per system:\n"
         f"""    oeb run --system gold-echo --sample 1 --options '{{"refuse": ["d1"]}}' --dataset {ds} --out """
         f"{tmp_path / 'runs'} -y\n"
         f"    oeb run --system openai/gpt-5.6-sol --sample 1 --dataset {ds} --out {tmp_path / 'runs'} -y\n"
-        "Use the same --sample (or --limit, --only, --suites) in each, so they answer the same rows.\n"), err
+        "Use the same --sample (or --limit, --only) in each, so they answer the same rows."), err
     assert CALLS == [] and not (tmp_path / "runs").exists()
 
 
@@ -463,9 +462,9 @@ def test_options_for_another_system_are_refused(tmp_path, capsys, monkeypatch):
     ds = dataset(tmp_path / "ds")
     monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
     CALLS.clear()
-    code, _, err = oeb(capsys, "run", "--system", "gold-echo", "--options", '{"datalab": {"mode": "fast"}}',
-                       "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
-    assert code == 1 and "--options gives options for datalab, but this command runs gold-echo" in err, err
+    err = raised(ValueError, capsys, "run", "--system", "gold-echo", "--options", '{"datalab": {"mode": "fast"}}',
+                 "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
+    assert "--options gives options for datalab, but this command runs gold-echo" in err, err
     assert CALLS == [] and not (tmp_path / "runs").exists()
 
 
@@ -482,26 +481,25 @@ def test_oeb_run_workers_is_one_number(tmp_path, capsys, monkeypatch):
     assert "argument --workers: invalid int value" in capsys.readouterr().err
 
 
-def test_oeb_predict_says_whose_bug_it_is(tmp_path, capsys, monkeypatch):
+def test_oeb_predict_raises_a_bug_as_it_is(tmp_path, capsys, monkeypatch):
     ds = dataset(tmp_path / "ds")
     monkeypatch.setitem(harness.ADAPTERS, "buggy", Buggy)
-    code, out, err = oeb(capsys, "predict", "--system", "buggy", "--doc", str(ds / "pdfs" / "d0.pdf"),
-                         "--schema", str(ds / "gold" / "d0.json"))
-    assert code == 1 and out == "", err
-    assert err.startswith("oeb predict: Bug: Buggy raised KeyError while predicting"), err
-    assert "this is a bug in your Buggy" in err and "Traceback" in err, err
+    with pytest.raises(KeyError) as got:
+        oeb(capsys, "predict", "--system", "buggy", "--doc", str(ds / "pdfs" / "d0.pdf"),
+            "--schema", str(ds / "gold" / "d0.json"))
+    assert got.value.__notes__[0].startswith("Buggy raised this while predicting"), got.value.__notes__
 
 
 def test_a_refused_connection_stops_the_run(tmp_path, capsys, monkeypatch):
     ds = dataset(tmp_path / "ds")
     monkeypatch.setitem(harness.ADAPTERS, "offline", Offline)
-    code, out, err = oeb(capsys, "run", "--system", "offline", "--dataset", str(ds), "--out", str(tmp_path / "runs"),
-                         "-y")
-    assert code == 1 and out == "" and "the connection was refused" in err, err
+    err = raised(errors.SystemUnreachable, capsys, "run", "--system", "offline", "--dataset", str(ds), "--out",
+                 str(tmp_path / "runs"), "-y")
+    assert "the connection was refused" in err, err
     assert not list((tmp_path / "runs").glob("*/records/*.json"))
-    code, out, err = oeb(capsys, "predict", "--system", "offline", "--doc", str(ds / "pdfs" / "d0.pdf"),
-                         "--schema", str(ds / "gold" / "d0.json"))
-    assert code == 1 and out == "" and "start it" in err, err
+    err = raised(errors.SystemUnreachable, capsys, "predict", "--system", "offline", "--doc",
+                 str(ds / "pdfs" / "d0.pdf"), "--schema", str(ds / "gold" / "d0.json"))
+    assert "start it" in err, err
 
 
 class Tty(io.StringIO):

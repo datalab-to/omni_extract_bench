@@ -52,7 +52,7 @@ oeb run --system datalab --options '{"mode": "accurate"}' --limit 1 --out runs/
 
 A missing key stops the run before any call, and says what to set, such as `export DATALAB_API_KEY=...`. `oeb systems <name>` prints a system's options and the variables it needs.
 
-A run is one system. To compare systems, or one system's options, run one command per system, with the same choice of documents (`--sample`, `--limit`, `--only` or `--suites`), so they answer the same rows:
+A run is one system. To compare systems, or one system's options, run one command per system, with the same choice of documents (`--sample`, `--limit` or `--only`), so they answer the same rows:
 
 ```bash
 oeb run --system datalab --options '{"mode": "accurate"}' --sample 20 --out runs/
@@ -70,7 +70,7 @@ oeb run --system datalab --out runs/ \
   --manifest manifests/sample40-predictive-across-vendors-2026-09-22.parquet
 ```
 
-Each run is a folder under `--out`, named after everything that changes its answers: the system, its options, the dataset, the manifest and which documents (`--suites`, `--sample`, `--limit`, `--only`). So:
+Each run is a folder under `--out`, named after everything that changes its answers: the system, its options, the dataset, the manifest and which documents (`--sample`, `--limit`, `--only`). So:
 
 - running the same command again resumes the same folder, and pays for nothing already answered; and
 - changing any of those uses a new folder, and leaves the old one as it was.
@@ -82,7 +82,7 @@ A run is graded only when it is finished: every document has an answer or a reco
 - a document counts 0 only when code says, on purpose, that the system failed, by raising `errors.SystemFailed` (or one of its kinds, `SystemTimeout`, `SystemUnreachable` and `Unreadable`). Its record keeps the message and the traceback of where it was raised; and
 - any other exception stops the run and prints its traceback. It is a bug in an adapter or a scorer, not a failure of the system.
 
-When the run stops (its key is refused, its account is out of credits, an adapter or a scorer has a bug), the command exits 1 saying why, and running it again resumes. An answer that `read` crashed on is kept, unread, and running the same command again after the fix reads it with no call.
+When the run stops (its key is refused, its account is out of credits, an adapter or a scorer has a bug), the command raises the exception as it is, with its traceback and a note saying where, and running it again resumes. An answer that `read` crashed on is kept, unread, and running the same command again after the fix reads it with no call.
 
 To grade a run again, or a folder of your own predictions (`predictions/<doc_id>.json`):
 
@@ -109,7 +109,7 @@ if __name__ == "__main__":
     g = b.run(Datalab(mode="accurate"), out="runs", sample=20)    # one system; g["run"] names its folder
 ```
 
-To compare systems, call `run` once per system with the same `sample` (or `suites`, `limit`, `only`), so each is graded on the same documents. `harness.system("datalab", {"mode": "accurate"})` makes the same adapter from a system name.
+To compare systems, call `run` once per system with the same `sample` (or `limit`, `only`), so each is graded on the same documents. `harness.system("datalab", {"mode": "accurate"})` makes the same adapter from a system name.
 
 Code that runs or grades a benchmark goes under `if __name__ == "__main__":`. Grading scores documents in a pool of processes, and on macOS and Windows each process imports your script again.
 

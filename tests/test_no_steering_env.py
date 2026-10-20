@@ -112,7 +112,7 @@ os.environ["AZURE_CU_ENDPOINT"] = "https://set-in-the-shell.example"
 try:
     try:
         harness.system("azure-cu")
-    except errors.UsageError as exc:
+    except ValueError as exc:
         assert "endpoint" in str(exc), exc
     else:
         raise AssertionError("azure-cu took its endpoint from the environment; it must be an option")

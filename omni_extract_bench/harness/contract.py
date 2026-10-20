@@ -44,8 +44,8 @@ class Extractor(adapter.Adapter[Question]):
        answer, with the schema it couldn't reshape. Anything else it raises is a bug in the reshaping, and
        stops the run before any call;
     2. calls `extract`. A failure it raises carries the reshaped schema, so the record says what the vendor
-       was asked even when it refused. A failure caused by a refused connection stops the run instead
-       (`refused`), since nothing listens at the address for any document; and
+       was asked even when it refused. A failure caused by a refused connection stops the run instead, since
+       nothing listens at the address for any document (omni-bench-core's `predict` finds it in the chain); and
     3. fills in the cost from the vendor's response when `extract` didn't say (`responses.cost_from_response`).
 
     Before all three it refuses a missing key (`keys`, `missing_keys`). A run checks keys before any call
@@ -69,8 +69,8 @@ class Extractor(adapter.Adapter[Question]):
 
     def call(self, q: Question, *, timeout: float) -> adapter.Call:
         if missing := self.missing_keys():
-            raise errors.MissingCredential(f"{self.label} needs {', '.join(missing)}: set "
-                                           + " and ".join(f"export {k}=..." for k in missing) + ", then run again")
+            raise ValueError(f"{self.label} needs {', '.join(missing)}: set "
+                             + " and ".join(f"export {k}=..." for k in missing) + ", then run again")
         try:
             sent = self.prepare_schema(q.schema)
         except DialectError as exc:
@@ -79,9 +79,6 @@ class Extractor(adapter.Adapter[Question]):
         try:
             got = self.extract(q.pdf, sent, timeout=timeout)
         except errors.SystemFailed as exc:
-            # Note: an adapter reports a network fault as the document's failure (`SystemUnreachable`), but a
-            # refused connection means nothing listens at the address, which is the same for every document.
-            if errors.refused(exc): raise refused(self, exc) from None
             if exc.sent is None: exc.sent = sent
             raise
         if got.cost.usd is None and got.cost.credits is None:
@@ -97,12 +94,6 @@ class Extractor(adapter.Adapter[Question]):
         the vendor's fields inside `adapter.reading`. Anything else `read` raises is a bug: the run stops, the
         answer is kept unread, and running the same command again after the fix reads it with no call."""
         return extraction(raw.get("extraction") if isinstance(raw, dict) else None)
-
-
-def refused(a: adapter.Adapter, exc: BaseException) -> errors.Stop:
-    """The `Stop` for a refused connection to the system `a` calls, worded as omni-bench-core words it in a run."""
-    return errors.Stop(f"{a.label} couldn't connect: the connection was refused ({exc}). If it calls a server you "
-                       "run, start it (or pass its base_url), then run the same command again")
 
 
 def unreachable(what: str, exc: BaseException) -> errors.SystemFailed:

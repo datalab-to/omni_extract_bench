@@ -98,9 +98,8 @@ def outside(path):
     return {m for m in out if m.startswith(".") or m.split(".")[0] not in _sys.stdlib_module_names | {"numpy", "scipy"}}
 
 
-# Note: the math may raise the core's `UsageError` for a gold it can't read, and `omni_bench_core.errors` imports
-# nothing, so it keeps the math standalone.
-ALLOWED_OUTSIDE = {"omni_bench_core.errors"}
+# Note: the math raises native exceptions, so it imports nothing from omni-bench-core.
+ALLOWED_OUTSIDE: set[str] = set()
 math_files = [p for p in FM.glob("*.py") if p.stem not in (BRIDGE, "__init__")]
 leaks = {p.name: sorted(outside(p) - ALLOWED_OUTSIDE) for p in math_files if outside(p) - ALLOWED_OUTSIDE}
 report("only field_matching.py imports outside the package; the math imports nothing of omni-bench-core or oeb",

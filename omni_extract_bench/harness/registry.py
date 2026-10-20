@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from importlib import metadata
 from typing import Any
 
-from omni_bench_core import adapter, errors
+from omni_bench_core import adapter
 
 from . import contract
 
@@ -19,8 +19,9 @@ try:
 except ImportError as exc:
     if (exc.name or "").startswith(__name__.split(".")[0]):
         raise
-    raise errors.MissingDependency(f"the harness could not import what the vendor adapters need:\n    {exc}\n"
-                                   "    pip install 'omni-extract-bench[harness]'") from None
+    exc.add_note("the harness could not import what the vendor adapters need: pip install "
+                 "'omni-extract-bench[harness]'")
+    raise
 
 ENTRY_POINT_GROUP = "omni_extract_bench.adapters"
 SHIPPED: tuple[type[contract.Extractor], ...] = (
@@ -39,8 +40,8 @@ def plugins() -> dict[str, metadata.EntryPoint]:
     out: dict[str, metadata.EntryPoint] = {}
     for ep in metadata.entry_points(group=ENTRY_POINT_GROUP):
         if ep.name in ADAPTERS or ep.name in out or "/" in ep.name:
-            raise errors.UsageError(f"package {ep.dist.name if ep.dist else '?'} declares adapter {ep.name!r}, which "
-                                    "is taken or holds a '/'; rename it in its pyproject.toml")
+            raise ValueError(f"package {ep.dist.name if ep.dist else '?'} declares adapter {ep.name!r}, which "
+                             "is taken or holds a '/'; rename it in its pyproject.toml")
         out[ep.name] = ep
     return out
 
@@ -60,8 +61,8 @@ def adapter_class(provider: str) -> type[adapter.Adapter]:
             exc.add_note(f"while loading adapter {provider!r} from package {ep.dist.name if ep.dist else '?'}")
             raise
     if provider not in ADAPTERS:
-        raise errors.UsageError(f"unknown system {provider!r}. Known vendors: {', '.join(PROVIDERS)}. "
-                                "Any OpenRouter model id also works, e.g. openai/gpt-5.6-sol")
+        raise ValueError(f"unknown system {provider!r}. Known vendors: {', '.join(PROVIDERS)}. "
+                         "Any OpenRouter model id also works, e.g. openai/gpt-5.6-sol")
     return ADAPTERS[provider]
 
 
@@ -73,7 +74,7 @@ def system(provider: str, options: Mapping[str, Any] | None = None) -> adapter.A
     options = dict(options or {})
     if "/" in provider:
         if "model" in options:
-            raise errors.UsageError(f"{provider}: `model` is the provider name, not an option; run the one you "
-                                    f"want: --system {options['model']}")
+            raise ValueError(f"{provider}: `model` is the provider name, not an option; run the one you "
+                             f"want: --system {options['model']}")
         return adapter.configure(LLM, {**options, "model": provider})
     return adapter.configure(adapter_class(provider), options)

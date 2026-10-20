@@ -71,7 +71,7 @@ def renamed(args: argparse.Namespace) -> None:
         if getattr(args, old, None) in (None, False): continue
         deprecated(old_flag, new_flag)
         if getattr(args, new, None) not in (None, False):
-            raise errors.UsageError(f"{old_flag} is the old name of {new_flag}; give {new_flag} only")
+            raise ValueError(f"{old_flag} is the old name of {new_flag}; give {new_flag} only")
         setattr(args, new, getattr(args, old))
 
 
@@ -80,14 +80,14 @@ def read_object(path: str, flag: str) -> dict:
     try:
         got = json.loads(pathlib.Path(path).read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
-        raise errors.UsageError(f"{flag} {path}: no such file") from None
+        raise ValueError(f"{flag} {path}: no such file") from None
     except IsADirectoryError:
-        raise errors.UsageError(f"{flag} {path} is a folder; pass a JSON file") from None
+        raise ValueError(f"{flag} {path} is a folder; pass a JSON file") from None
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise errors.UsageError(f"{flag} {path} isn't JSON: {exc}") from None
+        raise ValueError(f"{flag} {path} isn't JSON: {exc}") from None
     if not isinstance(got, dict):
-        raise errors.UsageError(f"{flag} {path} holds a JSON "
-                                f"{'null' if got is None else type(got).__name__}; it must be a JSON object")
+        raise ValueError(f"{flag} {path} holds a JSON "
+                         f"{'null' if got is None else type(got).__name__}; it must be a JSON object")
     return got
 
 
@@ -98,9 +98,9 @@ def read_object_or_json(value: str, flag: str) -> dict:
     try:
         got = json.loads(value)
     except json.JSONDecodeError as exc:
-        raise errors.UsageError(f"{flag} isn't JSON: {exc}") from None
+        raise ValueError(f"{flag} isn't JSON: {exc}") from None
     if not isinstance(got, dict):
-        raise errors.UsageError(f"{flag} must be a JSON object, not {value!r:.80}")
+        raise ValueError(f"{flag} must be a JSON object, not {value!r:.80}")
     return got
 
 
@@ -113,19 +113,19 @@ def system_options(value: str | None, system: str) -> dict[str, Any]:
     got = read_object_or_json(value, "--options")
     if list(got) != [system]:
         if others := [k for k, v in got.items() if isinstance(v, dict) and (k in harness.PROVIDERS or "/" in k)]:
-            raise errors.UsageError(f"--options gives options for {', '.join(others)}, but this command runs {system}; "
-                                    f"give {system}'s options bare, e.g. '{{\"mode\": \"accurate\"}}'")
+            raise ValueError(f"--options gives options for {', '.join(others)}, but this command runs {system}; "
+                             f"give {system}'s options bare, e.g. '{{\"mode\": \"accurate\"}}'")
         return got
     if not isinstance(got[system], dict):
-        raise errors.UsageError(f"--options gives {system!r} {got[system]!r:.80}; one command runs one set of "
-                                f"options, so give one object, e.g. '{{\"{system}\": {{...}}}}'")
+        raise ValueError(f"--options gives {system!r} {got[system]!r:.80}; one command runs one set of "
+                         f"options, so give one object, e.g. '{{\"{system}\": {{...}}}}'")
     return got[system]
 
 
 def read_ids(path: pathlib.Path, flag: str) -> frozenset[str]:
     """A file of ids, one per line; blank lines and `#` comments are skipped."""
     if not path.is_file():
-        raise errors.UsageError(f"{flag} {path}: no such file; it holds ids, one per line")
+        raise ValueError(f"{flag} {path}: no such file; it holds ids, one per line")
     lines = path.read_text(encoding="utf-8-sig").splitlines()
     return frozenset(x for line in lines if (x := line.split("#", 1)[0].strip()))
 
@@ -144,20 +144,11 @@ def confirm(text: str) -> bool:
         return False
 
 
-def said(command: str, exc: errors.UsageError | errors.Stop) -> str:
-    """The line `oeb <command>` prints on stderr when `exc` stops it."""
-    if not isinstance(exc, errors.Stop): return f"oeb {command}: {exc}"
-    # Note: the core's messages say what to do; an account failure carries only the system's own words.
-    resume = isinstance(exc, errors.AccountFailure) and command == "run" and "again" not in str(exc)
-    return f"oeb {command}: {type(exc).__name__}: {exc}" + ("; fix it, then run the same command again to resume"
-                                                            if resume else "")
-
-
 def predicted(p: Any) -> None:
     """For the deprecated `--score-only`: refuses a run that was never predicted."""
     if not p.run.predictions.is_dir():
-        raise errors.UsageError(f"no run at {p.run.folder}: this system with these options and documents was never "
-                                "predicted under this --out")
+        raise ValueError(f"no run at {p.run.folder}: this system with these options and documents was never "
+                         "predicted under this --out")
 
 
 SYSTEM_FLAGS = ("--system", "--systems", "--providers")
@@ -169,7 +160,7 @@ def one_system(args: argparse.Namespace) -> str:
     old = "--providers" if args.providers else "--systems" if args.systems else None
     names = args.system or args.providers or args.systems
     if len(names) > 1:
-        raise errors.UsageError(one_per_system(args.argv, names))
+        raise ValueError(one_per_system(args.argv, names))
     if old: deprecated(old, "--system")
     return names[0]
 
@@ -187,7 +178,7 @@ def one_per_system(argv: list[str], names: list[str]) -> str:
     def options(value: str) -> dict[str, str | None]:
         try:
             got = read_object_or_json(value, "--options")
-        except errors.UsageError:
+        except ValueError:
             return {n: value for n in names}
         if got and all(k in names and isinstance(v, dict) for k, v in got.items()):
             return {n: json.dumps(got[n], ensure_ascii=False) if n in got else None for n in names}
@@ -205,7 +196,7 @@ def one_per_system(argv: list[str], names: list[str]) -> str:
 
     return (f"a run is one system, but {len(names)} were given ({', '.join(names)}). Run one command per system:\n"
             + "".join(f"    {command(n)}\n" for n in names)
-            + "Use the same --sample (or --limit, --only, --suites) in each, so they answer the same rows.")
+            + "Use the same --sample (or --limit, --only) in each, so they answer the same rows.")
 
 
 def cmd_run(args) -> int:
@@ -216,7 +207,7 @@ def cmd_run(args) -> int:
     system = one_system(args)
     b = benchmark.default(args.dataset, args.manifest)
     only = read_ids(args.only, "--only") if args.only else None
-    kw = dict(suites=args.suites, limit=args.limit, sample=args.sample, only=only, timeout=args.timeout,
+    kw = dict(limit=args.limit, sample=args.sample, only=only, timeout=args.timeout,
               workers=args.workers, retry_failed=args.retry_failed)
     p = b.plan(harness.system(system, system_options(args.options, system)), args.out, **kw)
     if args.score_only:
@@ -264,25 +255,23 @@ def cmd_score(args) -> int:
 def cmd_predict(args) -> int:
     """One document through one system, by the rules a run uses; the record on stdout, and exit 1 when the
     record is a failure. A refused connection stops it, and any other exception from the adapter is a bug in
-    the adapter (`errors.bug`), as in a run."""
+    the adapter, raised as it is with a note naming the adapter, as in a run."""
     from omni_bench_core import adapter
 
     from . import harness, task
-    from .harness import contract
 
     system = harness.system(args.system, system_options(args.options, args.system))
     doc = pathlib.Path(args.doc)
     if not doc.is_file():
-        raise errors.UsageError(f"--doc {doc}: no such file")
+        raise ValueError(f"--doc {doc}: no such file")
     # Note: predicting reads no gold, so the row's gold path is never opened.
     row = data.Doc(doc.stem, data.NO_SUITE, doc, doc, read_object(args.schema, "--schema"))
     try:
         rec = adapter.predict(system, task.Extract().input(row), timeout=args.timeout)
-    except errors.Stop:
+    except Exception as exc:
+        # Note: the core's `predict` already noted a refused connection; anything else is the adapter's bug.
+        if not errors.refused(exc): errors.noted(exc, type(system), f"predicting {doc}")
         raise
-    except Exception as exc:  # noqa: BLE001 -- the adapter's code raised; say whose code it is, as a run does
-        if errors.refused(exc): raise contract.refused(system, exc) from None
-        raise errors.bug(f"predicting {doc}", exc, type(system)) from None
     _print(rec)
     return 1 if rec["error"] else 0
 
@@ -344,9 +333,8 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--manifest", default=data.MANIFEST, help="a manifest inside the dataset (default: %(default)s)")
     r.add_argument("--out", type=pathlib.Path, default=pathlib.Path("runs"),
                    help="the parent of the run folders (default: runs/)")
-    r.add_argument("--suites", nargs="+", help="only these suites")
     r.add_argument("--limit", type=int, default=0, help="the first N documents; for a smoke test")
-    r.add_argument("--sample", type=int, default=0, metavar="N", help="N documents spread over every suite")
+    r.add_argument("--sample", type=int, default=0, metavar="N", help="N documents evenly spaced over the manifest")
     r.add_argument("--only", type=pathlib.Path, metavar="FILE", help="only the documents whose ids this file lists, "
                                                                     "one per line")
     r.add_argument("--docs", type=pathlib.Path, help=argparse.SUPPRESS)
@@ -418,10 +406,10 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Runs one `oeb` command and returns its exit code.
 
-    `run` shows its plan and waits for a yes, unless given `-y` or run with no terminal. A `UsageError` (what
-    was asked is wrong, or a run graded before it is finished) or a `Stop` (an account, a key, a dependency,
-    or a bug in an adapter) is printed as `oeb <command>: <what was wrong>` and exits 1; an interrupt exits
-    130. Anything else is a bug in oeb, and is raised as it is."""
+    `run` shows its plan and waits for a yes, unless given `-y` or run with no terminal. An interrupt exits
+    130. Anything else is raised as it is, with its traceback: a `ValueError` for what was asked wrong (a
+    flag, an option, a dataset, a missing key, a run graded before it is finished), a `PermissionError` for
+    an account that can't pay, and a bug as whatever it raised, with a note saying where."""
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser().parse_args(argv)
     args.argv = argv
@@ -442,9 +430,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         renamed(args)
         return args.fn(args)
-    except (errors.UsageError, errors.Stop) as exc:
-        print(said(args.command, exc), file=sys.stderr)
-        return 1
     except KeyboardInterrupt:
         print(f"oeb {args.command}: interrupted" + ("; run the same command again to resume" if args.command == "run"
                                                     else ""), file=sys.stderr)

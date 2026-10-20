@@ -17,12 +17,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from omni_bench_core import data, errors
+from omni_bench_core import data
 
 REPO = "datalab-to/omni_extract_bench"
 DEFAULT_DATASET = f"{data.HF_PREFIX}{REPO}"
 MANIFEST = data.MANIFEST
-NO_SUITE = data.NO_SUITE
+NO_SUITE = "other"
 COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
 
 
@@ -30,8 +30,9 @@ COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
 class Doc:
     """One document of a dataset, with the schema it is asked against.
 
-    Its paths are full paths on this machine. `extra` holds the manifest's other columns, unread, so a
-    dataset can carry more for scorers of its own. A copy with a field changed is
+    Its paths are full paths on this machine. `suite` is the kind of document, from the manifest's optional
+    `suite` column (`NO_SUITE` when it is missing, empty or null); field matching breaks its summary down by it.
+    `extra` holds the manifest's other columns, unread, so a dataset can carry more for scorers of its own. A copy with a field changed is
     `dataclasses.replace(doc, ...)`."""
 
     doc_id: str
@@ -59,10 +60,14 @@ def doc(r: dict[str, Any]) -> Doc:
     try:
         schema = json.loads(r["schema"])
     except (TypeError, json.JSONDecodeError) as exc:
-        raise errors.UsageError(f"document {r['doc_id']} has a schema that is not a JSON string ({exc}); the "
-                                "schema column holds the JSON Schema as text: write it with json.dumps(schema)"
-                                ) from None
+        raise ValueError(f"document {r['doc_id']} has a schema that is not a JSON string ({exc}); the "
+                         "schema column holds the JSON Schema as text: write it with json.dumps(schema)"
+                         ) from None
     if not isinstance(schema, dict) or not schema:
-        raise errors.UsageError(f"document {r['doc_id']} has schema {r['schema']!r:.80}; it must be a non-empty "
-                                "JSON object, the JSON Schema of the extraction")
-    return Doc(r["doc_id"], r["suite"], r["doc_path"], r["gt_path"], schema, r["extra"])
+        raise ValueError(f"document {r['doc_id']} has schema {r['schema']!r:.80}; it must be a non-empty "
+                         "JSON object, the JSON Schema of the extraction")
+    extra = dict(r["extra"])
+    suite = extra.pop("suite", None)
+    if suite is not None and not isinstance(suite, str):
+        raise ValueError(f"document {r['doc_id']} has suite {suite!r}; give a string, or null for {NO_SUITE!r}")
+    return Doc(r["doc_id"], suite if (suite or "").strip() else NO_SUITE, r["doc_path"], r["gt_path"], schema, extra)

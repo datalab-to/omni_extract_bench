@@ -124,7 +124,7 @@ oeb --version
 ```
 
 A run is one system. To compare systems, run one command per system, with the same choice of documents
-(`--sample`, `--limit`, `--only` or `--suites`), so they answer the same rows:
+(`--sample`, `--limit` or `--only`), so they answer the same rows:
 
 ```bash
 oeb run --system datalab --options '{"mode": "accurate"}' --sample 20 --out runs/
@@ -141,7 +141,7 @@ predictions has no settings.json, so without `--dataset` it is graded against th
 (`hf://datasets/datalab-to/omni_extract_bench`) and its `manifest.parquet`.
 
 `oeb check` reads the manifest, checks every document's PDF exists and every gold reads, and prints
-`{"dataset", "manifest", "rows", "suites"}`; it exits 1 naming the first problem (every missing PDF at once).
+`{"dataset", "manifest", "rows"}`; it raises a `ValueError` naming the first problem (every missing PDF at once).
 
 In code, `benchmark.default(dataset, manifest)` is Omni Extract Bench as an omni-bench-core `Benchmark`:
 
@@ -171,7 +171,7 @@ documents in a pool of processes, and on macOS and Windows each process imports 
 3. grade: grades the run, when it is finished.
 
 A run folder answers one exact question: the system and its options, the dataset, the manifest and which
-documents (`--suites`, `--sample`, `--limit`, `--only`). Running the same command again resumes the same
+documents (`--sample`, `--limit`, `--only`). Running the same command again resumes the same
 folder and calls nothing already answered; changing any of those uses another folder. A `--limit` or
 `--sample` that covers every document is the same run as neither.
 
@@ -182,7 +182,8 @@ The timeout isn't part of the question. Running the same command again with a lo
 A run is graded over its own documents, and only when it is finished: every document has an answer or a
 recorded failure. A document with no usable answer counts as 0. A run that stops part way (a key the system
 refuses, an account out of credits, a server of yours that isn't running, a bug in an adapter, an interrupt)
-is not graded: `oeb run` exits 1 with the reason, and running the same command again finishes it.
+is not graded: `oeb run` raises the exception that stopped it, with its traceback, and running the same command
+again finishes it.
 `oeb grade --partial` (`partial=True` in Python) grades an unfinished run anyway, counting its unfinished
 documents as 0, and its summary lists them under `partial`.
 
@@ -269,11 +270,11 @@ What `extract` raises decides what happens to the run:
   a `SystemTimeout` for a timeout, a `SystemUnreachable` otherwise, which `--retry-failed` tries again. Raise
   it `from exc`, and don't cut its message: the record keeps the traceback underneath, and cuts the message
   itself;
-- `errors.Stop(message)`, or one of its kinds (`AccountFailure`, `MissingCredential`): the run can't go on
-  for any document. Say in the message what to fix. A 401 or 402 `SystemFailed` already stops the run as an
-  `AccountFailure`, and a missing key in `keys` stops it before any call; and
-- anything else: a bug in your adapter. The run stops, and prints the whole traceback, whose code it is, and
-  the versions a bug report needs. `oeb predict` does the same.
+- anything else stops the run and is raised as it is, with its traceback and a note naming the adapter and
+  the document. Use a native exception whose message says what to fix (a `ValueError` for a wrong option).
+  A 401 or 402 `SystemFailed` already stops the run as a `PermissionError`, a refused connection stops it as
+  the connection error it is, and a missing key in `keys` is a `ValueError` before any call. A bug in your
+  adapter stops the run the same way. `oeb predict` does the same.
 
 `prepare_schema` raises `contract.DialectError`, a `SystemFailed`, for a schema the vendor's dialect can't
 express. The document is recorded as failed, with the schema it couldn't reshape, and no call is made. Anything
@@ -334,7 +335,7 @@ The manifest is a parquet file with one row per document and these columns:
 | column | holds |
 | --- | --- |
 | `doc_id` | the document's id, a string. It names the document's files (`predictions/<doc_id>.json`), so it must be a file name (no `/`), and no two ids may be the same ignoring case |
-| `suite` | optional: the kind of document, a string such as `"invoices"`. Summaries are broken down by suite. A missing column, or an empty or null value, is `"other"` |
+| `suite` | optional: the kind of document, a string such as `"invoices"`. Field matching's summary is broken down by suite. A missing column, or an empty or null value, is `"other"` |
 | `doc_path` | the PDF's path, relative to the dataset folder, such as `pdfs/invoice-1.pdf`. Several rows may share one PDF |
 | `gt_path` | the gold file's path, relative to the dataset folder, named after its row: `<doc_id>.json`, such as `gold/invoice-1.json` |
 | `schema` | the JSON Schema to extract against, as a JSON string (`json.dumps(schema)`), not a nested object. It must be a non-empty JSON object |
@@ -375,7 +376,7 @@ oeb grade runs/datalab-1a2b3c4d                                      # grade aga
 oeb grade mine/ --dataset my-dataset/                                # your own predictions/<doc_id>.json
 ```
 
-`oeb check` prints `{"dataset", "manifest", "rows", "suites"}`. Another manifest inside the folder is
+`oeb check` prints `{"dataset", "manifest", "rows"}`. Another manifest inside the folder is
 `--manifest manifests/<name>.parquet`. In Python, the same dataset is `benchmark.default("my-dataset/")`.
 
 
@@ -435,8 +436,9 @@ runs/datalab-69059f7c/
   records/<doc_id>.json            each document's record, as `predict` returns it
   predictions/<doc_id>.json        each document's extraction alone; all grading reads
   field_matching/
-    scores.jsonl                   one line per document: id, suite, status, and score's numbers
-    summary.json                   the summary: the headline, counts, the metrics, and per suite
+    scores.jsonl                   one line per document: id, status, row (its suite), and score's numbers
+    summary.json                   the summary: the headline, counts, and under scored the metrics, overall
+                                   and per suite
     details/<doc_id>.jsonl         one verdict per address (`--no-details` skips them)
     cache/<doc_id>.json            each document's kept score, reused while its prediction and gold don't change
 ```
@@ -453,7 +455,7 @@ settings.json is written before the first call, and holds:
   full path;
 - `manifest`: the manifest's path inside the dataset;
 - `task`: the task's name and options, `{"name": "extract", "options": {"overlay": true}}`;
-- `rows`: which documents, as chosen by `--suites`, `--only`, `--sample` and `--limit`, such as
+- `rows`: which documents, as chosen by `--only`, `--sample` and `--limit`, such as
   `{"sample": 20}`. `{}` means every document of the manifest;
 - `commit`: the commit the dataset was downloaded at, for an `hf://` dataset only; and
 - `timeout_s`: the seconds each document may take, as of the latest run of this folder. It isn't part of
@@ -482,10 +484,17 @@ A record, `records/<doc_id>.json`, holds:
 - `unread`: true when `read` raised a bug on this answer. Such a record has its `raw` answer, no `output` and no
   `error`; the document isn't finished, and running the same command again reads it with no call.
 
-A summary holds what omni-bench-core adds to every summary (`scorer`, `options`, `run`, `rows`, `failed`,
-`coverage`, `headline_is`, and `partial` when graded with `--partial`), then field matching's own numbers
-(`scored`, `accuracy`, `precision`, `recall`, and one `<error>_rate` per kind of error), and `per_suite`,
-the same numbers for each suite. The `headline` is accuracy over the scored documents times coverage
-(`headline_is` says "accuracy × coverage"), so a failed document counts as 0.
+A summary holds what omni-bench-core gives every summary (`scorer`, `options`, `run`, `headline`,
+`headline_is`, `rows`, `failed`, `coverage`, and `partial` when graded with `--partial`), and under `scored`
+field matching's own numbers over the scored documents only: `headline` (their accuracy), `rows` (how many
+were scored), `accuracy`, `precision`, `recall`, one `<error>_rate` per kind of error, and `per_suite`, the
+same numbers for each suite. The top `headline` is `scored.headline` times coverage, so a failed document
+counts as 0:
+
+```json
+{"headline": 0.5, "headline_is": "scored.headline × coverage", "rows": 2, "failed": 1, "coverage": 0.5,
+ "scored": {"headline": 1.0, "headline_is": "accuracy", "rows": 1, "accuracy": 1.0, "precision": 1.0, ...,
+            "per_suite": {"s": {"rows": 1, "accuracy": 1.0, ...}}}}
+```
 
 `oeb run` and `oeb grade` print each run's cost (from its records) beside its summary.

@@ -7,8 +7,6 @@ import collections
 from collections.abc import Callable, Iterable
 from typing import Any, NamedTuple
 
-from omni_bench_core import errors
-
 from . import values
 from .documents import (Address, _classify_extra, _document_arrays, _find_arrays, _has_ref, _reading_order,
                         _schema_arrays, _schema_nodes, flatten, format_node, prep_ground_truth, prep_prediction,
@@ -65,7 +63,7 @@ def _resolve_order(order_matters: bool | Iterable[str], schema: Any,
             )
         if name not in known:
             near = sorted(known)
-            raise errors.UsageError(
+            raise ValueError(
                 f"order_matters names {name!r}, which is not an array here. "
                 + (f"Arrays available: {', '.join(repr(n) for n in near[:12])}"
                    + (f" (and {len(near) - 12} more)" if len(near) > 12 else "")
