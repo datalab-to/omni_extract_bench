@@ -123,7 +123,8 @@ oeb check --dataset <dataset>                   # is it a dataset oeb can run? n
 oeb --version
 ```
 
-A run is one system. To compare systems, run each with the same choice of documents:
+A run is one system. To compare systems, run one command per system, with the same choice of documents
+(`--sample`, `--limit`, `--only` or `--suites`), so they answer the same rows:
 
 ```bash
 oeb run --system datalab --options '{"mode": "accurate"}' --sample 20 --out runs/
@@ -132,10 +133,8 @@ oeb run --system reducto --sample 20 --out runs/
 
 `oeb run` prints the run's grading as one JSON object, whose `"run"` is the run folder's name.
 
-`--systems A B ...` and its older name `--providers` are deprecated, and kept for one release. They run each
-system in turn, with `--options` keyed by system (`'{"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}'`,
-where a list runs each option set), and print one JSON object of gradings keyed by run name. A system that
-stops is reported on stderr, the next one still runs, and the command exits 1. Use `--system`, one per command.
+`--options` is the system's options as an object (`'{"mode": "accurate"}'`), or the same keyed by the system's
+name (`'{"datalab": {"mode": "accurate"}}'`). Options keyed by another system are refused.
 
 `oeb grade` grades a run against the dataset and manifest its settings.json names. A folder of your own
 predictions has no settings.json, so without `--dataset` it is graded against the public dataset

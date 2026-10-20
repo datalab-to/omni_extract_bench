@@ -52,7 +52,7 @@ oeb run --system datalab --options '{"mode": "accurate"}' --limit 1 --out runs/
 
 A missing key stops the run before any call, and says what to set, such as `export DATALAB_API_KEY=...`. `oeb systems <name>` prints a system's options and the variables it needs.
 
-To compare systems, or one system's options, make one run of each, with the same choice of documents:
+A run is one system. To compare systems, or one system's options, run one command per system, with the same choice of documents (`--sample`, `--limit`, `--only` or `--suites`), so they answer the same rows:
 
 ```bash
 oeb run --system datalab --options '{"mode": "accurate"}' --sample 20 --out runs/
@@ -60,8 +60,6 @@ oeb run --system reducto --sample 20 --out runs/
 ```
 
 Each prints its grading as one JSON object, whose `"run"` is the run folder's name. `--workers N` sets how many documents are in flight at once; by default, the system's own number.
-
-`--systems A B ...` (and its older name, `--providers`) still works for one release, and is deprecated: it runs each system in turn, with `--options` keyed by system (`'{"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}'`, where a list runs each option set), prints one JSON object keyed by run name, and exits 1 when any system stopped. Use `--system`, one per command.
 
 `oeb run` shows the plan and asks before calling any system. With no terminal to ask (a pipe, a notebook, CI), it goes ahead without asking, so a script runs as written.
 

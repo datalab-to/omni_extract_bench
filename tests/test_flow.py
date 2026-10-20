@@ -364,7 +364,7 @@ def test_old_commands_still_work_and_say_what_replaced_them(tmp_path, capsys, mo
                          str(tmp_path / "runs"), "--score-only", "--score-workers", "2")
     assert code == 0 and "--score-only is deprecated" in err, err
     assert "--score-workers is ignored and will be removed" in err, err
-    [g] = json.loads(out).values()
+    g = json.loads(out)
     assert g["scorers"]["field_matching"]["headline"] == 1.0
     for name, v in (("p.json", {"a": "x"}), ("s.json", SCHEMA)):
         (tmp_path / name).write_text(json.dumps(v))
@@ -415,29 +415,6 @@ def test_the_base_install_grades_without_the_harness(tmp_path):
     assert json.loads(got.stdout[got.stdout.index("{\n  \"run\""):])["scorers"]["field_matching"]["headline"] == 0.5
 
 
-def test_deprecated_systems_runs_each_and_one_stopping_does_not_stop_the_next(tmp_path, capsys, monkeypatch):
-    """`--systems a b` runs each system in turn, saying it is deprecated. One system's account failure is said
-    and the next system still runs and is graded; the command exits 1."""
-    ds = dataset(tmp_path / "ds")
-    monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
-    monkeypatch.setitem(harness.ADAPTERS, "broke", Broke)
-    code, out, err = oeb(capsys, "run", "--systems", "broke", "gold-echo", "--dataset", str(ds), "--out",
-                         str(tmp_path / "runs"), "-y")
-    [(name, g)] = json.loads(out).items()
-    assert code == 1 and name.startswith("gold-echo-") and g["scorers"]["field_matching"]["headline"] == 1.0, err
-    assert "--systems is deprecated" in err and "use `--system`, one system per command" in err, err
-    assert "AccountFailure: broke: out of credits" in err, err
-
-
-def test_deprecated_systems_runs_each_option_set(tmp_path, capsys, monkeypatch):
-    ds = dataset(tmp_path / "ds")
-    monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
-    code, out, err = oeb(capsys, "run", "--systems", "gold-echo", "--options", '{"gold-echo": [{}, {"refuse": ["d1"]}]}',
-                         "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
-    got = sorted(g["scorers"]["field_matching"]["headline"] for g in json.loads(out).values())
-    assert code == 0 and got == [0.5, 1.0], err
-
-
 def test_oeb_run_takes_one_system_and_its_options_bare(tmp_path, capsys, monkeypatch):
     """`--options` is the system's own object; keyed by the system's name it is the same run."""
     ds = dataset(tmp_path / "ds")
@@ -453,6 +430,43 @@ def test_oeb_run_takes_one_system_and_its_options_bare(tmp_path, capsys, monkeyp
     code, _, err = oeb(capsys, "run", "--system", "gold-echo", "--options", '{"gold-echo": [{}, {}]}',
                        "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
     assert code == 1 and "one set of options" in err, err
+
+
+@pytest.mark.parametrize("flag", ["--system", "--systems", "--providers"])
+def test_several_systems_are_refused_with_one_command_per_system(tmp_path, capsys, monkeypatch, flag):
+    ds = dataset(tmp_path / "ds")
+    monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
+    CALLS.clear()
+    code, out, err = oeb(capsys, "run", flag, "gold-echo", "openai/gpt-5.6-sol", "--sample", "1", "--options",
+                         '{"gold-echo": {"refuse": ["d1"]}}', "--dataset", str(ds), "--out", str(tmp_path / "runs"),
+                         "-y")
+    assert code == 1 and out == "" and "deprecated" not in err, err
+    assert err == (
+        "oeb run: a run is one system, but 2 were given (gold-echo, openai/gpt-5.6-sol). Run one command per system:\n"
+        f"""    oeb run --system gold-echo --sample 1 --options '{{"refuse": ["d1"]}}' --dataset {ds} --out """
+        f"{tmp_path / 'runs'} -y\n"
+        f"    oeb run --system openai/gpt-5.6-sol --sample 1 --dataset {ds} --out {tmp_path / 'runs'} -y\n"
+        "Use the same --sample (or --limit, --only, --suites) in each, so they answer the same rows.\n"), err
+    assert CALLS == [] and not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("flag", ["--systems", "--providers"])
+def test_one_name_under_the_old_flags_is_system(tmp_path, capsys, monkeypatch, flag):
+    ds = dataset(tmp_path / "ds")
+    monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
+    code, out, err = oeb(capsys, "run", flag, "gold-echo", "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
+    assert code == 0 and f"{flag} is deprecated" in err and "use --system" in err, err
+    assert json.loads(out)["scorers"]["field_matching"]["headline"] == 1.0
+
+
+def test_options_for_another_system_are_refused(tmp_path, capsys, monkeypatch):
+    ds = dataset(tmp_path / "ds")
+    monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
+    CALLS.clear()
+    code, _, err = oeb(capsys, "run", "--system", "gold-echo", "--options", '{"datalab": {"mode": "fast"}}',
+                       "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
+    assert code == 1 and "--options gives options for datalab, but this command runs gold-echo" in err, err
+    assert CALLS == [] and not (tmp_path / "runs").exists()
 
 
 def test_oeb_run_workers_is_one_number(tmp_path, capsys, monkeypatch):
@@ -488,18 +502,6 @@ def test_a_refused_connection_stops_the_run(tmp_path, capsys, monkeypatch):
     code, out, err = oeb(capsys, "predict", "--system", "offline", "--doc", str(ds / "pdfs" / "d0.pdf"),
                          "--schema", str(ds / "gold" / "d0.json"))
     assert code == 1 and out == "" and "start it" in err, err
-
-
-def test_deprecated_systems_shows_the_keyed_options_for_bare_ones(tmp_path, capsys, monkeypatch):
-    ds = dataset(tmp_path / "ds")
-    monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
-    code, _, err = oeb(capsys, "run", "--systems", "gold-echo", "--options", '{"delay": 0}', "--dataset", str(ds),
-                       "--out", str(tmp_path / "runs"), "-y")
-    assert code == 1 and "'delay', which is not one of --systems (gold-echo)" in err, err
-    assert """'{"gold-echo": {"delay": 0}}'""" in err, err
-    code, _, err = oeb(capsys, "run", "--systems", "gold-echo", "--options", '{"datalab": {"mode": "fast"}}',
-                       "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
-    assert code == 1 and "'datalab', which is not one of --systems" in err and "delay" not in err, err
 
 
 class Tty(io.StringIO):
