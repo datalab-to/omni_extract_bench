@@ -89,7 +89,7 @@ To grade a run again, or a folder of your own predictions (`predictions/<doc_id>
 ```bash
 oeb grade runs/datalab-1a2b3c4d                    # a run knows its own dataset
 oeb grade mine/ --dataset my-dataset/              # your predictions on your own dataset
-oeb grade mine/ --dataset my-dataset/ --partial    # count unfinished documents as 0; the summary lists them
+oeb grade mine/ --dataset my-dataset/ --partial    # count unfinished documents as 0; the summary counts them
 ```
 
 Without `--dataset`, a folder of your own predictions is graded against our public dataset (`hf://datasets/datalab-to/omni_extract_bench`).

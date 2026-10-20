@@ -242,7 +242,7 @@ def test_oeb_grade_refuses_an_unfinished_folder_unless_partial(tmp_path, capsys)
     code, out, err = oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--partial")
     s = json.loads(out)["scorers"]["field_matching"]
     assert code == 0 and s["failed"] == 1 and s["headline"] == 0.5, err
-    assert s["partial"] == {"no_answer": ["d1"], "not_scored": []}, s
+    assert s["partial"] == {"no_answer": 1, "not_scored": 0, "e.g.": ["d1"]}, s
 
 
 def test_oeb_grade_refuses_a_run_with_a_lost_document_unless_partial(tmp_path, capsys, monkeypatch):
@@ -256,7 +256,7 @@ def test_oeb_grade_refuses_a_run_with_a_lost_document_unless_partial(tmp_path, c
     code, _, err = oeb(capsys, "grade", str(run))
     assert code == 1 and "never predicted" in err and "d1" in err, err
     code, out, err = oeb(capsys, "grade", str(run), "--partial")
-    assert code == 0 and json.loads(out)["scorers"]["field_matching"]["partial"]["no_answer"] == ["d1"], err
+    assert code == 0 and json.loads(out)["scorers"]["field_matching"]["partial"]["e.g."] == ["d1"], err
 
 
 def test_oeb_run_prints_an_unfinished_refusal_and_exits_one(tmp_path, capsys, monkeypatch):
