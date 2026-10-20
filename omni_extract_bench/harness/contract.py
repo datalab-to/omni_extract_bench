@@ -42,8 +42,12 @@ class Extractor(adapter.Adapter[Question]):
     1. reshapes the schema with `prepare_schema`. A failure here is a `DialectError`, recorded as the
        document's answer with the schema it couldn't reshape;
     2. calls `extract`. A failure it raises carries the reshaped schema, so the record says what the vendor
-       was asked even when it refused; and
+       was asked even when it refused. A failure caused by a refused connection stops the run instead
+       (`refused`), since nothing listens at the address for any document; and
     3. fills in the cost from the vendor's response when `extract` didn't say (`responses.cost_from_response`).
+
+    Before all three it refuses a missing key (`keys`, `missing_keys`). A run checks keys before any call
+    (`Benchmark.plan`); this check is for a call made without a plan, such as `oeb predict`.
 
     The schema as sent is kept in the record (`Call.sent`), so the record says what the vendor was asked.
     Whether a failure is the account's is omni-bench-core's default (`Adapter.account_failure`), which knows the
@@ -62,6 +66,9 @@ class Extractor(adapter.Adapter[Question]):
         raise NotImplementedError(f"{type(self).__name__} has no extract(pdf, schema, *, timeout) -> adapter.Call")
 
     def call(self, q: Question, *, timeout: float) -> adapter.Call:
+        if missing := self.missing_keys():
+            raise errors.MissingCredential(f"{self.label} needs {', '.join(missing)}: set "
+                                           + " and ".join(f"export {k}=..." for k in missing) + ", then run again")
         try:
             sent = self.prepare_schema(q.schema)
         except Exception as exc:  # noqa: BLE001 -- a reshaping may raise anything; it is this document's answer
@@ -70,6 +77,9 @@ class Extractor(adapter.Adapter[Question]):
         try:
             got = self.extract(q.pdf, sent, timeout=timeout)
         except errors.VendorError as exc:
+            # Note: an adapter reports a network fault as the document's failure (`VendorUnreachable`), but a
+            # refused connection means nothing listens at the address, which is the same for every document.
+            if errors.refused(exc): raise refused(self, exc) from None
             if exc.sent is None: exc.sent = sent
             raise
         if got.cost.usd is None and got.cost.credits is None:
@@ -81,6 +91,12 @@ class Extractor(adapter.Adapter[Question]):
         """The extraction in the answer. By default `raw["extraction"]`, which must be a non-empty JSON
         object; an adapter whose answer holds it elsewhere overrides this."""
         return extraction(raw.get("extraction") if isinstance(raw, dict) else None)
+
+
+def refused(a: adapter.Adapter, exc: BaseException) -> errors.Stop:
+    """The `Stop` for a refused connection to the system `a` calls, worded as omni-bench-core words it in a run."""
+    return errors.Stop(f"{a.label} couldn't connect: the connection was refused ({exc}). If it calls a server you "
+                       "run, start it (or pass its base_url), then run the same command again")
 
 
 def extraction(x: Any) -> dict:

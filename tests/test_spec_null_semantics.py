@@ -140,7 +140,7 @@ es_checks = [
     ("a gold '' asks for nothing, so asserting there is charged",
      gold_blank["fabricated"] == 1),
     ("a gold row whose payload is only '' is dropped like an all-null row",
-     blank_row["accuracy"] == 1.0 and blank_row["gt_rows"] == 1),
+     blank_row["accuracy"] == 1.0 and blank_row["gold_rows"] == 1),
 ]
 for name, passed in es_checks:
     print(f"  {'PASS' if passed else 'FAIL'}  {name}")

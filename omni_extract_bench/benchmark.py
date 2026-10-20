@@ -1,10 +1,11 @@
 """Omni Extract Bench: the extraction task (`task.Extract`) on a dataset, graded by field matching.
 
-    from omni_extract_bench import benchmark, harness
+    from omni_extract_bench import benchmark
+    from omni_extract_bench.harness.providers.datalab import Datalab
 
-    oeb = benchmark.default()                                 # the public dataset, graded by field matching
-    oeb.run([harness.system("datalab", {"mode": "accurate"})], out="runs", sample=20)
-    oeb.grade("mine/")                                        # a folder of your own predictions
+    b = benchmark.default()                                   # the public dataset, graded by field matching
+    b.run(Datalab(mode="accurate"), out="runs", sample=20)    # one run is one system
+    b.grade("mine/")                                          # a folder of your own predictions
 
 The loop (planning, predicting, resuming, grading, run folders) is omni-bench-core's `Benchmark`.
 """

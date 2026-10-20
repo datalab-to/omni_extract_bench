@@ -5,7 +5,7 @@ vendor), submits a v2 extraction job at its highest tier, `agentic_plus`, and po
 Auth: LLAMA_CLOUD_API_KEY (llx-...).
 
 Usage:
-    oeb run --providers llamaextract
+    oeb run --system llamaextract
 
 Adapted from longextract_bench (MIT, (c) 2026 Micro1) -- see providers/LICENSE-micro1.
 """
@@ -162,12 +162,17 @@ class LlamaExtract(contract.Extractor):
     """LlamaExtract's v2 stateless extraction, at its highest tier."""
 
     name: ClassVar[str] = "llamaextract"
+    keys: ClassVar[tuple[str, ...]] = ("LLAMA_CLOUD_API_KEY",)
     workers: ClassVar[int] = 3
     tier: str = dataclasses.field(
         default=TIER,
         metadata={"choices": ["cost_effective", "agentic", "agentic_plus"],
                   "help": "extraction tier; entitlements change, so check one against the API"})
     poll_interval: int = 5
+
+    def missing_keys(self) -> list[str]:
+        """LLAMAPARSE_API_KEY, the older name of the same key, stands in for LLAMA_CLOUD_API_KEY."""
+        return [] if os.environ.get("LLAMAPARSE_API_KEY") else super().missing_keys()
 
     def prepare_schema(self, schema: dict) -> dict:
         """Inline $refs, drop $-prefixed metadata, and reduce to the subset the v2 API accepts.
@@ -193,9 +198,7 @@ class LlamaExtract(contract.Extractor):
         environment is one a run cannot state in its own record.
         """
         deadline = adapter.Budget(timeout)
-        key = os.environ.get("LLAMA_CLOUD_API_KEY") or os.environ.get("LLAMAPARSE_API_KEY")
-        if not key:
-            raise errors.MissingCredential("LLAMA_CLOUD_API_KEY (or LLAMAPARSE_API_KEY) is not set")
+        key = os.environ.get("LLAMA_CLOUD_API_KEY") or os.environ["LLAMAPARSE_API_KEY"]
 
         project_id = _project_id(key)
         file_id = _upload(pdf, key)

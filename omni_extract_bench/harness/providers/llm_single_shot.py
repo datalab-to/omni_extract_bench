@@ -3,7 +3,7 @@ OpenAI-compatible endpoint (OpenRouter by default, the only one that reports rea
 
 Auth: OPENROUTER_API_KEY, or OPENAI_API_KEY. Another endpoint is chosen with the `base_url` option.
 
-    oeb run --providers anthropic/claude-opus-5
+    oeb run --system anthropic/claude-opus-5
 
 The model is the provider name on the command line; in code it is the `model` option,
 `LLMSingleShot(model="anthropic/claude-opus-5")`, and it names the run folder (`label`).
@@ -69,6 +69,7 @@ class LLMSingleShot(contract.Extractor):
     number the model was handed, not `null`."""
 
     name: ClassVar[str] = "llm_single_shot"
+    keys: ClassVar[tuple[str, ...]] = ("OPENROUTER_API_KEY",)
     workers: ClassVar[int] = 5
     model: str = dataclasses.field(metadata={"help": "an OpenRouter org/model id"})
     max_output_tokens: int | None = dataclasses.field(
@@ -79,6 +80,10 @@ class LLMSingleShot(contract.Extractor):
     def __post_init__(self):
         if self.max_output_tokens is None:
             object.__setattr__(self, "max_output_tokens", max_output_for(self.model))
+
+    def missing_keys(self) -> list[str]:
+        """OPENAI_API_KEY stands in for OPENROUTER_API_KEY, for a `base_url` that is OpenAI's own."""
+        return [] if os.environ.get("OPENAI_API_KEY") else super().missing_keys()
 
     @property
     def label(self) -> str:
@@ -101,9 +106,7 @@ class LLMSingleShot(contract.Extractor):
         - an answer that isn't JSON is retried at a slightly higher temperature, but the model's text is kept
           in the record either way, so a fenced or broken answer can be read again rather than paid for again.
         """
-        key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        if not key:
-            raise errors.MissingCredential("OPENROUTER_API_KEY (or OPENAI_API_KEY) must be set")
+        key = os.environ.get("OPENROUTER_API_KEY") or os.environ["OPENAI_API_KEY"]
 
         deadline = adapter.Budget(timeout)
         model = self.model

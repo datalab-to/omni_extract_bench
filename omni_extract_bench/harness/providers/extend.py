@@ -5,7 +5,7 @@ Extend validates schemas strictly, so `prepare_schema` restates the schema in it
 
 Auth: EXTEND_API_KEY, and EXTEND_WORKSPACE_ID when the key reaches several workspaces.
 
-    oeb run --providers extend
+    oeb run --system extend
 """
 from __future__ import annotations
 
@@ -131,6 +131,7 @@ class Extend(contract.Extractor):
     array-heavy."""
 
     name: ClassVar[str] = "extend"
+    keys: ClassVar[tuple[str, ...]] = ("EXTEND_API_KEY",)
     workers: ClassVar[int] = 5
     array_strategy: str = dataclasses.field(
         default=ARRAY_STRATEGY, metadata={"help": "large-array, maximum-context extraction; this corpus is array-heavy"})
@@ -148,9 +149,7 @@ class Extend(contract.Extractor):
         Extend does not report a per-document cost, so `cost.usd` is None rather than a figure invented
         from a price list.
         """
-        key = os.environ.get("EXTEND_API_KEY")
-        if not key:
-            raise errors.MissingCredential("EXTEND_API_KEY is not set")
+        key = os.environ["EXTEND_API_KEY"]
 
         deadline = adapter.Budget(timeout)
         with httpx.Client(headers=headers(key, self.api_version), timeout=120) as c:

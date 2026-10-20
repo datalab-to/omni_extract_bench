@@ -36,11 +36,17 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
     Each document's score is `compare.score`'s numbers, and its details are one verdict per address,
     written to `details/<doc_id>.jsonl`. The summary is `summarize`'s; its headline is the
     accuracy over the scored documents, which omni-bench-core multiplies by coverage, so a failed document counts
-    as 0. Scoring pairs rows with an assignment solver, which is slow on large arrays, so documents are
-    scored in a pool of processes."""
+    as 0.
+
+    Scoring pairs rows with an assignment solver, which is slow on large arrays: one document of the public
+    dataset, a list of 1238 entities with arrays inside each, takes about two minutes on its own. So documents
+    are scored in a pool of processes, and each score is kept (`cache`), so grading again scores only the
+    documents whose prediction or gold changed. Keeping scores is safe because scoring is deterministic."""
 
     name: ClassVar[str] = "field_matching"
+    headline_field: ClassVar[str] = "accuracy"
     workers: ClassVar[int] = min(8, os.cpu_count() or 1)
+    cache: ClassVar[bool] = True
 
     def gold(self, row: data.Doc) -> Gold:
         return Gold(gold(row), row.schema)
@@ -57,12 +63,12 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
         return scorer.Score(got, [v._asdict() for v in got.pop("verdicts")])
 
     def summarize(self, lines: Sequence[scorer.Line]) -> scorer.Summary:
-        """`summarize`, with the counts omni-bench-core adds left to it (`failed`, `coverage`), and
-        the headline over the scored documents, before omni-bench-core multiplies it by coverage."""
+        """`summarize`, without the counts omni-bench-core adds itself (`rows`, `failed`, `coverage`). Its
+        headline is the accuracy over the scored documents, 0 when none was, which omni-bench-core multiplies by
+        coverage."""
         s = summarize(lines)
-        out = {k: v for k, v in s.items() if k not in ("failed", "coverage")}
-        out["headline"] = s["accuracy"] if s["scored"] else (0.0 if lines else None)
-        return out
+        return {**{k: v for k, v in s.items() if k not in ("rows", "failed", "coverage")},
+                "headline": s["accuracy"] or 0.0}
 
 
 def gold(doc: Any) -> dict:
@@ -102,6 +108,8 @@ def summarize(lines: Iterable[dict]) -> dict:
     then per suite, each suite in the same shape. A line carries its document's suite, so the lines are all
     it needs. A line's status is `scored` or `failed` (no usable prediction)."""
     lines = list(lines)
+    if not lines:
+        raise ValueError("summarize takes at least one score line; there is nothing to summarize")
     if bad := next((x for x in lines if not isinstance(x, dict) or "suite" not in x or "status" not in x), None):
         raise ValueError(f"summarize takes score lines, each with its document's suite and status, as "
                          f"scores.jsonl holds; got {bad!r:.120}. score()'s result "
@@ -113,24 +121,24 @@ def summarize(lines: Iterable[dict]) -> dict:
 
 
 def _over(lines: list[dict]) -> dict:
-    """How a set of documents went: the headline, the counts, coverage, the three metrics over the scored
-    documents, and where the errors were.
+    """How a non-empty set of documents went: the headline, the counts, coverage, the three metrics over the
+    scored documents, and where the errors were.
 
     Note: `headline` counts a failed document as 0, so a system can't rank higher by failing on its
-    hard documents; `accuracy` is over the scored ones, and `headline` is `accuracy * coverage`. It is
-    None for no documents, since there is no number to compare, and the metrics over the scored are None
-    when none was scored: 0.0 would read as everything wrong (and a 0.0 rate as nothing wrong)."""
+    hard documents; `accuracy` is over the scored ones, and `headline` is `accuracy * coverage`. The
+    metrics over the scored are None when none was scored: 0.0 would read as everything wrong (and a 0.0
+    rate as nothing wrong)."""
     scored = [x for x in lines if x["status"] == "scored"]
 
     def mean(of) -> float | None:
         return sum(of(x) for x in scored) / len(scored) if scored else None
 
     return {
-        "headline": sum(x["accuracy"] for x in scored) / len(lines) if lines else None,
-        "documents": len(lines),
+        "headline": sum(x["accuracy"] for x in scored) / len(lines),
+        "rows": len(lines),
         "scored": len(scored),
         "failed": len(lines) - len(scored),
-        "coverage": len(scored) / len(lines) if lines else None,
+        "coverage": len(scored) / len(lines),
         "accuracy": mean(lambda x: x["accuracy"]),
         "precision": mean(lambda x: x["precision"]),
         "recall": mean(lambda x: x["recall"]),

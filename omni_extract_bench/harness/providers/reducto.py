@@ -8,7 +8,7 @@ descriptions guide it).
 Auth: REDUCTO_API_KEY.
 
 Usage:
-    oeb run --providers reducto
+    oeb run --system reducto
 
 Adapted from longextract_bench (MIT, (c) 2026 Micro1) -- see providers/LICENSE-micro1.
 """
@@ -158,6 +158,7 @@ class Reducto(contract.Extractor):
     """Reducto's async extraction, at its maximum tier: deep extract on, `max` agentic tables."""
 
     name: ClassVar[str] = "reducto"
+    keys: ClassVar[tuple[str, ...]] = ("REDUCTO_API_KEY",)
     workers: ClassVar[int] = 3
     deep_extract_model: str = DEFAULT_DEEP_EXTRACT_MODEL
     system_prompt: str = dataclasses.field(
@@ -174,9 +175,7 @@ class Reducto(contract.Extractor):
         A job that outlives its budget is named in the record by `job_id`, so it can be chased by
         hand rather than being anonymous.
         """
-        key = os.environ.get("REDUCTO_API_KEY")
-        if not key:
-            raise errors.MissingCredential("REDUCTO_API_KEY is not set")
+        key = os.environ["REDUCTO_API_KEY"]
 
         deadline = adapter.Budget(timeout)
         with httpx.Client() as client:

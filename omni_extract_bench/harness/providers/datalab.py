@@ -9,7 +9,7 @@ Read as dollars it would overstate the cost 100 times.
 
 Auth: DATALAB_API_KEY.
 
-    oeb run --providers datalab --options '{"datalab": {"mode": "balanced"}}'
+    oeb run --system datalab --options '{"mode": "balanced"}'
 """
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ class Datalab(contract.Extractor):
     """Datalab's extraction API, at one tier (`mode`)."""
 
     name: ClassVar[str] = "datalab"
+    keys: ClassVar[tuple[str, ...]] = ("DATALAB_API_KEY",)
     workers: ClassVar[int] = 10
     mode: str = dataclasses.field(
         default="balanced",
@@ -52,9 +53,7 @@ class Datalab(contract.Extractor):
         place that knows the difference between "the vendor said no" and "we ran out of budget
         while it was still working".
         """
-        key = os.environ.get("DATALAB_API_KEY")
-        if not key:
-            raise errors.MissingCredential("DATALAB_API_KEY is not set")
+        key = os.environ["DATALAB_API_KEY"]
 
         deadline = adapter.Budget(timeout)
         base_url = self.base_url.rstrip("/")

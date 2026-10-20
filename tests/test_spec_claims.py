@@ -77,7 +77,7 @@ report("the corpus's largest array (6881 rows) is ~19% of the cap, so it solves 
 print("\nSection 4 -- every key the spec names exists")
 named = ["matched", "misread", "unfound", "fabricated", "invented_item", "invented_field",
          "asserted", "total", "accuracy", "precision", "recall", "f1",
-         "addresses_found", "addresses_read_right", "gt_rows", "pred_rows", "matched_rows", "matching_exact",
+         "addresses_found", "addresses_read_right", "gold_rows", "pred_rows", "matched_rows", "matching_exact",
          "approximated", "skipped_open_maps"]
 report("all 20 reported keys are present, and nothing else is",
        sorted(R) == sorted(named),

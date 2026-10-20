@@ -1,68 +1,122 @@
 # Omni Extract Bench
 
-This repository contains a way to run our benchmark using our dataset on [HuggingFace](https://huggingface.co/datasets/datalab-to/omni_extract_bench) or *your own dataset*. It also
-provides lower-level primitives (`score` and `predict`) to run in your own pipelines however you like. The README is split up into the following table of contents.
+Omni Extract Bench measures how well a system extracts a JSON object from a PDF, given a JSON Schema. This repository holds:
 
-1. **[Install](#install)** — the scorer on its own, or with the vendor adapters.
-2. **[Run our benchmark with one line](#run-our-benchmark-with-one-line)** — rerun vendors on the benchmark dataset.
-3. **[Score](#score)** — score predictions against ground-truth in your code or from the cli.
-    - [What the metric does](#what-the-metric-does) — explains how the scoring works.
-4. **[Predict](#predict)** — predict on one document and its schema in your code or from the cli.
-5. **[Licence](#licence)** — Apache 2.0
+- the scorer, field matching, which compares a prediction with its ground truth value by value;
+- the benchmark: our dataset on [Hugging Face](https://huggingface.co/datasets/datalab-to/omni_extract_bench), or your own, run through vendor systems and graded; and
+- the lower-level pieces (`score` and `predict`), to use in your own pipelines.
 
-And take a look at [`docs/API.md`](./docs/API.md) for more in-depth documentation of public functionality.
+Contents:
+
+1. [Install](#install): the scorer on its own, or with the vendor adapters;
+2. [Run our benchmark](#run-our-benchmark): run vendors on the benchmark dataset, and grade them;
+3. [Score](#score): score one prediction against its ground truth, in code or from the command line;
+4. [Predict](#predict): one document and its schema through one system;
+5. [Write your own scorer or adapter](#write-your-own-scorer-or-adapter);
+6. [Tests](#tests); and
+7. [Licence](#licence).
+
+[`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md) documents the public functions and commands in more depth.
 
 ## Install
 
-
 ```bash
-uv pip install omni-extract-bench                 # the scorer: score(), scipy and nothing else
-uv pip install 'omni-extract-bench[harness]'      # + vendor adapters, to produce predictions
-uv pip install 'omni-extract-bench[benchmark]'    # + packages to orchestrate and run benchmark
+uv pip install omni-extract-bench                 # the scorer, and grading a dataset folder on disk
+uv pip install 'omni-extract-bench[harness]'      # + the vendor adapters, to produce predictions
+uv pip install 'omni-extract-bench[benchmark]'    # + huggingface_hub, to download our dataset
 ```
 
-![oeb-usage](./assets/oeb_usage.gif)
+The base install brings scipy and [omni-bench-core](https://github.com/datalab-to/omni-bench-core), which brings pyarrow and rich; scipy brings numpy. It scores, and grades (`oeb grade`, `oeb check`) without any vendor package. Reading a dataset from the Hugging Face Hub also needs `huggingface_hub`, which the `[benchmark]` extra installs.
 
+![oeb-usage](https://github.com/datalab-to/omni_extract_bench/blob/main/assets/oeb_usage.gif?raw=true)
 
-## Run our benchmark with one line
+## Run our benchmark
 
-The benchmark runs on [omni-bench-core](https://github.com/datalab-to/omni-bench), which sends each document to each system, saves each answer, and grades the answers. Run it here on 1 document. It's **resumable**: stop it, run the same command again, and it resumes without paying again for what was answered.
-
-**!!NOTE!!**: this will cost money and you will need your API keys set.
+The benchmark runs on [omni-bench-core](https://github.com/datalab-to/omni-bench-core). A run is one system: it sends each document to the system, saves each answer, and grades the answers. This runs Datalab in accurate mode on one document:
 
 ```bash
-oeb run --out runs/ --limit 1 \
-    --providers datalab reducto extend llamaextract
+oeb run --system datalab --options '{"mode": "accurate"}' --limit 1 --out runs/
 ```
 
-You can also specify settings per provider. For example:
+`--options` is the system's own options, as `oeb predict` takes them. This costs money, and each system needs its API key in the environment:
+
+| system | environment variable |
+| --- | --- |
+| `datalab` | `DATALAB_API_KEY` |
+| `reducto` | `REDUCTO_API_KEY` |
+| `extend` | `EXTEND_API_KEY`, and `EXTEND_WORKSPACE_ID` when the key reaches several workspaces |
+| `llamaextract` | `LLAMA_CLOUD_API_KEY` (or its older name, `LLAMAPARSE_API_KEY`) |
+| `mistral` | `MISTRAL_API_KEY` |
+| `azure-cu` | `AZURE_CU_KEY`, and the `endpoint` option |
+| an OpenRouter model id, such as `openai/gpt-5.6-sol` | `OPENROUTER_API_KEY` (or `OPENAI_API_KEY`) |
+
+A missing key stops the run before any call, and says what to set, such as `export DATALAB_API_KEY=...`. `oeb systems <name>` prints a system's options and the variables it needs.
+
+To compare systems, or one system's options, make one run of each, with the same choice of documents:
 
 ```bash
-oeb run \
-  --providers datalab reducto \
-  --limit 1 \
-  --options '{"datalab":  [{"mode": "balanced"}, {"mode": "accurate"}],
-              "reducto": [{"agentic_table_mode": "max"},
-                          {"agentic_table_mode": "default"}]}' \
-  --out runs/
+oeb run --system datalab --options '{"mode": "accurate"}' --sample 20 --out runs/
+oeb run --system reducto --sample 20 --out runs/
 ```
 
-This will execute 4 different runs -- one for each pair (provider, settings).
+Each prints its grading as one JSON object, whose `"run"` is the run folder's name. `--workers N` sets how many documents are in flight at once; by default, the system's own number.
 
-It shows the plan and asks before calling any vendor; with no terminal to ask (a pipe, a notebook, CI) it goes ahead without asking, so a script runs as written.
+`--systems A B ...` (and its older name, `--providers`) still works for one release, and is deprecated: it runs each system in turn, with `--options` keyed by system (`'{"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}'`, where a list runs each option set), prints one JSON object keyed by run name, and exits 1 when any system stopped. Use `--system`, one per command.
 
-`--dataset` picks the dataset (a folder on disk, or a HuggingFace dataset; ours by default), and `--manifest` picks which of its documents to run. For example, a 40-document subset of ours:
+`oeb run` shows the plan and asks before calling any system. With no terminal to ask (a pipe, a notebook, CI), it goes ahead without asking, so a script runs as written.
+
+`--dataset` picks the dataset: a folder on disk, or a Hugging Face dataset (ours by default). Ours is about 856 MB, and it is downloaded whole the first time, even for one document, because grading needs all of it; later runs use the copy in the Hugging Face cache. Set `HF_TOKEN` (or run `hf auth login`) to download faster and avoid the Hub's rate limits. `--manifest` picks which of its documents to run, such as a 40-document subset of ours:
 
 ```bash
-oeb run --providers datalab --out runs/ \
+oeb run --system datalab --out runs/ \
   --manifest manifests/sample40-predictive-across-vendors-2026-09-22.parquet
 ```
 
-See [`docs/API.md`](./docs/API.md) for more details on what `oeb run` writes and **how you can run on your own benchmark dataset**.
+Each run is a folder under `--out`, named after everything that changes its answers: the system, its options, the dataset, the manifest and which documents (`--suites`, `--sample`, `--limit`, `--only`). So:
+
+- running the same command again resumes the same folder, and pays for nothing already answered; and
+- changing any of those uses a new folder, and leaves the old one as it was.
+
+The timeout isn't one of them. To give documents that timed out more time, run the same command again with a longer `--timeout` and `--retry-failed`: it uses the same folder, and each document's record keeps the timeout it was run with.
+
+A run is graded only when it is finished: every document has an answer or a recorded failure. A document the system failed on counts as 0. When the system stops the run (its key is refused, its account is out of credits, its adapter has a bug), the command exits 1 saying why, and running it again resumes.
+
+To grade a run again, or a folder of your own predictions (`predictions/<doc_id>.json`):
+
+```bash
+oeb grade runs/datalab-1a2b3c4d                    # a run knows its own dataset
+oeb grade mine/ --dataset my-dataset/              # your predictions on your own dataset
+oeb grade mine/ --dataset my-dataset/ --partial    # count unfinished documents as 0; the summary lists them
+```
+
+Without `--dataset`, a folder of your own predictions is graded against our public dataset (`hf://datasets/datalab-to/omni_extract_bench`).
+
+Grading is fast on most documents, but field matching on a very large document takes long. On our dataset, `long__real_ofac_ssi_full` alone takes about 2 minutes, and all 620 documents take about 7 to 8 minutes of CPU, spread over up to 8 processes. Each document's score is kept in the run folder, so grading again only scores the documents whose prediction or gold changed.
+
+What happens in every other case (a refusal, a timeout, a wrong key, an interrupt, a bug in an adapter) is in the table under [The rules](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#the-rules) in omni-bench-core's overview. [`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#what-a-run-writes) says what a run writes, and [how to run on your own dataset](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-dataset).
+
+In Python:
+
+```python
+from omni_extract_bench import benchmark
+from omni_extract_bench.harness.providers.datalab import Datalab
+
+if __name__ == "__main__":
+    b = benchmark.default()
+    g = b.run(Datalab(mode="accurate"), out="runs", sample=20)    # one system; g["run"] names its folder
+```
+
+To compare systems, call `run` once per system with the same `sample` (or `suites`, `limit`, `only`), so each is graded on the same documents. `harness.system("datalab", {"mode": "accurate"})` makes the same adapter from a system name.
+
+Code that runs or grades a benchmark goes under `if __name__ == "__main__":`. Grading scores documents in a pool of processes, and on macOS and Windows each process imports your script again.
 
 ## Score
 
-Use in your own code.
+The scorer works on its own, with no dataset and no network. The files of this example are `pred.json`, `gold.json` and `schema.json` in [`data/`](https://github.com/datalab-to/omni_extract_bench/blob/main/data) on GitHub. A pip install doesn't include them, so download them from there, or clone the repository and run the commands below from its folder:
+
+```bash
+git clone https://github.com/datalab-to/omni_extract_bench && cd omni_extract_bench
+```
 
 ```python
 from omni_extract_bench import score
@@ -135,7 +189,7 @@ or from the command line.
 
 
 ```bash
-oeb score --pred pred.json --gold gold.json --schema schema.json
+oeb score --pred data/pred.json --gold data/gold.json --schema data/schema.json
 ```
 
 ```json
@@ -154,7 +208,7 @@ oeb score --pred pred.json --gold gold.json --schema schema.json
   "asserted": 16,
   "addresses_found": 0.5882352941176471,
   "addresses_read_right": 0.9,
-  "gt_rows": 2,
+  "gold_rows": 2,
   "pred_rows": 3,
   "matched_rows": 2,
   "matching_exact": true,
@@ -173,10 +227,10 @@ print(result["verdicts"][0]) # print the first verdict
 #         pred_canon='usd', result='invented_field')
 ```
 
-From the cli.
+From the command line.
 
 ```bash
-oeb score --pred pred.json --gold gold.json --schema schema.json --verdicts
+oeb score --pred data/pred.json --gold data/gold.json --schema data/schema.json --details
 ```
 
 On the example above, printing one line each:
@@ -208,24 +262,24 @@ On the example above, printing one line each:
 
 ### What the metric does
 
-![scoring.gif](./assets/scoring.gif)
+![scoring.gif](https://github.com/datalab-to/omni_extract_bench/blob/main/assets/scoring.gif?raw=true)
 
 - Normalize document;
 - Flatten prediction and gold JSON dictionary to addresses mapped to their scalar values;
 - Normalize scalar values of the flattened addresses; and
-- For each array that appears, Hungarian match (recursively for nested arrays) based on array element content to align ambiguous predicted and gold addresses (there may unmatched predicted addresses — false positives, and unmatched gold addresses — false negatives).
+- For each array that appears, Hungarian match (recursively for nested arrays) based on array element content to align ambiguous predicted and gold addresses (there may be unmatched predicted addresses, false positives, and unmatched gold addresses, false negatives).
 
-Full specification: [`METRIC_SPEC.md`](./docs/METRIC_SPEC.md).
+Full specification: [`METRIC_SPEC.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/METRIC_SPEC.md).
 
 ## Predict
 
-Predict using our provider harnesses.
+Predict with our vendor adapters.
 
 ```bash
 uv pip install 'omni-extract-bench[harness]'
 ```
 
-Each vendor is an adapter class; `harness.system` makes one from a provider name and its options. omni-bench-core's `predict` sends one document under the same rules a run uses (one time budget, retries, failures recorded) and returns its record.
+Each vendor is an adapter class; `harness.system` makes one from a system name and its options. omni-bench-core's `predict` sends one document under the same rules a run uses (one time budget, retries, failures recorded) and returns its record.
 
 ```python
 from pathlib import Path
@@ -241,8 +295,7 @@ record["raw"]
 record["cost"]
 ```
 
-This sends the schema as you give it. `oeb run` and `oeb predict` first apply the benchmark's conventions to
-the schema (`task.Extract().input`), so use `oeb predict` to send exactly what a run sends.
+This sends the schema as you give it. `oeb run` and `oeb predict` first apply the benchmark's conventions to the schema (`task.Extract().input`), so use `oeb predict` to send exactly what a run sends.
 
 Score directly from the predictions.
 
@@ -251,13 +304,23 @@ from omni_extract_bench import score
 score(record["output"], gold, schema)
 ```
 
-You can also use the cli, which prints the record as JSON and exits 1 when the call failed:
+You can also use the command line, which prints the record as JSON and exits 1 when the call failed. `--options` takes the bare options, as `oeb run --system` does, or the same keyed by the system's name:
 
 ```bash
-oeb predict --provider datalab --doc invoice.pdf --schema schema.json --options '{"mode": "accurate"}'
+oeb predict --system datalab --doc invoice.pdf --schema schema.json --options '{"mode": "accurate"}'
+oeb predict --system datalab --doc invoice.pdf --schema schema.json --options '{"datalab": {"mode": "accurate"}}'
 ```
 
+## Write your own scorer or adapter
+
+A scorer is a class with `gold` and `score`; an adapter is a class with `call` (for extraction, `extract`). omni-bench-core's [overview](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md) explains both with small examples. [`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-adapter) shows an extraction adapter and how it signals each outcome, and [how to grade with a scorer of your own](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-scorer) beside field matching.
+
+## Tests
+
+```bash
+uv run --group test --extra benchmark pytest -n auto
+```
 
 ## Licence
 
-Apache 2.0 — see [`LICENSE`](./LICENSE). All code here is Datalab's own.
+Apache 2.0, see [`LICENSE`](https://github.com/datalab-to/omni_extract_bench/blob/main/LICENSE). All code here is Datalab's own.

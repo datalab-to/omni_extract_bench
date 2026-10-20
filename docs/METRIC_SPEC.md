@@ -265,7 +265,8 @@ answer differently, or would require reading the field to decide how to compare 
 ## 11. Reading a score
 
 **Quote three.** `accuracy` is how much came back, `precision` how much of it can be trusted,
-and coverage how many documents were graded at all.
+and coverage the share of documents that had a usable answer: a failed document counts as 0 in the
+headline (`accuracy × coverage`).
 
 **Check four things before comparing providers:** coverage, `matching_exact`,
 `skipped_open_maps`, and whether the misses are in §2's second list — a harness gap reads

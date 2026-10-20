@@ -97,26 +97,32 @@ print("every promoted setting carries its literal default on the adapter")
 # directory, and a resume without the variable re-buys the corpus.
 import os  # noqa: E402
 
+from omni_bench_core import errors  # noqa: E402
+from omni_bench_core import run as runs  # noqa: E402
+
 from omni_extract_bench import harness  # noqa: E402
 
 
 def out_name(provider, options=None):
-    return harness.system(provider, options).folder_name
+    return runs.folder_name(harness.system(provider, options), {})
 
 
 saved = os.environ.get("AZURE_CU_ENDPOINT")
 os.environ["AZURE_CU_ENDPOINT"] = "https://set-in-the-shell.example"
 try:
-    with_var = out_name("azure-cu")
+    try:
+        harness.system("azure-cu")
+    except errors.UsageError as exc:
+        assert "endpoint" in str(exc), exc
+    else:
+        raise AssertionError("azure-cu took its endpoint from the environment; it must be an option")
 finally:
     os.environ.pop("AZURE_CU_ENDPOINT") if saved is None else os.environ.__setitem__(
         "AZURE_CU_ENDPOINT", saved)
-without_var = out_name("azure-cu")
-assert with_var == without_var, (
-    f"azure-cu's run directory changed with the environment: {with_var} vs {without_var}")
 
 explicit = out_name("azure-cu", {"endpoint": "https://a.example"})
-assert explicit != without_var, "an endpoint passed as an option must still name its own run"
+assert explicit == out_name("azure-cu", {"endpoint": "https://a.example/"}), \
+    "an endpoint's trailing slash must not name another run"
 assert explicit != out_name("azure-cu", {"endpoint": "https://b.example"}), \
     "two endpoints must not share a run directory"
 print("a run directory is a function of the options, not of the shell")

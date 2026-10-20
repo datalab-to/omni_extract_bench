@@ -60,7 +60,7 @@ def adapter_class(provider: str) -> type[adapter.Adapter]:
             exc.add_note(f"while loading adapter {provider!r} from package {ep.dist.name if ep.dist else '?'}")
             raise
     if provider not in ADAPTERS:
-        raise errors.UsageError(f"unknown provider {provider!r}. Known vendors: {', '.join(PROVIDERS)}. "
+        raise errors.UsageError(f"unknown system {provider!r}. Known vendors: {', '.join(PROVIDERS)}. "
                                 "Any OpenRouter model id also works, e.g. openai/gpt-5.6-sol")
     return ADAPTERS[provider]
 
@@ -74,6 +74,6 @@ def system(provider: str, options: Mapping[str, Any] | None = None) -> adapter.A
     if "/" in provider:
         if "model" in options:
             raise errors.UsageError(f"{provider}: `model` is the provider name, not an option; run the one you "
-                                    f"want: --providers {options['model']}")
+                                    f"want: --system {options['model']}")
         return adapter.configure(LLM, {**options, "model": provider})
     return adapter.configure(adapter_class(provider), options)

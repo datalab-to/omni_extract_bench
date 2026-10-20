@@ -562,8 +562,8 @@ deep_g = {"outer": [{"rows": [{"a": i} for i in range(10)]}]}
 deep_p = {"outer": [{"rows": [{"a": i} for i in range(3)]}]}
 deep = score(deep_p, deep_g)
 report("rows nested below the top level are counted",
-       deep["gt_rows"] == 11 and deep["matched_rows"] == 4,
-       f"gt_rows={deep['gt_rows']} matched_rows={deep['matched_rows']}, want 11 and 4")
+       deep["gold_rows"] == 11 and deep["matched_rows"] == 4,
+       f"gold_rows={deep['gold_rows']} matched_rows={deep['matched_rows']}, want 11 and 4")
 report("recall counts leaves, so it is the same flat or wrapped",
        abs(score(deep_p, deep_g)["recall"]
            - score({"rows": [{"a": i} for i in range(3)]},
@@ -635,8 +635,8 @@ report("this scorer's row counts do not depend on what the schema declares",
        f"recall {ACC(p_rc, g_rc)['recall']}")
 
 er = ACC({"rows": [{}, {"x": 1}]}, {"rows": [{}, {"x": 1}]})
-report("an empty row {} is not counted as a row", er["gt_rows"] == 1,
-       f"gt_rows={er['gt_rows']}, want 1")
+report("an empty row {} is not counted as a row", er["gold_rows"] == 1,
+       f"gold_rows={er['gold_rows']}, want 1")
 
 print("\nAn approximate score says so")
 big_gold = [{"seg": "same", "b": float(i)} for i in range(40)]

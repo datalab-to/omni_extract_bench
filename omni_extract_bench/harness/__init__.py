@@ -13,8 +13,20 @@ The loop that runs adapters over a dataset (resuming, retries, budgets, run fold
 
     pip install 'omni-extract-bench[harness]'
 """
+from typing import Any
+
 from . import contract
-from .registry import ADAPTERS, ENTRY_POINT_GROUP, LLM, PLUGINS, PROVIDERS, SHIPPED, adapter_class, system
+
+# Note: the registry imports every vendor SDK, so it is imported on first use, not here. The task imports
+# `contract` and `schema`, and grading must work without the [harness] extra.
+REGISTRY = ("ADAPTERS", "ENTRY_POINT_GROUP", "LLM", "PLUGINS", "PROVIDERS", "SHIPPED", "adapter_class", "system")
 
 __all__ = ["ADAPTERS", "ENTRY_POINT_GROUP", "LLM", "PLUGINS", "PROVIDERS", "SHIPPED", "adapter_class", "contract",
            "system"]
+
+
+def __getattr__(name: str) -> Any:
+    if name not in REGISTRY: raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from . import registry
+
+    return getattr(registry, name)

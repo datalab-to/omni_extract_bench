@@ -6,16 +6,20 @@ This is the public API. There are three entry points:
 - `predict`: one document through one vendor; and
 - `run`: the benchmark, every document through every vendor, resumable.
 
-Predicting and running are built on [omni-bench-core](https://github.com/datalab-to/omni-bench), which holds
+Predicting and running are built on [omni-bench-core](https://github.com/datalab-to/omni-bench-core), which holds
 the loop, the run folders and the rules every call and every grading follows. This package adds what is
 particular to extraction: the rows (`data.Doc`), the task (`task.Extract`), the vendor adapters
 (`harness`) and the scorer (`scorers.field_matching.FieldMatching`, over the functions of `scorers.field_matching`).
 
-1. **[score](#score)**: grade one prediction against one ground truth.
-2. **[predict](#predict)**: one document, one vendor.
-3. **[run](#run)**: the whole corpus, every vendor, resumable.
-4. **[providers](#providers)**: what you can run, what each one takes, and adding your own.
-5. **[What a run writes](#what-a-run-writes)**: the files, and what's in them.
+The sections:
+
+1. [score](#score): grade one prediction against one ground truth;
+2. [predict](#predict): one document, one vendor;
+3. [run](#run): the whole corpus, every vendor, resumable;
+4. [providers](#providers): what you can run, what each one takes and needs, and adding your own;
+5. [Your own dataset](#your-own-dataset): its folder, its manifest and its gold files;
+6. [Your own scorer](#your-own-scorer): grading with a scorer of yours beside field matching; and
+7. [What a run writes](#what-a-run-writes): the files, and what's in them.
 
 
 ## score
@@ -62,8 +66,9 @@ oeb score --pred pred.json --gold gold.json --schema schema.json
   ...truncated for display
 ```
 
-Every argument except `absent` is a flag of the same name, underscores as dashes, so
-`order_matters` is `--order-matters`. It goes to stdout, so `oeb score ... | jq .accuracy` is one pipe.
+On the command line, `pred`, `gold` and `schema` are `--pred`, `--gold` and `--schema` (each a JSON file),
+`order_matters` is `--order-matters`, and `verdicts=True` is `--details`. `absent` has no flag. The result
+goes to stdout, so `oeb score ... | jq .accuracy` is one pipe.
 
 The README has a [worked example](../README.md#score) and
 [`docs/METRIC_SPEC.md`](./METRIC_SPEC.md) is the full specification.
@@ -71,7 +76,7 @@ The README has a [worked example](../README.md#score) and
 
 ## predict
 
-A vendor is an adapter class; `harness.system` makes one from a provider name and its options, checked.
+A vendor is an adapter class; `harness.system` makes one from a system name and its options, checked.
 omni-bench-core's `adapter.predict` sends one document under the same rules a run uses: one time budget per
 document, transient failures retried, other failures recorded as the document's answer.
 
@@ -86,15 +91,21 @@ datalab = harness.system("datalab", {"mode": "accurate"})
 record = adapter.predict(datalab, contract.Question(Path("invoice.pdf"), schema), timeout=1800)
 ```
 
-From the cli, the record is printed as JSON, and the command exits 1 when the call failed:
+From the command line, the record is printed as JSON, and the command exits 1 when the call failed.
+`--options` takes the bare options, as `oeb run` does, or the same keyed by the system's name
+(`'{"datalab": {"mode": "accurate"}}'`):
 
 ```bash
-oeb predict --provider datalab --doc invoice.pdf --schema schema.json --options '{"mode": "accurate"}'
+oeb predict --system datalab --doc invoice.pdf --schema schema.json --options '{"mode": "accurate"}'
 ```
 
-The record holds `output` (the extraction, None on a failure), `raw` (the vendor's answer as received),
-`sent` (the schema as the vendor was sent it, kept on a failure too), `error`, `cost` (a failed call's too,
-when the vendor billed it), `job_id`, `settings` and `timeout_s`. A
+A missing API key is refused before the call, saying what to set (`export DATALAB_API_KEY=...`). As in a
+run, a refused connection or an account failure stops it with the reason, and an exception from the
+adapter's own code is reported as a bug in that adapter, saying whose code it is, with the traceback.
+
+The record holds `system`, `options`, `package`, `output` (the extraction, null on a failure), `raw`
+(the vendor's answer as received), `sent` (the schema as the vendor was sent it), `error`, `cost`,
+`job_id`, `timeout_s` and `captured_at`; [What a run writes](#what-a-run-writes) says what each is. A
 benchmark run sends the schema with the benchmark's conventions applied and its own annotations removed
 (`task.Extract.input`); call that, or `harness.schema`, to send exactly what a run sends.
 
@@ -102,13 +113,33 @@ benchmark run sends the schema with the benchmark's conventions applied and its 
 ## run
 
 ```bash
-oeb run --providers datalab reducto --out runs/ --sample 20
-oeb run --providers datalab --options '{"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}'
+oeb run --system datalab --options '{"mode": "accurate"}' --out runs/ --sample 20
+oeb run --system datalab --workers 4             # 4 documents in flight at once; default: the system's own
 oeb grade runs/datalab-69059f7c                 # grade again, with no call
 oeb grade mine/ --dataset <dataset>             # a folder of your own predictions/<doc_id>.json
-oeb run --providers datalab --docs ids.txt      # only the documents listed, one id per line
+oeb grade mine/ --dataset <dataset> --partial   # grade an unfinished folder, counting what's missing as 0
+oeb run --system datalab --only ids.txt         # only the documents listed, one id per line
 oeb check --dataset <dataset>                   # is it a dataset oeb can run? no call is made
+oeb --version
 ```
+
+A run is one system. To compare systems, run each with the same choice of documents:
+
+```bash
+oeb run --system datalab --options '{"mode": "accurate"}' --sample 20 --out runs/
+oeb run --system reducto --sample 20 --out runs/
+```
+
+`oeb run` prints the run's grading as one JSON object, whose `"run"` is the run folder's name.
+
+`--systems A B ...` and its older name `--providers` are deprecated, and kept for one release. They run each
+system in turn, with `--options` keyed by system (`'{"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}'`,
+where a list runs each option set), and print one JSON object of gradings keyed by run name. A system that
+stops is reported on stderr, the next one still runs, and the command exits 1. Use `--system`, one per command.
+
+`oeb grade` grades a run against the dataset and manifest its settings.json names. A folder of your own
+predictions has no settings.json, so without `--dataset` it is graded against the public dataset
+(`hf://datasets/datalab-to/omni_extract_bench`) and its `manifest.parquet`.
 
 `oeb check` reads the manifest, checks every document's PDF exists and every gold reads, and prints
 `{"dataset", "manifest", "rows", "suites"}`; it exits 1 naming the first problem (every missing PDF at once).
@@ -116,30 +147,81 @@ oeb check --dataset <dataset>                   # is it a dataset oeb can run? n
 In code, `benchmark.default(dataset, manifest)` is Omni Extract Bench as an omni-bench-core `Benchmark`:
 
 ```python
-from omni_extract_bench import benchmark, harness
+from omni_extract_bench import benchmark
+from omni_extract_bench.harness.providers.datalab import Datalab
+from omni_extract_bench.harness.providers.reducto import Reducto
 
-oeb = benchmark.default()
-oeb.run([harness.system("datalab", {"mode": "accurate"})], out="runs", sample=20)
-oeb.grade("mine/")
+if __name__ == "__main__":
+    b = benchmark.default()
+    for system in (Datalab(mode="accurate"), Reducto()):     # one run per system, on the same documents
+        g = b.run(system, out="runs", sample=20)
+        print(g["run"], g["scorers"]["field_matching"]["headline"])
+    b.grade("mine/", partial=True)
 ```
 
-`run` plans (checks every option, folder and gold before any call), predicts every document a run has no
-record of, then grades each run. Running it again calls nothing already answered. A document never
-attempted is pending, and the headline is null while any document is pending; a document with no usable
-answer counts as 0. `--dataset` is a folder or `hf://datasets/<org>/<name>[@<revision>]` (ours by default),
-and `--manifest` a manifest inside it, such as `manifests/sample40-predictive-across-vendors-2026-09-22.parquet`.
-omni-bench-core's `Benchmark` docstring has the rest: `plan`, `predict`, `grade`, `reread`.
+`run` takes one adapter instance; `harness.system("datalab", {"mode": "accurate"})` makes the same one from a
+system name. It returns the grading: `{"run", "cost", "scorers"}`.
+
+Code that runs or grades a benchmark goes under `if __name__ == "__main__":`, because grading scores
+documents in a pool of processes, and on macOS and Windows each process imports your script again.
+
+`run` has three steps:
+
+1. plan: checks the options, the API key, every document and every gold before any call;
+2. predict: calls the system on every document the run has no record of; and
+3. grade: grades the run, when it is finished.
+
+A run folder answers one exact question: the system and its options, the dataset, the manifest and which
+documents (`--suites`, `--sample`, `--limit`, `--only`). Running the same command again resumes the same
+folder and calls nothing already answered; changing any of those uses another folder. A `--limit` or
+`--sample` that covers every document is the same run as neither.
+
+The timeout isn't part of the question. Running the same command again with a longer `--timeout` and
+`--retry-failed` gives the documents that timed out more time, in the same folder. Each record keeps the
+`timeout_s` it was run with, and settings.json holds the latest.
+
+A run is graded over its own documents, and only when it is finished: every document has an answer or a
+recorded failure. A document with no usable answer counts as 0. A run that stops part way (a key the system
+refuses, an account out of credits, a server of yours that isn't running, a bug in an adapter, an interrupt)
+is not graded: `oeb run` exits 1 with the reason, and running the same command again finishes it.
+`oeb grade --partial` (`partial=True` in Python) grades an unfinished run anyway, counting its unfinished
+documents as 0, and its summary lists them under `partial`.
+
+Grading is fast on most documents, but field matching on a very large one takes long, because pairing the
+rows of large arrays is slow. On the public dataset, `long__real_ofac_ssi_full` takes about 2 minutes on its
+own, and all 620 documents take about 7 to 8 minutes of CPU, spread over up to 8 processes. Each document's
+score is kept (`field_matching/cache/`), so grading again only scores the documents whose prediction or gold
+changed (or all of them, after a change to the scorer's code).
+
+What happens in each case is the table under [The rules](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#the-rules) in
+omni-bench-core's overview.
+
+`--dataset` is a folder or `hf://datasets/<org>/<name>[@<revision>]` (ours by default, about 856 MB,
+downloaded whole once; set `HF_TOKEN` to download faster), and `--manifest` a manifest inside it, such as
+`manifests/sample40-predictive-across-vendors-2026-09-22.parquet`. omni-bench-core's `Benchmark` docstring
+has the rest: `plan`, `predict`, `grade`, `reread`.
 
 
 ## providers
 
 ```bash
-oeb providers                 # every name
-oeb providers datalab         # what --options takes for it, and its defaults
+oeb systems                 # every name
+oeb systems datalab         # what --options takes for it, its defaults, and the key it needs
 ```
 
-A provider is a vendor (`datalab`, `reducto`, `extend`, `llamaextract`, `mistral`, `azure-cu`) or any
-OpenRouter model id (`openai/gpt-5.6-sol`), which the single-shot LLM adapter runs with that model.
+A system is a vendor (`datalab`, `reducto`, `extend`, `llamaextract`, `mistral`, `azure-cu`) or any
+OpenRouter model id (`openai/gpt-5.6-sol`), which the single-shot LLM adapter runs with that model. Each
+needs its API key in the environment:
+
+| system | environment variable |
+| --- | --- |
+| `datalab` | `DATALAB_API_KEY` |
+| `reducto` | `REDUCTO_API_KEY` |
+| `extend` | `EXTEND_API_KEY`, and `EXTEND_WORKSPACE_ID` when the key reaches several workspaces |
+| `llamaextract` | `LLAMA_CLOUD_API_KEY` (or its older name, `LLAMAPARSE_API_KEY`) |
+| `mistral` | `MISTRAL_API_KEY` |
+| `azure-cu` | `AZURE_CU_KEY`, and the `endpoint` option: `--options '{"endpoint": "https://<resource>.cognitiveservices.azure.com"}'` |
+| an OpenRouter model id | `OPENROUTER_API_KEY` (or `OPENAI_API_KEY`) |
 
 ### Your own adapter
 
@@ -156,6 +238,7 @@ from omni_extract_bench.harness import contract
 @dataclasses.dataclass(frozen=True)
 class Mine(contract.Extractor):
     name: ClassVar[str] = "mine"
+    keys: ClassVar[tuple[str, ...]] = ("MINE_API_KEY",)   # checked before any call
     mode: str = "best"
 
     def extract(self, pdf, schema, *, timeout):          # the vendor's answer, as received
@@ -163,25 +246,192 @@ class Mine(contract.Extractor):
 ```
 
 `prepare_schema` reshapes the schema into the vendor's dialect, and `read` reads the extraction out of the
-raw answer (by default `raw["extraction"]`). Pass an instance to `benchmark.default().run([...])`, or
-declare the class under the entry-point group `omni_extract_bench.adapters` so `oeb run --providers mine`
+raw answer (by default `raw["extraction"]`). Pass an instance to `benchmark.default().run(Mine(), out="runs")`,
+or declare the class under the entry-point group `omni_extract_bench.adapters` so `oeb run --system mine`
 finds it.
+
+`extract` runs in several threads at once, one per document in flight (the class's `workers`, 5 unless you
+set it, or `--workers`), so anything it shares between calls, such as a client or a cache, must be safe to
+use from several threads.
+
+What `extract` raises decides what happens to the run:
+
+- `errors.VendorError(message, status=...)`, or one of its kinds (`VendorTimeout`, `VendorUnreachable`):
+  the vendor failed on this document. It is recorded and counts 0, and a 429 or 5xx status is retried first;
+- `errors.Stop(message)`, or one of its kinds (`AccountFailure`, `MissingCredential`): the run can't go on
+  for any document. Say in the message what to fix. A 401 or 402 `VendorError` already stops the run as an
+  `AccountFailure`, and a missing key in `keys` stops it before any call; and
+- anything else: a bug in your adapter. The run stops, and prints the whole traceback, whose code it is, and
+  the versions a bug report needs. `oeb predict` does the same.
+
+A refused connection stops the run too, whether it is raised as it is or as the cause of a `VendorError`:
+nothing listens at the address, so every document would fail the same way. This is what you see when a
+server you host isn't running; start it (or fix its `base_url`) and run the same command again.
+
+omni-bench-core's [overview](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#adapter)
+has the full rules, and [The rules](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#the-rules)
+has the table of every case.
+
+
+## Your own dataset
+
+A dataset is a folder (or a Hugging Face dataset with the same files). `help(omni_extract_bench.data)` has
+the same in short:
+
+```
+my-dataset/
+  manifest.parquet          one row per document
+  manifests/*.parquet       other manifests, if any, such as a subset of the same documents
+  pdfs/invoice-1.pdf        the documents that are sent
+  gold/invoice-1.json       each document's gold
+```
+
+The manifest is a parquet file with one row per document and these columns:
+
+| column | holds |
+| --- | --- |
+| `doc_id` | the document's id, a string. It names the document's files (`predictions/<doc_id>.json`), so it must be a file name (no `/`), and no two ids may be the same ignoring case |
+| `suite` | optional: the kind of document, a string such as `"invoices"`. Summaries are broken down by suite. A missing column, or an empty or null value, is `"other"` |
+| `doc_path` | the PDF's path, relative to the dataset folder, such as `pdfs/invoice-1.pdf`. Several rows may share one PDF |
+| `gt_path` | the gold file's path, relative to the dataset folder, named after its row: `<doc_id>.json`, such as `gold/invoice-1.json` |
+| `schema` | the JSON Schema to extract against, as a JSON string (`json.dumps(schema)`), not a nested object. It must be a non-empty JSON object |
+
+Any other column is kept, unread, in each row's `extra` (`data.Doc.extra`), for scorers of your own. The
+folder names `pdfs/` and `gold/` are only a convention: any paths inside the dataset work.
+
+A gold file is one JSON object: the extraction a perfect system would return for that document and its
+schema. For example, for a schema with `invoice_id` and `total_due`:
+
+```json
+{"invoice_id": "INV-4417", "total_due": 1240.0}
+```
+
+A run sends each schema with the benchmark's conventions written into its field descriptions
+(`task.Extract`, `overlay=True`), and with every key named `evaluation_config` or `default` removed, at any
+depth; these are the public dataset's notes for graders, and are never sent.
+
+To write a manifest:
+
+```python
+import json
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+rows = [{"doc_id": "invoice-1", "suite": "invoices", "doc_path": "pdfs/invoice-1.pdf",
+         "gt_path": "gold/invoice-1.json", "schema": json.dumps(schema)}]
+pq.write_table(pa.Table.from_pylist(rows), "my-dataset/manifest.parquet")
+```
+
+Then check it, run on it, and grade it:
+
+```bash
+oeb check --dataset my-dataset/                                      # no call; names the first problem
+oeb run --system datalab --dataset my-dataset/ --out runs/            # predict, then grade
+oeb grade runs/datalab-1a2b3c4d                                      # grade again; the run knows its dataset
+oeb grade mine/ --dataset my-dataset/                                # your own predictions/<doc_id>.json
+```
+
+`oeb check` prints `{"dataset", "manifest", "rows", "suites"}`. Another manifest inside the folder is
+`--manifest manifests/<name>.parquet`. In Python, the same dataset is `benchmark.default("my-dataset/")`.
+
+
+## Your own scorer
+
+Field matching is the benchmark's scorer, but a benchmark can have several. To grade with one of your own
+beside it, build the benchmark directly. A scorer is a frozen dataclass with `gold(row)`, which reads a
+row's gold, and `score(pred, gold)`, which returns a `scorer.Score`:
+
+```python
+import dataclasses
+import json
+
+from omni_bench_core import benchmark, scorer
+from omni_extract_bench import data, task
+from omni_extract_bench.harness.providers.datalab import Datalab
+from omni_extract_bench.scorers import field_matching
+
+
+@dataclasses.dataclass(frozen=True)
+class KeysFound(scorer.Scorer):
+    """The share of the gold's top-level keys that the prediction has."""
+
+    def gold(self, row):
+        return json.loads(row.gt_path.read_text())
+
+    def score(self, pred, gold):
+        return scorer.Score({"keys_found": sum(k in pred for k in gold) / len(gold) if gold else 1.0})
+
+
+if __name__ == "__main__":
+    b = benchmark.Benchmark(task.Extract(), data.DEFAULT_DATASET,
+                            [field_matching.FieldMatching(), KeysFound()], data.MANIFEST)
+    b.run(Datalab(mode="accurate"), out="runs", sample=20)
+    b.grade("runs/datalab-1a2b3c4d")          # a run you already have: graded again, with no call
+```
+
+The scorers are not part of a run's question, so the runs you already have keep their folders, and `grade`
+adds a `keys_found/` folder beside `field_matching/`. The `oeb` command grades with field matching only.
+omni-bench-core's [overview](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#scorer)
+explains scorers, and its [toy task](https://github.com/datalab-to/omni-bench-core/blob/main/tests/test_core.py)
+is a whole benchmark with its own scorer.
 
 
 ## What a run writes
 
-omni-bench-core's run folder, one per vendor and options:
+omni-bench-core's run folder, one per question (system, options, dataset, manifest, task and documents):
 
 ```
 runs/datalab-69059f7c/
-  settings.json                    what the run asked, its dataset, commit and manifest
+  settings.json                    the question, and the timeout
   records/<doc_id>.json            each document's record, as `predict` returns it
   predictions/<doc_id>.json        each document's extraction alone; all grading reads
   field_matching/
-    scores.jsonl                   one line per graded document: id, suite, status, and score's numbers
+    scores.jsonl                   one line per document: id, suite, status, and score's numbers
     summary.json                   the summary: the headline, counts, the metrics, and per suite
-    details/<doc_id>.jsonl         one verdict per address (`--no-verdicts` skips them)
+    details/<doc_id>.jsonl         one verdict per address (`--no-details` skips them)
+    cache/<doc_id>.json            each document's kept score, reused while its prediction and gold don't change
 ```
 
-The folder is named for the vendor and a digest of every option, so two configurations never share one.
+The folder is named for the system's label and a digest of the question, so two configurations, or two
+choices of documents, never share one.
+
+settings.json is written before the first call, and holds:
+
+- `run`: the folder's name;
+- `system`: the system's name, such as `datalab`;
+- `options`: every option of the system, defaults included;
+- `dataset`: the dataset, as an `hf://datasets/<org>/<name>` address (without its revision) or a folder's
+  full path;
+- `manifest`: the manifest's path inside the dataset;
+- `task`: the task's name and options, `{"name": "extract", "options": {"overlay": true}}`;
+- `rows`: which documents, as chosen by `--suites`, `--only`, `--sample` and `--limit`, such as
+  `{"sample": 20}`. `{}` means every document of the manifest;
+- `commit`: the commit the dataset was downloaded at, for an `hf://` dataset only; and
+- `timeout_s`: the seconds each document may take, as of the latest run of this folder. It isn't part of
+  the question (see [run](#run)).
+
+A record, `records/<doc_id>.json`, holds:
+
+- `system` and `options`: the system and its options, as in settings.json;
+- `package`: the adapter's package and its version, such as `"omni-extract-bench 1.0.0"`, so answers from
+  two versions of an adapter can be told apart; null for an adapter of your own outside any package;
+- `output`: the extraction, what predictions/ holds; null on a failure;
+- `raw`: the vendor's answer as received, kept so that a fixed `read` can read it again with no call
+  (`Benchmark.reread`);
+- `sent`: the schema as the vendor was sent it, kept on a failure too;
+- `error`: null, or the failure's `type`, `status`, `transient` (whether a retry could help) and `message`;
+- `cost`: `usd` and `credits` as the vendor reported them (a failed call's too, when it was billed),
+  `source` (the response field the cost was read from), `tokens_in`, `tokens_out`, `wall_s` (the seconds
+  the document took) and `attempts`;
+- `job_id`: the vendor's id for the job, when it made one;
+- `timeout_s`: the seconds this document was given; and
+- `captured_at`: when the answer was recorded.
+
+A summary holds what omni-bench-core adds to every summary (`scorer`, `options`, `run`, `rows`, `failed`,
+`coverage`, `headline_is`, and `partial` when graded with `--partial`), then field matching's own numbers
+(`scored`, `accuracy`, `precision`, `recall`, and one `<error>_rate` per kind of error), and `per_suite`,
+the same numbers for each suite. The `headline` is accuracy over the scored documents times coverage
+(`headline_is` says "accuracy × coverage"), so a failed document counts as 0.
+
 `oeb run` and `oeb grade` print each run's cost (from its records) beside its summary.

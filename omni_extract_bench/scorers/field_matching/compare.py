@@ -89,7 +89,7 @@ def score(pred: Any, gold: Any, schema: Any,
     - `matching_exact`: False when an array was too large to pair exactly.
 
     An address is a key path, so precision and recall treat a key path and its value as one detection: a
-    value read wrongly is charged on both sides. Row counts are reported as `gt_rows`, `pred_rows` and
+    value read wrongly is charged on both sides. Row counts are reported as `gold_rows`, `pred_rows` and
     `matched_rows`. With `verdicts=True`, the result also holds one `Verdict` per address, saying what
     happened there; it costs almost nothing, because aligning the two documents is nearly all of the work.
 
@@ -143,13 +143,13 @@ def score(pred: Any, gold: Any, schema: Any,
     slots = _schema_nodes(schema)
     extra_kind = {a: _classify_extra(a, slots) for a in only_pred}
     extra = collections.Counter(extra_kind.values())
-    gt_rows = pred_rows = paired = 0
+    gold_rows = pred_rows = paired = 0
     for prefix in _find_arrays(union):
         g = _extract_rows_at(gold_leaves, prefix, frozenset())
         p = _extract_rows_at(pred_leaves, prefix, frozenset())
         grow = {i for i, r in g.items() if r.is_object()}
         prow = {i for i, r in p.items() if r.is_object()}
-        gt_rows += len(grow)
+        gold_rows += len(grow)
         pred_rows += len(prow)
         paired += len(grow & prow)
 
@@ -193,7 +193,7 @@ def score(pred: Any, gold: Any, schema: Any,
         "asserted": asserted,
         "addresses_found": found,
         "addresses_read_right": read_right,
-        "gt_rows": gt_rows,
+        "gold_rows": gold_rows,
         "pred_rows": pred_rows,
         "matched_rows": paired,
         "matching_exact": not inexact,

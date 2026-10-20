@@ -5,7 +5,7 @@ The PDF goes inline as a base64 data URL and the extraction comes back as
 
 Auth: MISTRAL_API_KEY.
 
-    oeb run --providers mistral
+    oeb run --system mistral
 """
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ class Mistral(contract.Extractor):
     """Mistral OCR. Nothing to steer: the document and the schema go in one call and that is all."""
 
     name: ClassVar[str] = "mistral"
+    keys: ClassVar[tuple[str, ...]] = ("MISTRAL_API_KEY",)
     workers: ClassVar[int] = 5
 
     def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
@@ -39,9 +40,7 @@ class Mistral(contract.Extractor):
         operation rather than to total elapsed time, so a server trickling bytes could outlast it; for a
         single call that is the closest an HTTP client gets to a wall-clock cap.
         """
-        key = os.environ.get("MISTRAL_API_KEY")
-        if not key:
-            raise errors.MissingCredential("MISTRAL_API_KEY is not set")
+        key = os.environ["MISTRAL_API_KEY"]
 
         b64 = base64.b64encode(pdf.read_bytes()).decode()
         body = {

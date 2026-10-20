@@ -208,7 +208,7 @@ _DIALECTS = {
     "datalab": (datalab.Datalab().prepare_schema, {}),
     "llamaextract": (llamaextract.LlamaExtract().prepare_schema, {}),
     "extend": (_extend.Extend().prepare_schema, {"id": "id__"}),
-    "azure-cu": (azure_cu.AzureCU().prepare_schema, {}),
+    "azure-cu": (azure_cu.AzureCU(endpoint="https://x.example").prepare_schema, {}),
 }
 KNOWN_BROKEN = {
     "azure-cu": "asked for 45% of the corpus's fields; `_field` dispatches on `type` and the "
@@ -247,7 +247,8 @@ _ANNOTATED = {"type": "object", "evaluation_config": "array_llm",
               "properties": {"amt": {"anyOf": [{"type": "number"}, {"type": "null"}],
                                      "default": None, "description": "the amount"}}}
 for _name, _mod in (("datalab", datalab.Datalab()), ("llamaextract", llamaextract.LlamaExtract()),
-                    ("extend", _extend.Extend()), ("azure-cu", azure_cu.AzureCU()), ("mistral", mistral.Mistral())):
+                    ("extend", _extend.Extend()), ("azure-cu", azure_cu.AzureCU(endpoint="https://x.example")),
+                    ("mistral", mistral.Mistral())):
     _prepared = _prepared_by(_mod, _copy.deepcopy(_ANNOTATED))
     check(f"{_name}: the adapter's own prepare_schema is what ran",
           _prepared == _mod.prepare_schema(strip_bench_keys(SCHEMA.apply_overlay(
@@ -262,7 +263,7 @@ check("a dialect-less adapter is identity, not a dropped schema",
 check("llamaextract is sent the nullability the schema declares, not a collapsed union",
       "anyOf" in json.dumps(_prepared_by(llamaextract.LlamaExtract(), _copy.deepcopy(_ANNOTATED))))
 check("azure-cu's payload is a fieldSchema, not a JSON Schema",
-      "fields" in _prepared_by(azure_cu.AzureCU(), _copy.deepcopy(_ANNOTATED)))
+      "fields" in _prepared_by(azure_cu.AzureCU(endpoint="https://x.example"), _copy.deepcopy(_ANNOTATED)))
 check("extend's payload carries the aliased name",
       "id__" in json.dumps(_prepared_by(_extend.Extend(), {"type": "object", "properties": {
           "id": {"type": "string"}}})))

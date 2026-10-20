@@ -3,7 +3,7 @@ each document is analysed against it. `AzureCU` says what to know before compari
 
 Auth: AZURE_CU_KEY. The `endpoint` is an option, not a credential.
 
-    oeb run --providers azure-cu --options '{"azure-cu": {"endpoint": "https://<resource>.cognitiveservices.azure.com"}}'
+    oeb run --system azure-cu --options '{"endpoint": "https://<resource>.cognitiveservices.azure.com"}'
 """
 from __future__ import annotations
 
@@ -175,14 +175,15 @@ class AzureCU(contract.Extractor):
 
     `endpoint` is an option for the same reason: it selects an Azure resource and region, and
     two runs against different deployments used to produce records nothing could tell apart.
-    There is no public Azure endpoint to default to, so the default is empty and `extract` says
-    what to pass. The key stays in the environment: it is a credential and belongs in no record.
+    There is no public Azure endpoint to default to, so it must be given, and making the adapter without one
+    says what to pass. The key stays in the environment: it is a credential and belongs in no record.
     """
 
     name: ClassVar[str] = "azure-cu"
+    keys: ClassVar[tuple[str, ...]] = ("AZURE_CU_KEY",)
     workers: ClassVar[int] = 3
     endpoint: str = dataclasses.field(
-        default="", metadata={"help": "the Azure resource to analyse against, e.g. "
+        default="", metadata={"help": "(required) the Azure resource to analyse against, e.g. "
                                       "https://<resource>.cognitiveservices.azure.com"})
     completion_model: str = dataclasses.field(
         default=DEFAULT_COMPLETION_MODEL,
@@ -191,7 +192,12 @@ class AzureCU(contract.Extractor):
     poll_interval: float = 3.0
 
     def __post_init__(self):
-        """Normalise here, so the options hold what the URLs are actually built from."""
+        """Normalise here, so the options hold what the URLs are actually built from. An empty endpoint is
+        refused here, so a run without one stops before any call."""
+        if not self.endpoint.strip():
+            raise errors.UsageError("azure-cu has no endpoint, the Azure resource to analyse against; give it in "
+                                    "its options: --options '{\"azure-cu\": {\"endpoint\": "
+                                    "\"https://<resource>.cognitiveservices.azure.com\"}}'")
         object.__setattr__(self, "endpoint", self.endpoint.rstrip("/"))
 
     def prepare_schema(self, schema: dict) -> dict:
@@ -204,12 +210,7 @@ class AzureCU(contract.Extractor):
         from a price list.
         """
         endpoint = self.endpoint
-        key = os.environ.get("AZURE_CU_KEY")
-        if not endpoint or not key:
-            raise errors.MissingCredential(
-                "azure-cu needs AZURE_CU_KEY in the environment and an endpoint in its options:\n"
-                "    --options '{\"azure-cu\": {\"endpoint\": "
-                "\"https://<resource>.cognitiveservices.azure.com\"}}'")
+        key = os.environ["AZURE_CU_KEY"]
         deadline = adapter.Budget(timeout)
 
         with httpx.Client(headers={"Ocp-Apim-Subscription-Key": key}, timeout=120) as client:
