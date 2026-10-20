@@ -342,7 +342,7 @@ def cmd_systems(args) -> int:
 
 
 def _print(x: Any) -> None:
-    json.dump(x, sys.stdout, indent=2, default=str)
+    json.dump(x, sys.stdout, indent=2, default=str, ensure_ascii=False)
     sys.stdout.write("\n")
 
 
