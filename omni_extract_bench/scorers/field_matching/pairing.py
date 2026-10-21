@@ -1,10 +1,9 @@
 """Pairing rows: which predicted row goes with which gold row, so every value has the same address on both
 sides.
 
-`align` renumbers the prediction's rows to match the gold's. It uses `_best_pairing`, which chooses the
-pairs, and `_worth_if_paired`, which prices one candidate pair (and, for nested arrays, pairs again one level
-down). `matching.py` holds the assignment solver they use.
-"""
+- `align`: renumbers the prediction's rows to match the gold's;
+- `_best_pairing`: chooses the pairs, with the solver in `matching.py`; and
+- `_worth_if_paired`: prices one candidate pair, pairing again one level down for nested arrays."""
 from __future__ import annotations
 
 from collections.abc import Hashable
@@ -17,49 +16,30 @@ from .documents import flatten, show  # noqa: F401 -- the examples in the docstr
 
 
 class Row(NamedTuple):
-    """One element of an array, split into two parts.
+    """One element of an array, split by how its values are reached.
 
-    Take a row like `{"issuer": "Acme", "prices": [1.5, 2.5]}`.
+    - `named`: values reached by key (`issuer`), which the schema names the same on both sides, so they
+      compare by lookup; and
+    - `arrays`: nested arrays, whose elements are reached by position, so they must be paired first
+      (`_worth_if_paired`).
 
-    `issuer` goes in `named`. You get to it by its key. The predicted row and the
-    ground-truth row both call it `issuer`, because the schema does. So comparing it is
-    easy: look up `issuer` in the other row and see if the values agree.
-
-    `prices` goes in `arrays`. You get to its contents by position. The predicted row's
-    `prices[0]` is not necessarily the ground-truth row's `prices[0]`, so there is nothing to
-    look up yet. Those have to be matched first, which is what `_worth_if_paired` does when it
-    descends.
-
-    That split is the only distinction in this file. Everything else follows from it.
-
-    One exception. If the caller said an array is `ordered`, its contents go in `named` too.
-    Calling an array ordered means position 0 really does mean position 0, so there is
-    nothing left to match. This has to happen here and not only in `align`, or
-    `_worth_if_paired` would judge the array ignoring order while the final score judged it by
-    position, and the two would disagree.
-    """
+    An array the caller calls `ordered` goes in `named` with its indices, since its positions already
+    mean the same thing on both sides."""
 
     named: Leaves
     arrays: dict[Address, dict[Hashable, "Row"]]
     key: tuple = ()
 
     def is_object(self) -> bool:
-        """True if this element is an object, meaning it has children with names.
-
-        An array can hold three kinds of thing. `{"a": 1}` is an object. `"hello"` is a
-        plain value. `[1, 2]` is another array. Only the first counts as a row for the
-        `recall` and `precision` numbers, which count rows rather than values.
-        """
+        """True if the element is an object (has named children), not a plain value or an array. Only
+        objects count as rows for `recall` and `precision`."""
         return (any(a and a[0][0] == KEY for a in self.named)
                 or any(a and a[0][0] == KEY for a in self.arrays))
 
     @classmethod
     def at(cls, leaves: Leaves, address: Address, ordered: frozenset) -> "Row":
-        """Build the row sitting at `address`, from that element's values.
-
-        Sorts each value into `named` or `arrays`, and canonicalises it on the way past so
-        it is done once here rather than on every comparison later.
-        """
+        """The row at `address`, with each value sorted into `named` or `arrays` and canonicalised once
+        here."""
         named: Leaves = {}
         grouped: dict[Address, dict[Hashable, Leaves]] = {}
         for a, v in leaves.items():
@@ -75,20 +55,9 @@ class Row(NamedTuple):
 
 
 def _content_key(named: Leaves, arrays: dict) -> tuple:
-    """What this row contains, in a form that sorts.
-
-    Two rows holding the same values get the same key, whatever order anything arrived in.
-    That is the point: it is read off content, never off position, so relabelling rows cannot
-    change it. Nested arrays contribute the sorted keys of their own elements, which makes the
-    key blind to how those elements are numbered -- and an `ordered` array is already in
-    `named` with its indices intact, so there the numbering is content and is kept.
-
-    Values are canonical by the time they get here, so two spellings of one value key alike
-    and sort together.
-
-    Built once per row, from children that already carry theirs, so the whole tree costs one
-    pass rather than one pass per comparison.
-    """
+    """What the row contains, as a sortable key read off content, never position, so renumbering rows can't
+    change it. Nested arrays contribute their elements' sorted keys; an `ordered` array is in `named`
+    with its indices."""
     def addr(a: Address) -> tuple:
         return tuple((kind, str(name)) for kind, name in a)
 
@@ -98,10 +67,7 @@ def _content_key(named: Leaves, arrays: dict) -> tuple:
 
 
 def _extract_rows_at(leaves: Leaves, prefix: Address, ordered: frozenset) -> dict[Hashable, Row]:
-    """Pull one array's elements out of a document's flat address map.
-
-    Give it the address of an array, get back its elements keyed by index. The indices are
-    whatever the document used. Making them line up with the other document is `align`'s job.
+    """The elements of the array at `prefix`, keyed by the document's own indices.
 
     >>> leaves = flatten({"r": [{"name": "Cloud", "q": [1.5, 2.5]}]})
     >>> rows = _extract_rows_at(leaves, ((KEY, "r"),), frozenset())
@@ -120,22 +86,14 @@ def _extract_rows_at(leaves: Leaves, prefix: Address, ordered: frozenset) -> dic
 
 def _worth_if_paired(pred: Row, gold: Row, scale: int,
                     inexact: list | None = None) -> tuple[int, int]:
-    """What would it be worth to pair these two rows?
+    """What pairing two rows is worth: `(matched, shared)`.
 
-    Returns two numbers.
+    - `matched`: how many values would agree; and
+    - `shared`: how many addresses both rows have, agreeing or not. It breaks ties, since the score
+      divides by the addresses either document uses.
 
-    `matched` is how many values would agree. That is the one you care about.
-
-    `shared` is how many addresses the two rows have in common, whether or not the values
-    agree. This one breaks ties. The final score divides by the number of addresses used by
-    either document, so a pair that shares addresses keeps that number down. Between two
-    pairings that match the same number of values, the one sharing more addresses scores
-    better.
-
-    The answer is exact, not a guess. Named values are a direct lookup. For each nested
-    array, we work out the best its own pairing could do and add that. Arrays inside a row
-    do not affect each other, so adding up their best cases gives the row's best case. That
-    holds because JSON is a tree. If documents could share nodes by reference it would not.
+    It is exact: named values are a lookup, and each nested array adds its own best pairing, which can
+    be added up because JSON is a tree (nested arrays don't affect each other).
 
     >>> as_row = lambda d: _extract_rows_at(flatten({"r": [d]}), ((KEY, "r"),), frozenset())[0]
     >>> _worth_if_paired(as_row({"issuer": "Acme", "value": 999.0}),
@@ -181,28 +139,12 @@ MAX_VECTOR_CELLS = 64 * 10**6
 
 def _pair_weights(pred: dict[Hashable, Row], gold: dict[Hashable, Row],
                   pi: list, gi: list, scale: int, inexact: list | None):
-    """Every pair's weight at once, or None to price them one at a time.
+    """Every pair's weight at once, as two sparse matrix products, or None to price pairs one at a time.
 
-    `_worth_if_paired` counts two intersections per pair: the addresses both rows carry, and
-    the ones where the values also agree. Counting shared features across every pair of two
-    collections of sets is a boolean matrix product, so the whole matrix is two compiled
-    multiplications rather than n*m interpreted calls. On the corpus's 3,437-row block that is
-    236 ms against 20.6 s, and 74% of a heavy document's time is in those calls.
-
-    It computes the same numbers, not an approximation of them. No pairing is forbidden and
-    nothing is bucketed, so `matching_exact` keeps meaning what it means.
-
-    Nested rows are not vectorised at all. A row carrying its own array is worth what its
-    sub-pairings are worth, which is a recursive solve and not an intersection. Those pairs are
-    handed to `_worth_if_paired` exactly as before -- same function, same arguments -- so the
-    recursive descent, the `inexact` list it threads, and the `approximated` sizes it reports
-    are untouched by this path. Only pairs where neither row has an array are read off the
-    product, and a block where every row has one falls back entirely.
-
-    Returns None rather than raising when the block is too small to be worth it, too large to
-    hold, or holds a value that cannot be hashed -- the caller then prices pairs the old way,
-    so this can decline any input it does not like.
-    """
+    The numbers are the same as `_worth_if_paired`'s, not an approximation. Pairs where either row has a
+    nested array are still priced by `_worth_if_paired`, since they need a recursive pairing. Returns
+    None when the block is too small to be worth it, too large to hold, or holds a value that can't be
+    hashed."""
     n, m = len(pi), len(gi)
     if n * m < MIN_VECTOR_CELLS:
         return None
@@ -279,15 +221,12 @@ def _pair_weights(pred: dict[Hashable, Row], gold: dict[Hashable, Row],
 
 def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: int,
                 inexact: list | None = None) -> list[tuple[Hashable, Hashable, int, int]]:
-    """Decide which predicted rows go with which ground-truth rows.
+    """Which predicted rows go with which gold rows: one `(predicted index, gold index, matched, shared)`
+    per pair.
 
-    Returns one entry per pair: (predicted index, ground-truth index, matched, shared).
-
-    The bar for keeping a pair is one matching value, and it decides the denominator. A row
-    that clears it is charged once, and its wrong fields score as wrong. A row that fails it
-    is charged twice: once as a gold row nobody found, once as a row the model made up. So
-    neither omission nor invention is free.
-    """
+    A pair is kept only if at least one value matches. A kept row's wrong fields score as wrong; a row
+    that isn't kept is charged twice, as a gold row not found and as a row invented, so neither omission
+    nor invention is free."""
     if not pred or not gold:
         return []
 
@@ -311,27 +250,19 @@ def _best_pairing(pred: dict[Hashable, Row], gold: dict[Hashable, Row], scale: i
 
 
 def align(gold: Leaves, pred: Leaves, ordered: frozenset = frozenset()) -> tuple[Leaves, list]:
-    """Renumber the prediction's rows to match the ground truth's.
+    """Renumbers the prediction's rows to match the gold's. Returns the rewritten addresses, and the sizes
+    of any array too big to pair exactly.
 
-    Returns the rewritten addresses, and the sizes of any array too big to match exactly.
-
-    Why it is needed. Object keys work as addresses: the model was given the schema, so `invoice.total` means
-    the same thing in both documents. Array indices don't: a model writes rows in the order it read them, so
-    its row 0 might be the gold's row 2. Once the predicted rows are paired with gold rows and renumbered,
-    every value has an address that means the same thing on both sides, and scoring compares two sets of
-    addresses. Pricing a pair of rows can need a pairing of their own nested arrays, the same problem one level
-    down:
+    Object keys mean the same thing on both sides (the schema names them), but array indices don't: a
+    system's row 0 may be the gold's row 2. Once rows are paired and renumbered, scoring compares two
+    sets of addresses. Pricing a pair of rows can need a pairing of their nested arrays:
 
         _best_pairing(gold books, predicted books)
             _worth_if_paired(book A, book B)             are these the same book?
                 _best_pairing(A.chapters, B.chapters)    only the chapters can say
 
-    Works outside in, one depth at a time. It has to: renumbering an outer array changes the
-    addresses of everything inside it. `rows[2].prices` can become `rows[p2].prices`. So the
-    list of arrays is rebuilt after each pass, because a list made up front goes stale.
-
-    An array the caller marked order-dependent is left alone. Its index already means
-    something, so there is nothing to renumber.
+    It works outside in, one depth at a time, and lists the arrays again after each depth, because
+    renumbering an outer array changes every address inside it. An `ordered` array is left as it is.
 
     >>> g = flatten({"r": [{"a": 1}, {"a": 2}]})
     >>> p = flatten({"r": [{"a": 2}, {"a": 1}]})       # right answer, rows swapped
@@ -355,15 +286,9 @@ def align(gold: Leaves, pred: Leaves, ordered: frozenset = frozenset()) -> tuple
 
 def _align_one(gold: Leaves, pred: Leaves, prefix: Address, scale: int,
                inexact: list, ordered: frozenset) -> Leaves:
-    """Renumber one array.
-
-    A predicted row that was paired takes its partner's index. A predicted row that was not
-    paired gets a made-up label like `p2`.
-
-    The made-up label matters. If an invented row borrowed a spare ground-truth index it
-    would look like a real row that happened to be wrong. If we dropped it instead, inventing
-    rows would be free. Giving it its own address means it is counted, and counted against.
-    """
+    """Renumbers one array: a paired predicted row takes its partner's index, and an unpaired one gets its
+    own label (`p2`), so an invented row is counted against the system rather than passing as a wrong
+    real row or being dropped for free."""
     gold_rows = _extract_rows_at(gold, prefix, ordered)
     pred_rows = _extract_rows_at(pred, prefix, ordered)
     if not gold_rows or not pred_rows:

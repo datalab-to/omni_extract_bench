@@ -4,7 +4,7 @@ This is the public API. There are three entry points:
 
 - `score`: score one document's prediction against its ground truth;
 - `predict`: one document through one vendor; and
-- `run`: the benchmark, every document through every vendor, resumable.
+- `run`: the benchmark, every document through one system, resumable.
 
 Predicting and running are built on [omni-bench-core](https://github.com/datalab-to/omni-bench-core), which holds
 the loop, the run folders and the rules every call and every grading follows. This package adds what is
@@ -15,7 +15,7 @@ The sections:
 
 1. [score](#score): grade one prediction against one ground truth;
 2. [predict](#predict): one document, one vendor;
-3. [run](#run): the whole corpus, every vendor, resumable;
+3. [run](#run): the whole corpus through one system, resumable;
 4. [providers](#providers): what you can run, what each one takes and needs, and adding your own;
 5. [Your own dataset](#your-own-dataset): its folder, its manifest and its gold files;
 6. [Your own scorer](#your-own-scorer): grading with a scorer of yours beside field matching; and
@@ -99,9 +99,10 @@ From the command line, the record is printed as JSON, and the command exits 1 wh
 oeb predict --system datalab --doc invoice.pdf --schema schema.json --options '{"mode": "accurate"}'
 ```
 
-A missing API key is refused before the call, saying what to set (`export DATALAB_API_KEY=...`). As in a
-run, a refused connection or an account failure stops it with the reason, and an exception from the
-adapter's own code is reported as a bug in that adapter, saying whose code it is, with the traceback.
+`oeb predict`, like `adapter.predict` from Python, refuses a missing API key before the call, saying what to set
+(`export DATALAB_API_KEY=...`), as a run's plan does. As in
+a run, a refused connection is raised with a note on how to start the server, an account that can't pay is a
+`PermissionError`, and any other exception is raised as it is, with a note naming the adapter.
 
 The record holds `system`, `options`, `package`, `output` (the extraction, null on a failure), `raw`
 (the vendor's answer as received), `sent` (the schema as the vendor was sent it), `error`, `cost`,
@@ -185,7 +186,7 @@ refuses, an account out of credits, a server of yours that isn't running, a bug 
 is not graded: `oeb run` raises the exception that stopped it, with its traceback, and running the same command
 again finishes it.
 `oeb grade --partial` (`partial=True` in Python) grades an unfinished run anyway, counting its unfinished
-documents as 0, and its summary lists them under `partial`.
+documents as 0; its summary counts them under `partial`, and names a few.
 
 Grading is fast on most documents, but field matching on a very large one takes long, because pairing the
 rows of large arrays is slow. On the public dataset, `long__real_ofac_ssi_full` takes about 2 minutes on its
@@ -254,41 +255,32 @@ finds it.
 set it, or `--workers`), so anything it shares between calls, such as a client or a cache, must be safe to
 use from several threads.
 
-One rule decides what an exception does, in `extract`, `prepare_schema`, `read` and a scorer's `prediction`
-alike ([The rules](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#the-rules)): a document
-counts 0 only when code says, on purpose, that the system failed, by raising `errors.SystemFailed`. Any other
-exception stops the run and prints its traceback.
+One rule decides what an exception does, in `extract`, `prepare_schema`, `read` and a scorer's
+`prediction` alike: a document counts 0 only when code raises `errors.SystemFailed` on purpose. Any other
+exception stops the run and is raised as it is, with a note naming the adapter and the document; running the
+same command again after the fix costs nothing for the documents already answered.
 
-What `extract` raises decides what happens to the run:
+In `extract`:
 
-- `errors.SystemFailed(message, status=...)`, or one of its kinds (`SystemTimeout`, `SystemUnreachable`):
-  the vendor failed on this document. It is recorded with its traceback and counts 0, and a 429 or 5xx status
-  is retried first. Read the fields of the vendor's answer you need while calling (a job id, a status, a cost)
-  inside `adapter.reading("what it is")`, which turns a `ValueError`, `KeyError`, `IndexError`, `TypeError` or
-  `AttributeError` raised inside into a `SystemFailed` saying what couldn't be read. A request that got no
-  answer (a connection error, a client timeout) is `raise contract.unreachable("what was sent", exc) from exc`:
-  a `SystemTimeout` for a timeout, a `SystemUnreachable` otherwise, which `--retry-failed` tries again. Raise
-  it `from exc`, and don't cut its message: the record keeps the traceback underneath, and cuts the message
-  itself;
-- anything else stops the run and is raised as it is, with its traceback and a note naming the adapter and
-  the document. Use a native exception whose message says what to fix (a `ValueError` for a wrong option).
-  A 401 or 402 `SystemFailed` already stops the run as a `PermissionError`, a refused connection stops it as
-  the connection error it is, and a missing key in `keys` is a `ValueError` before any call. A bug in your
-  adapter stops the run the same way. `oeb predict` does the same.
+- raise `errors.SystemFailed(message, status=...)`, or one of its kinds, for a vendor failure. It is recorded
+  with its traceback and counts 0; a 429 or 5xx is retried first, and a 401 or 402 stops the run as a
+  `PermissionError`;
+- read the fields you need while calling (a job id, a status, a cost) inside `adapter.reading("what it is")`,
+  which turns a `ValueError`, `KeyError`, `IndexError`, `TypeError` or `AttributeError` into a
+  `SystemFailed`;
+- for a request that got no answer, `raise contract.unreachable("what was sent", exc) from exc`: a
+  `SystemTimeout` or a `SystemUnreachable`, which `--retry-failed` tries again. A refused connection in its
+  chain stops the run instead, since nothing listens at the address; and
+- use a native exception, whose message says what to fix, for anything that isn't the vendor's failure (a
+  `ValueError` for a wrong option).
 
 `prepare_schema` raises `contract.DialectError`, a `SystemFailed`, for a schema the vendor's dialect can't
-express. The document is recorded as failed, with the schema it couldn't reshape, and no call is made. Anything
-else it raises is a bug, and stops the run before any call.
+express: the document is recorded as failed, with the schema, and no call is made.
 
-`read` takes the raw answer and returns the extraction:
-
-- raise `errors.SystemFailed` for an answer that holds no usable extraction (a missing field, an LLM's broken
-  JSON). `contract.extraction(x)` does it for anything but a non-empty JSON object, and `adapter.reading` does
-  it for a malformed answer read inside it. The document is recorded as `Unreadable`, counts 0, and keeps its
-  raw answer; and
-- anything else is a bug in `read`. The record is saved with its raw answer and `"unread": true`, and the run
-  stops. Running the same command again after the fix reads every unread answer with no call, before
-  predicting the rest.
+`read` takes the raw answer and returns the extraction. Raise `errors.SystemFailed` for an answer with no
+usable extraction (`contract.extraction(x)` does, for anything but a non-empty JSON object); the document is
+recorded as `Unreadable` and keeps its raw answer. Anything else is a bug: the answer is saved unread, the
+run stops, and running the same command again after the fix reads it with no call.
 
 For a vendor whose answer holds the extraction as a JSON string under `result`:
 
@@ -307,10 +299,6 @@ class Stringly(Mine):
             x = json.loads(raw["result"])
         return contract.extraction(x)
 ```
-
-A refused connection stops the run too, whether it is raised as it is or as the cause of a `SystemFailed`:
-nothing listens at the address, so every document would fail the same way. This is what you see when a
-server you host isn't running; start it (or fix its `base_url`) and run the same command again.
 
 omni-bench-core's [overview](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#adapter)
 has the full rules, and [The rules](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#the-rules)
@@ -384,7 +372,8 @@ oeb grade mine/ --dataset my-dataset/                                # your own 
 
 Field matching is the benchmark's scorer, but a benchmark can have several. To grade with one of your own
 beside it, build the benchmark directly. A scorer is a frozen dataclass with `gold(row)`, which reads a
-row's gold, and `score(pred, gold)`, which returns a `scorer.Score`:
+row's gold, `score(pred, gold)`, which returns a `scorer.Score`, and `summarize(lines)`, which turns the scored
+documents' lines into a summary with a `headline` (0 to 1) and `headline_is`:
 
 ```python
 import dataclasses
@@ -405,6 +394,10 @@ class KeysFound(scorer.Scorer):
 
     def score(self, pred, gold):
         return scorer.Score({"keys_found": sum(k in pred for k in gold) / len(gold) if gold else 1.0})
+
+    def summarize(self, lines):
+        found = sum(x["keys_found"] for x in lines) / len(lines)
+        return {"headline": found, "headline_is": "keys_found"}
 
 
 if __name__ == "__main__":

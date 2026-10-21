@@ -253,9 +253,8 @@ def cmd_score(args) -> int:
 
 
 def cmd_predict(args) -> int:
-    """One document through one system, by the rules a run uses; the record on stdout, and exit 1 when the
-    record is a failure. A refused connection stops it, and any other exception from the adapter is a bug in
-    the adapter, raised as it is with a note naming the adapter, as in a run."""
+    """One document through one system, by a run's rules: the record on stdout, and exit 1 when it is a
+    failure. Anything the adapter raises is raised as it is, with a note naming the adapter."""
     from omni_bench_core import adapter
 
     from . import harness, task
@@ -285,8 +284,8 @@ def cmd_check(args) -> int:
 
 
 def cmd_systems(args) -> int:
-    """The names `--system` accepts, or one system's options, their defaults, and the environment variables
-    it needs (`Adapter.keys`). Both are read off the adapter class, so this can't drift from the adapter."""
+    """The names `--system` accepts, or one system's options, their defaults and the environment variables
+    it needs, all read off the adapter class."""
     import dataclasses
 
     from . import harness
@@ -404,12 +403,9 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Runs one `oeb` command and returns its exit code.
-
-    `run` shows its plan and waits for a yes, unless given `-y` or run with no terminal. An interrupt exits
-    130. Anything else is raised as it is, with its traceback: a `ValueError` for what was asked wrong (a
-    flag, an option, a dataset, a missing key, a run graded before it is finished), a `PermissionError` for
-    an account that can't pay, and a bug as whatever it raised, with a note saying where."""
+    """Runs one `oeb` command and returns its exit code. `run` shows its plan and waits for a yes, unless
+    given `-y` or run with no terminal. An interrupt exits 130; anything else is raised as it is, with
+    its traceback."""
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser().parse_args(argv)
     args.argv = argv

@@ -52,7 +52,7 @@ oeb run --system datalab --options '{"mode": "accurate"}' --limit 1 --out runs/
 
 A missing key stops the run before any call, and says what to set, such as `export DATALAB_API_KEY=...`. `oeb systems <name>` prints a system's options and the variables it needs.
 
-A run is one system. To compare systems, or one system's options, run one command per system, with the same choice of documents (`--sample`, `--limit` or `--only`), so they answer the same rows:
+To compare systems, or one system's options, run one command per system, with the same choice of documents (`--sample`, `--limit` or `--only`), so they answer the same rows:
 
 ```bash
 oeb run --system datalab --options '{"mode": "accurate"}' --sample 20 --out runs/
@@ -316,7 +316,7 @@ oeb predict --system datalab --doc invoice.pdf --schema schema.json --options '{
 
 ## Write your own scorer or adapter
 
-A scorer is a class with `gold` and `score`; an adapter is a class with `call` (for extraction, `extract`). omni-bench-core's [overview](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md) explains both with small examples. [`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-adapter) shows an extraction adapter and how it signals each outcome, and [how to grade with a scorer of your own](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-scorer) beside field matching.
+A scorer is a class with `gold`, `score` and `summarize`; an adapter is a class with `call` (for extraction, `extract`). omni-bench-core's [overview](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md) explains both with small examples. [`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-adapter) shows an extraction adapter and how it signals each outcome, and [how to grade with a scorer of your own](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-scorer) beside field matching.
 
 ## Tests
 

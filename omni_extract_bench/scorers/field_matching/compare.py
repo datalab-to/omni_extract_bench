@@ -1,6 +1,5 @@
-"""One document compared with its gold: every address paired, given a verdict, and counted into the
-document's numbers (`score`). The documents are flattened by `documents.py`, and rows paired by `pairing.py`.
-"""
+"""One document compared with its gold (`score`): every address paired, given a verdict, and counted. The
+documents are flattened by `documents.py`, and their rows paired by `pairing.py`."""
 from __future__ import annotations
 
 import collections
@@ -16,21 +15,11 @@ from .pairing import _extract_rows_at, align
 
 def _resolve_order(order_matters: bool | Iterable[str], schema: Any,
                    documents: Iterable[Any]) -> frozenset:
-    """Turn the caller's array names into the keys the scorer matches against.
+    """The caller's array names (`order_matters`) as node keys; `True` names every array, `False` none.
 
-    A name that fits no array is an error, not a no-op. Silence would be worse than useless
-    here: a typo leaves the array order-free, which is the default, so the run finishes and
-    reports a number that looks entirely fine.
-
-    A name counts if the schema declares it, or if any of `documents` contains it. Both are
-    needed, and so is being generous about which documents. The schema covers a table that
-    happens to be empty here. The documents cover an array the schema forgot to declare. And
-    passing the documents both before and after preparation covers a gold row dropped for
-    being all-null, which can take the last instance of a nested array with it -- the name is
-    still right, and rejecting it would be a false alarm.
-
-    `True` names every array found that way, `False` none.
-    """
+    A name that fits no array is an error, since a typo would silently leave the array order-free. A
+    name fits if the schema declares it or any of `documents` holds it (passed before and after
+    preparation), so an array that is empty here, or undeclared, still counts."""
     if isinstance(order_matters, str):
         raise TypeError(
             f"order_matters takes a list of array names, not one string. Did you mean "
@@ -76,25 +65,19 @@ def _resolve_order(order_matters: bool | Iterable[str], schema: Any,
 def score(pred: Any, gold: Any, schema: Any,
           order_matters: bool | Iterable[str] = (), verdicts: bool = False,
           absent: Callable[[Any], bool] = values.states_nothing) -> dict:
-    """Score one prediction against one ground truth.
+    """One prediction scored against one gold. The result holds, among others:
 
-    The result holds, among others:
-
-    - `accuracy`: from 0 to 1, the headline number;
-    - `f1`: reported next to accuracy, because it charges a hopeless guess;
+    - `accuracy`: from 0 to 1, the headline;
+    - `f1`: reported beside accuracy, because it charges a hopeless guess;
     - `recall`: matched addresses over gold addresses;
-    - `precision`: matched addresses over asserted addresses; and
+    - `precision`: matched addresses over asserted addresses;
+    - `gold_rows`, `pred_rows` and `matched_rows`: the row counts; and
     - `matching_exact`: False when an array was too large to pair exactly.
 
-    An address is a key path, so precision and recall treat a key path and its value as one detection: a
-    value read wrongly is charged on both sides. Row counts are reported as `gold_rows`, `pred_rows` and
-    `matched_rows`. With `verdicts=True`, the result also holds one `Verdict` per address, saying what
-    happened there; it costs almost nothing, because aligning the two documents is nearly all of the work.
-
-    `absent` decides which values state nothing, and so get no address on either side. The
-    default drops `null`, `""`, `[]` and `{}`; `lambda v: False` makes each one a value the
-    prediction must reproduce. Scores under different `absent`s are not comparable.
-    """
+    An address is a key path, so a value read wrongly is charged on both sides. `verdicts=True` adds one
+    `Verdict` per address. `absent` decides which values state nothing and get no address: by default
+    `null`, `""`, `[]` and `{}`; `lambda v: False` makes each a value to reproduce. Scores under
+    different `absent`s aren't comparable."""
     if pred is not None and not isinstance(pred, dict):
         raise TypeError(f"the prediction must be a JSON object, the extraction, or None for no answer; "
                         f"got a {type(pred).__name__}")
@@ -202,7 +185,7 @@ def score(pred: Any, gold: Any, schema: Any,
 
 
 class Verdict(NamedTuple):
-    """What happened at one address. One per address, from `score(..., verdicts=True)`."""
+    """What happened at one address, from `score(..., verdicts=True)`."""
     address: Address
     gold_raw: Any   
     pred_raw: Any   

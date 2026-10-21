@@ -1,13 +1,9 @@
-"""Single-shot LLM extraction: the PDF and the schema go to the model in one call, through any
-OpenAI-compatible endpoint (OpenRouter by default, the only one that reports real billing, `usage.cost`).
+"""A raw model: the PDF and the schema in one completion, through any OpenAI-compatible endpoint
+(OpenRouter by default, the one that reports real billing in `usage.cost`; another with the `base_url`
+option). Auth: OPENROUTER_API_KEY, or OPENAI_API_KEY. The model is the system's name on the command
+line:
 
-Auth: OPENROUTER_API_KEY, or OPENAI_API_KEY. Another endpoint is chosen with the `base_url` option.
-
-    oeb run --system anthropic/claude-opus-5
-
-The model is the provider name on the command line; in code it is the `model` option,
-`LLMSingleShot(model="anthropic/claude-opus-5")`, and it names the run folder (`label`).
-"""
+    oeb run --system anthropic/claude-opus-5"""
 from __future__ import annotations
 
 import base64
@@ -62,11 +58,13 @@ def max_output_for(model: str) -> int:
 
 @dataclasses.dataclass(frozen=True)
 class LLMSingleShot(contract.Extractor):
-    """A raw model, sent the PDF and the schema in one completion, through any OpenAI-compatible endpoint.
+    """A raw model, sent the PDF and the schema in one completion. Options:
 
-    One class stands for every model, so the model names the run folder (`label`). `max_output_tokens`
-    of None is resolved to the model's published ceiling in `__post_init__`, so the record states the
-    number the model was handed, not `null`."""
+    - `model`: an OpenRouter org/model id, which also names the run folder (`label`);
+    - `max_output_tokens`: by default the model's published ceiling, resolved when made, so the record
+      states it;
+    - `base_url`; and
+    - `attempts`: how many completions to try for a usable answer."""
 
     name: ClassVar[str] = "llm_single_shot"
     keys: ClassVar[tuple[str, ...]] = ("OPENROUTER_API_KEY",)
@@ -90,22 +88,15 @@ class LLMSingleShot(contract.Extractor):
         return self.model.replace("/", "__")
 
     def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
-        """One completion with the schema as `response_format`, retried only for a bad answer.
+        """One completion with the schema as `response_format`, asked again, at a slightly higher
+        temperature, only after an unusable answer (no choices, not JSON, not an object). Transport
+        failures are raised with their status for omni-bench-core to retry, so the two loops never
+        multiply. On purpose:
 
-        The loop here raises the temperature after a reply that would not parse, had no choices, or was not an
-        object: it tries to get a usable answer out of a model that gave a malformed one. Transport failures
-        are not retried here: a rate limit or a 5xx becomes a `SystemFailed` with its status, and omni-bench-core's
-        retry decides, so the two loops can't multiply into 12 attempts on one document.
-
-        Three cases are handled on purpose, because getting them wrong decides a vendor's score:
-
-        - `finish_reason == "length"` is not retried: the answer didn't fit in `max_tokens`, and a retry at
-          the same limit can't fit it either. Retrying it three times once cost $7.35 on one document;
-        - `choices` can be None when the provider behind the endpoint failed, with the real message in a
-          top-level `error`. That message is raised, so the failure says what went wrong; and
-        - an answer that isn't JSON is retried at a slightly higher temperature, but the model's text is kept
-          in the record either way, so a fenced or broken answer can be read again rather than paid for again.
-        """
+        - `finish_reason == "length"` isn't asked again, since the same limit can't fit the answer;
+        - no `choices` raises the provider's own message from the top-level `error`; and
+        - an answer that isn't JSON keeps its text in the record, so it can be read again without paying
+          again."""
         key = os.environ.get("OPENROUTER_API_KEY") or os.environ["OPENAI_API_KEY"]
 
         deadline = adapter.Budget(timeout)

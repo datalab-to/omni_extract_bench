@@ -1,9 +1,10 @@
-"""The schema every vendor is sent, and the reshaping more than one adapter needs.
+"""The schema every vendor is sent. Two steps apply to every vendor alike, and neither edits the dataset's
+files:
 
-Before any vendor sees a schema, two steps apply to every vendor alike: `strip_benchmark_keys` removes the
-benchmark's own annotations, and `apply_overlay` states the gold conventions in the field descriptions.
-Neither edits the dataset's files. A transform that only one adapter needs lives in that adapter.
-"""
+- `strip_benchmark_keys`: removes the benchmark's own annotations; and
+- `apply_overlay`: states the gold conventions in the field descriptions.
+
+A reshaping only one adapter needs lives in that adapter."""
 from __future__ import annotations
 import copy
 
@@ -14,11 +15,8 @@ BENCHMARK_ONLY_KEYS = ("evaluation_config", "default")
 
 
 def strip_benchmark_keys(node, keys=BENCHMARK_ONLY_KEYS):
-    """`node` without the annotations the benchmark added (`evaluation_config`, `default`). It changes no field
-    or type, so it is safe for every vendor.
-
-    Sending our own grader metadata as part of the task is a bug: one vendor validates strictly and rejected
-    8 of 40 documents over it."""
+    """`node` without the annotations the benchmark added (`evaluation_config`, `default`), which are
+    grader metadata, not part of the task; a strict vendor rejects them. No field or type changes."""
     if isinstance(node, list):
         return [strip_benchmark_keys(x, keys) for x in node]
     if not isinstance(node, dict):
@@ -63,17 +61,12 @@ def _matches(name: str, conv) -> bool:
 
 
 def apply_overlay(schema: dict, _name: str = "") -> dict:
-    """A copy of `schema` with each gold convention (`CONVENTIONS`) stated in the descriptions of the fields it
-    applies to.
+    """A copy of `schema` with each gold convention (`CONVENTIONS`) stated in the descriptions of the
+    fields it applies to. Stating a convention to every vendor, rather than loosening the comparison,
+    keeps a vendor that answers with a paragraph from being credited.
 
-    A convention is stated to every vendor rather than allowed for in the comparison, because a looser
-    comparison would credit a vendor that answers with a paragraph.
-
-    Every reshaping of a schema, here or in an adapter, follows one rule: it may change how a constraint is
-    written, never what is asked for. Resolving a $ref, collapsing a nullable union, or moving a null from an
-    enum to the field's optionality changes how it is written; removing a field changes what is asked. One
-    shape sent to every vendor would make the strict ones fail documents they could handle: in one run a vendor
-    came 8th of 9 with 19 of 40 documents failed by schema delivery alone, and 4th once that was fixed."""
+    Every reshaping, here or in an adapter, may change how a constraint is written (resolving a `$ref`,
+    collapsing a nullable union), never what is asked for (removing a field)."""
     if not isinstance(schema, dict):
         return schema
     out = copy.deepcopy(schema)

@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
-"""Run Reducto extraction against a PDF + JSON Schema.
+"""Reducto: uploads the PDF, submits an /extract_async job and polls it, with every setting fixed here
+(deep extraction on, its v2 model, citations off, and an empty system prompt by default, so the schema's
+descriptions guide it). Auth: REDUCTO_API_KEY.
 
-It uploads the PDF, submits an /extract_async job and polls it. Every setting is set here: deep extraction
-on, deep extraction model v2, citations off, and an empty system prompt by default (the schema's field
-descriptions guide it).
-
-Auth: REDUCTO_API_KEY.
-
-Usage:
     oeb run --system reducto
 
-Adapted from longextract_bench (MIT, (c) 2026 Micro1) -- see providers/LICENSE-micro1.
-"""
+Adapted from longextract_bench (MIT, (c) 2026 Micro1); see providers/LICENSE-micro1."""
 
 from __future__ import annotations
 
@@ -37,16 +31,8 @@ _JOBS_PAGE = 200
 
 
 def _server_duration(client: httpx.Client, api_key: str, job_id: str) -> float | None:
-    """The request's server-side processing seconds, as Reducto records it on the
-    job (the /jobs listing exposes `duration`; the /job result does not). This is
-    the API request's own latency: it excludes our upload, the waits between polls, and
-    the queue before processing starts.
-
-    It is best effort, and it never raises. The extraction is already finished and paid for by the
-    time this is called, so a cosmetic field must not be able to discard it -- `raise_for_status`
-    here used to throw `httpx.HTTPStatusError` straight past `predict`, which catches
-    `SystemFailed` only. A job that has scrolled past `_JOBS_PAGE` simply has no duration.
-    """
+    """The job's server-side processing seconds, from the /jobs listing, or None. It never raises: the
+    extraction is already paid for, so a cosmetic field must not discard it."""
     try:
         r = client.get(
             f"{BASE_URL}/jobs",
@@ -171,11 +157,8 @@ class Reducto(contract.Extractor):
     poll_interval: int = 5
 
     def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
-        """Upload, submit an async extract, poll to completion.
-
-        A job that outlives its budget is named in the record by `job_id`, so it can be chased by
-        hand rather than being anonymous.
-        """
+        """Uploads, submits an async extract, and polls it. A job that outlives its budget is named in the
+        record by `job_id`."""
         key = os.environ["REDUCTO_API_KEY"]
 
         deadline = adapter.Budget(timeout)
@@ -205,8 +188,8 @@ class Reducto(contract.Extractor):
                             job_id=job_id)
 
     def read(self, raw: Any, q: contract.Question) -> dict:
-        """The extraction in `result.result`. Reducto may answer with a list, one entry per extraction
-        pass, which `responses.as_object` merges."""
+        """The extraction in `result.result`; a list, one entry per pass, is merged by
+        `responses.as_object`."""
         with adapter.reading("the job's result"):
             resp = (raw.get("result") or {}) if isinstance(raw, dict) else {}
             found = responses.as_object(resp.get("result", resp))

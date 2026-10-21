@@ -1,10 +1,7 @@
-"""Azure AI Content Understanding adapter. A JSON Schema becomes an analyzer, created once per schema, and
-each document is analysed against it. `AzureCU` says what to know before comparing its numbers.
+"""Azure AI Content Understanding: a JSON Schema becomes an analyzer, created once per schema, and each
+document is analysed against it. Auth: AZURE_CU_KEY. `endpoint` is a required option:
 
-Auth: AZURE_CU_KEY. The `endpoint` is an option, not a credential.
-
-    oeb run --system azure-cu --options '{"endpoint": "https://<resource>.cognitiveservices.azure.com"}'
-"""
+    oeb run --system azure-cu --options '{"endpoint": "https://<resource>.cognitiveservices.azure.com"}'"""
 from __future__ import annotations
 
 import dataclasses
@@ -28,7 +25,7 @@ _TERMINAL_BAD = {"failed", "cancelled"}
 
 
 def _field(prop: dict) -> dict:
-    """One JSON-Schema property as a Content Understanding field definition."""
+    """One JSON Schema property as a Content Understanding field definition."""
     prop = prop or {}
     t = prop.get("type")
     if isinstance(t, list):
@@ -55,12 +52,12 @@ def _field(prop: dict) -> dict:
 
 
 def field_schema(schema: dict) -> dict:
-    """Azure takes a `fieldSchema`, not a JSON Schema, so this vendor's payload is not a schema at all."""
+    """The schema as Azure's `fieldSchema`, which isn't a JSON Schema."""
     return {"fields": {k: _field(v) for k, v in ((schema or {}).get("properties") or {}).items()}}
 
 
 def _value(node):
-    """Unwrap one Content Understanding value node to a plain Python value."""
+    """One Content Understanding value node as a plain value."""
     if not isinstance(node, dict):
         return node
     for key in ("valueString", "valueNumber", "valueInteger", "valueBoolean", "valueDate"):
@@ -84,32 +81,17 @@ _ANALYZER_LOCK = threading.Lock()
 
 
 def analyzer_id(fields: dict, completion_model: str, api_version: str) -> str:
-    """The analyzer's name: a digest of everything the analyzer is built from.
-
-    An analyzer is an object on Azure, reused by name, and a 409 when it is created means it already exists,
-    which this treats as success. So anything that changes what the analyzer is must change its name, or the
-    409 hands back a different analyzer. Named after the field schema alone, a run with `gpt-4.1` once reused
-    the `gpt-4.1-mini` analyzer, while its record said `gpt-4.1`.
-    """
+    """The analyzer's name: a digest of everything it is built from. Creating an analyzer that exists
+    returns 409, taken as success, so anything that changes the analyzer must change its name."""
     spelled = json.dumps({"fieldSchema": fields, "completion": completion_model,
                           "api_version": api_version}, sort_keys=True)
     return f"oeb-{hashlib.sha256(spelled.encode()).hexdigest()[:16]}"
 
 
 def _ensure_analyzer(client, analyzer: str, fields: dict, config: AzureCU, deadline) -> None:
-    """Create the analyzer once per process, not once per thread.
-
-    The cache is keyed by endpoint and analyzer, because the cache is shared by the whole process and an
-    analyzer lives inside one Azure resource. Keyed by the analyzer alone, a second run on another endpoint
-    skipped creating its own and then failed with a 404 on every document.
-
-    The lock is held for the whole create-and-wait, not only the cache lookup. A 409 says the analyzer exists,
-    not that it is ready, so a thread that lost the race would skip the wait below and analyse against an
-    analyzer still being set up. More `--workers` make that more likely, not less.
-
-    Threads that block here are waiting for something they need anyway, and the wait is bounded
-    by the holding document's own budget.
-    """
+    """Creates the analyzer once per process. The cache is keyed by endpoint and analyzer, since an
+    analyzer lives in one Azure resource. The lock is held through create-and-wait, because a 409 says
+    the analyzer exists, not that it is ready."""
     with _ANALYZER_LOCK:
         if (config.endpoint, analyzer) in _ANALYZERS:
             return
@@ -134,9 +116,7 @@ def _ensure_analyzer(client, analyzer: str, fields: dict, config: AzureCU, deadl
 
 
 def _await(client, op_url: str, *, deadline, poll_interval: float, want_result: bool):
-    """Polls one operation, within the document's budget rather than a fresh timeout. It is called twice per
-    document, once for the analyzer and once for the analysis; with a timeout each, azure-cu got two full
-    budgets where every other vendor got one."""
+    """Polls one operation within the document's budget, which covers both the analyzer and the analysis."""
     polls = 0
     retry = adapter.PollRetry(deadline)
     while True:
@@ -167,20 +147,15 @@ def _await(client, op_url: str, *, deadline, poll_interval: float, want_result: 
 
 @dataclasses.dataclass(frozen=True)
 class AzureCU(contract.Extractor):
-    """Azure AI Content Understanding.
+    """Azure AI Content Understanding. Options:
 
-    `completion_model` is a deployment choice, not a product tier: `gpt-4.1-mini` and `gpt-4.1` are different
-    systems behind one API, so which one ran has to be published beside the score.
+    - `endpoint`: the Azure resource to analyse against (required; there is no public default);
+    - `completion_model`: the deployment behind the analyzer, a different system per model, so publish
+      it with the score; and
+    - `api_version` and `poll_interval`.
 
-    Its field types are a smaller set than JSON Schema's: nested objects become `object`, arrays of objects
-    become `array` of `object`, and anything else becomes `string`. So the schema it is sent is a less exact
-    statement of the task than the one other vendors receive.
-
-    `endpoint` is an option for the same reason: it selects an Azure resource and region, and
-    two runs against different deployments used to produce records nothing could tell apart.
-    There is no public Azure endpoint to default to, so it must be given, and making the adapter without one
-    says what to pass. The key stays in the environment: it is a credential and belongs in no record.
-    """
+    Its field types are fewer than JSON Schema's (nested objects, arrays of objects, and strings), so it
+    is sent a less exact statement of the task than other vendors. Azure reports no per-call cost."""
 
     name: ClassVar[str] = "azure-cu"
     keys: ClassVar[tuple[str, ...]] = ("AZURE_CU_KEY",)
@@ -195,8 +170,7 @@ class AzureCU(contract.Extractor):
     poll_interval: float = 3.0
 
     def __post_init__(self):
-        """Normalise here, so the options hold what the URLs are actually built from. An empty endpoint is
-        refused here, so a run without one stops before any call."""
+        """Refuses an empty endpoint, and drops its trailing slash, so the options hold what the URLs use."""
         if not self.endpoint.strip():
             raise ValueError("azure-cu has no endpoint, the Azure resource to analyse against; give it in "
                              "its options: --options '{\"azure-cu\": {\"endpoint\": "
@@ -207,11 +181,7 @@ class AzureCU(contract.Extractor):
         return field_schema(schema)
 
     def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
-        """Create (or reuse) an analyzer for this field schema, analyse the document, poll for it.
-
-        Azure does not report a per-call cost, so `cost.usd` is None rather than a figure invented
-        from a price list.
-        """
+        """Creates (or reuses) the analyzer for this field schema, then analyses the document."""
         endpoint = self.endpoint
         key = os.environ["AZURE_CU_KEY"]
         deadline = adapter.Budget(timeout)
@@ -238,7 +208,7 @@ class AzureCU(contract.Extractor):
         return adapter.Call(raw=body, job_id=analyzer)
 
     def read(self, raw: Any, q: contract.Question) -> dict:
-        """The first content's fields, unwrapped to plain values."""
+        """The first content's fields, as plain values."""
         with adapter.reading("the first content's fields"):
             contents = ((raw or {}).get("result") or {}).get("contents") or []
             if not contents:

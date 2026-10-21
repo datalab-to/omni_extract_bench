@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
-"""LlamaExtract (LlamaCloud) adapter: uploads the PDF's bytes (never a URL, so no source domain reaches the
-vendor), submits a v2 extraction job at its highest tier, `agentic_plus`, and polls it to the end.
+"""LlamaExtract (LlamaCloud): uploads the PDF's bytes (never a URL, so no source domain reaches the
+vendor), submits a v2 extraction job at its highest tier, `agentic_plus`, and polls it. Auth:
+LLAMA_CLOUD_API_KEY.
 
-Auth: LLAMA_CLOUD_API_KEY (llx-...).
-
-Usage:
     oeb run --system llamaextract
 
-Adapted from longextract_bench (MIT, (c) 2026 Micro1) -- see providers/LICENSE-micro1.
-"""
+Adapted from longextract_bench (MIT, (c) 2026 Micro1); see providers/LICENSE-micro1."""
 
 from __future__ import annotations
 
@@ -37,12 +34,8 @@ JSON_TYPE_NAMES = {str: "string", bool: "boolean", int: "integer", float: "numbe
 
 
 def enum_type(members: list):
-    """The `type` an enum needs: the type of each member, `"null"` included.
-
-    A list when the members are of more than one type, which is what keeps a nullable enum
-    nullable -- `["MILD", "MODERATE", null]` is `["string", "null"]`, not `"string"` with the
-    null quietly dropped.
-    """
+    """The `type` an enum needs: each member's type, `"null"` included, so a nullable enum stays nullable
+    (`["MILD", null]` is `["string", "null"]`)."""
     names = sorted({JSON_TYPE_NAMES[type(m)] for m in members
                     if m is not None and type(m) in JSON_TYPE_NAMES})
     if not names:
@@ -53,16 +46,10 @@ def enum_type(members: list):
 
 
 def to_typed_enum_dialect(node):
-    """Reshape for a vendor that requires every enum to declare a matching type.
-
-    ``{"enum": ["mild", "moderate", null]}`` is valid JSON Schema and rejected here for having
-    no ``type``. The type is inferred from the enum's own values, the null among them, so the
-    field stays as nullable as it was declared: a benchmark that quietly forbids null asks this
-    vendor a different question than the schema asks, and then scores the answer as if it had
-    not. Unions are recursed into rather than collapsed, for the same reason. Also reduces
-    ``additionalProperties`` from a schema to a boolean, which some validators require; the map
-    stays open, only the per-value constraint is lost.
-    """
+    """The schema reshaped for a vendor that requires every enum to declare a type: the type is inferred
+    from the members, `null` included, so the field stays as nullable as declared. Unions are recursed
+    into, and an `additionalProperties` schema becomes `true` (the map stays open; only the per-value
+    constraint is lost)."""
     if isinstance(node, list):
         return [to_typed_enum_dialect(x) for x in node]
     if not isinstance(node, dict):
@@ -87,11 +74,7 @@ def to_typed_enum_dialect(node):
 
 
 def drop_schema_metadata(node):
-    """Remove `$`-prefixed annotations -- `$schema`, `$id`, `$comment`.
-
-    `resolve_refs` consumes `$ref` and `$defs`; these are what is left, and they describe the
-    document rather than the data. Several validators reject them as unknown keys.
-    """
+    """The schema without `$`-prefixed annotations (`$schema`, `$id`, `$comment`), which validators reject."""
     if isinstance(node, list):
         return [drop_schema_metadata(x) for x in node]
     if not isinstance(node, dict):
@@ -161,7 +144,7 @@ def _dt(v: object) -> datetime | None:
 
 @dataclasses.dataclass(frozen=True)
 class LlamaExtract(contract.Extractor):
-    """LlamaExtract's v2 stateless extraction, at its highest tier."""
+    """LlamaExtract's v2 stateless extraction, at its highest tier (`tier`)."""
 
     name: ClassVar[str] = "llamaextract"
     keys: ClassVar[tuple[str, ...]] = ("LLAMA_CLOUD_API_KEY",)
@@ -173,32 +156,18 @@ class LlamaExtract(contract.Extractor):
     poll_interval: int = 5
 
     def missing_keys(self) -> list[str]:
-        """LLAMAPARSE_API_KEY, the older name of the same key, stands in for LLAMA_CLOUD_API_KEY."""
+        """LLAMAPARSE_API_KEY, the key's older name, stands in for LLAMA_CLOUD_API_KEY."""
         return [] if os.environ.get("LLAMAPARSE_API_KEY") else super().missing_keys()
 
     def prepare_schema(self, schema: dict) -> dict:
-        """Inline $refs, drop $-prefixed metadata, and reduce to the subset the v2 API accepts.
-
-        Two constraints, each learned from a rejection, and both are what `to_typed_enum_dialect`
-        encodes:
-
-          * a typeless enum is rejected ("Invalid type for field"), so the type is inferred from
-            the enum's own members -- `null` included, rather than stripped.
-          * `additionalProperties` given as a schema rather than a boolean is rejected ("Input should be a
-            valid boolean").
-
-        What the schema declares as nullable is sent as nullable.
-        """
+        """The schema the v2 API accepts: `$ref`s inlined, `$` metadata dropped, enums typed and
+        `additionalProperties` a boolean (`to_typed_enum_dialect`). What the schema declares nullable is
+        sent nullable."""
         return to_typed_enum_dialect(
             drop_schema_metadata(field_matching.resolve_refs(schema, max_depth=SCHEMA.MAX_REF_DEPTH)))
 
     def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
-        """Upload, submit a v2 extract job at `tier`, poll it to a terminal state.
-
-        `tier` is an option rather than an environment variable because it is a parity decision:
-        the harness runs every vendor at its maximum, and a setting that reads itself out of the
-        environment is one a run cannot state in its own record.
-        """
+        """Uploads, submits a v2 extract job at `tier`, and polls it."""
         deadline = adapter.Budget(timeout)
         key = os.environ.get("LLAMA_CLOUD_API_KEY") or os.environ["LLAMAPARSE_API_KEY"]
 

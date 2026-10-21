@@ -1,12 +1,7 @@
-"""Extend adapter: upload, submit an extract run with the schema inline, poll it to a terminal state.
-
-Extend validates schemas strictly, so `prepare_schema` restates the schema in its dialect
-(`to_strict_dialect`) and aliases the names it reserves (`RESERVED`); `read` restores them.
-
-Auth: EXTEND_API_KEY, and EXTEND_WORKSPACE_ID when the key reaches several workspaces.
-
-    oeb run --system extend
-"""
+"""Extend: upload, submit an extract run with the schema inline, and poll it. Extend validates schemas
+strictly, so `prepare_schema` restates the schema in its dialect (`to_strict_dialect`) and aliases the
+names it reserves (`RESERVED`); `read` restores them. Auth: EXTEND_API_KEY, and EXTEND_WORKSPACE_ID when
+the key reaches several workspaces."""
 from __future__ import annotations
 
 import dataclasses
@@ -55,17 +50,8 @@ def upload(c: httpx.Client, pdf: Path, base_url: str = BASE) -> str:
 
 def submit(c: httpx.Client, file_id: str, schema: dict, base_url: str = BASE,
            array_strategy: str = ARRAY_STRATEGY) -> str:
-    """Submit an extraction run against the current API.
-
-    The schema goes inline in `config`, which is what the current API version is for. The old
-    one needed a saved processor to hang a schema on, so this adapter fetched any extract
-    processor from the workspace and passed its id -- a wasted round trip per document, and a
-    hard failure on an account that happens to have no processor saved. `submit` had already
-    stopped using it.
-
-    `advancedOptions.arrayStrategy` selects the large-array, maximum-context strategy
-    (`large_array_max_context`).
-    """
+    """Submits an extract run with the schema inline in `config`, using the large-array, maximum-context
+    strategy (`advancedOptions.arrayStrategy`)."""
     body = {"file": {"id": file_id},
             "config": {"schema": schema,
                        "advancedOptions": {"arrayStrategy": {"type": array_strategy}}}}
@@ -110,14 +96,8 @@ def poll(c: httpx.Client, run_id: str, deadline, base_url: str = BASE) -> dict:
 
 
 def extraction_of(run: dict):
-    """The extracted data, and the path it came from.
-
-    `output.value` is the documented shape -- "extraction output splits into `output.value`
-    (your data, shaped like the schema) and `output.metadata`" -- and a live run confirms it.
-    This used to try five shapes in order and take the first that looked plausible, which is
-    the wrong instinct in an extractor: if two could match, the wrong one is chosen silently
-    and the wrong thing is scored. Better to read the documented field and fail loudly.
-    """
+    """The extracted data from `output.value`, the documented shape, and the path it came from; other
+    shapes aren't guessed at, so a wrong one fails rather than being scored."""
     output = run.get("output")
     if isinstance(output, dict):
         value = output.get("value", output)
@@ -128,7 +108,7 @@ def extraction_of(run: dict):
 
 @dataclasses.dataclass(frozen=True)
 class Extend(contract.Extractor):
-    """Extend's extract runs, with its large-array, maximum-context strategy, because this corpus is
+    """Extend's extract runs, with the large-array, maximum-context strategy, since the corpus is
     array-heavy."""
 
     name: ClassVar[str] = "extend"
@@ -140,16 +120,12 @@ class Extend(contract.Extractor):
     base_url: str = BASE
 
     def prepare_schema(self, schema: dict) -> dict:
-        """The schema Extend is sent: reserved names aliased, $refs inlined, strict dialect."""
+        """The schema Extend is sent: reserved names aliased, `$ref`s inlined, strict dialect."""
         return to_strict_dialect(
             field_matching.resolve_refs(rename_reserved(schema), max_depth=SCHEMA.MAX_REF_DEPTH))
 
     def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
-        """Upload, submit a run, poll it to a terminal state.
-
-        Extend does not report a per-document cost, so `cost.usd` is None rather than a figure invented
-        from a price list.
-        """
+        """Uploads, submits a run and polls it. Extend reports credits per run, not dollars."""
         key = os.environ["EXTEND_API_KEY"]
 
         deadline = adapter.Budget(timeout)
@@ -204,12 +180,8 @@ STRICT_ALLOWED_KEYS = ("type", "enum", "properties", "items", "required", "descr
 
 
 def collapse_nullable_union(node):
-    """Reduce ``anyOf: [{...}, {"type": "null"}]`` to its non-null branch, merging siblings.
-
-    The nullable idiom declares no type of its own, and Extend's validator wants a type. The
-    nullability is not lost by collapsing here: `to_strict_dialect` puts it back in the form
-    Extend requires -- `["string", "null"]`, and `null` among an enum's members.
-    """
+    """`anyOf: [{...}, {"type": "null"}]` reduced to its non-null branch, merging siblings, since Extend
+    wants a type; `to_strict_dialect` puts the nullability back in Extend's form."""
     if not isinstance(node, dict):
         return node
     for branch_key in ("anyOf", "oneOf", "allOf"):
@@ -227,17 +199,11 @@ def collapse_nullable_union(node):
 
 
 def to_strict_dialect(node, in_items=False, allowed=STRICT_ALLOWED_KEYS):
-    """Reshape for a vendor that validates strictly and requires nullable properties.
+    """The schema reshaped for a vendor that validates strictly. The rules differ by position:
 
-    Three rules, and they differ by position. That is the detail worth writing down, because applying
-    nullability everywhere fixes properties and breaks array items at once:
-
-      * keys: an allowlist (see ``STRICT_ALLOWED_KEYS``);
-      * properties: must be nullable, ``["string", "null"]``, and enums must include ``null``; and
-      * items: must be a bare type; a ``["string","null"]`` union is rejected here.
-
-    Modelled on Extend's validator; useful for any vendor with the same shape of constraints.
-    """
+    - keys: an allowlist (`STRICT_ALLOWED_KEYS`);
+    - properties: nullable (`["string", "null"]`), with `null` among an enum's members; and
+    - array items: a bare type, since a nullable union is rejected there."""
     if isinstance(node, list):
         return [to_strict_dialect(x, in_items, allowed) for x in node]
     if not isinstance(node, dict):

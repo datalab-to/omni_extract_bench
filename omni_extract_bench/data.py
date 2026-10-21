@@ -1,15 +1,12 @@
-"""The dataset's rows: one document and one schema each.
-
-A dataset folder holds:
+"""The dataset's rows: one document and one schema each. A dataset folder holds:
 
     manifest.parquet       a row per document: doc_id, suite, doc_path, gt_path, schema
     manifests/*.parquet    other manifests, if any (a sample of the same documents)
     pdfs/<file>.pdf        the document that is sent
-    gold/<doc_id>.json     its ground truth, the extraction
+    gold/<doc_id>.json     its gold, the extraction
 
-Downloading and checking a dataset is omni-bench-core's (`omni_bench_core.data`). This module adds the row type, `Doc`,
-and the check that each row's schema is a JSON object.
-"""
+Reading and checking the manifest is omni-bench-core's (`omni_bench_core.data`); this module adds the
+row type, `Doc`, and reads each row's schema."""
 from __future__ import annotations
 
 import dataclasses
@@ -28,12 +25,11 @@ COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
 
 @dataclasses.dataclass(frozen=True)
 class Doc:
-    """One document of a dataset, with the schema it is asked against.
+    """One document, with the schema it is asked against; its paths are full paths on this machine.
 
-    Its paths are full paths on this machine. `suite` is the kind of document, from the manifest's optional
-    `suite` column (`NO_SUITE` when it is missing, empty or null); field matching breaks its summary down by it.
-    `extra` holds the manifest's other columns, unread, so a dataset can carry more for scorers of its own. A copy with a field changed is
-    `dataclasses.replace(doc, ...)`."""
+    - `suite`: the kind of document, from the manifest's optional `suite` column (`NO_SUITE` when
+      missing, empty or null); field matching's summary is broken down by it; and
+    - `extra`: the manifest's other columns, unread, for scorers of a dataset's own."""
 
     doc_id: str
     suite: str
@@ -56,7 +52,7 @@ def read_manifest(dataset: str | Path = DEFAULT_DATASET, manifest: str = MANIFES
 
 
 def doc(r: dict[str, Any]) -> Doc:
-    """One checked manifest row as a `Doc`. Its schema is a JSON string in the manifest, read as an object."""
+    """One checked manifest row as a `Doc`, its schema read from the manifest's JSON string."""
     try:
         schema = json.loads(r["schema"])
     except (TypeError, json.JSONDecodeError) as exc:

@@ -18,11 +18,9 @@ from .harness import schema as SCHEMA
 
 @dataclasses.dataclass(frozen=True)
 class Extract(task.Task[data.Doc, contract.Question]):
-    """Extraction: a PDF and a JSON Schema go in, a JSON object comes out.
-
-    `overlay` decides whether the benchmark's conventions are written into the schema's field descriptions
-    (`harness.schema.apply_overlay`). It is on for the published runs. The benchmark's own annotations
-    (`evaluation_config`, `default`) are always removed: they are grader metadata, not part of the task."""
+    """Extraction: a PDF and a JSON Schema go in, a JSON object comes out. `overlay` states the benchmark's
+    conventions in the field descriptions (`harness.schema.apply_overlay`), on for the published runs.
+    The benchmark's own annotations are always removed."""
 
     name: ClassVar[str] = "extract"
     overlay: bool = True

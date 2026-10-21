@@ -1,16 +1,9 @@
-"""Datalab API adapter: POST /api/v1/extract, then poll for the result.
+"""Datalab: POST /api/v1/extract, then poll for the result. `mode` is the tier (`fast`, `balanced`,
+`accurate`); balanced and accurate are published as separate legs, never only the better one. Cost comes
+back in cents (`cost_breakdown.final_cost_cents`) and is converted to dollars once, in `cost_of`. Auth:
+DATALAB_API_KEY.
 
-`mode` selects the extraction tier (`fast`, `balanced`, `accurate`). The published runs used
-`balanced` (the default product tier) and `accurate` (the most capable one) as two separate
-legs, because publishing only whichever scored higher would misrepresent the product.
-
-Cost comes back as `cost_breakdown.final_cost_cents`, in cents, and is converted to dollars once, here.
-Read as dollars it would overstate the cost 100 times.
-
-Auth: DATALAB_API_KEY.
-
-    oeb run --system datalab --options '{"mode": "balanced"}'
-"""
+    oeb run --system datalab --options '{"mode": "balanced"}'"""
 from __future__ import annotations
 
 import dataclasses
@@ -43,16 +36,13 @@ class Datalab(contract.Extractor):
     poll_interval: float = 5.0
 
     def prepare_schema(self, schema: dict) -> dict:
-        """Collapse nullable unions and de-require the fields that were nullable (`dialect`)."""
+        """The schema in Datalab's dialect (`dialect`)."""
         return dialect(schema)
 
     def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
-        """POST the document, poll until it is done, return the answer and what it cost.
-
-        Raises rather than returning a failure: this method ran the poll loop, so it is the only
-        place that knows the difference between "the vendor said no" and "we ran out of budget
-        while it was still working".
-        """
+        """POSTs the document and polls until it is done; returns the answer and its cost. A failure is
+        raised here, the one place that knows whether the vendor said no or the budget ran out while it
+        worked."""
         key = os.environ["DATALAB_API_KEY"]
 
         deadline = adapter.Budget(timeout)
@@ -115,7 +105,7 @@ class Datalab(contract.Extractor):
                 time.sleep(self.poll_interval)
 
     def read(self, raw: Any, q: contract.Question) -> dict:
-        """The extraction in `extraction_schema_json`, which the API sends as a JSON string or an object."""
+        """The extraction in `extraction_schema_json`, sent as a JSON string or an object."""
         x = raw.get("extraction_schema_json") if isinstance(raw, dict) else None
         if x is None:
             raise errors.SystemFailed("status complete but no extraction_schema_json")
@@ -125,10 +115,7 @@ class Datalab(contract.Extractor):
 
 
 def cost_of(body: dict) -> adapter.Cost | None:
-    """The cost the vendor stated in this response, or None if it does not say.
-
-    Two fields are tried, and the one the figure came from is named in `Cost.source`, so the figure
-    can be traced back to the vendor's own response."""
+    """The cost this response states, with the field it came from as `Cost.source`, or None."""
     for field, value in (("cost_breakdown.final_cost_cents", (body.get("cost_breakdown") or {}).get("final_cost_cents")),
                          ("total_cost", body.get("total_cost"))):
         found = adapter.Cost.reported(value, field, cents=True)
@@ -138,12 +125,8 @@ def cost_of(body: dict) -> adapter.Cost | None:
 
 
 def dialect(schema: dict) -> dict:
-    """Collapse nullable unions and de-require the fields that were nullable.
-
-    The API expresses optionality by omission from `required`, not by a `["string", "null"]`
-    union, so a schema written the JSON-Schema way has to be restated. Field names, types and
-    descriptions are untouched: this is a dialect translation, not a change to the task.
-    """
+    """The schema with nullable unions collapsed and nullable fields taken out of `required`, since the API
+    expresses optionality by omission. Names, types and descriptions are unchanged."""
     schema = dict(schema)
     nullable: set[str] = set()
     props = schema.get("properties")

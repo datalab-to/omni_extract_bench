@@ -1,12 +1,8 @@
-"""Mistral OCR adapter: one `/v1/ocr` call with a `document_annotation_format` schema.
+"""Mistral OCR: one `/v1/ocr` call, with the PDF inline as a base64 data URL and the schema as
+`document_annotation_format`; the extraction comes back as `document_annotation`, a JSON string. Auth:
+MISTRAL_API_KEY.
 
-The PDF goes inline as a base64 data URL and the extraction comes back as
-`document_annotation`, a JSON string. Single call, no polling.
-
-Auth: MISTRAL_API_KEY.
-
-    oeb run --system mistral
-"""
+    oeb run --system mistral"""
 from __future__ import annotations
 
 import base64
@@ -27,19 +23,15 @@ URL = "https://api.mistral.ai/v1/ocr"
 
 @dataclasses.dataclass(frozen=True)
 class Mistral(contract.Extractor):
-    """Mistral OCR. Nothing to steer: the document and the schema go in one call and that is all."""
+    """Mistral OCR: the document and the schema in one call, with nothing to configure."""
 
     name: ClassVar[str] = "mistral"
     keys: ClassVar[tuple[str, ...]] = ("MISTRAL_API_KEY",)
     workers: ClassVar[int] = 5
 
     def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
-        """One POST, one response.
-
-        No polling, so the document's budget IS this request's timeout. httpx applies it per socket
-        operation rather than to total elapsed time, so a server trickling bytes could outlast it; for a
-        single call that is the closest an HTTP client gets to a wall-clock cap.
-        """
+        """One POST, with the document's budget as its timeout. httpx applies it per socket operation, not
+        to the whole request, which is as close to a wall-clock cap as one HTTP call gets."""
         key = os.environ["MISTRAL_API_KEY"]
 
         b64 = base64.b64encode(pdf.read_bytes()).decode()

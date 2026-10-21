@@ -1,6 +1,8 @@
-"""Reading what a vendor sent back: JSON in a markdown fence (`parse_model_json`), a cost under any of
-several names and units (`cost_from_response`), and an answer given as a list (`as_object`).
-"""
+"""Reading what a vendor sent back:
+
+- `parse_model_json`: JSON, with or without a markdown fence;
+- `cost_from_response`: a cost under any of several names and units; and
+- `as_object`: an answer given as a list."""
 from __future__ import annotations
 
 import json
@@ -10,11 +12,7 @@ _FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.S)
 
 
 def parse_model_json(text):
-    """A model's JSON answer, read whether or not it is wrapped in a markdown code fence; None when the text
-    is not JSON.
-
-    Some models return bare JSON and some wrap it in ```json. A parser that accepts only bare JSON scores
-    the others at zero: one run discarded 12 of 24 documents from the most accurate provider that way."""
+    """A model's JSON answer, with or without a ```json fence; None when the text isn't JSON."""
     if not text:
         return None
     match = _FENCE.match(text)
@@ -27,10 +25,8 @@ def parse_model_json(text):
 
 def cost_from_response(body, paths=None):
     """The cost in a vendor's response, in dollars, and the field it came from: `(usd, "field=value")`, or
-    `(None, None)` when the response states none.
-
-    Vendors report cost under different names and units. A field in cents read as dollars overstates the
-    cost 100 times, so each known field carries its own conversion."""
+    `(None, None)`. Each known field carries its own unit, since cents read as dollars would overstate
+    the cost 100 times."""
     if paths is None:
         paths = (
             (("cost_breakdown", "final_cost_cents"), 0.01),
@@ -53,12 +49,8 @@ def cost_from_response(body, paths=None):
 
 
 def as_object(value) -> dict | None:
-    """An adapter's parsed answer as one JSON object, the extraction, or None.
-
-    One vendor answers with a list, one entry per extraction pass. A list of one object is that object. A
-    longer list is merged shallowly, the first value of each field kept, so array fields from separate passes
-    survive instead of the last pass overwriting them. Without this, every completed Reducto job read as
-    "no extraction"."""
+    """An answer as one JSON object, or None. A list of one object is that object; a longer list (one entry
+    per extraction pass, as Reducto sends) is merged shallowly, keeping each field's first value."""
     if isinstance(value, dict):
         return value or None
     if isinstance(value, list):

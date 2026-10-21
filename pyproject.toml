@@ -13,7 +13,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "omni-bench-core>=0.6,<0.7",
+    "omni-bench-core>=0.7,<0.8",
     "scipy>=1.13.1",
 ]
 
@@ -35,7 +35,7 @@ harness = [
 # manifest, comes with omni-bench-core.
 benchmark = [
     "omni_extract_bench[harness]",
-    "omni-bench-core[hub]>=0.6,<0.7",
+    "omni-bench-core[hub]>=0.7,<0.8",
 ]
 
 # Running the tests: `uv run --group test --extra benchmark pytest -n auto`. The extra brings the

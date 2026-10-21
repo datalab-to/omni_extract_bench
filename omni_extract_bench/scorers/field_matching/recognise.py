@@ -1,9 +1,5 @@
-"""Date, time and number recognisers.
-
-Each answers "is this text really a X?" and returns the canonical form, or None. They are
-strict on purpose: a value that is not obviously one of these falls through to the string
-folds in values.py, which is the conservative path. See METRIC_SPEC section 2.
-"""
+"""Date, time and number recognisers. Each returns a text's canonical form, or None when it isn't obviously
+one of these, so it falls through to the string folds in `values.py` (METRIC_SPEC section 2)."""
 from __future__ import annotations
 
 import re
@@ -114,11 +110,8 @@ def _sign_normalize(s: str):
 
 
 def _numeric_text(v):
-    """Signed numeric text of v, or None if v is not a decimal number.
-
-    Only text containing a '.' counts as numeric. That is the whole ID protection:
-    8303911426 is never parsed, so it cannot fuzzy-match a neighbour.
-    """
+    """The signed numeric text of `v`, or None. Only text with a '.' counts, so an ID like 8303911426 is
+    never parsed as a number and can't fuzzy-match a neighbour."""
     body, sign = _sign_normalize(str(v))
     body = body.replace(",", "").replace("$", "").replace("%", "").replace(" ", "")
     if "." not in body:
@@ -127,8 +120,7 @@ def _numeric_text(v):
 
 
 def _asdecimal(v):
-    """Exact Decimal, or None. Decimal not float: 123456.78 as a float is
-    123456.78000000000174623, and rounding that disagrees with the printed decimals."""
+    """The exact `Decimal`, or None; not a float, whose rounding can disagree with the printed decimals."""
     t = _numeric_text(v)
     if t is None:
         return None
@@ -147,11 +139,8 @@ _MAX_EXPONENT = 100
 
 
 def _fraction_places(d: Decimal) -> int:
-    """Decimal places to keep so the fraction carries 7 significant digits.
-
-    Leading zeros after the point do not count against the budget: Decimal("0.0025") keeps
-    nine places, not seven. Read off the digit tuple so no arithmetic can lose precision.
-    """
+    """How many decimal places keep 7 significant digits in the fraction; leading zeros after the point
+    don't count (`Decimal("0.0025")` keeps nine)."""
     _sign, digits, exp = d.as_tuple()
     if not isinstance(exp, int) or exp >= 0:
         return 0

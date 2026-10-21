@@ -1,10 +1,11 @@
-"""Field matching over a dataset: each document's gold read and checked (`gold`, `check`), every document's
-line summarized (`summarize`), and `FieldMatching`, the scorer as omni-bench-core grades a run, which scores each
-document with `compare.score`.
+"""Field matching over a dataset:
 
-It is the one file of the package that imports outside it (omni-bench-core's `Scorer`, and oeb's row type). Every
-other file is the comparison itself, which works on its own.
-"""
+- `FieldMatching`: the scorer a run is graded with, scoring each document with `compare.score`;
+- `gold` and `check`: each document's gold, read and checked; and
+- `summarize` and `metrics`: a whole scores.jsonl, or a set of scored lines, as one summary.
+
+It is the one module of the package that imports omni-bench-core; the rest is the comparison, on its
+own."""
 from __future__ import annotations
 
 import collections
@@ -22,8 +23,7 @@ from . import compare
 
 
 class Gold(NamedTuple):
-    """What field matching compares a prediction against: the gold extraction, and the schema both were
-    asked against."""
+    """What a prediction is compared against: the gold extraction, and the schema both were asked against."""
 
     extraction: dict
     schema: dict
@@ -33,15 +33,10 @@ class Gold(NamedTuple):
 class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
     """Field matching as an omni-bench-core scorer.
 
-    Each document's score is `compare.score`'s numbers, and its details are one verdict per address,
-    written to `details/<doc_id>.jsonl`. The summary is `summarize`'s; its headline is the
-    accuracy over the scored documents, which omni-bench-core multiplies by coverage, so a failed document counts
-    as 0.
-
-    Scoring pairs rows with an assignment solver, which is slow on large arrays: one document of the public
-    dataset, a list of 1238 entities with arrays inside each, takes about two minutes on its own. So documents
-    are scored in a pool of processes, and each score is kept (`cache`), so grading again scores only the
-    documents whose prediction or gold changed. Keeping scores is safe because scoring is deterministic."""
+    A document's result is `compare.score`'s numbers, and its details one verdict per address. The
+    summary is `metrics` over the scored documents, overall and per suite, with accuracy as the
+    headline. Scoring large arrays is slow (one public document takes about two minutes), so documents
+    are scored in a pool of processes and each score is cached."""
 
     name: ClassVar[str] = "field_matching"
     workers: ClassVar[int] = min(8, os.cpu_count() or 1)
@@ -65,9 +60,8 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
         return {"suite": row.suite}
 
     def summarize(self, lines: Sequence[scorer.Line]) -> scorer.Summary:
-        """The scored documents' metrics (`metrics`), overall and per suite; `rows` is how many were scored. Its
-        headline is their accuracy, which omni-bench-core multiplies by coverage, so a failed document counts
-        as 0."""
+        """`metrics` of the scored documents, overall and per suite, with `rows`, how many were scored; the
+        headline is their accuracy."""
         by_suite: dict[str, list[dict]] = collections.defaultdict(list)
         for x in lines:
             by_suite[x["row"]["suite"]].append(x)
@@ -77,8 +71,8 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
 
 
 def gold(doc: Any) -> dict:
-    """A document's ground truth, the extraction, from its gold file (`doc.gt_path`, a `data.Doc`'s); a
-    `ValueError` naming the document when the file can't be read or isn't a JSON object."""
+    """A document's gold extraction, from its gold file (`doc.gt_path`); a `ValueError` naming the document
+    when it can't be read or isn't a JSON object."""
     try:
         g = json.loads(Path(doc.gt_path).read_text())
     except (OSError, ValueError) as exc:
@@ -90,12 +84,9 @@ def gold(doc: Any) -> dict:
 
 
 def check(docs: Iterable[Any]) -> None:
-    """Raises a `ValueError` naming the first document of `docs` (a manifest's, `data.read_manifest`)
-    whose gold file can't be read, isn't JSON, or isn't a JSON object, the one shape `score` takes.
-    What `oeb check` runs.
-
-    It does not check a gold against its schema, nor that the scorer can read a schema: finding out
-    means scoring, which costs as much as grading, and grading names a document that fails."""
+    """Raises a `ValueError` naming the first document of `docs` whose gold can't be read or isn't a JSON
+    object; what `oeb check` runs. Checking a gold against its schema would mean scoring it, so that is
+    left to grading."""
     if hasattr(docs, "gt_path"):
         raise TypeError("check takes the documents, an iterable of them; for one, pass [doc]")
     for d in docs: gold(d)
@@ -105,10 +96,8 @@ ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
 
 
 def summarize(lines: Iterable[dict]) -> dict:
-    """A run's score lines (scores.jsonl's, one per document, failed ones included) as one summary (`_over`),
-    over every line and then per suite, each suite in the same shape. A line carries its document's suite
-    (under `row`), so the lines are all it needs. A line's status is `scored` or `failed` (no usable
-    prediction)."""
+    """A whole scores.jsonl (one line per document, failed ones included, each with its suite under `row`)
+    as one summary: `_over` of every line, and of each suite's lines."""
     lines = list(lines)
     if not lines:
         raise ValueError("summarize takes at least one score line; there is nothing to summarize")
@@ -124,13 +113,10 @@ def summarize(lines: Iterable[dict]) -> dict:
 
 
 def _over(lines: list[dict]) -> dict:
-    """How a non-empty set of documents went: the headline, the counts, coverage, the three metrics over the
-    scored documents, and where the errors were.
-
-    Note: `headline` counts a failed document as 0, so a system can't rank higher by failing on its
-    hard documents; `accuracy` is over the scored ones, and `headline` is `accuracy * coverage`. The
-    metrics over the scored are None when none was scored: 0.0 would read as everything wrong (and a 0.0
-    rate as nothing wrong)."""
+    """How a non-empty set of documents went: the headline, the counts, coverage, the metrics over the
+    scored documents, and where the errors were. `headline` is `accuracy * coverage`, so a failed
+    document counts as 0. The metrics are None when no document was scored, since 0.0 would read as
+    everything wrong."""
     scored = [x for x in lines if x["status"] == "scored"]
     m = metrics(scored) if scored else {k: None for k in ("accuracy", "precision", "recall",
                                                            *(f"{e}_rate" for e in ERRORS))}
@@ -145,8 +131,8 @@ def _over(lines: list[dict]) -> dict:
 
 
 def metrics(scored: Sequence[dict]) -> dict:
-    """The mean accuracy, precision and recall of a non-empty set of scored documents' lines, and the mean rate
-    of each kind of error (`ERRORS`)."""
+    """The mean accuracy, precision and recall of a non-empty set of scored lines, and the mean rate of
+    each kind of error (`ERRORS`)."""
     def mean(of) -> float:
         return sum(of(x) for x in scored) / len(scored)
 

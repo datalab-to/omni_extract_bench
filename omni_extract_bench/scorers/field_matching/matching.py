@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Provably-optimal array row matching for the benchmark grader."""
+"""Row matching: the maximum-weight pairing of predicted rows to gold rows, exact when it fits in memory
+and greedy (and reported as approximate) when it doesn't."""
 
 import numpy as _np
 import scipy.sparse as _sp
@@ -14,23 +15,10 @@ GREEDY_BYTES_PER_PAIR = 72
 
 
 def _exact_ok(n, m, positives=None):
-    """True when one block should be solved exactly rather than greedily.
-
-    Args:
-        n, m: the two sides' element counts, in either order.
-        positives: an upper bound on the pairs that can carry positive weight, or None if the
-            caller did not compute one. Only consulted between `MAX_CELLS` and
-            `MAX_CELLS_DENSE`, where the two paths have to be compared rather than assumed.
-
-    Returns:
-        Whether `optimal_pairs` may be called directly. `match_rows` falls back to greedy when
-        this is False, and records that the score is approximate.
-
-    Three bands: below `MAX_CELLS` exact outright, above `MAX_CELLS_DENSE` refused outright
-    so its memory is bounded whatever the data does, and between them whichever is cheaper --
-    which depends on density. Without `positives` the answer is the same as before it existed;
-    an over-estimate biases towards exact, whose cost is known before it runs.
-    """
+    """Whether a block of `n` by `m` rows is solved exactly rather than greedily. Below `MAX_CELLS` it is
+    exact; above `MAX_CELLS_DENSE` it is greedy, so memory stays bounded; in between it is whichever is
+    cheaper, judged from `positives`, an upper bound on the pairs worth anything (None: as if it weren't
+    given)."""
     lo, hi = (n, m) if n <= m else (m, n)
     if lo > MAX_EXACT:
         return False
@@ -43,23 +31,11 @@ def _exact_ok(n, m, positives=None):
 
 
 def sparse_pairs(pred_rows, gt_rows, weights):
-    """Maximum-weight pairing from a sparse weight matrix, exactly, without a dense one.
+    """The exact maximum-weight pairing from a sparse weight matrix, without building a dense one.
 
-    The dense solver needs n*m float64 -- 5.7 GB on the largest array here -- which is the
-    whole reason `_greedy` exists. When the weights are sparse they are 50 MB instead, and
-    scipy's sparse assignment solves them exactly.
-
-    The escape columns are what make it the same problem. The sparse solver finds a full
-    matching: every row on the smaller side must be assigned. This metric must be free to
-    leave a row unpaired -- pairing two rows that share nothing is not a match -- and forcing
-    a full matching answers a different, worse question. On a 2x2 where one row can only reach
-    the column another row is worth 10 on, the full matching scores 2 against the correct 10.
-
-    So every row is given its own private column, worth less than any real edge can be: real
-    weights are scaled by `n + m + 1`, escapes are worth 1, and a matching's escapes can never
-    outweigh a single real unit. Taking an escape is being unmatched. It costs `n` further
-    entries, so the sparsity that made this possible survives.
-    """
+    The sparse solver assigns every row of the smaller side, but this metric must be free to leave a row
+    unpaired. So each row gets a private escape column worth less than any real pair: real weights are
+    scaled by `n + m + 1` and escapes are worth 1, so no set of escapes outweighs one real unit."""
     n, m = weights.shape
     W = weights.tocsr()
     W.eliminate_zeros()
@@ -81,20 +57,12 @@ def sparse_pairs(pred_rows, gt_rows, weights):
 
 
 def optimal_pairs(pred_rows, gt_rows, weight, weights=None):
-    """Maximum-weight pairing of pred_rows to gt_rows.
+    """The maximum-weight pairing of `pred_rows` to `gt_rows`: `(pairs, unmatched_pred, unmatched_gt)`.
 
-    weight(p, g) -> number of matching leaves (higher is better).
-    Returns (pairs, unmatched_pred, unmatched_gt) with pairs = [(p_row, g_row), ...].
-    Only positive-weight pairs are kept: pairing two rows that share nothing is not a
-    "match", it would just relabel two misses as one bad pair.
-
-    `weights` is an optional precomputed array of the same numbers `weight` returns, shaped
-    (len(pred_rows), len(gt_rows)). The caller may know how to produce the whole matrix at
-    once -- `score._pair_weights` does it with two sparse products -- and filling it here one
-    interpreted call at a time is what a heavy document spends most of its time on. It is only
-    ever the same numbers: `weight` is still what decides whether a solved pair is kept, so a
-    matrix that disagreed with it would be caught rather than believed.
-    """
+    `weight(p, g)` is the number of matching leaves. Only pairs worth more than 0 are kept, since
+    pairing two rows that share nothing would turn two misses into one bad pair. `weights` is an
+    optional precomputed matrix of the same numbers (see `pairing._pair_weights`); `weight` still
+    decides which solved pairs are kept."""
     if not pred_rows or not gt_rows:
         return [], list(pred_rows), list(gt_rows)
     if weights is not None and _sp.issparse(weights):
@@ -131,18 +99,11 @@ def optimal_pairs(pred_rows, gt_rows, weight, weights=None):
 
 
 def match_rows(pred_rows, gt_rows, weight, positives=None, weights=None):
-    """Optimal matching over every candidate pair. Returns (pairs, up, ug, exact_flag).
+    """The best pairing over every candidate pair: `(pairs, unmatched_pred, unmatched_gt, exact)`.
 
-    Every predicted row is priced against every gold row: no partitioning, no key, no
-    pre-filter. See the module docstring for why -- in short, a partition can only remove
-    pairings the scorer would have accepted, and unlike the greedy fallback it cannot report
-    that it did.
-
-    positives: upper bound on pairs that can carry positive weight, for the exact-vs-greedy
-    memory comparison in `_exact_ok`.
-    weights: an optional precomputed weight matrix; see `optimal_pairs`. Ignored on the greedy
-    path, which does not build a matrix at all.
-    """
+    Every predicted row is priced against every gold row, with no partition or pre-filter, since a
+    partition could only remove pairings the scorer would accept, without saying so. `positives` and
+    `weights` are as in `_exact_ok` and `optimal_pairs`; the greedy path builds no matrix."""
     if not pred_rows or not gt_rows:
         return [], list(pred_rows), list(gt_rows), True
     if weights is not None and _sp.issparse(weights):
@@ -156,7 +117,7 @@ def match_rows(pred_rows, gt_rows, weight, positives=None, weights=None):
 
 
 def _greedy(pred_rows, gt_rows, weight):
-    """Documented fallback for oversized blocks: best-first greedy."""
+    """The fallback for blocks too large to solve exactly: best pairs first."""
     scored = []
     for i, p in enumerate(pred_rows):
         for j, g in enumerate(gt_rows):
