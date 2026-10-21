@@ -116,7 +116,7 @@ def test_gold_echo_scores_one_and_a_resumed_run_calls_nothing(tmp_path):
     rec = json.loads((folder / "records" / "d0.json").read_text())
     assert rec["sent"] == SCHEMA and rec["output"] == {"a": "x"}
     CALLS.clear()
-    b.run(GoldEcho(), tmp_path / "runs")
+    b.run(GoldEcho(), tmp_path / "runs", resume=name)
     assert CALLS == []
 
 
@@ -128,7 +128,7 @@ def test_a_refused_document_counts_as_zero(tmp_path):
     assert s["scored"]["per_suite"]["s"]["accuracy"] == 1.0 and s["scored"]["per_suite"]["s"]["rows"] == 1, s
 
 
-def test_a_bug_in_read_stops_the_run_and_the_same_command_reads_the_kept_answer_with_no_call(tmp_path):
+def test_a_bug_in_read_stops_the_run_and_resuming_reads_the_kept_answer_with_no_call(tmp_path):
     b = benchmark.default(dataset(tmp_path / "ds"))
     READ_FIXED.clear()
     CALLS.clear()
@@ -142,7 +142,7 @@ def test_a_bug_in_read_stops_the_run_and_the_same_command_reads_the_kept_answer_
     CALLS.clear()
     READ_FIXED.set()
     try:
-        g = b.run(ReadBug(), tmp_path / "runs", workers=1)
+        g = b.run(ReadBug(), tmp_path / "runs", workers=1, resume=folder.name)
     finally:
         READ_FIXED.clear()
     assert not set(CALLS) & set(kept), f"a kept answer was paid for again: {CALLS}"
@@ -361,8 +361,9 @@ def test_old_commands_still_work_and_say_what_replaced_them(tmp_path, capsys, mo
     code, _, err = oeb(capsys, "benchmark", "--providers", "gold-echo", "--dataset", str(ds), "--out",
                        str(tmp_path / "runs"), "-y")
     assert code == 0 and "`oeb benchmark` is deprecated" in err, err
+    [name] = [p.name for p in (tmp_path / "runs").iterdir()]
     code, out, err = oeb(capsys, "run", "--providers", "gold-echo", "--dataset", str(ds), "--out",
-                         str(tmp_path / "runs"), "--score-only", "--score-workers", "2")
+                         str(tmp_path / "runs"), "--score-only", "--score-workers", "2", "--resume", name)
     assert code == 0 and "--score-only is deprecated" in err, err
     assert "--score-workers is ignored and will be removed" in err, err
     g = json.loads(out)
@@ -420,10 +421,10 @@ def test_oeb_run_takes_one_system_and_its_options_bare(tmp_path, capsys, monkeyp
     """`--options` is the system's own object; keyed by the system's name it is the same run."""
     ds = dataset(tmp_path / "ds")
     monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
-    names = []
+    names: list[str] = []
     for options in ('{"refuse": ["d1"]}', '{"gold-echo": {"refuse": ["d1"]}}'):
         code, out, err = oeb(capsys, "run", "--system", "gold-echo", "--options", options, "--dataset", str(ds),
-                             "--out", str(tmp_path / "runs"), "-y")
+                             "--out", str(tmp_path / "runs"), "-y", *(["--resume", names[0]] if names else []))
         g = json.loads(out)
         assert code == 0 and g["scorers"]["field_matching"]["headline"] == 0.5 and "deprecated" not in err, err
         names.append(g["run"])

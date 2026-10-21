@@ -172,19 +172,20 @@ documents in a pool of processes, and on macOS and Windows each process imports 
 3. grade: grades the run, when it is finished.
 
 A run folder answers one exact question: the system and its options, the dataset, the manifest and which
-documents (`--sample`, `--limit`, `--only`). Running the same command again resumes the same
-folder and calls nothing already answered; changing any of those uses another folder. A `--limit` or
-`--sample` that covers every document is the same run as neither.
+documents (`--sample`, `--limit`, `--only`). Every launch is a new run in a new folder, named after the
+question and a run id. `--resume <its folder name>` (`resume=` in Python) continues a run and calls nothing
+already answered, and refuses a run of another question. A `--limit` or `--sample` that covers every
+document is the same question as neither.
 
-The timeout isn't part of the question. Running the same command again with a longer `--timeout` and
+The timeout isn't part of the question. Resuming a run with a longer `--timeout` and
 `--retry-failed` gives the documents that timed out more time, in the same folder. Each record keeps the
 `timeout_s` it was run with, and settings.json holds the latest.
 
 A run is graded over its own documents, and only when it is finished: every document has an answer or a
 recorded failure. A document with no usable answer counts as 0. A run that stops part way (a key the system
 refuses, an account out of credits, a server of yours that isn't running, a bug in an adapter, an interrupt)
-is not graded: `oeb run` raises the exception that stopped it, with its traceback, and running the same command
-again finishes it.
+is not graded: `oeb run` raises the exception that stopped it, with its traceback, and resuming the run
+(`--resume`) finishes it.
 `oeb grade --partial` (`partial=True` in Python) grades an unfinished run anyway, counting its unfinished
 documents as 0; its summary counts them under `partial`, and names a few.
 
@@ -257,8 +258,8 @@ use from several threads.
 
 One rule decides what an exception does, in `extract`, `prepare_schema`, `read` and a scorer's
 `prediction` alike: a document counts 0 only when code raises `errors.SystemFailed` on purpose. Any other
-exception stops the run and is raised as it is, with a note naming the adapter and the document; running the
-same command again after the fix costs nothing for the documents already answered.
+exception stops the run and is raised as it is, with a note naming the adapter and the document; resuming the
+run after the fix costs nothing for the documents already answered.
 
 In `extract`:
 
@@ -280,7 +281,7 @@ express: the document is recorded as failed, with the schema, and no call is mad
 `read` takes the raw answer and returns the extraction. Raise `errors.SystemFailed` for an answer with no
 usable extraction (`contract.extraction(x)` does, for anything but a non-empty JSON object); the document is
 recorded as `Unreadable` and keeps its raw answer. Anything else is a bug: the answer is saved unread, the
-run stops, and running the same command again after the fix reads it with no call.
+run stops, and resuming the run after the fix reads it with no call.
 
 For a vendor whose answer holds the extraction as a JSON string under `result`:
 
@@ -475,7 +476,7 @@ A record, `records/<doc_id>.json`, holds:
 - `timeout_s`: the seconds this document was given;
 - `captured_at`: when the answer was recorded; and
 - `unread`: true when `read` raised a bug on this answer. Such a record has its `raw` answer, no `output` and no
-  `error`; the document isn't finished, and running the same command again reads it with no call.
+  `error`; the document isn't finished, and resuming the run reads it with no call.
 
 A summary holds what omni-bench-core gives every summary (`scorer`, `options`, `run`, `headline`,
 `headline_is`, `rows`, `failed`, `coverage`, and `partial` when graded with `--partial`), and under `scored`

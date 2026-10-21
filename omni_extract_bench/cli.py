@@ -147,8 +147,7 @@ def confirm(text: str) -> bool:
 def predicted(p: Any) -> None:
     """For the deprecated `--score-only`: refuses a run that was never predicted."""
     if not p.run.predictions.is_dir():
-        raise ValueError(f"no run at {p.run.folder}: this system with these options and documents was never "
-                         "predicted under this --out")
+        raise ValueError(f"the run at {p.run.folder} has no predictions yet; resume it without --score-only")
 
 
 SYSTEM_FLAGS = ("--system", "--systems", "--providers")
@@ -200,15 +199,18 @@ def one_per_system(argv: list[str], names: list[str]) -> str:
 
 
 def cmd_run(args) -> int:
-    """Plans, asks, predicts, then grades one system's run, and prints the grading. A run that stops part way
-    is left for the same command, run again."""
+    """Plans, asks, predicts, then grades one system's run, and prints the grading: a new run, or the one
+    `--resume` names. A run that stops part way is continued with `--resume <its folder name>`."""
     from . import benchmark, harness
 
     system = one_system(args)
     b = benchmark.default(args.dataset, args.manifest)
     only = read_ids(args.only, "--only") if args.only else None
+    if args.score_only and not args.resume:
+        raise ValueError("--score-only grades a run already on disk: name it with --resume <its folder name>, or "
+                         "use oeb grade <run folder>")
     kw = dict(limit=args.limit, sample=args.sample, only=only, timeout=args.timeout,
-              workers=args.workers, retry_failed=args.retry_failed)
+              workers=args.workers, resume=args.resume, retry_failed=args.retry_failed)
     p = b.plan(harness.system(system, system_options(args.options, system)), args.out, **kw)
     if args.score_only:
         deprecated("--score-only", "`oeb grade <run folder>`")
@@ -340,8 +342,12 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--timeout", type=float, default=1800, help="seconds each document may take (default: %(default)g)")
     r.add_argument("--workers", type=int, default=0, metavar="N",
                    help="documents in flight at once (default: the system's own)")
+    r.add_argument("--resume", metavar="RUN",
+                   help="continue the run of this folder name under --out, asking the same question; it pays only "
+                        "for documents with no answer yet (default: a new run)")
     r.add_argument("--retry-failed", action="store_true",
-                   help="predict again the documents whose recorded failure may not recur (a timeout, an outage)")
+                   help="with --resume, predict again the documents whose recorded failure may not recur (a "
+                        "timeout, an outage)")
     r.add_argument("--no-details", action="store_true", help="don't write each document's per-address breakdown")
     r.add_argument("--no-verdicts", action="store_true", help=argparse.SUPPRESS)
     r.add_argument("-y", "--yes", action="store_true", help="don't ask before predicting")
@@ -427,7 +433,7 @@ def main(argv: list[str] | None = None) -> int:
         renamed(args)
         return args.fn(args)
     except KeyboardInterrupt:
-        print(f"oeb {args.command}: interrupted" + ("; run the same command again to resume" if args.command == "run"
+        print(f"oeb {args.command}: interrupted" + ("; continue it with --resume <its folder name>" if args.command == "run"
                                                     else ""), file=sys.stderr)
         return 130
 

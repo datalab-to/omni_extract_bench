@@ -171,7 +171,7 @@ def test_a_transport_error_in_submit_is_recorded_unreachable_and_retried_by_retr
     rec = json.loads(next((tmp_path / "runs").glob("*/records/d0.json")).read_text())
     assert rec["error"]["type"] == "SystemUnreachable" and "ReadError" in rec["error"]["traceback"], rec["error"]
     extend_vendor(monkeypatch, lambda request: httpx.Response(200, json={"id": "r1"}))
-    g = b.run(harness.system("extend"), tmp_path / "runs", retry_failed=True)
+    g = b.run(harness.system("extend"), tmp_path / "runs", retry_failed=True, resume=g["run"])
     assert g["scorers"]["field_matching"]["headline"] == 1.0, g
 
 

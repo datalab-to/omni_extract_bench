@@ -104,7 +104,7 @@ from omni_extract_bench import harness  # noqa: E402
 
 
 def out_name(provider, options=None):
-    return runs.folder_name(harness.system(provider, options), {})
+    return runs.stem(harness.system(provider, options), {})
 
 
 saved = os.environ.get("AZURE_CU_ENDPOINT")
