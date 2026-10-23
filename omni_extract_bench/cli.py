@@ -1,19 +1,23 @@
 """The `oeb` command: a thin wrapper over `benchmark`, `harness` and the scorer.
 
-    oeb run        --system datalab --out runs/                    predict, then grade
+    oeb init       datalab > datalab.yaml                          a config: one run, every key written out
+    oeb run        --config datalab.yaml [--set rows.sample=20]    predict, then grade
     oeb grade      mine/ [--partial] [--dataset ...]               grade a folder of predictions/<doc_id>.json
     oeb score      --pred p.json --gold g.json --schema s.json     score one prediction against one gold
     oeb predict    --system datalab --doc x.pdf --schema s.json    one document through one system
     oeb check      [--dataset ...] [--manifest ...]                whether a dataset is one oeb can run
     oeb systems    [datalab]                                       the systems, or one system's options
 
-A run is one system, so `oeb run` refuses several. To compare systems, run one command per system, with the
-same choice of documents:
+A run is one config: the dataset, its manifest, the scorers, which rows, and one system with every option
+(omni-bench-core's `config`). `--set path=value` changes one value the file has. To compare systems, write one
+config per system, with the same `rows`:
 
-    oeb run --system datalab --options '{"mode": "accurate"}' --sample 20 -y
-    oeb run --system reducto --sample 20 -y
+    oeb init datalab > datalab.yaml && oeb init reducto > reducto.yaml
+    oeb run --config datalab.yaml --set system.datalab.mode=accurate --set rows.sample=20 -y
+    oeb run --config reducto.yaml --set rows.sample=20 -y
 
-Results go to stdout as JSON; the plan and progress go to stderr. Commands and flags from before 1.0 still
+Each run folder keeps its config, resolved, as `config.yaml`, so `oeb run --config <run>/config.yaml` asks it
+again. Results go to stdout as JSON; the plan and progress go to stderr. Commands and flags from before 1.0 still
 work, each printing what replaced it (`deprecated`). `__version__` is the installed package's version.
 """
 from __future__ import annotations
@@ -23,11 +27,10 @@ import importlib.metadata
 import json
 import logging
 import pathlib
-import shlex
 import sys
 from typing import Any
 
-from omni_bench_core import errors
+from omni_bench_core import config, errors
 
 from . import data
 
@@ -40,16 +43,11 @@ def deprecated(old: str, new: str) -> None:
 
     The commands and flags from before 1.0 that still work:
 
-        oeb benchmark      is `oeb run`, with the same flags
         oeb providers      is `oeb systems`
-        --systems          on `oeb run`, with one name: is `--system`. Several names are refused (`one_per_system`)
-        --providers        on `oeb run`: is `--systems`, so the same
         --provider         on `oeb predict`: is `--system`
-        --docs             on `oeb run`: is `--only`
-        --no-verdicts      on `oeb run` and `oeb grade`: is `--no-details`
+        --no-verdicts      on `oeb grade`: is `--no-details`
         --verdicts         on `oeb score`: is `--details`
-        --score-only       on `oeb run`: grades the runs already on disk and predicts nothing; use `oeb grade`
-        --score-workers    on `oeb run` and `oeb grade`: is ignored; the scorer sets how many processes it uses
+        --score-workers    on `oeb grade`: is ignored; the scorer sets how many processes it uses
         --gt               on `oeb score`: is `--gold`
     """
     print(f"oeb: {old} is deprecated and will be removed in a later release; use {new}", file=sys.stderr)
@@ -58,7 +56,6 @@ def deprecated(old: str, new: str) -> None:
 # Note: each pre-1.0 flag that was renamed, as (its dest, the new flag's dest, the old flag, the new flag).
 RENAMED = (
     ("provider", "system", "--provider", "--system"),
-    ("docs", "only", "--docs", "--only"),
     ("no_verdicts", "no_details", "--no-verdicts", "--no-details"),
     ("verdicts", "details", "--verdicts", "--details"),
     ("gt", "gold", "--gt", "--gold"),
@@ -105,7 +102,7 @@ def read_object_or_json(value: str, flag: str) -> dict:
 
 
 def system_options(value: str | None, system: str) -> dict[str, Any]:
-    """`--options` of `oeb run` and `oeb predict`: the system's options as a bare object (`{"mode": "accurate"}`),
+    """`--options` of `oeb predict`: the system's options as a bare object (`{"mode": "accurate"}`),
     or keyed by the system (`{"datalab": {"mode": "accurate"}}`). An object keyed by other systems is refused."""
     from . import harness
 
@@ -122,14 +119,6 @@ def system_options(value: str | None, system: str) -> dict[str, Any]:
     return got[system]
 
 
-def read_ids(path: pathlib.Path, flag: str) -> frozenset[str]:
-    """A file of ids, one per line; blank lines and `#` comments are skipped."""
-    if not path.is_file():
-        raise ValueError(f"{flag} {path}: no such file; it holds ids, one per line")
-    lines = path.read_text(encoding="utf-8-sig").splitlines()
-    return frozenset(x for line in lines if (x := line.split("#", 1)[0].strip()))
-
-
 def confirm(text: str) -> bool:
     """Shows the plan on stderr and asks. With no terminal to ask (a pipe, CI), it goes ahead. Ctrl-D is a no."""
     print(text, file=sys.stderr)
@@ -144,82 +133,40 @@ def confirm(text: str) -> bool:
         return False
 
 
-def predicted(p: Any) -> None:
-    """For the deprecated `--score-only`: refuses a run that was never predicted."""
-    if not p.run.predictions.is_dir():
-        raise ValueError(f"the run at {p.run.folder} has no predictions yet; resume it without --score-only")
+def scorers() -> dict[str, type]:
+    """The scorers a config may name, by name."""
+    from .scorers import field_matching
+
+    return {field_matching.FieldMatching.name: field_matching.FieldMatching}
 
 
-SYSTEM_FLAGS = ("--system", "--systems", "--providers")
+def cmd_init(args) -> int:
+    """A config for one system on the public dataset, graded by field matching, as YAML on stdout: every row, and
+    every option of the system at its default, so the file says the whole run."""
+    import yaml
 
+    from . import harness
 
-def one_system(args: argparse.Namespace) -> str:
-    """The one system `oeb run` was given. Several are refused before anything else, with one command per
-    system (`one_per_system`); one name under the deprecated `--systems` or `--providers` is `--system`."""
-    old = "--providers" if args.providers else "--systems" if args.systems else None
-    names = args.system or args.providers or args.systems
-    if len(names) > 1:
-        raise ValueError(one_per_system(args.argv, names))
-    if old: deprecated(old, "--system")
-    return names[0]
-
-
-def one_per_system(argv: list[str], names: list[str]) -> str:
-    """The refusal of a run given several systems: one command per system, each the user's own `argv` with
-    `--system` naming one system. A keyed `--options` becomes each system's own bare object."""
-    rest, skip = [], False
-    for tok in argv[1:]:   # Note: argv[0] is the command, `run` or its old name
-        if skip and not tok.startswith("-"): continue
-        skip = tok in SYSTEM_FLAGS
-        if skip or tok.split("=", 1)[0] in SYSTEM_FLAGS: continue
-        rest.append(tok)
-
-    def options(value: str) -> dict[str, str | None]:
-        try:
-            got = read_object_or_json(value, "--options")
-        except ValueError:
-            return {n: value for n in names}
-        if got and all(k in names and isinstance(v, dict) for k, v in got.items()):
-            return {n: json.dumps(got[n], ensure_ascii=False) if n in got else None for n in names}
-        return {n: value for n in names}
-
-    def command(name: str) -> str:
-        out, xs = ["oeb", "run", "--system", name], iter(rest)
-        for tok in xs:
-            if tok == "--options" or tok.startswith("--options="):
-                value = tok.split("=", 1)[1] if "=" in tok else next(xs, "")
-                if (o := options(value)[name]) is not None: out += ["--options", o]
-            else:
-                out.append(tok)
-        return " ".join(shlex.quote(x) for x in out)
-
-    return (f"a run is one system, but {len(names)} were given ({', '.join(names)}). Run one command per system:\n"
-            + "".join(f"    {command(n)}\n" for n in names)
-            + "Use the same --sample (or --limit, --only) in each, so they answer the same rows.")
+    c = config.template(harness.system, args.system, dataset=args.dataset, manifest=args.manifest,
+                        scorers={"field_matching": {}})
+    sys.stdout.write(yaml.safe_dump(c, sort_keys=False, width=1000, allow_unicode=True))
+    return 0
 
 
 def cmd_run(args) -> int:
-    """Plans, asks, predicts, then grades one system's run, and prints the grading: a new run, or the one
+    """Plans, asks, predicts, then grades the run a config asks, and prints the grading: a new run, or the one
     `--resume` names. A run that stops part way is continued with `--resume <its folder name>`."""
-    from . import benchmark, harness
+    from . import harness, task
 
-    system = one_system(args)
-    b = benchmark.default(args.dataset, args.manifest)
-    only = read_ids(args.only, "--only") if args.only else None
-    if args.score_only and not args.resume:
-        raise ValueError("--score-only grades a run already on disk: name it with --resume <its folder name>, or "
-                         "use oeb grade <run folder>")
-    kw = dict(limit=args.limit, sample=args.sample, only=only, timeout=args.timeout,
-              workers=args.workers, resume=args.resume, retry_failed=args.retry_failed)
-    p = b.plan(harness.system(system, system_options(args.options, system)), args.out, **kw)
-    if args.score_only:
-        deprecated("--score-only", "`oeb grade <run folder>`")
-        predicted(p)
-    elif not (args.yes or confirm(b.describe(p))):
+    c = config.load(args.config, args.set)
+    b = config.benchmark(c, task.Extract(), scorers())
+    s = config.system(c, harness.system)
+    p = config.plan(c, b, s, args.out, resume=args.resume, retry_failed=args.retry_failed)
+    if not (args.yes or confirm(b.describe(p))):
         print("oeb run: not run", file=sys.stderr)
         return 1
-    else:
-        b.predict(p)
+    config.write(c, s, p.run.folder)
+    b.predict(p)
     _print(b.grade(p.run, details=not args.no_details))
     return 0
 
@@ -316,30 +263,20 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    r = sub.add_parser("run", aliases=["benchmark"], help="predict with one system, then grade", allow_abbrev=False)
-    # Note: a required flag and its deprecated forms are a required group, so usage shows the flag as required.
-    rs = r.add_mutually_exclusive_group(required=True)
-    # Note: `nargs="+"` only so several systems are refused with one command per system (`one_system`), not
-    # with argparse's "unrecognized arguments".
-    rs.add_argument("--system", nargs="+", metavar="NAME", help="a vendor (`oeb systems`) or an OpenRouter model id")
-    rs.add_argument("--systems", nargs="+", help=argparse.SUPPRESS)
-    rs.add_argument("--providers", nargs="+", help=argparse.SUPPRESS)
-    r.add_argument("--options", metavar="JSON", help="the system's options, inline JSON or a file: an object, e.g. "
-                                                      "'{\"mode\": \"accurate\"}'")
-    r.add_argument("--dataset", default=data.DEFAULT_DATASET,
+    n = sub.add_parser("init", help="a config for one system, as YAML on stdout", allow_abbrev=False)
+    n.add_argument("system", help="a vendor (`oeb systems`) or an OpenRouter model id")
+    n.add_argument("--dataset", default=data.DEFAULT_DATASET,
                    help="a dataset folder, or hf://datasets/<org>/<name>[@<revision>] (default: %(default)s, the "
                         "public one)")
-    r.add_argument("--manifest", default=data.MANIFEST, help="a manifest inside the dataset (default: %(default)s)")
+    n.add_argument("--manifest", default=data.MANIFEST, help="a manifest inside the dataset (default: %(default)s)")
+    n.set_defaults(fn=cmd_init)
+
+    r = sub.add_parser("run", help="predict with one config's system, then grade", allow_abbrev=False)
+    r.add_argument("--config", required=True, metavar="YAML", help="the run: a config, as `oeb init` writes one")
+    r.add_argument("--set", action="append", default=[], metavar="PATH=VALUE",
+                   help="change one value the config has, read as YAML, e.g. rows.sample=20; repeatable")
     r.add_argument("--out", type=pathlib.Path, default=pathlib.Path("runs"),
                    help="the parent of the run folders (default: runs/)")
-    r.add_argument("--limit", type=int, default=0, help="the first N documents; for a smoke test")
-    r.add_argument("--sample", type=int, default=0, metavar="N", help="N documents evenly spaced over the manifest")
-    r.add_argument("--only", type=pathlib.Path, metavar="FILE", help="only the documents whose ids this file lists, "
-                                                                    "one per line")
-    r.add_argument("--docs", type=pathlib.Path, help=argparse.SUPPRESS)
-    r.add_argument("--timeout", type=float, default=1800, help="seconds each document may take (default: %(default)g)")
-    r.add_argument("--workers", type=int, default=0, metavar="N",
-                   help="documents in flight at once (default: the system's own)")
     r.add_argument("--resume", metavar="RUN",
                    help="continue the run of this folder name under --out, asking the same question; it pays only "
                         "for documents with no answer yet (default: a new run)")
@@ -347,10 +284,7 @@ def parser() -> argparse.ArgumentParser:
                    help="with --resume, predict again the documents whose recorded failure may not recur (a "
                         "timeout, an outage)")
     r.add_argument("--no-details", action="store_true", help="don't write each document's per-address breakdown")
-    r.add_argument("--no-verdicts", action="store_true", help=argparse.SUPPRESS)
     r.add_argument("-y", "--yes", action="store_true", help="don't ask before predicting")
-    r.add_argument("--score-only", action="store_true", help=argparse.SUPPRESS)   # Note: deprecated; see the docstring.
-    r.add_argument("--score-workers", type=int, help=argparse.SUPPRESS)
     r.set_defaults(fn=cmd_run)
 
     g = sub.add_parser("grade", help="grade a folder of predictions/<doc_id>.json: yours, or a run's",
@@ -412,10 +346,6 @@ def main(argv: list[str] | None = None) -> int:
     its traceback."""
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser().parse_args(argv)
-    args.argv = argv
-    if args.command == "benchmark":
-        deprecated("`oeb benchmark`", "`oeb run`, which takes the same flags")
-        args.command = "run"
     if args.command == "providers":
         deprecated("`oeb providers`", "`oeb systems`")
         args.command = "systems"

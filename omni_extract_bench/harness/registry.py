@@ -63,11 +63,11 @@ def adapter_class(provider: str) -> type[adapter.Adapter]:
 
 def system(provider: str, options: Mapping[str, Any] | None = None) -> adapter.Adapter:
     """The adapter `provider` names, with `options`, checked. A name with a "/" is a model id for the
-    single-shot LLM adapter, and a `model` option is refused, so a run can't be stored under a model it
-    didn't use."""
+    single-shot LLM adapter, and a `model` option other than it is refused, so a run can't be stored under a
+    model it didn't use."""
     options = dict(options or {})
     if "/" in provider:
-        if "model" in options:
+        if options.get("model", provider) != provider:
             raise ValueError(f"{provider}: `model` is the provider name, not an option; run the one you "
                              f"want: --system {options['model']}")
         return adapter.configure(LLM, {**options, "model": provider})

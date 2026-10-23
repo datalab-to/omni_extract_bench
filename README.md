@@ -26,19 +26,42 @@ uv pip install 'omni-extract-bench[harness]'      # + the vendor adapters, to pr
 uv pip install 'omni-extract-bench[benchmark]'    # + huggingface_hub, to download our dataset
 ```
 
-The base install brings scipy and [omni-bench-core](https://github.com/datalab-to/omni-bench-core), which brings pyarrow and rich; scipy brings numpy. It scores, and grades (`oeb grade`, `oeb check`) without any vendor package. Reading a dataset from the Hugging Face Hub also needs `huggingface_hub`, which the `[benchmark]` extra installs.
+The base install brings scipy and [omni-bench-core](https://github.com/datalab-to/omni-bench-core), which brings pyarrow, pydantic, pyyaml and rich; scipy brings numpy. It scores, and grades (`oeb grade`, `oeb check`) without any vendor package. Reading a dataset from the Hugging Face Hub also needs `huggingface_hub`, which the `[benchmark]` extra installs.
 
 ![oeb-usage](https://github.com/datalab-to/omni_extract_bench/blob/main/assets/oeb_usage.gif?raw=true)
 
 ## Run our benchmark
 
-The benchmark runs on [omni-bench-core](https://github.com/datalab-to/omni-bench-core). A run is one system: it sends each document to the system, saves each answer, and grades the answers. This runs Datalab in accurate mode on one document:
+The benchmark runs on [omni-bench-core](https://github.com/datalab-to/omni-bench-core). A run is one system: it sends each document to the system, saves each answer, and grades the answers. A run is one config, a YAML file with every key written out: the dataset, the manifest, the scorers, which documents, the timeout, the workers, and the system with every option. `oeb init` writes one for a system at its defaults, on our public dataset:
 
 ```bash
-oeb run --system datalab --options '{"mode": "accurate"}' --limit 1 --out runs/
+oeb init datalab > datalab.yaml
 ```
 
-`--options` is the system's own options, as `oeb predict` takes them. This costs money, and each system needs its API key in the environment:
+```yaml
+dataset: hf://datasets/datalab-to/omni_extract_bench   # a folder, or a Hugging Face dataset
+manifest: manifest.parquet                             # which of its documents, with which files
+scorers:
+  field_matching: {}
+rows:                    # sample N evenly spaced, or limit to the first N (0 for every document), or only these ids
+  sample: 0
+  limit: 0
+  only: null
+timeout: 1800.0          # seconds each document may take
+workers: 0               # documents in flight at once; 0 for the system's own
+system:
+  datalab:
+    mode: balanced
+    ...
+```
+
+This runs Datalab in accurate mode on one document. `--set path=value` changes one value the file has (read as YAML), and refuses a path it hasn't:
+
+```bash
+oeb run --config datalab.yaml --set system.datalab.mode=accurate --set rows.limit=1 --out runs/
+```
+
+This costs money, and each system needs its API key in the environment:
 
 | system | environment variable |
 | --- | --- |
@@ -52,30 +75,31 @@ oeb run --system datalab --options '{"mode": "accurate"}' --limit 1 --out runs/
 
 A missing key stops the run before any call, and says what to set, such as `export DATALAB_API_KEY=...`. `oeb systems <name>` prints a system's options and the variables it needs.
 
-To compare systems, or one system's options, run one command per system, with the same choice of documents (`--sample`, `--limit` or `--only`), so they answer the same rows:
+To compare systems, or one system's options, write one config per system, with the same `rows`, so they answer the same documents:
 
 ```bash
-oeb run --system datalab --options '{"mode": "accurate"}' --sample 20 --out runs/
-oeb run --system reducto --sample 20 --out runs/
+oeb init reducto > reducto.yaml
+oeb run --config datalab.yaml --set rows.sample=20 --out runs/
+oeb run --config reducto.yaml --set rows.sample=20 --out runs/
 ```
 
-Each prints its grading as one JSON object, whose `"run"` is the run folder's name. `--workers N` sets how many documents are in flight at once; by default, the system's own number.
+Each prints its grading as one JSON object, whose `"run"` is the run folder's name. Each run folder keeps its config as `config.yaml`, every `--set` applied, so `oeb run --config runs/<run>/config.yaml` asks the same question again.
 
 `oeb run` shows the plan and asks before calling any system. With no terminal to ask (a pipe, a notebook, CI), it goes ahead without asking, so a script runs as written.
 
-`--dataset` picks the dataset: a folder on disk, or a Hugging Face dataset (ours by default). Ours is about 856 MB, and it is downloaded whole the first time, even for one document, because grading needs all of it; later runs use the copy in the Hugging Face cache. Set `HF_TOKEN` (or run `hf auth login`) to download faster and avoid the Hub's rate limits. `--manifest` picks which of its documents to run, such as a 40-document subset of ours:
+`dataset` is a folder on disk, or a Hugging Face dataset (ours, as `oeb init` writes it; `oeb init --dataset` writes another). Ours is about 856 MB, and it is downloaded whole the first time, even for one document, because grading needs all of it; later runs use the copy in the Hugging Face cache. Set `HF_TOKEN` (or run `hf auth login`) to download faster and avoid the Hub's rate limits. `manifest` picks which of its documents to run, such as a 40-document subset of ours:
 
 ```bash
-oeb run --system datalab --out runs/ \
-  --manifest manifests/sample40-predictive-across-vendors-2026-09-22.parquet
+oeb run --config datalab.yaml --out runs/ \
+  --set manifest=manifests/sample40-predictive-across-vendors-2026-09-22.parquet
 ```
 
-Each run is a folder under `--out`, named after everything that changes its answers (the system, its options, the dataset, the manifest and which documents: `--sample`, `--limit`, `--only`), then a run id: `datalab-1a2b3c4d-20261021-160012-3f9a`. So:
+Each run is a folder under `--out`, named after everything that changes its answers (the system, its options, the dataset, the manifest and which documents: `rows`), then a run id: `datalab-1a2b3c4d-20261021-160012-3f9a`. So:
 
 - every `oeb run` is a new run in a new folder, so a system redeployed since an earlier run is never mixed into it;
 - `--resume <a run's folder name>` continues that run, and pays for nothing already answered. It refuses a run of another question.
 
-The timeout isn't part of the question. To give documents that timed out more time, resume the run with a longer `--timeout` and `--retry-failed`: each document's record keeps the timeout it was run with.
+The timeout isn't part of the question. To give documents that timed out more time, resume the run with a longer `timeout` (`--set timeout=3600`) and `--retry-failed`: each document's record keeps the timeout it was run with.
 
 A run is graded only when it is finished: every document has an answer or a recorded failure. One rule decides what counts as 0 ([The rules](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#the-rules) in omni-bench-core's overview):
 
@@ -307,7 +331,7 @@ from omni_extract_bench import score
 score(record["output"], gold, schema)
 ```
 
-You can also use the command line, which prints the record as JSON and exits 1 when the call failed. `--options` takes the bare options, as `oeb run --system` does, or the same keyed by the system's name:
+You can also use the command line, which prints the record as JSON and exits 1 when the call failed. `--options` takes the bare options, or the same keyed by the system's name:
 
 ```bash
 oeb predict --system datalab --doc invoice.pdf --schema schema.json --options '{"mode": "accurate"}'

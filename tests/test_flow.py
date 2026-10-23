@@ -23,7 +23,7 @@ from omni_bench_core import adapter, errors
 from omni_extract_bench import benchmark, cli, harness
 from omni_extract_bench.harness import contract
 from omni_extract_bench.scorers import field_matching
-from tests.folders import SCHEMA, dataset, oeb, predictions, raised
+from tests.folders import SCHEMA, configured, dataset, oeb, predictions, raised
 
 ROOT = Path(__file__).resolve().parent.parent
 CALLS: list[str] = []
@@ -221,7 +221,7 @@ def test_an_older_key_name_stands_in(monkeypatch):
 def test_oeb_run_grade_and_score(tmp_path, capsys, monkeypatch):
     ds = dataset(tmp_path / "ds")
     monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
-    code, out, err = oeb(capsys, "run", "--system", "gold-echo", "--dataset", str(ds), "--out",
+    code, out, err = oeb(capsys, "run", "--config", configured(capsys, ds, "gold-echo"), "--out",
                          str(tmp_path / "runs"), "-y")
     g = json.loads(out)
     assert code == 0 and g["run"].startswith("gold-echo-") and g["scorers"]["field_matching"]["headline"] == 1.0, err
@@ -232,7 +232,7 @@ def test_oeb_run_grade_and_score(tmp_path, capsys, monkeypatch):
                          "--schema", str(tmp_path / "s.json"))
     assert code == 0 and json.loads(out)["accuracy"] == 1.0 and json.loads(out)["gold_rows"] == 0
 
-    assert raised(ValueError, capsys, "run", "--system", "nope", "--dataset", str(ds), "-y").startswith("unknown system")
+    assert raised(ValueError, capsys, "init", "nope", "--dataset", str(ds)).startswith("unknown system")
 
 
 def test_oeb_grade_refuses_an_unfinished_folder_unless_partial(tmp_path, capsys):
@@ -250,7 +250,7 @@ def test_oeb_grade_refuses_an_unfinished_folder_unless_partial(tmp_path, capsys)
 def test_oeb_grade_refuses_a_run_with_a_lost_document_unless_partial(tmp_path, capsys, monkeypatch):
     ds = dataset(tmp_path / "ds")
     monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
-    code, out, err = oeb(capsys, "run", "--system", "gold-echo", "--dataset", str(ds), "--out",
+    code, out, err = oeb(capsys, "run", "--config", configured(capsys, ds, "gold-echo"), "--out",
                          str(tmp_path / "runs"), "-y")
     name = json.loads(out)["run"]
     run = tmp_path / "runs" / name
@@ -273,7 +273,7 @@ def test_oeb_run_raises_an_unfinished_refusal(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(field_matching.FieldMatching, "workers", 1)
     monkeypatch.setattr(field_matching.FieldMatching, "cache", False)
     monkeypatch.setattr(field_matching.FieldMatching, "score", score)
-    err = raised(ValueError, capsys, "run", "--system", "gold-echo", "--dataset", str(ds), "--out",
+    err = raised(ValueError, capsys, "run", "--config", configured(capsys, ds, "gold-echo"), "--out",
                  str(tmp_path / "runs"), "-y")
     assert "not scored (no judge)" in err, err
 
@@ -283,7 +283,7 @@ def test_a_missing_key_is_refused_before_any_call(tmp_path, capsys, monkeypatch)
     monkeypatch.delenv("OEB_TEST_NEVER_SET_KEY", raising=False)
     monkeypatch.setitem(harness.ADAPTERS, "keyed-echo", KeyedEcho)
     CALLS.clear()
-    err = raised(ValueError, capsys, "run", "--system", "keyed-echo", "--dataset", str(ds), "--out",
+    err = raised(ValueError, capsys, "run", "--config", configured(capsys, ds, "keyed-echo"), "--out",
                  str(tmp_path / "runs"), "-y")
     assert CALLS == [] and not (tmp_path / "runs").exists(), err
     assert "export OEB_TEST_NEVER_SET_KEY=..." in err, err
@@ -324,11 +324,10 @@ def test_oeb_check_counts_a_good_dataset_and_names_a_missing_file(tmp_path, caps
 
 def test_oeb_run_only_predicts_and_grades_only_those(tmp_path, capsys, monkeypatch):
     ds = dataset(tmp_path / "ds")
-    (tmp_path / "ids.txt").write_text("# just one\nd1\n")
     monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
     CALLS.clear()
-    code, out, err = oeb(capsys, "run", "--system", "gold-echo", "--dataset", str(ds), "--out",
-                         str(tmp_path / "runs"), "--only", str(tmp_path / "ids.txt"), "-y")
+    code, out, err = oeb(capsys, "run", "--config", configured(capsys, ds, "gold-echo"), "--set", "rows.only=[d1]",
+                         "--out", str(tmp_path / "runs"), "-y")
     assert code == 0 and CALLS == ["d1"], (err, CALLS)
     assert json.loads(out)["scorers"]["field_matching"]["rows"] == 1
 
@@ -343,12 +342,11 @@ def test_version_abbreviations_and_no_command(capsys):
         cli.main(["--version"])
     assert e.value.code == 0 and capsys.readouterr().out.strip() == f"oeb {cli.__version__}"
     with pytest.raises(SystemExit):
-        cli.main(["run", "--system", "datalab", "--sys", "datalab"])
-    assert "unrecognized arguments: --sys" in capsys.readouterr().err
+        cli.main(["run", "--config", "c.yaml", "--conf", "c.yaml"])
+    assert "unrecognized arguments: --conf" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         cli.main(["run"])
-    err = capsys.readouterr().err
-    assert "[-h] --system NAME" in err and "one of the arguments --system is required" in err, err
+    assert "the following arguments are required: --config" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         cli.main([])
     assert "required: command" in capsys.readouterr().err
@@ -358,16 +356,6 @@ def test_old_commands_still_work_and_say_what_replaced_them(tmp_path, capsys, mo
     """The commands and flags from before 1.0 work as before, each with a deprecation line."""
     ds = dataset(tmp_path / "ds")
     monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
-    code, _, err = oeb(capsys, "benchmark", "--providers", "gold-echo", "--dataset", str(ds), "--out",
-                       str(tmp_path / "runs"), "-y")
-    assert code == 0 and "`oeb benchmark` is deprecated" in err, err
-    [name] = [p.name for p in (tmp_path / "runs").iterdir()]
-    code, out, err = oeb(capsys, "run", "--providers", "gold-echo", "--dataset", str(ds), "--out",
-                         str(tmp_path / "runs"), "--score-only", "--score-workers", "2", "--resume", name)
-    assert code == 0 and "--score-only is deprecated" in err, err
-    assert "--score-workers is ignored and will be removed" in err, err
-    g = json.loads(out)
-    assert g["scorers"]["field_matching"]["headline"] == 1.0
     for name, v in (("p.json", {"a": "x"}), ("s.json", SCHEMA)):
         (tmp_path / name).write_text(json.dumps(v))
     code, out, err = oeb(capsys, "score", "--pred", str(tmp_path / "p.json"), "--gt", str(tmp_path / "p.json"),
@@ -376,18 +364,11 @@ def test_old_commands_still_work_and_say_what_replaced_them(tmp_path, capsys, mo
     code, out, err = oeb(capsys, "score", "--pred", str(tmp_path / "p.json"), "--gold", str(tmp_path / "p.json"),
                          "--schema", str(tmp_path / "s.json"), "--verdicts")
     assert code == 0 and "--verdicts is deprecated" in err and "verdicts" in json.loads(out), err
-    (tmp_path / "ids.txt").write_text("d0\n")
-    code, _, err = oeb(capsys, "run", "--providers", "gold-echo", "--dataset", str(ds), "--out", str(tmp_path / "old"),
-                       "--docs", str(tmp_path / "ids.txt"), "--no-verdicts", "-y")
-    assert code == 0 and all(f"{x} is deprecated" in err for x in ("--providers", "--docs", "--no-verdicts")), err
     code, out, err = oeb(capsys, "predict", "--provider", "gold-echo", "--doc", str(ds / "pdfs" / "d0.pdf"),
                          "--schema", str(tmp_path / "s.json"))
     assert code == 0 and "--provider is deprecated" in err, err
     code, out, err = oeb(capsys, "providers")
     assert code == 0 and "`oeb providers` is deprecated" in err and "datalab" in out, err
-    with pytest.raises(SystemExit):
-        cli.main(["run", "--providers", "gold-echo", "--systems", "gold-echo", "--dataset", str(ds), "-y"])
-    assert "argument --systems: not allowed with argument --providers" in capsys.readouterr().err
 
 
 # Note: run in a fresh interpreter whose imports of the [harness] and hub packages fail, as on a base install.
@@ -417,69 +398,33 @@ def test_the_base_install_grades_without_the_harness(tmp_path):
     assert json.loads(got.stdout[got.stdout.index("{\n  \"run\""):])["scorers"]["field_matching"]["headline"] == 0.5
 
 
-def test_oeb_run_takes_one_system_and_its_options_bare(tmp_path, capsys, monkeypatch):
-    """`--options` is the system's own object; keyed by the system's name it is the same run."""
+def test_oeb_run_is_its_config_and_its_folder_keeps_it(tmp_path, capsys, monkeypatch):
+    """`--set` changes the config's values; the run folder's config.yaml, given back, asks the same question."""
     ds = dataset(tmp_path / "ds")
     monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
-    names: list[str] = []
-    for options in ('{"refuse": ["d1"]}', '{"gold-echo": {"refuse": ["d1"]}}'):
-        code, out, err = oeb(capsys, "run", "--system", "gold-echo", "--options", options, "--dataset", str(ds),
-                             "--out", str(tmp_path / "runs"), "-y", *(["--resume", names[0]] if names else []))
-        g = json.loads(out)
-        assert code == 0 and g["scorers"]["field_matching"]["headline"] == 0.5 and "deprecated" not in err, err
-        names.append(g["run"])
-    assert names[0] == names[1] and len(list((tmp_path / "runs").iterdir())) == 1, names
-    err = raised(ValueError, capsys, "run", "--system", "gold-echo", "--options", '{"gold-echo": [{}, {}]}',
-                 "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
-    assert "one set of options" in err, err
+    c = configured(capsys, ds, "gold-echo")
+    code, out, err = oeb(capsys, "run", "--config", c, "--set", "system.gold-echo.refuse=[d1]", "--set", "workers=2",
+                         "--out", str(tmp_path / "runs"), "-y")
+    g = json.loads(out)
+    assert code == 0 and g["scorers"]["field_matching"]["headline"] == 0.5, err
+    kept = str(tmp_path / "runs" / g["run"] / "config.yaml")
+    assert "workers: 2" in Path(kept).read_text() and "- d1" in Path(kept).read_text()
+    code, out, _ = oeb(capsys, "run", "--config", kept, "--out", str(tmp_path / "runs"), "-y", "--resume", g["run"])
+    assert code == 0 and json.loads(out)["run"] == g["run"]
+    err = raised(ValueError, capsys, "run", "--config", c, "--set", "system.gold-echo.refuze=[d1]", "-y")
+    assert "did you mean system.gold-echo.refuse?" in err, err
+    err = raised(ValueError, capsys, "run", "--config", c, "--set", "workers=two", "-y")
+    assert "workers:" in err and "'two'" in err, err
 
 
-@pytest.mark.parametrize("flag", ["--system", "--systems", "--providers"])
-def test_several_systems_are_refused_with_one_command_per_system(tmp_path, capsys, monkeypatch, flag):
+def test_a_model_ids_config_runs_again_from_its_folder(tmp_path, capsys):
+    """An OpenRouter model id's options name its model; a config naming the same model is the same system."""
     ds = dataset(tmp_path / "ds")
-    monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
-    CALLS.clear()
-    err = raised(ValueError, capsys, "run", flag, "gold-echo", "openai/gpt-5.6-sol", "--sample", "1", "--options",
-                 '{"gold-echo": {"refuse": ["d1"]}}', "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
-    assert err == (
-        "a run is one system, but 2 were given (gold-echo, openai/gpt-5.6-sol). Run one command per system:\n"
-        f"""    oeb run --system gold-echo --sample 1 --options '{{"refuse": ["d1"]}}' --dataset {ds} --out """
-        f"{tmp_path / 'runs'} -y\n"
-        f"    oeb run --system openai/gpt-5.6-sol --sample 1 --dataset {ds} --out {tmp_path / 'runs'} -y\n"
-        "Use the same --sample (or --limit, --only) in each, so they answer the same rows."), err
-    assert CALLS == [] and not (tmp_path / "runs").exists()
-
-
-@pytest.mark.parametrize("flag", ["--systems", "--providers"])
-def test_one_name_under_the_old_flags_is_system(tmp_path, capsys, monkeypatch, flag):
-    ds = dataset(tmp_path / "ds")
-    monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
-    code, out, err = oeb(capsys, "run", flag, "gold-echo", "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
-    assert code == 0 and f"{flag} is deprecated" in err and "use --system" in err, err
-    assert json.loads(out)["scorers"]["field_matching"]["headline"] == 1.0
-
-
-def test_options_for_another_system_are_refused(tmp_path, capsys, monkeypatch):
-    ds = dataset(tmp_path / "ds")
-    monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
-    CALLS.clear()
-    err = raised(ValueError, capsys, "run", "--system", "gold-echo", "--options", '{"datalab": {"mode": "fast"}}',
-                 "--dataset", str(ds), "--out", str(tmp_path / "runs"), "-y")
-    assert "--options gives options for datalab, but this command runs gold-echo" in err, err
-    assert CALLS == [] and not (tmp_path / "runs").exists()
-
-
-def test_oeb_run_workers_is_one_number(tmp_path, capsys, monkeypatch):
-    ds = dataset(tmp_path / "ds")
-    monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
-    # Note: with no terminal to ask, the plan is shown on stderr and the run goes ahead.
-    code, out, err = oeb(capsys, "run", "--system", "gold-echo", "--workers", "2", "--dataset", str(ds), "--out",
-                         str(tmp_path / "runs"))
-    assert code == 0 and "2 to predict, 2 at a time" in err, err
-    assert json.loads(out)["scorers"]["field_matching"]["headline"] == 1.0
-    with pytest.raises(SystemExit):
-        cli.main(["run", "--system", "gold-echo", "--workers", '{"gold-echo": 2}'])
-    assert "argument --workers: invalid int value" in capsys.readouterr().err
+    c = configured(capsys, ds, "openai/gpt-5.6-sol")
+    assert "model: openai/gpt-5.6-sol" in Path(c).read_text()
+    assert harness.system("openai/gpt-5.6-sol", {"model": "openai/gpt-5.6-sol"}) == harness.system("openai/gpt-5.6-sol")
+    err = raised(ValueError, capsys, "run", "--config", c, "--set", "system.openai/gpt-5.6-sol.model=x/y", "-y")
+    assert "`model` is the provider name" in err, err
 
 
 def test_oeb_predict_raises_a_bug_as_it_is(tmp_path, capsys, monkeypatch):
@@ -494,7 +439,7 @@ def test_oeb_predict_raises_a_bug_as_it_is(tmp_path, capsys, monkeypatch):
 def test_a_refused_connection_stops_the_run(tmp_path, capsys, monkeypatch):
     ds = dataset(tmp_path / "ds")
     monkeypatch.setitem(harness.ADAPTERS, "offline", Offline)
-    err = raised(errors.SystemUnreachable, capsys, "run", "--system", "offline", "--dataset", str(ds), "--out",
+    err = raised(errors.SystemUnreachable, capsys, "run", "--config", configured(capsys, ds, "offline"), "--out",
                  str(tmp_path / "runs"), "-y")
     assert "the connection was refused" in err, err
     assert not list((tmp_path / "runs").glob("*/records/*.json"))
@@ -514,6 +459,7 @@ def test_no_at_the_prompt_runs_nothing(tmp_path, capsys, monkeypatch, typed):
     monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
     monkeypatch.setattr(sys, "stdin", Tty(typed))
     CALLS.clear()
-    code, out, err = oeb(capsys, "run", "--system", "gold-echo", "--dataset", str(ds), "--out", str(tmp_path / "runs"))
+    c = configured(capsys, ds, "gold-echo")
+    code, out, err = oeb(capsys, "run", "--config", c, "--out", str(tmp_path / "runs"))
     assert code == 1 and out == "" and CALLS == [] and err.endswith("proceed? [y/N] " + "\n" * (not typed)
                                                                     + "oeb run: not run\n"), err

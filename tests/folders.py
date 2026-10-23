@@ -1,6 +1,6 @@
 """Small datasets and folders for the pytest-style tests.
 
-    from tests.folders import SCHEMA, dataset, oeb, predictions, raised
+    from tests.folders import SCHEMA, configured, dataset, oeb, predictions, raised
 """
 from __future__ import annotations
 
@@ -44,6 +44,14 @@ def oeb(capsys, *argv: str) -> tuple[int, str, str]:
     code = cli.main(list(argv))
     got = capsys.readouterr()
     return code, got.out, got.err
+
+
+def configured(capsys, ds: Path, system: str) -> str:
+    """A config for `system` on dataset `ds`, as `oeb init` writes it, beside the dataset: its path."""
+    assert cli.main(["init", system, "--dataset", str(ds)]) == 0
+    path = ds.parent / f"{system.replace('/', '_')}.yaml"
+    path.write_text(capsys.readouterr().out)
+    return str(path)
 
 
 def raised(kind: type[BaseException], capsys, *argv: str) -> str:

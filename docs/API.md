@@ -92,7 +92,7 @@ record = adapter.predict(datalab, contract.Question(Path("invoice.pdf"), schema)
 ```
 
 From the command line, the record is printed as JSON, and the command exits 1 when the call failed.
-`--options` takes the bare options, as `oeb run` does, or the same keyed by the system's name
+`--options` takes the bare options, or the same keyed by the system's name
 (`'{"datalab": {"mode": "accurate"}}'`):
 
 ```bash
@@ -114,28 +114,35 @@ benchmark run sends the schema with the benchmark's conventions applied and its 
 ## run
 
 ```bash
-oeb run --system datalab --options '{"mode": "accurate"}' --out runs/ --sample 20
-oeb run --system datalab --workers 4             # 4 documents in flight at once; default: the system's own
+oeb init datalab > datalab.yaml                 # a config: one run, every key written out
+oeb run --config datalab.yaml --out runs/ --set system.datalab.mode=accurate --set rows.sample=20
+oeb run --config datalab.yaml --set workers=4   # 4 documents in flight at once; 0: the system's own
+oeb run --config datalab.yaml --set 'rows.only=[invoice-1, invoice-2]'   # only these documents
+oeb run --config runs/datalab-69059f7c-.../config.yaml   # the same question again, as a new run
 oeb grade runs/datalab-69059f7c                 # grade again, with no call
 oeb grade mine/ --dataset <dataset>             # a folder of your own predictions/<doc_id>.json
 oeb grade mine/ --dataset <dataset> --partial   # grade an unfinished folder, counting what's missing as 0
-oeb run --system datalab --only ids.txt         # only the documents listed, one id per line
 oeb check --dataset <dataset>                   # is it a dataset oeb can run? no call is made
 oeb --version
 ```
 
-A run is one system. To compare systems, run one command per system, with the same choice of documents
-(`--sample`, `--limit` or `--only`), so they answer the same rows:
+A run is one config, omni-bench-core's (its `config` module): `dataset`, `manifest`, `scorers`, `rows`
+(`sample` N evenly spaced, `limit` the first N, 0 for every document, or `only` these ids), `timeout`, `workers`,
+and `system`, one system and every option it has. Nothing has a default and nothing comes from another file, so
+the file says the whole run; a missing key, an unknown one or a value of the wrong kind is refused at its key.
+`oeb init <system>` writes one with every option at its default (`--dataset` and `--manifest` for another
+dataset). `--set path=value` changes one value the file has, read as YAML (`rows.sample=20`,
+`system.datalab.mode=accurate`); a path the file hasn't is refused, with the nearest one it has.
+
+To compare systems, write one config per system, with the same `rows`, so they answer the same documents:
 
 ```bash
-oeb run --system datalab --options '{"mode": "accurate"}' --sample 20 --out runs/
-oeb run --system reducto --sample 20 --out runs/
+oeb init reducto > reducto.yaml
+oeb run --config datalab.yaml --set rows.sample=20 --out runs/
+oeb run --config reducto.yaml --set rows.sample=20 --out runs/
 ```
 
 `oeb run` prints the run's grading as one JSON object, whose `"run"` is the run folder's name.
-
-`--options` is the system's options as an object (`'{"mode": "accurate"}'`), or the same keyed by the system's
-name (`'{"datalab": {"mode": "accurate"}}'`). Options keyed by another system are refused.
 
 `oeb grade` grades a run against the dataset and manifest its settings.json names. A folder of your own
 predictions has no settings.json, so without `--dataset` it is graded against the public dataset
@@ -172,12 +179,12 @@ documents in a pool of processes, and on macOS and Windows each process imports 
 3. grade: grades the run, when it is finished.
 
 A run folder answers one exact question: the system and its options, the dataset, the manifest and which
-documents (`--sample`, `--limit`, `--only`). Every launch is a new run in a new folder, named after the
+documents (`rows`). Every launch is a new run in a new folder, named after the
 question and a run id. `--resume <its folder name>` (`resume=` in Python) continues a run and calls nothing
-already answered, and refuses a run of another question. A `--limit` or `--sample` that covers every
+already answered, and refuses a run of another question. A `limit` or `sample` that covers every
 document is the same question as neither.
 
-The timeout isn't part of the question. Resuming a run with a longer `--timeout` and
+The timeout isn't part of the question. Resuming a run with a longer `timeout` and
 `--retry-failed` gives the documents that timed out more time, in the same folder. Each record keeps the
 `timeout_s` it was run with, and settings.json holds the latest.
 
@@ -198,8 +205,8 @@ changed (or all of them, after a change to the scorer's code).
 What happens in each case is the table under [The rules](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#the-rules) in
 omni-bench-core's overview.
 
-`--dataset` is a folder or `hf://datasets/<org>/<name>[@<revision>]` (ours by default, about 856 MB,
-downloaded whole once; set `HF_TOKEN` to download faster), and `--manifest` a manifest inside it, such as
+`dataset` is a folder or `hf://datasets/<org>/<name>[@<revision>]` (ours, about 856 MB, downloaded whole
+once; set `HF_TOKEN` to download faster), and `manifest` a manifest inside it, such as
 `manifests/sample40-predictive-across-vendors-2026-09-22.parquet`. omni-bench-core's `Benchmark` docstring
 has the rest: `plan`, `predict`, `grade`, `reread`.
 
@@ -249,11 +256,11 @@ class Mine(contract.Extractor):
 
 `prepare_schema` reshapes the schema into the vendor's dialect, and `read` reads the extraction out of the
 raw answer (by default `raw["extraction"]`). Pass an instance to `benchmark.default().run(Mine(), out="runs")`,
-or declare the class under the entry-point group `omni_extract_bench.adapters` so `oeb run --system mine`
-finds it.
+or declare the class under the entry-point group `omni_extract_bench.adapters` so a config's `system: {mine:
+{...}}` finds it (`oeb init mine` writes one).
 
 `extract` runs in several threads at once, one per document in flight (the class's `workers`, 5 unless you
-set it, or `--workers`), so anything it shares between calls, such as a client or a cache, must be safe to
+set it, or the config's `workers`), so anything it shares between calls, such as a client or a cache, must be safe to
 use from several threads.
 
 One rule decides what an exception does, in `extract`, `prepare_schema`, `read` and a scorer's
@@ -360,7 +367,8 @@ Then check it, run on it, and grade it:
 
 ```bash
 oeb check --dataset my-dataset/                                      # no call; names the first problem
-oeb run --system datalab --dataset my-dataset/ --out runs/            # predict, then grade
+oeb init datalab --dataset my-dataset/ > datalab.yaml                 # a config on it
+oeb run --config datalab.yaml --out runs/                            # predict, then grade
 oeb grade runs/datalab-1a2b3c4d                                      # grade again; the run knows its dataset
 oeb grade mine/ --dataset my-dataset/                                # your own predictions/<doc_id>.json
 ```
@@ -426,6 +434,7 @@ omni-bench-core's run folder, one per question (system, options, dataset, manife
 
 ```
 runs/datalab-69059f7c/
+  config.yaml                      the config that asked it, every --set applied and every option written out
   settings.json                    the question, and the timeout
   records/<doc_id>.json            each document's record, as `predict` returns it
   predictions/<doc_id>.json        each document's extraction alone; all grading reads
@@ -449,7 +458,7 @@ settings.json is written before the first call, and holds:
   full path;
 - `manifest`: the manifest's path inside the dataset;
 - `task`: the task's name and options, `{"name": "extract", "options": {}}`;
-- `rows`: which documents, as chosen by `--only`, `--sample` and `--limit`, such as
+- `rows`: which documents, as the config's `rows` chose them, such as
   `{"sample": 20}`. `{}` means every document of the manifest;
 - `commit`: the commit the dataset was downloaded at, for an `hf://` dataset only; and
 - `timeout_s`: the seconds each document may take, as of the latest run of this folder. It isn't part of
