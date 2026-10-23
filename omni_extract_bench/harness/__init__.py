@@ -1,85 +1,34 @@
-"""Everything that is not the scorer: producing predictions.
+"""Producing predictions: the vendor adapters, and how a provider name becomes one.
 
-The package above this one is the metric. `scorers/field_matching` reaches exactly `matching`, `prepare`,
-`recognise` and `values` -- `tests/test_score_standalone.py` fails if that ever widens --
-so a score cannot come to depend on a transport, a vendor dialect, or an envelope convention.
+The loop that runs adapters over a dataset (resuming, retries, budgets, run folders) is omni-bench-core's
+(`omni_bench_core.benchmark`, `omni_bench_core.adapter.predict`). What is particular to extraction is here:
 
-    contract.py      what an adapter IS: `Adapter`, and the `Extraction`/`Cost` it returns
-    errors.py        how a call fails, and whether a retry can fix it
-    budget.py        spending one document's share of the clock
-    schema.py        the schema vendors are sent: the universal layer, and the shared
-                     pieces adapters re-encode it with
-    responses.py     making sense of what came back: fenced JSON, list replies, cost units
-    registry.py      which adapter, at what settings, filed under what name
-    document.py      run one document, return the answer and the evidence for it
-    providers/       one module per vendor, each satisfying `Adapter`
+    contract.py      `Question`, what every vendor is sent, and `Extractor`, the base class of an adapter
+    schema.py        the conventions every vendor is asked under, and the shared pieces of schema reshaping
+    responses.py     reading what came back: fenced JSON, list replies, cost units
+    registry.py      which adapter a provider name means, made from a config's options
+    providers/       one adapter class per vendor
+
+`system(provider, options)` makes an adapter from a provider name (`registry.py`).
 
     pip install 'omni-extract-bench[harness]'
-
-AN ADAPTER IS A MODULE, not a program -- `contract.Adapter` states it:
-
-    Config          what the vendor can be asked
-    prepare_schema  the JSON Schema -> whatever this vendor's API takes
-    extract         (pdf, schema, *, timeout, config) -> Extraction
-
-`extract` makes the call, parses the answer, returns both, and RAISES its failures from where
-they happen. Not a subprocess watched by a transport tap, which is the shape this replaced:
-every fact that cost -- a tempfile dance, a `sitecustomize` injection, a cross-process log
-merge, an error channel that was the last line of the child's stderr -- the adapter already
-had. "Timed out while the vendor was still working" was being recovered by reading an HTTP
-log, from the code that ran the poll loop.
-
-THE SURFACE
------------
-    predict(provider, pdf, schema)   the whole per-document procedure; returns the answer
-                                     and the evidence for it in one dict
-    Extraction, Cost                 what an adapter hands back
-    VendorError, VendorTimeout       a failure of the call; `.transient` decides a retry
-    VendorUnreachable                within the call; `benchmark.needs` decides a later one
-    DialectError                     the schema would not shape for this vendor; no call made
-    AccountFailure                   raised, never returned: not a fact about a document
-    MissingCredential                likewise: an unset API key
-    MissingDependency                likewise: an adapter that could not import its SDK
-    PROVIDERS, DEFAULT_TIMEOUT       advisory, for building a loop
-
-Orchestration is absent on purpose. Which documents, in what order, and how many at once are
-decisions about a corpus, not about a document, and a library that made them would be deciding
-the shape of every benchmark built on it. `omni_extract_bench/benchmark.py` is one such loop.
-
-WHAT A RUN LEAVES BEHIND
-------------------------
-Every prediction is accompanied by the schema actually sent, the vendor's own response, the
-cost it reported and a `run_manifest`. That is what makes a vendor's score checkable after the
-fact: what it was asked, what it answered, and what the call cost, rather than the parsed
-result alone -- a parser bug is then fixed by re-reading a file instead of re-paying for 166
-calls, which is what it cost once.
 """
+from typing import Any
 
-from .contract import Adapter, Cost, Extraction
-from .errors import (AccountFailure, DialectError, MissingCredential, MissingDependency,
-                     VendorError, VendorTimeout, VendorUnreachable)
+from omni_bench_core.adapter import predict
 
-# Vendor SDKs are checked once, at import: one message naming the extra, not a failure hours
-# into a run. The scorer never imports this package, so scoring needs none of them.
-try:
-    from .document import predict
-    from .registry import (DEFAULT_TIMEOUT, PROVIDERS, adapter, add_adapter, out_name, resolve,
-                           settings_for)
-except ImportError as exc:
-    # `exc.name` tells an SDK that is missing or incompatible apart from an import of ours that
-    # broke; only the first is fixed by installing the extra.
-    if (exc.name or "").startswith(__name__.split(".")[0]):
-        raise
-    raise MissingDependency(
-        f"the harness could not import what the vendor adapters need:\n"
-        f"    {exc}\n"
-        f"    pip install 'omni-extract-bench[harness]'"
-    ) from None
+from . import contract
 
-__all__ = [
-    "predict", "adapter", "add_adapter", "Adapter",
-    "Extraction", "Cost",
-    "VendorError", "VendorTimeout", "VendorUnreachable", "DialectError",
-    "AccountFailure", "MissingCredential", "MissingDependency",
-    "PROVIDERS", "DEFAULT_TIMEOUT", "settings_for", "resolve", "out_name",
-]
+# Note: the registry imports every vendor SDK, so it is imported on first use, not here. The task imports
+# `contract` and `schema`, and grading must work without the [harness] extra.
+REGISTRY = ("ADAPTERS", "ENTRY_POINT_GROUP", "LLM", "PLUGINS", "PROVIDERS", "SHIPPED", "adapter_class", "system")
+
+__all__ = ["ADAPTERS", "ENTRY_POINT_GROUP", "LLM", "PLUGINS", "PROVIDERS", "SHIPPED", "adapter_class", "contract",
+           "predict", "system"]
+
+
+def __getattr__(name: str) -> Any:
+    if name not in REGISTRY: raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from . import registry
+
+    return getattr(registry, name)

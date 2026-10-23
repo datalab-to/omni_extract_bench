@@ -265,7 +265,10 @@ answer differently, or would require reading the field to decide how to compare 
 ## 11. Reading a score
 
 **Quote three.** `accuracy` is how much came back, `precision` how much of it can be trusted,
-and coverage how many documents were graded at all.
+and coverage the share of documents that had a usable answer: a failed document counts as 0 in the
+headline (`accuracy × coverage`). A document fails only when code says, on purpose, that the system
+failed (`errors.SystemFailed`: a refusal, a timeout, an answer with no usable extraction); a bug in an
+adapter or the scorer stops the run instead, so coverage never hides one.
 
 **Check four things before comparing providers:** coverage, `matching_exact`,
 `skipped_open_maps`, and whether the misses are in §2's second list — a harness gap reads

@@ -1,23 +1,8 @@
-"""Azure AI Content Understanding adapter.
+"""Azure AI Content Understanding: a JSON Schema becomes an analyzer, created once per schema, and each
+document is analysed against it. Auth: AZURE_CU_KEY. `endpoint` is a required option:
 
-Content Understanding is analyzer-based: a JSON Schema becomes a `fieldSchema`, the analyzer is
-created once per schema (cached by schema hash, because creating one per document would both be
-slow and litter the resource), then each document is analysed against it.
-
-Two things worth knowing before comparing its numbers with anyone else's:
-
-  * the `completion` model is a deployment choice, not a product tier. `gpt-4.1-mini` and
-    `gpt-4.1` are different systems behind the same API, so which one was used has to be
-    recorded and published beside the score -- see `--completion-model`.
-  * its field types are a smaller set than JSON Schema's. Nested objects become `object`,
-    arrays of objects become `array` of `object`, and anything else degrades to `string`.
-    That is the vendor's surface, not a benchmark choice, but it means a schema this adapter
-    sends is a lossier statement of the task than the one other vendors receive.
-
-Auth: AZURE_CU_KEY. The `endpoint` is an OPTION, not a credential -- see `Config`.
-
-    oeb predict --provider azure-cu --doc doc.pdf --schema schema.json
-"""
+    oeb init azure-cu > azure-cu.yaml
+    oeb run --config azure-cu.yaml --set system.azure-cu.endpoint=https://<resource>.cognitiveservices.azure.com"""
 from __future__ import annotations
 
 import dataclasses
@@ -27,10 +12,12 @@ import os
 import threading
 import time
 from pathlib import Path
+from typing import Any, ClassVar
 
 import httpx
+from omni_bench_core import adapter, errors
 
-from .. import budget, contract, errors
+from .. import contract
 
 API_VERSION = "2025-05-01-preview"
 DEFAULT_COMPLETION_MODEL = "gpt-4.1-mini"
@@ -38,46 +25,8 @@ _TERMINAL_OK = {"succeeded", "completed"}
 _TERMINAL_BAD = {"failed", "cancelled"}
 
 
-@dataclasses.dataclass(frozen=True)
-class Config:
-    """What azure-cu can be asked.
-
-    `completion_model` is a DEPLOYMENT CHOICE, not a product tier: `gpt-4.1-mini` and `gpt-4.1`
-    are different systems behind one API, so which one ran has to be published beside the score.
-
-    `endpoint` is a setting for the same reason: it selects an Azure resource and region, and
-    two runs against different deployments used to produce records nothing could tell apart.
-    It is an OPTION with a literal default, exactly like datalab's and extend's `base_url` --
-    it was read from `$AZURE_CU_ENDPOINT` for one commit, and that made the run DIRECTORY a
-    function of the shell, so a resume from a terminal without the variable set looked in a
-    directory with no records and re-bought the corpus. There is no public Azure endpoint to
-    default to, so the default is empty and `extract` says what to pass.
-
-    The KEY stays in the environment -- that is a credential and belongs in no record.
-    """
-
-    endpoint: str = dataclasses.field(
-        default="", metadata={"help": "the Azure resource to analyse against, e.g. "
-                                      "https://<resource>.cognitiveservices.azure.com"})
-    completion_model: str = dataclasses.field(
-        default=DEFAULT_COMPLETION_MODEL,
-        metadata={"help": "the deployment behind the analyzer; publish it with the score"})
-    api_version: str = API_VERSION
-    poll_interval: float = 3.0
-
-    def __post_init__(self):
-        """Normalise here, so the Config holds what the URLs are actually built from.
-
-        Empty is allowed rather than required: `config_for` runs for `oeb providers` and for a
-        run's directory name, and a `Config` with a required field cannot be built at all --
-        every adapter writes `config: Config = Config()` as a default argument, evaluated at
-        import. `extract` is where a missing endpoint is a failure, and it says so.
-        """
-        object.__setattr__(self, "endpoint", self.endpoint.rstrip("/"))
-
-
 def _field(prop: dict) -> dict:
-    """One JSON-Schema property as a Content Understanding field definition."""
+    """One JSON Schema property as a Content Understanding field definition."""
     prop = prop or {}
     t = prop.get("type")
     if isinstance(t, list):
@@ -103,14 +52,13 @@ def _field(prop: dict) -> dict:
     return {"type": "string", "description": desc}
 
 
-def prepare_schema(schema: dict) -> dict:
-    """Azure takes a `fieldSchema`, not a JSON Schema -- so this vendor's payload is not a
-    schema at all, and `extract` sends whatever shape the API takes."""
+def field_schema(schema: dict) -> dict:
+    """The schema as Azure's `fieldSchema`, which isn't a JSON Schema."""
     return {"fields": {k: _field(v) for k, v in ((schema or {}).get("properties") or {}).items()}}
 
 
 def _value(node):
-    """Unwrap one Content Understanding value node to a plain Python value."""
+    """One Content Understanding value node as a plain value."""
     if not isinstance(node, dict):
         return node
     for key in ("valueString", "valueNumber", "valueInteger", "valueBoolean", "valueDate"):
@@ -134,52 +82,34 @@ _ANALYZER_LOCK = threading.Lock()
 
 
 def analyzer_id(fields: dict, completion_model: str, api_version: str) -> str:
-    """The analyzer's name: a digest of EVERYTHING the analyzer is built from.
-
-    An analyzer is a server-side object, reused by name, and a `409` on the PUT means it
-    already exists -- which this treats as success. So anything that changes what the analyzer
-    IS has to change its name, or the 409 silently hands back somebody else's.
-
-    Naming it after the field schema alone did exactly that with `completion_model`, which goes
-    into the PUT body and not into the name. Run the corpus with `gpt-4.1-mini`, run it again
-    with `gpt-4.1`: same name, 409, every document analysed against the first deployment while
-    the record says the second. Two published numbers, one model, and nothing to show for it.
-    """
+    """The analyzer's name: a digest of everything it is built from. Creating an analyzer that exists
+    returns 409, taken as success, so anything that changes the analyzer must change its name."""
     spelled = json.dumps({"fieldSchema": fields, "completion": completion_model,
                           "api_version": api_version}, sort_keys=True)
     return f"oeb-{hashlib.sha256(spelled.encode()).hexdigest()[:16]}"
 
 
-def _ensure_analyzer(client, analyzer: str, fields: dict, config: Config, deadline) -> None:
-    """Create the analyzer once per process, not once per thread.
-
-    KEYED BY (endpoint, analyzer) -- the cache is process-wide and an analyzer lives inside one
-    Azure resource, so keying it by the analyzer alone let a second leg on a different endpoint
-    skip its own creation and then 404 on every document.
-
-    UNDER THE LOCK FOR THE WHOLE CREATE-AND-WAIT, not just the cache lookup. A 409 says the
-    analyzer EXISTS, not that it is READY -- so a thread that lost the race would skip the
-    readiness wait below and analyse against an analyzer still provisioning. Checking the cache
-    without holding anything is what let several threads reach the PUT at once, and widening
-    `--workers` makes that likelier rather than rarer.
-
-    Threads that block here are waiting for something they need anyway, and the wait is bounded
-    by the holding document's own budget.
-    """
+def _ensure_analyzer(client, analyzer: str, fields: dict, config: AzureCU, deadline) -> None:
+    """Creates the analyzer once per process. The cache is keyed by endpoint and analyzer, since an
+    analyzer lives in one Azure resource. The lock is held through create-and-wait, because a 409 says
+    the analyzer exists, not that it is ready."""
     with _ANALYZER_LOCK:
         if (config.endpoint, analyzer) in _ANALYZERS:
             return
-        r = client.put(
-            f"{config.endpoint}/contentunderstanding/analyzers/{analyzer}"
-            f"?api-version={config.api_version}",
-            json={"baseAnalyzerId": "prebuilt-documentAnalyzer",
-                  "config": {"returnDetails": False,
-                             "completion": config.completion_model},
-                  "fieldSchema": fields})
+        try:
+            r = client.put(
+                f"{config.endpoint}/contentunderstanding/analyzers/{analyzer}"
+                f"?api-version={config.api_version}",
+                json={"baseAnalyzerId": "prebuilt-documentAnalyzer",
+                      "config": {"returnDetails": False,
+                                 "completion": config.completion_model},
+                      "fieldSchema": fields})
+        except httpx.TransportError as exc:
+            raise contract.unreachable("creating the analyzer", exc) from exc
         if r.status_code != 409:
             if r.status_code >= 400:
-                raise errors.VendorError(f"creating analyzer: HTTP {r.status_code}: {r.text[:300]}",
-                                         status=r.status_code, body=r.text)
+                raise errors.SystemFailed(f"creating analyzer: HTTP {r.status_code}: {r.text}",
+                                          status=r.status_code, body=r.text)
             if r.headers.get("Operation-Location"):
                 _await(client, r.headers["Operation-Location"], deadline=deadline,
                        poll_interval=config.poll_interval, want_result=False)
@@ -187,11 +117,9 @@ def _ensure_analyzer(client, analyzer: str, fields: dict, config: Config, deadli
 
 
 def _await(client, op_url: str, *, deadline, poll_interval: float, want_result: bool):
-    """Poll one operation. Takes the DOCUMENT's budget, not a fresh timeout: this is
-    called twice per document -- once for the analyzer, once for the analysis -- and with
-    a timeout each it gave azure-cu two full budgets where every other vendor got one."""
+    """Polls one operation within the document's budget, which covers both the analyzer and the analysis."""
     polls = 0
-    retry = budget.PollRetry(deadline)
+    retry = adapter.PollRetry(deadline)
     while True:
         deadline.check(f"still analysing after {polls} polls")
         try:
@@ -199,67 +127,91 @@ def _await(client, op_url: str, *, deadline, poll_interval: float, want_result: 
         except httpx.TransportError as exc:
             if retry.again():
                 continue
-            raise errors.VendorUnreachable(f"polling failed: {exc}"[:300]) from None
+            raise contract.unreachable("polling failed", exc) from exc
         if r.status_code >= 400:
             if retry.again(r.status_code):
                 continue
-            raise errors.VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
-                                     status=r.status_code, body=r.text)
-        retry.ok()
+            raise errors.SystemFailed(f"HTTP {r.status_code}: {r.text}",
+                                      status=r.status_code, body=r.text)
+        retry.reset()
         polls += 1
-        body = r.json()
-        status = str(body.get("status", "")).lower()
+        with adapter.reading("the analysis's status"):
+            body = r.json()
+            status = str(body.get("status", "")).lower()
         if status in _TERMINAL_OK:
             return body if want_result else True
         if status in _TERMINAL_BAD:
-            raise errors.VendorError(f"azure-cu {status}: {json.dumps(body.get('error') or {})[:300]}",
-                                     status=200, body=r.text)
+            raise errors.SystemFailed(f"azure-cu {status}: {json.dumps(body.get('error') or {})}",
+                                      status=200, body=r.text)
         time.sleep(poll_interval)
 
 
-def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
-            config: Config = Config()) -> contract.Extraction:
-    """Create (or reuse) an analyzer for this field schema, analyse the document, poll for it.
+@dataclasses.dataclass(frozen=True)
+class AzureCU(contract.Extractor):
+    """Azure AI Content Understanding. Options:
 
-    `schema` here is already the Azure `fieldSchema` -- `DIALECT` is applied by the caller, so
-    what arrives is what goes on the wire.
+    - `endpoint`: the Azure resource to analyse against (required; there is no public default);
+    - `completion_model`: the deployment behind the analyzer, a different system per model, so publish
+      it with the score; and
+    - `api_version` and `poll_interval`.
 
-    Azure does not report a per-call cost, so `cost.usd` is None and the record says
-    `billed_out_of_band` -- rather than inventing a figure from a price list.
-    """
-    endpoint = config.endpoint
-    key = os.environ.get("AZURE_CU_KEY")
-    if not endpoint or not key:
-        raise errors.MissingCredential(
-            "azure-cu needs AZURE_CU_KEY in the environment and an endpoint in its options:\n"
-            "    --options '{\"azure-cu\": {\"endpoint\": "
-            "\"https://<resource>.cognitiveservices.azure.com\"}}'")
-    deadline = budget.Budget(timeout)
+    Its field types are fewer than JSON Schema's (nested objects, arrays of objects, and strings), so it
+    is sent a less exact statement of the task than other vendors. Azure reports no per-call cost."""
 
-    with httpx.Client(headers={"Ocp-Apim-Subscription-Key": key}, timeout=120) as client:
-        analyzer = analyzer_id(schema, config.completion_model, config.api_version)
-        _ensure_analyzer(client, analyzer, schema, config, deadline)
-        r = client.post(f"{endpoint}/contentunderstanding/analyzers/{analyzer}:analyze"
-                        f"?api-version={config.api_version}",
-                        content=pdf.read_bytes(),
-                        headers={"Content-Type": "application/octet-stream"})
-        if r.status_code >= 400:
-            raise errors.VendorError(f"HTTP {r.status_code}: {r.text[:300]}",
-                                     status=r.status_code, body=r.text)
-        op = r.headers.get("Operation-Location")
-        if not op:
-            raise errors.VendorError("no Operation-Location header on :analyze",
-                                     status=r.status_code, body=r.text)
+    name: ClassVar[str] = "azure-cu"
+    keys: ClassVar[tuple[str, ...]] = ("AZURE_CU_KEY",)
+    workers: ClassVar[int] = 3
+    endpoint: str = dataclasses.field(
+        default="", metadata={"help": "(required) the Azure resource to analyse against, e.g. "
+                                      "https://<resource>.cognitiveservices.azure.com"})
+    completion_model: str = dataclasses.field(
+        default=DEFAULT_COMPLETION_MODEL,
+        metadata={"help": "the deployment behind the analyzer; publish it with the score"})
+    api_version: str = API_VERSION
+    poll_interval: float = 3.0
 
-        body = _await(client, op, deadline=deadline, poll_interval=config.poll_interval,
-                      want_result=True)
+    def __post_init__(self):
+        """Drops the endpoint's trailing slash, so the options hold what the URLs use. An empty one is refused at the
+        first call, not here, so `oeb init azure-cu` writes a config to fill in."""
+        object.__setattr__(self, "endpoint", self.endpoint.rstrip("/"))
 
-    contents = ((body or {}).get("result") or {}).get("contents") or []
-    if not contents:
-        raise errors.VendorError("analysis returned no contents", status=200,
-                                 body=json.dumps(body)[:300])
-    return contract.Extraction(result=fields_to_dict(contents[0].get("fields") or {}),
-                               raw=body,
-                               cost=contract.Cost(),
-                               job_id=analyzer)
+    def prepare_schema(self, schema: dict) -> dict:
+        return field_schema(schema)
 
+    def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
+        """Creates (or reuses) the analyzer for this field schema, then analyses the document."""
+        endpoint = self.endpoint
+        if not endpoint.strip():
+            raise ValueError("azure-cu has no endpoint, the Azure resource to analyse against; give it: --set "
+                             "system.azure-cu.endpoint=https://<resource>.cognitiveservices.azure.com")
+        key = os.environ["AZURE_CU_KEY"]
+        deadline = adapter.Budget(timeout)
+
+        with httpx.Client(headers={"Ocp-Apim-Subscription-Key": key}, timeout=120) as client:
+            analyzer = analyzer_id(schema, self.completion_model, self.api_version)
+            _ensure_analyzer(client, analyzer, schema, self, deadline)
+            try:
+                r = client.post(f"{endpoint}/contentunderstanding/analyzers/{analyzer}:analyze"
+                                f"?api-version={self.api_version}",
+                                content=pdf.read_bytes(), headers={"Content-Type": "application/octet-stream"})
+            except httpx.TransportError as exc:
+                raise contract.unreachable("submitting the document", exc) from exc
+            if r.status_code >= 400:
+                raise errors.SystemFailed(f"HTTP {r.status_code}: {r.text}", status=r.status_code, body=r.text)
+            op = r.headers.get("Operation-Location")
+            if not op:
+                raise errors.SystemFailed("no Operation-Location header on :analyze", status=r.status_code, body=r.text)
+            body = _await(client, op, deadline=deadline, poll_interval=self.poll_interval, want_result=True)
+        with adapter.reading("the analysis's contents"):
+            done = bool(((body or {}).get("result") or {}).get("contents"))
+        if not done:
+            raise errors.SystemFailed("analysis returned no contents", status=200, body=json.dumps(body))
+        return adapter.Call(raw=body, job_id=analyzer)
+
+    def read(self, raw: Any, q: contract.Question) -> dict:
+        """The first content's fields, as plain values."""
+        with adapter.reading("the first content's fields"):
+            contents = ((raw or {}).get("result") or {}).get("contents") or []
+            if not contents:
+                raise errors.SystemFailed("analysis returned no contents")
+            return fields_to_dict(contents[0].get("fields") or {})

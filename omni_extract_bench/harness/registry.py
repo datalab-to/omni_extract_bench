@@ -1,55 +1,43 @@
-"""Which adapter, at what settings, filed under what name.
-
-An adapter is a MODULE with three names -- `contract.Adapter` states them. `ADAPTERS` maps a
-provider name to one, and a model id routes to the single-shot LLM adapter, so a model id
-needs no entry.
-
-THE CONFIG IS THE DECLARATION. Its fields are the options: what `--options` may set and what
-`oeb providers` lists. Nothing infers an option from a signature and nothing restates a
-default elsewhere. An environment variable that steered a run without appearing in it is the
-bug this shape exists to prevent -- `LLAMAEXTRACT_TIER=cost_effective` once produced a run
-indistinguishable from the maxed-out one the benchmark claims to publish.
-"""
+"""Which adapter a system name means: a shipped adapter (`ADAPTERS`), one an installed package declares
+under the entry-point group `omni_extract_bench.adapters` (`plugins`), or, for an OpenRouter model id
+such as `openai/gpt-5.6-sol`, the single-shot LLM adapter."""
 from __future__ import annotations
 
-import dataclasses
-import difflib
-import hashlib
-import json
-import re
-import typing
+from collections.abc import Mapping
 from importlib import metadata
-from types import ModuleType
+from typing import Any
 
-from .. import errors as base_errors
-from .providers import (azure_cu, datalab, extend, llamaextract, llm_single_shot, mistral,
-                        reducto)
+from omni_bench_core import adapter
 
-DEFAULT_TIMEOUT = 1800.0
-MODEL_SEPARATOR = "/"
+from . import contract
 
-ADAPTERS = {
-    "datalab": datalab,
-    "mistral": mistral,
-    "reducto": reducto,
-    "extend": extend,
-    "llamaextract": llamaextract,
-    "azure-cu": azure_cu,
-}
+# Vendor SDKs are checked once, at import: one message naming the extra, not a failure hours into a run.
+try:
+    from .providers import azure_cu, datalab, extend, llamaextract, llm_single_shot, mistral, reducto
+except ImportError as exc:
+    if (exc.name or "").startswith(__name__.split(".")[0]):
+        raise
+    exc.add_note("the harness could not import what the vendor adapters need: pip install "
+                 "'omni-extract-bench[harness]'")
+    raise
+
 ENTRY_POINT_GROUP = "omni_extract_bench.adapters"
+SHIPPED: tuple[type[contract.Extractor], ...] = (
+    datalab.Datalab, mistral.Mistral, reducto.Reducto, extend.Extend, llamaextract.LlamaExtract, azure_cu.AzureCU)
+LLM = llm_single_shot.LLMSingleShot
+
+
+ADAPTERS: dict[str, type[adapter.Adapter]] = {a.name: a for a in SHIPPED}
 
 
 def plugins() -> dict[str, metadata.EntryPoint]:
-    out = {}
-    # Note: walked per distribution because `metadata.entry_points` keeps one entry per name,
-    # silently dropping a second package that claims it.
-    for ep in (ep for d in metadata.distributions() for ep in d.entry_points):
-        if ep.group != ENTRY_POINT_GROUP: continue
-        if (ep.name in ADAPTERS or MODEL_SEPARATOR in ep.name
-                or (ep.name in out and out[ep.name].dist.name != ep.dist.name)):
-            raise ValueError(f"package {ep.dist.name!r} declares adapter {ep.name!r}, which is "
-                             f"taken or contains {MODEL_SEPARATOR!r}. Rename it in its "
-                             f"pyproject.toml")
+    """The adapters installed packages declare under `ENTRY_POINT_GROUP`, by name, not yet loaded, so a
+    broken plugin breaks only the runs that use it. A name already taken, or holding a "/", is refused."""
+    out: dict[str, metadata.EntryPoint] = {}
+    for ep in metadata.entry_points(group=ENTRY_POINT_GROUP):
+        if ep.name in ADAPTERS or ep.name in out or "/" in ep.name:
+            raise ValueError(f"package {ep.dist.name if ep.dist else '?'} declares adapter {ep.name!r}, which "
+                             "is taken or holds a '/'; rename it in its pyproject.toml")
         out[ep.name] = ep
     return out
 
@@ -58,149 +46,29 @@ PLUGINS = plugins()
 PROVIDERS = sorted({*ADAPTERS, *PLUGINS})
 
 
-def adapter(provider: str):
-    """The module that talks to this vendor: its `Config`, `prepare_schema` and `extract`.
-
-    Any OpenRouter model id is the single-shot LLM adapter, which is why model ids need no
-    entry above -- there is one adapter for all of them, and the id is one of its settings.
-    """
-    if MODEL_SEPARATOR in provider:
-        return llm_single_shot
+def adapter_class(provider: str) -> type[adapter.Adapter]:
+    """The class a system name means: the LLM adapter for a model id, a shipped adapter, or a plugin."""
+    if "/" in provider: return LLM
     if provider not in ADAPTERS and (ep := PLUGINS.get(provider)):
         try:
-            add_adapter(provider, ep.load(), replace=True)
+            ADAPTERS[provider] = ep.load()
         except ImportError as exc:
-            exc.add_note(f"while loading adapter {provider!r} from package {ep.dist.name!r}")
+            exc.add_note(f"while loading adapter {provider!r} from package {ep.dist.name if ep.dist else '?'}")
             raise
     if provider not in ADAPTERS:
-        raise base_errors.UsageError(f"unknown provider {provider!r}. Known vendors: "
-                                     f"{', '.join(PROVIDERS)}. Any OpenRouter model id also works, "
-                                     f"e.g. openai/gpt-5.6-sol")
+        raise ValueError(f"unknown system {provider!r}. Known vendors: {', '.join(PROVIDERS)}. "
+                         "Any OpenRouter model id also works, e.g. openai/gpt-5.6-sol")
     return ADAPTERS[provider]
 
 
-def add_adapter(provider: str, module: ModuleType, *, replace: bool = False) -> None:
-    """File an adapter defined in code; a package declares one under `ENTRY_POINT_GROUP`."""
-    taken = provider in ADAPTERS or provider in PLUGINS
-    if MODEL_SEPARATOR in provider or (taken and not replace):
-        raise ValueError(f"adapter name {provider!r} is taken or contains {MODEL_SEPARATOR!r}. "
-                         f"Pick another, or pass replace=True to replace a taken one")
-    if missing := [n for n in ("Config", "prepare_schema", "extract") if not hasattr(module, n)]:
-        raise TypeError(f"adapter {provider!r} is missing {', '.join(missing)}; see contract.py")
-    ADAPTERS[provider] = module
-    # Note: updated in place because callers hold the list itself (`from . import PROVIDERS`).
-    PROVIDERS[:] = sorted({*PROVIDERS, provider})
-
-
-def resolve(provider: str) -> str:
-    """This adapter's name -- what `WORKERS` and `--workers` are keyed by, and what groups the runs of
-    one adapter together however many model ids reached it: one of ours by its module's short name
-    (`llm_single_shot` for every model id), one added in code or by a package by the name it was
-    filed under."""
-    return _name(provider, adapter(provider))
-
-
-def adapter_names() -> frozenset[str]:
-    """`resolve`'s name for every adapter filed so far, and `llm_single_shot`, every model id's."""
-    return frozenset(_name(p, m) for p, m in ADAPTERS.items()) | {"llm_single_shot"}
-
-
-def _name(provider: str, module: ModuleType) -> str:
-    """`resolve`'s name for the adapter `module`, filed under `provider`."""
-    name = module.__name__
-    return name.rsplit(".", 1)[-1] if name.startswith(f"{__package__}.providers.") else provider
-
-
-def out_name(provider: str, options: dict | None = None) -> str:
-    """A run's directory name: the provider, and a digest of everything it was asked.
-
-    THE NAME IS A FUNCTION OF THE SETTINGS, ALL OF THEM, so a directory holds one
-    configuration and two configurations never share one -- `runs/datalab-f46415c9` and
-    `runs/datalab-01a72762` are the balanced and the accurate run, and `benchmark.needs` cannot hand
-    either the other's records. Naming what a run merely CHANGED about the defaults would tie
-    the name to the defaults, and they move: the day a vendor's maximum tier moves with them,
-    two tiers land in one directory and average into one published number.
-
-    The digest is not readable, and nothing here tries to make it so. WHAT A RUN WAS ASKED IS
-    WRITTEN INTO THE RUN, by `benchmark.prepare`, as `settings.json` -- beside the answers, where
-    there is no width budget to select fields against.
-
-    `openai/gpt-5.6-sol` would otherwise nest, and a `:batch` suffix is not a filename on every
-    filesystem, so the provider half is spelled out and sanitised too. Two ids that sanitise
-    alike still differ: the model is one of the settings the digest covers.
-    """
-    spelled = json.dumps(settings_for(provider, options), sort_keys=True, default=str)
-    digest = hashlib.sha256(spelled.encode()).hexdigest()[:8]
-    name = re.sub(r"[^A-Za-z0-9._-]+", "_", provider.replace(MODEL_SEPARATOR, "__"))
-    return f"{name}-{digest}"
-
-
-def config_for(provider: str, options: dict | None = None):
-    """This provider's adapter `Config`, with the caller's options applied.
-
-    THE CONFIG IS THE DECLARATION. Its fields are the options: what `--options` may set and
-    what `oeb providers` lists. Nothing infers them from a signature and nothing restates a
-    default elsewhere.
-
-    An option the adapter does not have is REFUSED, by name, rather than ignored -- a typo
-    that goes through changes nothing and the run reports as stock.
-    """
-    config_type = adapter(provider).Config
-    options = options or {}
-    if MODEL_SEPARATOR in provider:
-        if "model" in options:
-            raise base_errors.UsageError(
-                f"{provider}: `model` is the provider name, not an option -- otherwise the "
-                f"run would be stored and published under a model it did not use. Run the "
-                f"one you want: --providers {options['model']}")
-        options = {**options, "model": provider}
-    fields = [f.name for f in dataclasses.fields(config_type)]
-    if unknown := sorted(set(options) - set(fields)):
-        near = difflib.get_close_matches(unknown[0], fields, n=1)
-        raise base_errors.UsageError(f"{provider} has no option {unknown[0]!r}"
-                                     + (f" (did you mean {near[0]!r}?)" if near else "")
-                                     + f"; its options are: {', '.join(fields) or '(none)'}")
-    for k, v in options.items():
-        # Note: NaN and infinity are no JSON, and a run's settings are written as JSON.
-        if not _finite(v):
-            raise base_errors.UsageError(f"{provider}: option {k} is {v!r}; give a finite number")
-    return config_type(**_typed(provider, config_type, options))
-
-
-def _finite(value) -> bool:
-    """Whether `value` is JSON without NaN or infinity anywhere in it."""
-    try:
-        json.dumps(value, allow_nan=False, default=str)
-    except ValueError:
-        return False
-    return True
-
-
-def _typed(provider: str, config_type: type, options: dict) -> dict:
-    """`options` with each value given as its `Config` field's type: a whole number for a float field
-    becomes a float, so `{"delay": 0}` and the default `0.0` name one run; a value of another simple
-    type is refused, naming the option. A field typed otherwise (a union, a list) is passed as given."""
-    try:
-        hints = typing.get_type_hints(config_type)
-    except Exception:  # noqa: BLE001 -- a plugin's annotations may not resolve; then nothing is checked
-        return options
-    out = dict(options)
-    for k, v in options.items():
-        t = hints.get(k)
-        if t not in (str, int, float, bool): continue
-        if t is float and isinstance(v, int) and not isinstance(v, bool):
-            out[k] = float(v)
-        elif not isinstance(v, t) or (t is not bool and isinstance(v, bool)):
-            raise base_errors.UsageError(f"{provider}: option {k} is {v!r}, a {type(v).__name__}; it takes a "
-                                         f"{t.__name__}")
-    return out
-
-
-def settings_for(provider: str, options: dict | None = None) -> dict:
-    """What the adapter will be sent, as a plain dict: the `Config` it is handed.
-
-    The record states it and `out_name` digests it to name a run.
-    There are no credentials in it -- every adapter reads its key from the environment -- so
-    nothing secret reaches a record or a directory name.
-    """
-    return dataclasses.asdict(config_for(provider, options))
+def system(provider: str, options: Mapping[str, Any] | None = None) -> adapter.Adapter:
+    """The adapter `provider` names, with `options`, checked. A name with a "/" is a model id for the
+    single-shot LLM adapter, and a `model` option other than it is refused, so a run can't be stored under a
+    model it didn't use."""
+    options = dict(options or {})
+    if "/" in provider:
+        if options.get("model", provider) != provider:
+            raise ValueError(f"{provider}: its `model` is its name, not {options['model']!r}; to run "
+                             f"{options['model']}, write its config: oeb init {options['model']}")
+        return adapter.configure(LLM, {**options, "model": provider})
+    return adapter.configure(adapter_class(provider), options)

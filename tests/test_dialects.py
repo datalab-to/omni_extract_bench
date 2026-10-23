@@ -13,7 +13,7 @@ import sys
 
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.scorers.field_matching import resolve_refs
+from omni_extract_bench.scorers.field_matching.documents import resolve_refs  # noqa: E402
 from omni_extract_bench.harness.providers.llamaextract import to_typed_enum_dialect
 from omni_extract_bench.harness.providers.extend import to_strict_dialect
 from omni_extract_bench.harness.responses import cost_from_response, parse_model_json
@@ -69,7 +69,7 @@ strict = to_strict_dialect(resolve_refs(strip_benchmark_keys({
 props = strict["properties"]
 check("property primitive is nullable", props["name"]["type"] == ["string", "null"],
       str(props["name"]))
-check("ARRAY ITEM stays a bare type", props["tags"]["items"]["type"] == "string",
+check("array item stays a bare type", props["tags"]["items"]["type"] == "string",
       str(props["tags"]["items"]))
 described = to_strict_dialect(resolve_refs(strip_benchmark_keys({
     "type": "object",
@@ -81,7 +81,7 @@ described = to_strict_dialect(resolve_refs(strip_benchmark_keys({
     },
 })))
 leaf = described["properties"]["rows"]["items"]["properties"]["cases"]["items"]
-check("scalar array item carries ONLY type", set(leaf) == {"type"}, str(leaf))
+check("scalar array item carries only type", set(leaf) == {"type"}, str(leaf))
 check("object array item keeps properties",
       "properties" in described["properties"]["rows"]["items"])
 check("a property keeps its description",
@@ -131,5 +131,5 @@ check("openrouter USD passthrough",
 check("absent cost is None, not zero", cost_from_response({"pages": 3})[0] is None)
 check("booleans are not costs", cost_from_response({"cost": True})[0] is None)
 
-print(f"\n{'ALL DIALECT TESTS PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}")
+print(f"\n{'All dialect tests pass' if not FAILS else 'Failures: ' + ', '.join(FAILS)}")
 sys.exit(1 if FAILS else 0)

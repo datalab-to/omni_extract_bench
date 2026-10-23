@@ -1,23 +1,10 @@
 #!/usr/bin/env python3
-"""`_asdate`'s prefilter must never change what counts as a date.
+"""`_asdate`'s prefilter, which skips `strptime` calls that would fail, must never change what counts as a
+date.
 
-The prefilter exists only to skip `strptime` calls that were going to fail. If it ever
-skips one that would have SUCCEEDED, a date silently stops being a date, two values that
-used to compare equal stop comparing equal, and a provider's score moves for a reason
-nobody can see in the output.
-
-So every check below is the same property, approached from a different direction:
-filtered and unfiltered agree. The property is worth this much machinery because the
-obvious way to test it does not work. An earlier hand-rolled prefilter -- one that worked
-out by hand which literal characters each format demands -- passed 265,056 real values
-drawn from the corpus and was still wrong. It rejected "January<TAB>15<TAB>2024", because
-`strptime` compiles whitespace in a format to `\\s+` and matches any whitespace, while a
-rule looking for a literal " " does not. No document in the corpus separates a date with
-tabs, so the corpus had nothing to say about it.
-
-That is the lesson these tests encode: a differential against real data only proves you
-did not break the data you already have. The generated cases below are what actually holds
-the property down.
+Every check is the same property: filtered and unfiltered agree. The cases are generated rather than taken
+from the corpus, because an earlier prefilter passed 265,056 real values and still rejected
+"January<TAB>15<TAB>2024".
 
 Run: python3 tests/test_asdate_prefilter.py
 """
@@ -48,7 +35,7 @@ def unfiltered(v):
     """What `_asdate` does with no prefilter: try every format in both lists, in order.
 
     Kept here rather than imported so the comparison survives the day someone deletes the
-    slow path entirely. It must mirror `_asdate`'s TWO phases -- calendar formats first,
+    slow path entirely. It must mirror `_asdate`'s two phases -- calendar formats first,
     then a timestamp, which counts as a date only at midnight -- or the test would pass
     while the prefilter quietly swallowed every timestamp.
     """
@@ -93,7 +80,7 @@ DAYS = [date(y, m, d)
         for d in (1, 9, 10, 28)]
 
 
-print("\nASDATE PREFILTER\n")
+print("\nAsdate prefilter\n")
 
 report("the prefilter is installed, not silently fallen back to the slow loop",
        hasattr(V, "_union_regex")
@@ -191,11 +178,11 @@ report("the fuzz actually generated dates, so it tests the accept path too",
        positives > 500, f"only {positives} real dates in {N:,} inputs")
 note(f"{N:,} fuzz inputs, {positives:,} of them real dates")
 
-print(f"\n{'ASDATE PREFILTER HOLDS' if not FAILS else 'FAILURES:'}")
+print(f"\n{'Asdate prefilter holds' if not FAILS else 'Failures:'}")
 for f in FAILS:
     print(f"   {f}")
 
-print("\nAMBIGUOUS DATES RESOLVE BY SEPARATOR, DELIBERATELY")
+print("\nAmbiguous dates resolve by separator, deliberately")
 for _v, _want, _why in (
         ("01/02/2024", "2024-01-02", "slash: month first, US convention"),
         ("01-02-2024", "2024-01-02", "hyphen: month first"),

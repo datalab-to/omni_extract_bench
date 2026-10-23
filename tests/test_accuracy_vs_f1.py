@@ -1,25 +1,9 @@
 #!/usr/bin/env python3
-"""How `accuracy` and `f1` relate, and exactly when they disagree.
+"""How `accuracy` and `f1` relate, and when they disagree about ranking.
 
-They can rank two predictions oppositely, so the spec has to say which one decides. It does
-(`accuracy`), and this file establishes the algebra behind that choice, because "these two
-numbers sometimes disagree" is the sort of thing a reader is entitled to see proven.
-
-    m = matched   w = misread   u = unfound   x = fabricated + invented_item + invented_field
-
-    G = m + w + u        gold addresses
-    P = m + w + x        asserted addresses
-    T = m + w + u + x    the union
-
-    accuracy = m / T          f1 = 2m / (G + P)
-
-`f1` is the Dice coefficient over (address, value) pairs, and charges a misread twice --
-`FP = w + x` and `FN = w + u` both contain it, as in object detection. `accuracy` is Jaccard
-over the same pairs EXCEPT that a misread counts once instead of twice, which is P4 and which
-is what makes "you recovered 60% of this document" literally true.
-
-That single deviation is the whole reason the two can disagree about ranking. With no
-misreads, accuracy is Jaccard and f1 is 2J/(1+J) -- monotone, so identical ordering.
+With m matched, w misread, u unfound and x asserted wrongly: accuracy = m / (m + w + u + x) and
+f1 = 2m / (2m + 2w + u + x). `f1` charges a misread twice and `accuracy` once, so with no misreads they rank
+identically, and with misreads they can disagree; the spec says `accuracy` decides.
 
 Run: python3 tests/test_accuracy_vs_f1.py
 """
@@ -29,7 +13,7 @@ import random
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.scorers.field_matching import score                                 # noqa: E402
+from omni_extract_bench.scorers.field_matching.compare import score  # noqa: E402
 
 FAILS = []
 
@@ -97,7 +81,7 @@ def buckets(r):
     return m, w, u, x
 
 
-print("\nTHE ALGEBRA, OVER GENERATED DOCUMENTS")
+print("\nThe algebra, over generated documents")
 bad_t = bad_f1 = bad_acc = bad_dice = seen = 0
 for _ in range(1000):
     g = doc()
@@ -123,7 +107,7 @@ report("with no misread, accuracy is Jaccard and f1 == 2J/(1+J)",
        bad_dice == 0, f"{bad_dice} violations")
 note("so f1 is the textbook measure; accuracy is Jaccard minus one misread charge (P4)")
 
-print("\naccuracy READS THE ALIGNMENT; f1 AND JACCARD CANNOT")
+print("\naccuracy reads the alignment; f1 and Jaccard cannot")
 AB_S = {"properties": {k: {"type": "string"} for k in "abc"}}
 AB_G = {"a": "1", "b": "2"}
 A = score({"a": "1", "b": "99"}, AB_G, AB_S)
@@ -142,14 +126,14 @@ report("the two are identical in claim-set terms",
        f"|G|={B['matched']+B['misread']+B['unfound']} |P|={B['asserted']}")
 report("so f1 scores them the same", abs(A["f1"] - B["f1"]) < 1e-12,
        f"{A['f1']:.4f} vs {B['f1']:.4f}")
-report("and jaccard scores them the same", abs(_j(A) - _j(B)) < 1e-12,
+report("and Jaccard scores them the same", abs(_j(A) - _j(B)) < 1e-12,
        f"{_j(A):.4f} vs {_j(B):.4f}")
 report("but accuracy tells them apart", abs(A["accuracy"] - B["accuracy"]) > 1e-9,
        f"{A['accuracy']:.2f} vs {B['accuracy']:.2f}")
-note("hence accuracy is NOT a set-similarity measure -- it uses strictly more information,")
+note("hence accuracy is not a set-similarity measure -- it uses strictly more information,")
 note("and f1 is a coarsening of it rather than a generalisation")
 
-print("\nWHERE accuracy IS INDIFFERENT, AND WHERE IT IS NOT")
+print("\nWhere accuracy is indifferent, and where it is not")
 IN_S = {"properties": {"a": {"type": "string"}, "b": {"type": "string"},
                        "blank": {"type": ["string", "null"]}}}
 filled_G = {"a": "1", "b": "2"}
@@ -158,19 +142,19 @@ abst_f = score({"a": "1"}, filled_G, IN_S)
 gues_f = score({"a": "1", "b": "WRONG"}, filled_G, IN_S)
 abst_s = score({"a": "1"}, silent_G, IN_S)
 gues_s = score({"a": "1", "blank": "WRONG"}, silent_G, IN_S)
-report("at an address where gold HAS a value, a wrong value costs what a blank costs",
+report("at an address where gold has a value, a wrong value costs what a blank costs",
        abs(abst_f["accuracy"] - gues_f["accuracy"]) < 1e-9,
        f"blank {abst_f['accuracy']:.2f}, wrong {gues_f['accuracy']:.2f}")
 report("...and precision is what separates them",
        gues_f["precision"] < abst_f["precision"] - 1e-9)
-report("where gold is SILENT, asserting is charged -- it creates a new address",
+report("where gold is silent, asserting is charged -- it creates a new address",
        gues_s["accuracy"] < abst_s["accuracy"] - 1e-9,
        f"blank {abst_s['accuracy']:.2f}, asserted {gues_s['accuracy']:.2f}")
 report("...and it is counted as `fabricated`", gues_s["fabricated"] == 1,
        f"fabricated {gues_s['fabricated']}")
 note("so the hallucination case is charged in the headline, not only in a diagnostic")
 
-print("\nP20 -- WITH NO MISREADS, THEIR RANKING IS IDENTICAL")
+print("\nP20 -- With no misreads, their ranking is identical")
 pairs = inv = 0
 for _ in range(4000):
     g = doc()
@@ -187,7 +171,7 @@ report(f"zero ranking disagreements over {pairs} misread-free pairs", inv == 0,
        f"{inv} disagreements, which would break P20")
 note("2J/(1+J) is strictly increasing in J, so no disagreement is possible here")
 
-print("\nAND WITH MISREADS, THEY CAN DISAGREE -- WHICH IS WHY accuracy DECIDES")
+print("\nAnd with misreads, they can disagree -- which is why accuracy decides")
 pairs2 = inv2 = 0
 for _ in range(4000):
     g = doc()
@@ -200,12 +184,12 @@ for _ in range(4000):
         continue
     pairs2 += 1
     inv2 += (ra["accuracy"] > rb["accuracy"]) != (ra["f1"] > rb["f1"])
-report("a model that misreads and one that omits/invents CAN be ranked oppositely",
+report("a model that misreads and one that omits/invents can be ranked oppositely",
        inv2 > 0, f"{inv2} of {pairs2} pairs -- if this hits zero the docs are stale")
 note(f"{inv2} of {pairs2} pairs ({100 * inv2 / max(pairs2, 1):.1f}%) -- accuracy is kinder to")
 note("a model that misreads, f1 to one that omits and invents. accuracy is the score.")
 
-print("\nP21 -- accuracy CANNOT BE RAISED EXCEPT BY BEING RIGHT MORE OFTEN")
+print("\nP21 -- accuracy cannot be raised except by being right more often")
 import itertools                                                            # noqa: E402
 
 G_S = {"properties": {f"k{i}": {"type": "string"} for i in range(6)}}
@@ -227,7 +211,7 @@ report("no strategy beats one that produced more correct values",
        str(ceilings))
 note("so guessing well raises accuracy because it produces correct values -- not an exploit")
 
-print("\nWHAT accuracy IS INDIFFERENT TO, AND WHAT precision SAYS ABOUT IT")
+print("\nWhat accuracy is indifferent to, and what precision says about it")
 IND_S = {"properties": {"a": {"type": "string"}, "b": {"type": "string"}}}
 IND_G = {"a": "x", "b": "y"}
 blank = score({"a": "x"}, IND_G, IND_S)
@@ -240,7 +224,7 @@ report("...and precision tells them apart",
        f"blank {blank['precision']:.3f}, wrong {wrong['precision']:.3f}")
 note("nothing is gained by the wrong value, but a consumer would act on it -- hence both")
 
-print("\nCORPUS VARIANCE PRICES A BASE-RATE GUESS; IT DOES NOT DEFEAT IT")
+print("\nCorpus variance prices a base-rate guess; it does not defeat it")
 BR_S = {"properties": {"lines": {"type": "array", "items": {"properties":
         {"sku": {"type": "string"}, "region": {"type": "string"}}}}}}
 
@@ -265,7 +249,7 @@ report("guessing the modal value gains on every corpus, most where the prior is 
        all(g > 0 for g in gains) and gains[0] > gains[1] > gains[2], str(gains))
 note("so variance is not a defence -- it prices the guess at the average hit rate, correctly")
 
-print("\nAN OMISSION ALWAYS COSTS AT LEAST AS MUCH AS AN INVENTION")
+print("\nAn omission always costs at least as much as an invention")
 worse = []
 for N in (2, 3, 5, 10, 50):
     keys = [f"k{i}" for i in range(N)]
@@ -278,7 +262,7 @@ report("losing a true fact never scores above adding a false one",
        all(ok for *_r, ok in worse), str(worse))
 note("gap is 1/(T(T+1)): 16.67 points at 2 values, 0.04 at 50 -- P12's lean, but faint")
 
-print(f"\n{'accuracy AND f1 RELATE AS DOCUMENTED' if not FAILS else 'FAILURES:'}")
+print(f"\n{'accuracy and f1 relate as documented' if not FAILS else 'Failures:'}")
 for f in FAILS:
     print(f"   {f}")
 _sys.exit(1 if FAILS else 0)

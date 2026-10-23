@@ -42,7 +42,8 @@ class Script(pytest.File):
 
 class ScriptRun(pytest.Item):
     def runtest(self) -> None:
-        env = {**os.environ, "PYTHONPATH": str(ROOT)}
+        # Note: added to, not replaced, so a local omni-bench-core put on PYTHONPATH reaches the script too.
+        env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(ROOT), os.environ.get("PYTHONPATH")]))}
         out = subprocess.run([sys.executable, str(self.path)], cwd=ROOT, env=env,
                              capture_output=True, text=True)
         if out.returncode:

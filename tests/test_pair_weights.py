@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
-"""The vectorised pairing weights, against the scalar function they replace.
+"""The vectorised pairing weights (`_pair_weights`), against the per-pair function they replace
+(`_worth_if_paired`), which once took 74% of the largest document's scoring time.
 
-`_worth_if_paired` counts two intersections per row pair, and `_best_pairing` calls it once
-per cell of an n*m matrix -- 11.8 million times on the corpus's largest exactly-solved block,
-which is 74% of that document's scoring time. `_pair_weights` computes the same matrix with
-two sparse products instead.
-
-"The same matrix" is the whole claim, so this file tries to break it:
-
-  * every cell, on generated documents, against the scalar `cost` the scorer uses
-  * NESTED rows especially -- a row carrying its own array is worth what its sub-pairings are
-    worth, which is a recursive solve and not an intersection. Those pairs are not vectorised
-    at all, and this checks that the fallback really is taken
-  * `shared`, the tie-break term, which the rest of the suite asserts in exactly one place
-  * grades are identical with the vectorised path forced on and forced off
-  * a value that cannot be hashed declines the path instead of raising
+It checks every cell on generated documents; that rows holding their own arrays are not vectorised and take
+the per-pair path; the tie-break term `shared`; that grades are identical with the vectorised path forced on
+and off; and that a value that can't be hashed makes the path decline rather than raise.
 
 Run: python3 tests/test_pair_weights.py
 """
@@ -24,7 +14,8 @@ import sys as _sys
 
 _ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 _sys.path.insert(0, _ROOT)
-import omni_extract_bench.scorers.field_matching as sc                                       # noqa: E402
+import omni_extract_bench.scorers.field_matching.compare as cmp  # noqa: E402
+import omni_extract_bench.scorers.field_matching.pairing as sc                                       # noqa: E402
 
 FAILS = []
 
@@ -106,14 +97,14 @@ def compare_every_cell(seeds, force_small=True):
             rnd = random.Random(seed)
             gold = doc(rnd)
             pred = shuffled(gold, rnd) if seed % 3 else doc(rnd)
-            sc.score(pred, gold, NESTED)
+            cmp.score(pred, gold, NESTED)
     finally:
         sc._best_pairing = real
         sc.MIN_VECTOR_CELLS = saved
     return seen
 
 
-print("\nEVERY CELL AGREES WITH THE FUNCTION IT REPLACES")
+print("\nEvery cell agrees with the function it replaces")
 seen = compare_every_cell(range(120))
 report("no cell disagrees with the scalar cost, over generated 3-deep documents",
        seen["bad"] == 0, f"{seen['bad']} of {seen['cells']:,} cells")
@@ -129,7 +120,7 @@ note("`shared` is asserted exactly once in the rest of the suite; a weight that 
      "would still pair correctly most of the time and silently lose tie-breaks")
 report("the recursion's `inexact` list is identical either way", seen["inexact"] == 0)
 
-print("\nNESTED ROWS TAKE THE FALLBACK, NOT THE PRODUCT")
+print("\nNested rows take the fallback, not the product")
 rnd = random.Random(1)
 gold = {"rows": [{"tag": "a", "items": [{"k": "x", "vals": [1.0]}]},
                  {"tag": "b", "items": [{"k": "y", "vals": [2.0]}]}]}
@@ -144,7 +135,7 @@ sc._worth_if_paired = counted
 saved = sc.MIN_VECTOR_CELLS
 sc.MIN_VECTOR_CELLS = 1
 try:
-    r = sc.score(pred, gold, NESTED)
+    r = cmp.score(pred, gold, NESTED)
 finally:
     sc._worth_if_paired = real_worth
     sc.MIN_VECTOR_CELLS = saved
@@ -153,7 +144,7 @@ report("a document whose every row is nested still scores 1.0 after reordering",
 report("and the scalar function was still called for those pairs",
        calls["n"] > 0, f"{calls['n']} calls")
 
-print("\nNESTING ONE SIDE NEVER HAD IS NOT NESTING")
+print("\nNesting one side never had is not nesting")
 addr_tag = (("k", "tag"),)
 inner = sc.Row(named={(("k", "z"),): "v"}, arrays={}, key=())
 gold_rows = {i: sc.Row(named={addr_tag: f"g{i}"}, arrays={}, key=(f"g{i}",))
@@ -183,16 +174,16 @@ for i in range(6):
         ok &= float(w[i, j]) == float(mt * 97 + sh if mt else 0)
 report("and every one of its weights is still exactly right", ok)
 
-print("\nTHE SAME GRADE, VECTORISED OR NOT")
+print("\nThe same grade, vectorised or not")
 same = differing = 0
 for seed in range(160):
     rnd = random.Random(seed + 9000)
     gold = doc(rnd)
     pred = shuffled(gold, rnd) if seed % 2 else doc(rnd)
     sc.MIN_VECTOR_CELLS, sc.MAX_VECTOR_CELLS = 1, 64 * 10**6
-    a = sc.score(pred, gold, NESTED)
+    a = cmp.score(pred, gold, NESTED)
     sc.MAX_VECTOR_CELLS = 0
-    b = sc.score(pred, gold, NESTED)
+    b = cmp.score(pred, gold, NESTED)
     sc.MIN_VECTOR_CELLS, sc.MAX_VECTOR_CELLS = 16 * 16, 64 * 10**6
     same += a == b
     differing += a != b
@@ -200,7 +191,7 @@ report("160 generated documents score identically on every key", differing == 0,
        f"{differing} differ")
 note("not just accuracy: matched, total, matching_exact, approximated, all of them")
 
-print("\nIT DECLINES WHAT IT CANNOT DO, RATHER THAN RAISING")
+print("\nIt declines what it cannot do, rather than raising")
 report("a block smaller than the threshold is not vectorised",
        sc._pair_weights({}, {}, [], [], 3, None) is None)
 import scipy.sparse as _sp                                                  # noqa: E402
@@ -215,7 +206,7 @@ saved_max, saved_min = sc.MAX_VECTOR_CELLS, sc.MIN_VECTOR_CELLS
 sc.MAX_VECTOR_CELLS, sc.MIN_VECTOR_CELLS = 0, 1
 try:
     got = sc._pair_weights(flat_p, flat_g, list(range(6)), list(range(6)), 97, None)
-    report("past the dense ceiling a flat block comes back SPARSE, not None",
+    report("past the dense ceiling a flat block comes back sparse, not None",
            got is not None and _sp.issparse(got), repr(type(got)))
     both = sc._pair_weights(nest_p, nest_p, list(range(6)), list(range(6)), 97, None)
     report("but a block where both sides nest at one path declines instead",
@@ -242,7 +233,7 @@ finally:
     sc.MIN_VECTOR_CELLS = saved_min
 note("returning None is how it declines; the caller then prices pairs one at a time")
 
-print(f"\n{'THE WEIGHTS HOLD' if not FAILS else 'FAILURES:'}")
+print(f"\n{'The weights hold' if not FAILS else 'Failures:'}")
 for f in FAILS:
     print(f"   {f}")
 _sys.exit(1 if FAILS else 0)

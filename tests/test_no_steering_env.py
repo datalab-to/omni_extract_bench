@@ -1,4 +1,4 @@
-"""The adapters read the environment for CREDENTIALS ONLY.
+"""The adapters read the environment for credentials only.
 
 Everything that steers a vendor -- mode, tier, array strategy, api version, base url,
 completion model -- is a field on the adapter's `Config`, so it arrives through `--options` and
@@ -6,7 +6,7 @@ is recorded in `run_manifest.settings`. An environment variable steers a run wit
 in its record: `LLAMAEXTRACT_TIER=cost_effective` once produced a run indistinguishable from
 the maxed-out one the benchmark claims to publish.
 
-Credentials are the exception on purpose. A key changes whether a call is ALLOWED, not what it
+Credentials are the exception on purpose. A key changes whether a call is allowed, not what it
 asks, and it must not be on a command line or in a record -- so it stays in the environment.
 """
 import ast
@@ -53,14 +53,16 @@ for path in modules:
 assert not offenders, (
     "adapters must take settings as arguments, not out of the environment:\n"
     + "\n".join(f"  {f}: {', '.join(v)}" for f, v in offenders.items())
-    + "\n\nAdd a field to the adapter's `Config` with the default you want; then it "
-      "reaches the adapter through `oeb benchmark --options` and shows up in "
-      "`run_manifest.settings`, which is what makes a run state what it asked."
+    + "\n\nAdd a field to the adapter class with the default you want; then it "
+      "reaches the adapter through the config's options and shows up in the run's "
+      "settings.json, which is what makes a run state what it asked."
 )
 print(f"{len(modules)} adapters: no steering read from the environment")
 
 import dataclasses  # noqa: E402
 import importlib  # noqa: E402
+
+from omni_extract_bench.harness import contract  # noqa: E402
 
 PROMOTED = {
     "datalab": ("mode", "base_url"),
@@ -71,43 +73,52 @@ PROMOTED = {
     "llm_single_shot": ("base_url",),
 }
 def config_fields(module):
-    """The adapter's `Config` fields -- the one declaration of what it can be asked."""
-    return {f.name: f for f in dataclasses.fields(
-        importlib.import_module(f"omni_extract_bench.harness.providers.{module}").Config)}
+    """The adapter class's fields: the one declaration of what it can be asked."""
+    mod = importlib.import_module(f"omni_extract_bench.harness.providers.{module}")
+    [cls] = [v for v in vars(mod).values()
+             if isinstance(v, type) and issubclass(v, contract.Extractor) and v.__module__ == mod.__name__]
+    return {f.name: f for f in dataclasses.fields(cls)}
 
 
 for module, params in PROMOTED.items():
     missing = [p for p in params if p not in config_fields(module)]
-    assert not missing, f"{module}.Config cannot be steered through options: {missing}"
-print(f"{sum(len(v) for v in PROMOTED.values())} former env settings are Config fields")
+    assert not missing, f"{module}'s adapter cannot be steered through options: {missing}"
+print(f"{sum(len(v) for v in PROMOTED.values())} former env settings are adapter options")
 
 for module in ("datalab", "reducto", "llamaextract", "azure_cu"):
     fields = config_fields(module)
     for name in PROMOTED[module]:
         got = fields[name].default
         assert got is not dataclasses.MISSING and got is not None, \
-            f"{module}.Config.{name} should carry its literal default, got {got!r}"
-print("every promoted setting carries its literal default on the Config")
+            f"{module}'s option {name} should carry its literal default, got {got!r}"
+print("every promoted setting carries its literal default on the adapter")
 
-# `out_name` digests every setting, so a default read from the environment moves the run
-# directory, and a resume without the variable re-buys the corpus.
+# A run's question holds every option, so a default read from the environment changes the question, and a
+# resume without the variable is refused.
 import os  # noqa: E402
 
-from omni_extract_bench.harness.registry import out_name  # noqa: E402
+from omni_bench_core import errors  # noqa: E402
+from omni_bench_core import run as runs  # noqa: E402
+
+from omni_extract_bench import harness  # noqa: E402
+
+
+def out_name(provider, options=None):
+    return runs.identity(harness.system(provider, options), {})
+
 
 saved = os.environ.get("AZURE_CU_ENDPOINT")
 os.environ["AZURE_CU_ENDPOINT"] = "https://set-in-the-shell.example"
 try:
-    with_var = out_name("azure-cu")
+    assert harness.system("azure-cu").endpoint == "", \
+        "azure-cu took its endpoint from the environment; it must be an option"
 finally:
     os.environ.pop("AZURE_CU_ENDPOINT") if saved is None else os.environ.__setitem__(
         "AZURE_CU_ENDPOINT", saved)
-without_var = out_name("azure-cu")
-assert with_var == without_var, (
-    f"azure-cu's run directory changed with the environment: {with_var} vs {without_var}")
 
 explicit = out_name("azure-cu", {"endpoint": "https://a.example"})
-assert explicit != without_var, "an endpoint passed as an option must still name its own run"
+assert explicit == out_name("azure-cu", {"endpoint": "https://a.example/"}), \
+    "an endpoint's trailing slash must not name another run"
 assert explicit != out_name("azure-cu", {"endpoint": "https://b.example"}), \
     "two endpoints must not share a run directory"
 print("a run directory is a function of the options, not of the shell")

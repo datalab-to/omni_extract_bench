@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
-"""What must be true of the path-based scorer (`score`), stated as properties.
+"""What must be true of the scorer (`score`), stated as properties, each check named in words.
 
-This file asks whether the scorer is correct on its own terms, which is the only question
-left now that the predecessor it replaced is gone. There was an equivalence harness beside
-this one, comparing the two implementations; it was deleted with `grading.py`, and it was
-never the load-bearing evidence anyway -- a rewrite that merely reproduces its predecessor
-inherits its predecessor's bugs, and three denominator defects and an order-sensitivity bug
-were found in that predecessor while this module was being written. Agreement was evidence.
-These properties are the proof.
-
-Every check below names the property in words. Run: python3 tests/test_score_properties.py
+Run: python3 tests/test_score_properties.py
 """
 import copy
 import itertools
@@ -22,11 +14,12 @@ import tracemalloc
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from tests.approximate import approximate                  # noqa: E402
 from omni_extract_bench.scorers.field_matching.values import cmp_leaf, canon_key                         # noqa: E402
-from omni_extract_bench.scorers.field_matching import (                          # noqa: E402
-    node_key, format_node, _find_arrays, KEY, INDEX,
-    score, flatten, align)
+from omni_extract_bench.scorers.field_matching.documents import node_key  # noqa: E402
+from omni_extract_bench.scorers.field_matching.compare import score  # noqa: E402
+from omni_extract_bench.scorers.field_matching.documents import format_node, _find_arrays, KEY, INDEX, flatten  # noqa: E402
+from omni_extract_bench.scorers.field_matching.pairing import align  # noqa: E402
 
-from omni_extract_bench.scorers.field_matching import score as _score_impl          # noqa: E402
+from omni_extract_bench.scorers.field_matching.compare import score as _score_impl  # noqa: E402
 
 
 def _schema_from(doc):
@@ -96,9 +89,9 @@ def rand_doc(rnd, depth=0):
 
 ACC = lambda p, g: score(copy.deepcopy(p), copy.deepcopy(g), {})   # noqa: E731
 
-print("\nNO PAIRING OF ROWS SCORES HIGHER THAN THE ONE CHOSEN")
+print("\nNo pairing of rows scores higher than the one chosen")
 def brute_force_matched(pred_rows, gold_rows):
-    """Most matched leaves achievable by ANY pairing of these flat rows."""
+    """Most matched leaves achievable by any pairing of these flat rows."""
     P = [flatten(r) for r in pred_rows]
     G = [flatten(r) for r in gold_rows]
     best = 0
@@ -125,7 +118,7 @@ for s in range(150):
         break
 report("the chosen pairing maximises matched leaves (checked against brute force)", ok, worst)
 
-print("\nDEPTH DOES NOT CHANGE THE SCORE")
+print("\nDepth does not change the score")
 ok, detail = True, None
 for s in range(200):
     rnd = random.Random(9200 + s)
@@ -152,7 +145,7 @@ for s in range(200):
         break
 report("wrapping a document in extra levels changes neither score nor denominator", ok, detail)
 
-print("\nARRAY ORDER IS IRRELEVANT, AT EVERY DEPTH")
+print("\nArray order is irrelevant, at every depth")
 ok, detail = True, None
 for s in range(200):
     rnd = random.Random(9400 + s)
@@ -186,7 +179,7 @@ report("rows distinguished only by nested content are still order-free", bad_pat
 note("these rows share every top-level value, so only the nested object separates them -- a "
      "scorer that paired on the shallow fields alone would mis-pair all 200")
 
-print("\nFIXING A WRONG VALUE NEVER LOWERS THE SCORE")
+print("\nFixing a wrong value never lowers the score")
 ok, detail = True, None
 for s in range(300):
     rnd = random.Random(9800 + s)
@@ -214,14 +207,14 @@ for s in range(300):
         break
 report("correcting one wrong leaf never lowers the score", ok, detail)
 
-print("\nEVERY GOLD LEAF COSTS EXACTLY ONE DENOMINATOR SLOT")
+print("\nEvery gold leaf costs exactly one denominator slot")
 ok, detail = True, None
 for s in range(300):
     rnd = random.Random(10000 + s)
     gold = rand_doc(rnd)
 
     def subset(n):
-        """A prediction that only ever DROPS gold content, never adds."""
+        """A prediction that only ever drops gold content, never adds."""
         if isinstance(n, dict):
             return {k: subset(v) for k, v in n.items() if rnd.random() > 0.3}
         if isinstance(n, list):
@@ -246,7 +239,7 @@ for s in range(200):
         break
 report("returning only some of the gold rows never scores 1.0", ok)
 
-print("\nNULL ASSERTS NOTHING")
+print("\nNull asserts nothing")
 g_null = {"a": 1, "b": None, "rows": [{"x": 5, "y": None}, {"x": None, "y": None}]}
 r_null = ACC(copy.deepcopy(g_null), g_null)
 r_bare = ACC({"a": 1, "rows": [{"x": 5}]}, {"a": 1, "rows": [{"x": 5}]})
@@ -254,7 +247,7 @@ report("null on both sides adds nothing to numerator or denominator",
        r_null["total"] == r_bare["total"] and abs(r_null["accuracy"] - 1) < 1e-9,
        f"with nulls {r_null['total']} slots, without {r_bare['total']}")
 
-print("\nTHE SAME INPUT ALWAYS PRODUCES THE SAME OUTPUT")
+print("\nThe same input always produces the same output")
 ok, detail = True, None
 for s in range(200):
     rnd = random.Random(10400 + s)
@@ -267,7 +260,7 @@ for s in range(200):
         break
 report("repeated grading, and re-ordered object keys, give identical results", ok, detail)
 
-print("\nAN OBJECT KEY IS NEVER CONFUSED WITH AN ARRAY INDEX")
+print("\nAn object key is never confused with an array index")
 g_key = {"m": {"0": "A", "1": "B"}}
 p_arr = {"m": ["A", "B"]}
 r = ACC(p_arr, g_key)
@@ -277,7 +270,7 @@ report("an object keyed \"0\" does not join an array's element 0",
 report("a key literally named \"*\" does not collide with a masked index",
        abs(ACC({"m": {"*": [1, 2]}}, {"m": {"*": [1, 2]}})["accuracy"] - 1) < 1e-9)
 
-print("\nA FABRICATED ROW GETS ITS OWN ADDRESS, NEVER A REAL ONE")
+print("\nA fabricated row gets its own address, never a real one")
 gold_rows = [{"a": "x", "b": 1.0}, {"a": "y", "b": 2.0}]
 none_pair = [{"a": "q", "b": 9.0}, {"a": "r", "b": 8.0}, {"a": "s", "b": 7.0}]
 r = ACC({"rows": none_pair}, {"rows": gold_rows})
@@ -288,7 +281,7 @@ addrs = {v.address[1][1] for v in explain({"rows": none_pair}, {"rows": gold_row
 report("fabricated rows occupy addresses disjoint from gold's indices",
        addrs == {0, 1, "p0", "p1", "p2"}, f"addresses {sorted(addrs, key=str)}")
 
-print("\nALIGNING AN ALREADY-ALIGNED PREDICTION CHANGES NOTHING")
+print("\nAligning an already-aligned prediction changes nothing")
 ok, detail = True, None
 for s in range(200):
     rnd = random.Random(10600 + s)
@@ -302,7 +295,7 @@ for s in range(200):
         break
 report("alignment is idempotent: addresses are stable once assigned", ok, detail)
 
-print("\nDEGENERATE SHAPES TERMINATE AND SCORE SENSIBLY")
+print("\nDegenerate shapes terminate and score sensibly")
 DEGENERATE = [
     ({}, {}), ({"a": []}, {"a": []}), ({"a": {}}, {"a": {}}),
     ({"a": [[]]}, {"a": [[]]}), ({"a": [{}]}, {"a": [{}]}),
@@ -329,7 +322,7 @@ ok = all(abs(ACC(copy.deepcopy(g), copy.deepcopy(g))["accuracy"] - 1) < 1e-9
          for _, g in DEGENERATE if flatten(g))
 report("identity holds for degenerate shapes that contain any leaf", ok)
 
-print("\nNESTED ARRAYS ARE ORDER-FREE, AND THEIR WEIGHT IS NEVER OVER-COUNTED")
+print("\nNested arrays are order-free, and their weight is never over-counted")
 deep_gold = {"cube": [[[1.5, 2.5], [3.5, 4.5]], [[5.5, 6.5], [7.5, 8.5]]]}
 
 
@@ -351,7 +344,7 @@ report("one wrong cell in a three-deep array costs one cell, not a whole sub-arr
        r["total"] == 9 and r["matched"] == 7,
        f"denominator {r['total']} (want 8 gold + 1 spurious = 9), matched {r['matched']} (want 7)")
 
-from omni_extract_bench.scorers.field_matching import _extract_rows_at, _worth_if_paired  # noqa: E402
+from omni_extract_bench.scorers.field_matching.pairing import _extract_rows_at, _worth_if_paired  # noqa: E402
 
 
 def true_max_matched(a, b):
@@ -393,8 +386,8 @@ for s_ in range(120):
         break
 report("the pairing weight never claims more matches than a pairing can deliver", ok, detail)
 
-print("\nA NESTED ARRAY'S ORDER CANNOT CHANGE THE OUTER PAIRING")
-from omni_extract_bench.scorers.field_matching import _extract_rows_at, _worth_if_paired   # noqa: E402
+print("\nA nested array's order cannot change the outer pairing")
+from omni_extract_bench.scorers.field_matching.pairing import _extract_rows_at, _worth_if_paired   # noqa: E402
 
 
 def row_weight(row_p, row_g):
@@ -427,7 +420,7 @@ for s_ in range(400):
 report("permuting a nested array never moves the score, across generated documents",
        moved == 0, f"{moved}/400 documents scored differently under some inner permutation")
 
-print("\nTHE WORKED NESTED EXAMPLE, ASSERTED END TO END")
+print("\nThe worked nested example, asserted end to end")
 NEST_SCHEMA = {"type": "object", "properties": {
     "segments": {"type": "array", "items": {"type": "object", "properties": {
         "name": {"type": "string"},
@@ -469,10 +462,10 @@ report("every address and verdict is exactly as documented", verdicts == expecte
        "differences: " + str({k: (expected.get(k), verdicts.get(k))
                               for k in set(expected) | set(verdicts)
                               if expected.get(k) != verdicts.get(k)}))
-report("an extra CELL inside a real row is addressed separately from an extra ROW",
+report("an extra cell inside a real row is addressed separately from an extra row",
        "['segments'][0]['quarters']['p2']" in verdicts and "['segments']['p2']['name']" in verdicts)
 
-print("\nORDER IS FREE BY DEFAULT, AND CHARGED WHERE DECLARED")
+print("\nOrder is free by default, and charged where declared")
 RECIPE = {"steps": ["mix", "bake", "cool"]}
 BACKWARDS = {"steps": ["cool", "bake", "mix"]}
 STEPS = ["steps"]
@@ -517,8 +510,9 @@ report("declaring an array ordered leaves identity at 1.0 over generated documen
            for d in (rand_doc(random.Random(12000 + s_)) for s_ in range(120))
            if flatten(d)))
 
-print("\nTHE PRICE PROMISED IS THE SCORE DELIVERED")
-from omni_extract_bench.scorers.field_matching import _best_pairing, _extract_rows_at, align, INDEX   # noqa: E402
+print("\nThe price promised is the score delivered")
+from omni_extract_bench.scorers.field_matching.pairing import _best_pairing, _extract_rows_at, align   # noqa: E402
+from omni_extract_bench.scorers.field_matching.documents import INDEX   # noqa: E402
 
 
 def price_vs_delivery(gold, pred):
@@ -563,13 +557,13 @@ report("every price the matcher paid is a price the score honours",
        f"{mismatched} of {checked} chosen pairs delivered something other than their price")
 note(f"checked {checked} chosen pairs across 400 documents nested up to three levels")
 
-print("\nROWS ARE COUNTED AT EVERY DEPTH")
+print("\nRows are counted at every depth")
 deep_g = {"outer": [{"rows": [{"a": i} for i in range(10)]}]}
 deep_p = {"outer": [{"rows": [{"a": i} for i in range(3)]}]}
 deep = score(deep_p, deep_g)
 report("rows nested below the top level are counted",
-       deep["gt_rows"] == 11 and deep["matched_rows"] == 4,
-       f"gt_rows={deep['gt_rows']} matched_rows={deep['matched_rows']}, want 11 and 4")
+       deep["gold_rows"] == 11 and deep["matched_rows"] == 4,
+       f"gold_rows={deep['gold_rows']} matched_rows={deep['matched_rows']}, want 11 and 4")
 report("recall counts leaves, so it is the same flat or wrapped",
        abs(score(deep_p, deep_g)["recall"]
            - score({"rows": [{"a": i} for i in range(3)]},
@@ -641,10 +635,10 @@ report("this scorer's row counts do not depend on what the schema declares",
        f"recall {ACC(p_rc, g_rc)['recall']}")
 
 er = ACC({"rows": [{}, {"x": 1}]}, {"rows": [{}, {"x": 1}]})
-report("an empty row {} is not counted as a row", er["gt_rows"] == 1,
-       f"gt_rows={er['gt_rows']}, want 1")
+report("an empty row {} is not counted as a row", er["gold_rows"] == 1,
+       f"gold_rows={er['gold_rows']}, want 1")
 
-print("\nAN APPROXIMATE SCORE SAYS SO")
+print("\nAn approximate score says so")
 big_gold = [{"seg": "same", "b": float(i)} for i in range(40)]
 big_pred = list(reversed(big_gold))
 with approximate():
@@ -664,11 +658,11 @@ report("an inner array solved exactly reports matching_exact=True",
        ACC(INNER_P, INNER_G)["matching_exact"] is True)
 with approximate():
     r_inner = ACC(INNER_P, INNER_G)
-report("an approximate INNER solve is reported, not hidden under an exact outer one",
+report("an approximate inner solve is reported, not hidden under an exact outer one",
        r_inner["matching_exact"] is False and r_inner["approximated"],
        f"matching_exact={r_inner['matching_exact']} greedy_blocks={r_inner['approximated']}")
 
-print("\nHARNESS METADATA IS STRIPPED THE SAME WAY")
+print("\nHarness metadata is stripped the same way")
 plain = {"a": 1, "rows": [{"x": 5}]}
 cited = {"a": {"value": 1, "citations": ["p1"], "confidence": 0.9},
          "rows": [{"x": {"value": 5, "citations": ["p2"]}}]}
@@ -676,7 +670,7 @@ report("a {value, citations} envelope around a field is stripped",
        abs(ACC(cited, plain)["accuracy"] - 1) < 1e-9,
        f"got {ACC(cited, plain)['accuracy']:.2f}")
 res = {"result": plain}
-report("an outer {\"result\": ...} wrapper is NOT the scorer's job -- it is charged",
+report("an outer {\"result\": ...} wrapper is not the scorer's job -- it is charged",
        ACC(res, plain)["accuracy"] < 1.0,
        f"got {ACC(res, plain)['accuracy']:.2f}; unwrapping envelopes belongs in prediction_io")
 side = {"a": 1, "a_citations": ["p1"], "a_meta": {"conf": 0.9}, "rows": [{"x": 5}]}
@@ -701,10 +695,10 @@ spellings = {
                      {"id": "3", "act": "Dose reduced"}, {"id": "4", "act": ""}],
 }
 got = {k: ACC({"rows": v}, copy.deepcopy(NUL_G))["accuracy"] for k, v in spellings.items()}
-report("omitted / null / empty-string score identically at ROW level",
+report("omitted / null / empty-string score identically at row level",
        len({round(v, 9) for v in got.values()}) == 1,
        "; ".join(f"{k}={v:.2f}" for k, v in got.items()))
-report("...and that score credits the ids the model DID get right (5 of 8)",
+report("...and that score credits the ids the model did get right (5 of 8)",
        abs(got["explicit null"] - 0.625) < 1e-9, f"got {got['explicit null']:.4f}, want 0.6250")
 
 BLANK_G = {"rows": [{"id": "1", "act": "X"}, {"id": None, "act": None}, {"id": "2", "act": "Y"}]}
@@ -716,9 +710,9 @@ report("a wholly blank row is inert in a prediction",
        abs(ACC(copy.deepcopy(BLANK_G), copy.deepcopy(BLANK_P))["accuracy"] - 1) < 1e-9,
        f"got {ACC(copy.deepcopy(BLANK_G), copy.deepcopy(BLANK_P))['accuracy']:.2f}")
 
-print("\nTHE SCHEMA ARGUMENT DOES NOT AFFECT THE SCORE")
+print("\nThe schema argument does not affect the score")
 
-print("\nBEHAVIOUR WE HAVE DECIDED NOT TO CHANGE YET (pinned so it cannot drift)")
+print("\nBehaviour we have decided not to change yet (pinned so it cannot drift)")
 KEY_G, KEY_P = {"m": {"total": 1.0, "net": 2.0}}, {"m": {"total": 1.0, "Net": 2.0}}
 r_key = ACC(KEY_P, KEY_G)
 report("a predicted key that is not exactly gold's is charged as invented",
@@ -773,7 +767,7 @@ dp_path = ACC(DP, DG)["accuracy"]
 report("a row wrong only in its dimension field is charged for that field, not for the row",
        abs(dp_path - 0.8) < 1e-9, f"path {dp_path:.4f}, want 0.8000 (4 of 5 fields right)")
 
-print("\nTHE LARGEST REAL ARRAY IS TRACTABLE")
+print("\nThe largest real array is tractable")
 rnd = random.Random(1)
 N = 6900
 big_g = {"rows": [{"a": f"n{i}", "b": round(i * 1.5, 2), "c": rnd.choice(WORDS)}
@@ -788,9 +782,9 @@ tracemalloc.stop()
 report(f"{N} rows x 3 fields scores in bounded time, exactly",
        rb["matching_exact"] and dt < 300,
        f"{dt:.1f}s, exact={rb['matching_exact']}")
-note(f"{dt:.1f}s, peak {peak/1e6:.0f} MB, exact={rb['matching_exact']}")
+note(f"{dt:.1f}s, peak {peak/1e6:.0f} mb, exact={rb['matching_exact']}")
 
-print(f"\n{'PATH SCORER PROPERTIES HOLD' if not FAILS else 'FAILURES:'}")
+print(f"\n{'Path scorer properties hold' if not FAILS else 'Failures:'}")
 for f in FAILS:
     print(f"   {f}")
 _sys.exit(1 if FAILS else 0)

@@ -43,16 +43,17 @@ jobs:
           fi
 
       # The scorer decides published numbers, so a release that cannot pass its own tests is
-      # not one to ship. `benchmark` brings pyarrow and `harness` brings httpx; between them
-      # every test runs. None of them needs network or credentials.
+      # not one to ship. `benchmark` brings the adapters and huggingface_hub, so every test
+      # runs; none needs network or credentials. Python 3.12, the oldest `requires-python`
+      # admits. `--no-sources` installs omni-bench-core from PyPI, as a user would.
       # A venv, not `--system`: the runner's Python is Debian's, which refuses installs into
       # itself under PEP 668 ("externally managed"). Activating it here means pytest below
       # runs on the interpreter that has the extras.
       - name: Install and test
         run: |
-          uv venv
+          uv venv --python 3.12
           . .venv/bin/activate
-          uv pip install -e ".[benchmark,harness]" --group test
+          uv pip install --no-sources -e ".[benchmark]" --group test
           pytest -n auto
 
       - run: uv build

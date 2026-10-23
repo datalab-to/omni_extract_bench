@@ -13,15 +13,21 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Every Python that `requires-python` (>=3.12) admits and that we support.
+    strategy:
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
 
       # Same install as `release.yml`: a venv because the runner's Python refuses installs
-      # under PEP 668, and `benchmark` plus `harness` because between them every test runs.
+      # under PEP 668, and `benchmark` because it brings every package a test imports.
+      # `--no-sources` installs omni-bench-core from PyPI, never from a local checkout that
+      # `[tool.uv.sources]` may name during development.
       - name: Install and test
         run: |
-          uv venv
+          uv venv --python ${{ matrix.python }}
           . .venv/bin/activate
-          uv pip install -e ".[benchmark,harness]" --group test
+          uv pip install --no-sources -e ".[benchmark]" --group test
           pytest -n auto

@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""Every doctest in the package, run.
-
-The scorer's docstrings carry worked examples -- what a fold does, what an address looks like,
-why two different strings compare equal -- and those examples are the explanation someone reads
-before trusting a number. An example that no longer matches the code is worse than none: it
-documents behaviour the scorer does not have.
-
-Nothing was running them. `scorer.py`'s 19 doctests only executed under
-`python -m omni_extract_bench.scorers.field_matching`, which CI does not do, and `values.py`'s were not executed
-at all -- so `canon_trace`'s example sat stale, still describing periods as always removed after
-the rule had grown a decimal-point exception.
+"""Runs every doctest in the package, so a worked example in a docstring can't drift from what the code does.
 
 Run: python3 tests/test_doctests.py
 """
@@ -47,7 +37,7 @@ for module in pkgutil.walk_packages(omni_extract_bench.__path__,
         FAILS.append(f"{name} ({result.failed} of {result.attempted})")
 
 print(f"\n{total} doctests run")
-print("ALL DOCTESTS PASS" if not FAILS else "FAILURES:")
+print("All doctests pass" if not FAILS else "Failures:")
 for f in FAILS:
     print(f"   {f}")
 sys.exit(1 if FAILS else 0)

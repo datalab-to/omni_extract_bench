@@ -1,9 +1,9 @@
 [project]
 name = "omni-extract-bench"
-version = "1.0.0rc1"
+version = "1.0.0"
 description = "One scorer for document-extraction benchmarks: leaf value accuracy with optimal row matching."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Datalab" }]
 keywords = ["benchmark", "document-extraction", "evaluation", "ocr", "structured-extraction"]
@@ -13,6 +13,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "omni-bench-core>=0.9,<0.10",
     "scipy>=1.13.1",
 ]
 
@@ -26,21 +27,20 @@ harness = [
     "httpx>=0.27",
     "requests>=2.31",
     "openai>=1.0",
-    "rich>=13.0",
 ]
 
-# Running the published benchmark end to end: `benchmark.py` fetches the corpus from
-# HuggingFace and reads its manifest. `huggingface_hub` rather than `datasets` because the
-# corpus is files -- PDFs and gold JSON -- not a table to load; `pyarrow` because the manifest
-# is one parquet file read once into plain dicts, with no dataframe work to justify more.
+# Running the published benchmark end to end: the vendor adapters, and `huggingface_hub` to
+# download the dataset from the Hub. `huggingface_hub` rather than `datasets` because the
+# corpus is files -- PDFs and gold JSON -- not a table to load. pyarrow, which reads the
+# manifest, comes with omni-bench-core.
 benchmark = [
     "omni_extract_bench[harness]",
-    "huggingface_hub>=0.23",
-    "pyarrow>=15.0.0",
+    "omni-bench-core[hub]>=0.9,<0.10",
 ]
 
-# Running the tests: `uv run --group test pytest -n auto`. A group, not an extra, so it never
-# reaches the published package's metadata.
+# Running the tests: `uv run --group test --extra benchmark pytest -n auto`. The extra brings the
+# adapters the harness tests import. A group, not an extra, so it never reaches the published
+# package's metadata.
 [dependency-groups]
 test = [
     "pytest>=8.0",
@@ -64,7 +64,7 @@ build-backend = "hatchling.build"
 packages = ["omni_extract_bench"]
 
 # The wheel is the package directory alone; the sdist carries what you need to check the
-# scorer's arithmetic -- tests, the metric spec, the tutorial. Named explicitly because the
+# scorer's arithmetic -- tests, the metric spec, the example files. Named explicitly because the
 # default sweeps the whole directory, and `build/` is a corpus of PDFs that runs to hundreds
 # of megabytes.
 [tool.hatch.build.targets.sdist]
@@ -72,7 +72,6 @@ include = [
     "omni_extract_bench/",
     "tests/",
     "docs/",
-    "tutorials/",
     "data/",
     "/README.md",
     "/LICENSE",

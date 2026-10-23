@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
-"""The three kinds of false assertion, and the identities that tie them together.
-
-`1 - precision` is the rate at which the model asserts something untrue. That single number
-hides three different bugs, so `score` splits it:
+"""The kinds of false assertion `score` splits `1 - precision` into, and the identities that tie them together:
 
     misread          the document has this value; the model read it wrongly
     fabricated       the schema offered the slot, the document is silent, the model filled it
     invented item    a value under an array element that paired with nothing
     invented field   a name the schema never declared
 
-The split keys off the SCHEMA, not gold's nulls. A gold field written `null` and a gold field
-left out mean the same thing (METRIC_SPEC section 5), so keying off gold would sort two
-identical documents into different buckets.
+The split keys off the schema, not the gold's nulls, because a gold `null` and a missing field mean the same.
 
 Run: python3 tests/test_false_assertions.py
 """
@@ -19,8 +14,9 @@ import os as _os
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.scorers.field_matching import (                                     # noqa: E402
-    INDEX, KEY, _classify_extra, _schema_nodes, format_node, score, show)
+from omni_extract_bench.scorers.field_matching.documents import INDEX  # noqa: E402
+from omni_extract_bench.scorers.field_matching.compare import score  # noqa: E402
+from omni_extract_bench.scorers.field_matching.documents import KEY, _classify_extra, _schema_nodes, format_node, show  # noqa: E402
 
 def verdicts_of(pred, gt, schema):
     """Per-address verdicts. `score` is the only entry point; the list comes off it."""
@@ -58,7 +54,7 @@ PRED = {"invoice_no": "INV-1",
                   {"sku": "b"},
                   {"sku": "zz"}]}
 
-print("\nWHAT THE SCHEMA OFFERS IS WHAT CAN BE FABRICATED")
+print("\nWhat the schema offers is what can be fabricated")
 slots = _schema_nodes(SCH)
 report("the schema's slots are found, at every depth, containers included",
        {format_node(k) for k in slots} == {"invoice_no", "total", "discount", "lines",
@@ -69,7 +65,7 @@ report("an open map offers no slot, so nothing inside it can be fabricated",
        not any(format_node(k).startswith("bag") for k in slots))
 note("that subtree is not graded at all, so a value there was never asked for")
 
-print("\nGOLD'S NULLS ARE NOT THE AUTHORITY -- THE SCHEMA IS")
+print("\nGold's nulls are not the authority -- the schema is")
 NULL_GT = {"lines": [{"sku": "a", "note": None}]}
 GONE_GT = {"lines": [{"sku": "a"}]}
 SAME_P = {"lines": [{"sku": "a", "note": "x"}]}
@@ -77,7 +73,7 @@ both = [score(SAME_P, g, SCH)["fabricated"] for g in (NULL_GT, GONE_GT)]
 report("gold `note: null` and gold with no `note` classify identically",
        both == [1, 1], f"got {both}, want [1, 1]")
 
-print("\nA SCALAR WHERE THE SCHEMA DECLARES A CONTAINER IS FABRICATED, NOT INVENTED")
+print("\nA scalar where the schema declares a container is fabricated, not invented")
 for name, gold in (("lines", {"total": 1.0}),
                    ("lines", {"total": 1.0, "lines": [{"sku": "a"}]}),
                    ("ship_to", {"total": 1.0}),
@@ -88,7 +84,7 @@ for name, gold in (("lines", {"total": 1.0}),
            got.get(name) == "fabricated", f"got {got}")
 note("`lines` and `ship_to` are names the schema offered; only `linez` would be invented")
 
-print("\nTHE THREE KINDS ARE TOLD APART")
+print("\nThe three kinds are told apart")
 cases = {
     "discount":      "fabricated",
     "lines[0].note": "fabricated",
@@ -105,7 +101,7 @@ for name, want in cases.items():
     got = _classify_extra(addrs[name], slots)
     report(f"{name} is {want}", got == want, f"got {got!r}")
 
-print("\nTHE `pN` LABEL IS LOAD-BEARING, SO PIN IT")
+print("\nThe `pN` label is load-bearing, so pin it")
 labels = [v.address for v in verdicts_of(PRED, GT, SCH) if v.result == "invented_item"]
 report("an unpaired predicted row is labelled with a string index, not an integer",
        labels and all(any(k == INDEX and isinstance(x, str) for k, x in a) for a in labels),
@@ -118,7 +114,7 @@ report("an integer index in an extra address would be a filled slot, not an extr
        _classify_extra(((KEY, "lines"), (INDEX, 3), (KEY, "note")), slots) == "fabricated")
 note("so the two are distinguished by the label alone -- hence this test")
 
-print("\nTHE IDENTITIES HOLD")
+print("\nThe identities hold")
 r = score(PRED, GT, SCH)
 parts = (r["matched"], r["misread"], r["unfound"], r["fabricated"],
          r["invented_item"], r["invented_field"])
@@ -136,10 +132,10 @@ report("1 - precision = every false assertion over everything asserted",
        abs((1 - r["precision"])
            - (r["misread"] + r["fabricated"] + r["invented_item"] + r["invented_field"])
            / r["asserted"]) < 1e-12)
-note("misread is counted in `asserted` and in gold, but only ONCE in `total` --")
+note("misread is counted in `asserted` and in gold, but only once in `total` --")
 note("which is the whole reason accuracy and f1 differ")
 
-print("\nTHE COUNTS ARE THE VERDICT HISTOGRAM")
+print("\nThe counts are the verdict histogram")
 import collections                                                          # noqa: E402
 hist = collections.Counter(v.result for v in verdicts_of(PRED, GT, SCH))
 report("score's counts equal explain's labels, so the two surfaces cannot drift",
@@ -149,7 +145,7 @@ report("score's counts equal explain's labels, so the two surfaces cannot drift"
            hist["invented_item"], hist["invented_field"]),
        f"score {parts} vs explain {dict(hist)}")
 
-print("\nA SCHEMA IS REQUIRED")
+print("\nA schema is required")
 for bad in (None, {}, "not a schema", []):
     try:
         score(PRED, GT, bad)
@@ -161,13 +157,13 @@ for bad in (None, {}, "not a schema", []):
 note("without it an open map cannot be found, and a fabricated value cannot be told")
 note("from an invented one -- reporting fabricated=0 would be a false claim")
 
-print("\nEXISTING NUMBERS ARE UNCHANGED BY THE SPLIT")
+print("\nExisting numbers are unchanged by the split")
 report("accuracy, precision, recall and f1 still come from matched and the address sets",
        abs(r["accuracy"] - r["matched"] / r["total"]) < 1e-9
        and abs(r["f1"] - (2 * r["precision"] * r["recall"]
                           / (r["precision"] + r["recall"]))) < 1e-12)
 
-print("\nA SCALAR ARRAY HAS NO CELLS TO MISREAD")
+print("\nA scalar array has no cells to misread")
 ARR_S = {"properties": {"q": {"type": "array", "items": {"type": "number"}},
                         "name": {"type": "string"}}}
 ARR_G = {"name": "Cloud", "q": [10.5, 12.0]}
@@ -203,15 +199,15 @@ report("omission and invention cost the same either way",
        and abs(score({"tags": ["a", "x", "c", "Z"]}, A_G, ARR_S2)["accuracy"]
                - score({"t1": "a", "t2": "x", "t3": "c", "t4": "Z"},
                        F_G, FLD_S2)["accuracy"]) < 1e-9)
-note("so the two shapes differ ONLY on order and on localising a wrong value")
+note("so the two shapes differ only on order and on localising a wrong value")
 
-print("\nTHE IDENTITIES HOLD OVER GENERATED DOCUMENTS, NOT JUST THE EXAMPLE")
+print("\nThe identities hold over generated documents, not just the example")
 import copy                                                                 # noqa: E402
 import random                                                               # noqa: E402
 
 
 def _schema_from(doc):
-    """The schema gold conforms to. Derived from GOLD only, so a key the prediction
+    """The schema gold conforms to. Derived from gold only, so a key the prediction
     invented genuinely is not a slot the model was offered."""
     if isinstance(doc, dict):
         return {"type": "object", "properties": {k: _schema_from(v) for k, v in doc.items()}}
@@ -298,7 +294,7 @@ report("and the generator actually produced false assertions to check",
                                   ("fabricated", "invented_field", "misread", "unfound")),
        f"{fired} gradings with an extra address; totals {dict(kinds)}")
 
-print(f"\n{'FALSE ASSERTION SPLIT HOLDS' if not FAILS else 'FAILURES:'}")
+print(f"\n{'False assertion split holds' if not FAILS else 'Failures:'}")
 for f in FAILS:
     print(f"   {f}")
 _sys.exit(1 if FAILS else 0)

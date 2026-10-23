@@ -1,24 +1,11 @@
 #!/usr/bin/env python3
-"""P21, on documents that have arrays.
+"""P21 on documents with arrays, where emitting more rows moves the denominator. P21 has two clauses:
 
-The exhaustive search in §8 runs over a four-field document with no arrays. A document with
-no arrays has a fixed denominator, so `accuracy` there is proportional to the count of correct
-values, and the search therefore cannot see the one attack the property is about: emitting
-more. Every check here uses an array, so the denominator moves.
+    hold what you emit fixed, make more of it right    the score can't fall
+    hold what is right fixed, emit more                the score can't rise
 
-P21 has two clauses, and they are monotonicity in two different arguments:
-
-    hold what you emit fixed, make more of it right    the score cannot fall
-    hold what is right fixed, emit more                the score cannot rise
-
-Neither implies the other. The first is about editing an assertion, the second about adding
-one. The first is not free either: correcting a value can re-pair rows and move the
-denominator, which it does in roughly a sixth of cases below.
-
-Also pinned here: the counterexample that retired the old wording of P21, *no prediction
-scores above one that produced more correct values*. It is false once an array is present,
-and it is false in the direction that matters -- a metric with that property would make
-spamming rows free.
+It also pins the counterexample to P21's old wording ("no prediction scores above one with more correct
+values"), which is false once an array is present.
 """
 import copy
 import itertools
@@ -27,7 +14,7 @@ import random
 import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-from omni_extract_bench.scorers.field_matching import score                                 # noqa: E402
+from omni_extract_bench.scorers.field_matching.compare import score  # noqa: E402
 
 FAILS = []
 
@@ -129,7 +116,7 @@ spam = {"rows": [{"k": f"k{i}", "v": i, "w": i * 2} for i in range(3)]
 h = score(honest, copy.deepcopy(G), SCHEMA)
 s = score(spam, copy.deepcopy(G), SCHEMA)
 
-report("a prediction with MORE correct values can score lower",
+report("a prediction with more correct values can score lower",
        s["matched"] > h["matched"] and s["accuracy"] < h["accuracy"],
        f"honest {h['matched']}/{h['accuracy']:.2f}  spam {s['matched']}/{s['accuracy']:.2f}")
 report("the figures quoted in §8 and §9 are the ones the scorer produces",
@@ -157,9 +144,9 @@ ordered = [best[k] for k in sorted(best)]
 report("best reachable accuracy is non-decreasing in correct values produced",
        all(a <= b + 1e-9 for a, b in zip(ordered, ordered[1:])),
        f"{ {k: round(v, 2) for k, v in sorted(best.items())} }")
-note(f"over a document WITH an array: { {k: round(v, 2) for k, v in sorted(best.items())} }")
+note(f"over a document with an array: { {k: round(v, 2) for k, v in sorted(best.items())} }")
 
-print(f"\n{'VOLUME INCENTIVE HOLDS' if not FAILS else 'FAILURES:'}")
+print(f"\n{'Volume incentive holds' if not FAILS else 'Failures:'}")
 for f in FAILS:
     print(f"  {f}")
 _sys.exit(1 if FAILS else 0)
