@@ -93,8 +93,8 @@ for module in ("datalab", "reducto", "llamaextract", "azure_cu"):
             f"{module}'s option {name} should carry its literal default, got {got!r}"
 print("every promoted setting carries its literal default on the adapter")
 
-# A run folder's name digests every option, so a default read from the environment moves the run
-# directory, and a resume without the variable re-buys the corpus.
+# A run's question holds every option, so a default read from the environment changes the question, and a
+# resume without the variable is refused.
 import os  # noqa: E402
 
 from omni_bench_core import errors  # noqa: E402
@@ -104,7 +104,7 @@ from omni_extract_bench import harness  # noqa: E402
 
 
 def out_name(provider, options=None):
-    return runs.stem(harness.system(provider, options), {})
+    return runs.identity(harness.system(provider, options), {})
 
 
 saved = os.environ.get("AZURE_CU_ENDPOINT")

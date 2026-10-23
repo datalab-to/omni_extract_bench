@@ -94,7 +94,7 @@ oeb run --config datalab.yaml --out runs/ \
   --set manifest=manifests/sample40-predictive-across-vendors-2026-09-22.parquet
 ```
 
-Each run is a folder under `--out`, named after everything that changes its answers (the system, its options, the dataset, the manifest and which documents: `rows`), then a run id: `datalab-1a2b3c4d-20261021-160012-3f9a`. So:
+Each run is a folder under `--out`, named after the system and a run id: `datalab-20261021-160012-3f9a`. Its settings.json keeps the question: everything that changes its answers (the system, its options, the dataset, the manifest and which documents: `rows`). So:
 
 - every `oeb run` is a new run in a new folder, so a system redeployed since an earlier run is never mixed into it;
 - `--resume <a run's folder name>` continues that run, and pays for nothing already answered. It refuses a run of another question.
@@ -111,7 +111,7 @@ When the run stops (its key is refused, its account is out of credits, an adapte
 To grade a run again, or a folder of your own predictions (`predictions/<doc_id>.json`):
 
 ```bash
-oeb grade runs/datalab-1a2b3c4d                    # a run knows its own dataset
+oeb grade runs/datalab-20261021-160012-3f9a                    # a run knows its own dataset
 oeb grade mine/ --dataset my-dataset/              # your predictions on your own dataset
 oeb grade mine/ --dataset my-dataset/ --partial    # count unfinished documents as 0; the summary counts them
 ```

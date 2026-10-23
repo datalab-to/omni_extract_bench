@@ -118,8 +118,8 @@ oeb init datalab > datalab.yaml                 # a config: one run, every key w
 oeb run --config datalab.yaml --out runs/ --set system.datalab.mode=accurate --set rows.sample=20
 oeb run --config datalab.yaml --set workers=4   # 4 documents in flight at once; 0: the system's own
 oeb run --config datalab.yaml --set 'rows.only=[invoice-1, invoice-2]'   # only these documents
-oeb run --config runs/datalab-69059f7c-.../config.yaml   # the same question again, as a new run
-oeb grade runs/datalab-69059f7c                 # grade again, with no call
+oeb run --config runs/datalab-20261021-160012-3f9a/config.yaml   # the same question again, as a new run
+oeb grade runs/datalab-20261021-160012-3f9a                 # grade again, with no call
 oeb grade mine/ --dataset <dataset>             # a folder of your own predictions/<doc_id>.json
 oeb grade mine/ --dataset <dataset> --partial   # grade an unfinished folder, counting what's missing as 0
 oeb check --dataset <dataset>                   # is it a dataset oeb can run? no call is made
@@ -369,7 +369,7 @@ Then check it, run on it, and grade it:
 oeb check --dataset my-dataset/                                      # no call; names the first problem
 oeb init datalab --dataset my-dataset/ > datalab.yaml                 # a config on it
 oeb run --config datalab.yaml --out runs/                            # predict, then grade
-oeb grade runs/datalab-1a2b3c4d                                      # grade again; the run knows its dataset
+oeb grade runs/datalab-20261021-160012-3f9a                                      # grade again; the run knows its dataset
 oeb grade mine/ --dataset my-dataset/                                # your own predictions/<doc_id>.json
 ```
 
@@ -413,7 +413,7 @@ if __name__ == "__main__":
     b = benchmark.Benchmark(task.Extract(), data.DEFAULT_DATASET,
                             [field_matching.FieldMatching(), KeysFound()], data.MANIFEST)
     b.run(Datalab(mode="accurate"), out="runs", sample=20)
-    b.grade("runs/datalab-1a2b3c4d")          # a run you already have: graded again, with no call
+    b.grade("runs/datalab-20261021-160012-3f9a")          # a run you already have: graded again, with no call
 ```
 
 A scorer can also write `prediction(output)`, which reads what it needs of a document's prediction. Raise
@@ -433,7 +433,7 @@ is a whole benchmark with its own scorer.
 omni-bench-core's run folder, one per question (system, options, dataset, manifest, task and documents):
 
 ```
-runs/datalab-69059f7c/
+runs/datalab-20261021-160012-3f9a/
   config.yaml                      the config that asked it, every --set applied and every option written out
   settings.json                    the question, and the timeout
   records/<doc_id>.json            each document's record, as `predict` returns it
@@ -446,8 +446,8 @@ runs/datalab-69059f7c/
     cache/<doc_id>.json            each document's kept score, reused while its prediction and gold don't change
 ```
 
-The folder is named for the system's label and a digest of the question, so two configurations, or two
-choices of documents, never share one.
+The folder is named for the system's label and a run id, so every launch has its own. Its settings.json keeps
+the question, and resuming it with another configuration, or another choice of documents, is refused.
 
 settings.json is written before the first call, and holds:
 
