@@ -15,6 +15,8 @@ The loop that runs adapters over a dataset (resuming, retries, budgets, run fold
 """
 from typing import Any
 
+from omni_bench_core.adapter import predict
+
 from . import contract
 
 # Note: the registry imports every vendor SDK, so it is imported on first use, not here. The task imports
@@ -22,7 +24,7 @@ from . import contract
 REGISTRY = ("ADAPTERS", "ENTRY_POINT_GROUP", "LLM", "PLUGINS", "PROVIDERS", "SHIPPED", "adapter_class", "system")
 
 __all__ = ["ADAPTERS", "ENTRY_POINT_GROUP", "LLM", "PLUGINS", "PROVIDERS", "SHIPPED", "adapter_class", "contract",
-           "system"]
+           "predict", "system"]
 
 
 def __getattr__(name: str) -> Any:

@@ -26,13 +26,13 @@ uv pip install 'omni-extract-bench[harness]'      # + the vendor adapters, to pr
 uv pip install 'omni-extract-bench[benchmark]'    # + huggingface_hub, to download our dataset
 ```
 
-The base install brings scipy and [omni-bench-core](https://github.com/datalab-to/omni-bench-core), which brings pyarrow, pydantic, pyyaml and rich; scipy brings numpy. It scores, and grades (`oeb grade`, `oeb check`) without any vendor package. Reading a dataset from the Hugging Face Hub also needs `huggingface_hub`, which the `[benchmark]` extra installs.
+The base install brings scipy, pyarrow, pydantic, pyyaml and rich; scipy brings numpy. It scores, and grades (`oeb grade`, `oeb check`) without any vendor package. Reading a dataset from the Hugging Face Hub also needs `huggingface_hub`, which the `[benchmark]` extra installs.
 
 ![oeb-usage](https://github.com/datalab-to/omni_extract_bench/blob/main/assets/oeb_usage.gif?raw=true)
 
 ## Run our benchmark
 
-The benchmark runs on [omni-bench-core](https://github.com/datalab-to/omni-bench-core). A run is one system: it sends each document to the system, saves each answer, and grades the answers. A run is one config, a YAML file with every key written out: the dataset, the manifest, the scorers, which documents, the timeout, the workers, and the system with every option. `oeb init` writes one for a system at its defaults, on our public dataset:
+A run is one system: it sends each document to the system, saves each answer, and grades the answers. A run is one config, a YAML file with every key written out: the dataset, the manifest, the scorers, which documents, the timeout, the workers, and the system with every option. `oeb init` writes one for a system at its defaults, on our public dataset:
 
 ```bash
 oeb init datalab > datalab.yaml
@@ -101,7 +101,7 @@ Each run is a folder under `--out`, named after everything that changes its answ
 
 The timeout isn't part of the question. To give documents that timed out more time, resume the run with a longer `timeout` (`--set timeout=3600`) and `--retry-failed`: each document's record keeps the timeout it was run with.
 
-A run is graded only when it is finished: every document has an answer or a recorded failure. One rule decides what counts as 0 ([The rules](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#the-rules) in omni-bench-core's overview):
+A run is graded only when it is finished: every document has an answer or a recorded failure. One rule decides what counts as 0:
 
 - a document counts 0 only when code says, on purpose, that the system failed, by raising `errors.SystemFailed` (or one of its kinds, `SystemTimeout`, `SystemUnreachable` and `Unreadable`). Its record keeps the message and the traceback of where it was raised; and
 - any other exception stops the run and prints its traceback. It is a bug in an adapter or a scorer, not a failure of the system.
@@ -120,7 +120,7 @@ Without `--dataset`, a folder of your own predictions is graded against our publ
 
 Grading is fast on most documents, but field matching on a very large document takes long. On our dataset, `long__real_ofac_ssi_full` alone takes about 2 minutes, and all 620 documents take about 7 to 8 minutes of CPU, spread over up to 8 processes. Each document's score is kept in the run folder, so grading again only scores the documents whose prediction or gold changed.
 
-What happens in every other case (a refusal, a timeout, a wrong key, an interrupt, a bug in an adapter) is in the table under [The rules](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md#the-rules) in omni-bench-core's overview. [`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#what-a-run-writes) says what a run writes, and [how to run on your own dataset](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-dataset).
+What happens in every other case (a refusal, a timeout, a wrong key, an interrupt, a bug in an adapter) follows from that rule. [`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#what-a-run-writes) says what a run writes, and [how to run on your own dataset](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-dataset).
 
 In Python:
 
@@ -306,17 +306,16 @@ Predict with our vendor adapters.
 uv pip install 'omni-extract-bench[harness]'
 ```
 
-Each vendor is an adapter class; `harness.system` makes one from a system name and its options. omni-bench-core's `predict` sends one document under the same rules a run uses (one time budget, retries, failures recorded) and returns its record.
+Each vendor is an adapter class; `harness.system` makes one from a system name and its options. `harness.predict` sends one document under the same rules a run uses (one time budget, retries, failures recorded) and returns its record.
 
 ```python
 from pathlib import Path
 
-from omni_bench_core import adapter
 from omni_extract_bench import harness
 from omni_extract_bench.harness import contract
 
 datalab = harness.system("datalab", {"mode": "accurate"})
-record = adapter.predict(datalab, contract.Question(Path("invoice.pdf"), schema))
+record = harness.predict(datalab, contract.Question(Path("invoice.pdf"), schema))
 record["output"]
 record["raw"]
 record["cost"]
@@ -340,7 +339,7 @@ oeb predict --system datalab --doc invoice.pdf --schema schema.json --options '{
 
 ## Write your own scorer or adapter
 
-A scorer is a class with `gold`, `score` and `summarize`; an adapter is a class with `call` (for extraction, `extract`). omni-bench-core's [overview](https://github.com/datalab-to/omni-bench-core/blob/main/OVERVIEW.md) explains both with small examples. [`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-adapter) shows an extraction adapter and how it signals each outcome, and [how to grade with a scorer of your own](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-scorer) beside field matching.
+A scorer is a class with `gold`, `score` and `summarize`; an adapter is a class with `call` (for extraction, `extract`). [`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-adapter) shows an extraction adapter and how it signals each outcome, and [how to grade with a scorer of your own](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-scorer) beside field matching.
 
 ## Tests
 
