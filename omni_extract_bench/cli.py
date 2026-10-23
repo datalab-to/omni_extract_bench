@@ -148,7 +148,7 @@ def cmd_init(args) -> int:
     from . import harness
 
     c = config.template(harness.system, args.system, dataset=args.dataset, manifest=args.manifest,
-                        scorers={"field_matching": {}})
+                        scorers={"field_matching": {}}, timeout=1800)
     sys.stdout.write(yaml.safe_dump(c, sort_keys=False, width=1000, allow_unicode=True))
     return 0
 
