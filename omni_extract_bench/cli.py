@@ -234,9 +234,7 @@ def cmd_grade(args) -> int:
     dataset = args.dataset or said.get("dataset") or data.DEFAULT_DATASET
     if args.dataset is None and said.get("commit"): dataset = f"{dataset}@{said['commit']}"
     manifest = args.manifest or said.get("manifest") or data.MANIFEST
-    overlay = (said.get("task") or {}).get("options", {}).get("overlay", True)
-    _print(benchmark.default(dataset, manifest, overlay=overlay).grade(folder, partial=args.partial,
-                                                                       details=not args.no_details))
+    _print(benchmark.default(dataset, manifest).grade(folder, partial=args.partial, details=not args.no_details))
     return 0
 
 

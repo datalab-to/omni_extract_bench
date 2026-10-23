@@ -340,7 +340,7 @@ schema. For example, for a schema with `invoice_id` and `total_due`:
 ```
 
 A run sends each schema with the benchmark's conventions written into its field descriptions
-(`task.Extract`, `overlay=True`), and with every key named `evaluation_config` or `default` removed, at any
+(`task.Extract`, always), and with every key named `evaluation_config` or `default` removed, at any
 depth; these are the public dataset's notes for graders, and are never sent.
 
 To write a manifest:
@@ -448,7 +448,7 @@ settings.json is written before the first call, and holds:
 - `dataset`: the dataset, as an `hf://datasets/<org>/<name>` address (without its revision) or a folder's
   full path;
 - `manifest`: the manifest's path inside the dataset;
-- `task`: the task's name and options, `{"name": "extract", "options": {"overlay": true}}`;
+- `task`: the task's name and options, `{"name": "extract", "options": {}}`;
 - `rows`: which documents, as chosen by `--only`, `--sample` and `--limit`, such as
   `{"sample": 20}`. `{}` means every document of the manifest;
 - `commit`: the commit the dataset was downloaded at, for an `hf://` dataset only; and

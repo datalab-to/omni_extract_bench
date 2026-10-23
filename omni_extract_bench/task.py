@@ -18,17 +18,15 @@ from .harness import schema as SCHEMA
 
 @dataclasses.dataclass(frozen=True)
 class Extract(task.Task[data.Doc, contract.Question]):
-    """Extraction: a PDF and a JSON Schema go in, a JSON object comes out. `overlay` states the benchmark's
-    conventions in the field descriptions (`harness.schema.apply_overlay`), on for the published runs.
-    The benchmark's own annotations are always removed."""
+    """Extraction: a PDF and a JSON Schema go in, a JSON object comes out. The schema is sent with the
+    benchmark's conventions stated in its field descriptions (`harness.schema.apply_overlay`), as every
+    published run sends it, and without the benchmark's own annotations."""
 
     name: ClassVar[str] = "extract"
-    overlay: bool = True
 
     def rows(self, dataset: str | Path, manifest: str = data.MANIFEST) -> tuple[data.Doc, ...]:
         return data.read_manifest(dataset, manifest)[1]
 
     def input(self, row: data.Doc) -> contract.Question:
         if not row.doc_path.exists(): raise FileNotFoundError(row.doc_path)
-        asked = SCHEMA.apply_overlay(row.schema) if self.overlay else row.schema
-        return contract.Question(row.doc_path, SCHEMA.strip_benchmark_keys(asked))
+        return contract.Question(row.doc_path, SCHEMA.strip_benchmark_keys(SCHEMA.apply_overlay(row.schema)))

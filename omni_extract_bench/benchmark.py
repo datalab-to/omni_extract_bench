@@ -19,9 +19,8 @@ from . import data, task
 from .scorers import field_matching
 
 
-def default(dataset: str | Path = data.DEFAULT_DATASET, manifest: str = data.MANIFEST, *,
-            overlay: bool = True) -> benchmark.Benchmark:
-    """Omni Extract Bench: the extraction task on `dataset`'s `manifest`, graded by field matching.
-    `overlay` is the task's option (`task.Extract`). Other scorers make another benchmark:
-    `omni_bench_core.benchmark.Benchmark(task.Extract(), dataset, [FieldMatching(), ...])`."""
-    return benchmark.Benchmark(task.Extract(overlay), dataset, [field_matching.FieldMatching()], manifest)
+def default(dataset: str | Path = data.DEFAULT_DATASET, manifest: str = data.MANIFEST) -> benchmark.Benchmark:
+    """Omni Extract Bench: the extraction task on `dataset`'s `manifest`, graded by field matching. Other
+    scorers make another benchmark: `omni_bench_core.benchmark.Benchmark(task.Extract(), dataset,
+    [FieldMatching(), ...])`."""
+    return benchmark.Benchmark(task.Extract(), dataset, [field_matching.FieldMatching()], manifest)
