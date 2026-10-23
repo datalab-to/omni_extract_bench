@@ -17,8 +17,8 @@ config per system, with the same `rows`:
     oeb run --config reducto.yaml --set rows.sample=20 -y
 
 Each run folder keeps its config, resolved, as `config.yaml`, so `oeb run --config <run>/config.yaml` asks it
-again. Results go to stdout as JSON; the plan and progress go to stderr. Commands and flags from before 1.0 still
-work, each printing what replaced it (`deprecated`). `__version__` is the installed package's version.
+again. Results go to stdout as JSON; the plan and progress go to stderr. Some commands and flags from before 1.0
+still work, each printing what replaced it (`deprecated` lists them); `oeb run`'s old flags are gone. `__version__` is the installed package's version.
 """
 from __future__ import annotations
 
@@ -165,7 +165,7 @@ def cmd_run(args) -> int:
     if not (args.yes or confirm(b.describe(p))):
         print("oeb run: not run", file=sys.stderr)
         return 1
-    config.write(c, s, p.run.folder)
+    config.write(c, b, s, p.run.folder)
     b.predict(p)
     _print(b.grade(p.run, details=not args.no_details))
     return 0
@@ -179,7 +179,7 @@ def cmd_grade(args) -> int:
     folder = run.Run.at(args.folder)
     said = folder.settings()
     dataset = args.dataset or said.get("dataset") or data.DEFAULT_DATASET
-    if args.dataset is None and said.get("commit"): dataset = f"{dataset}@{said['commit']}"
+    if args.dataset is None and said.get("dataset_commit"): dataset = f"{dataset}@{said['dataset_commit']}"
     manifest = args.manifest or said.get("manifest") or data.MANIFEST
     _print(benchmark.default(dataset, manifest).grade(folder, partial=args.partial, details=not args.no_details))
     return 0

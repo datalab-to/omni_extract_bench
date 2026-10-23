@@ -54,7 +54,7 @@ assert not offenders, (
     "adapters must take settings as arguments, not out of the environment:\n"
     + "\n".join(f"  {f}: {', '.join(v)}" for f, v in offenders.items())
     + "\n\nAdd a field to the adapter class with the default you want; then it "
-      "reaches the adapter through `oeb run --options` and shows up in the run's "
+      "reaches the adapter through the config's options and shows up in the run's "
       "settings.json, which is what makes a run state what it asked."
 )
 print(f"{len(modules)} adapters: no steering read from the environment")
@@ -110,12 +110,8 @@ def out_name(provider, options=None):
 saved = os.environ.get("AZURE_CU_ENDPOINT")
 os.environ["AZURE_CU_ENDPOINT"] = "https://set-in-the-shell.example"
 try:
-    try:
-        harness.system("azure-cu")
-    except ValueError as exc:
-        assert "endpoint" in str(exc), exc
-    else:
-        raise AssertionError("azure-cu took its endpoint from the environment; it must be an option")
+    assert harness.system("azure-cu").endpoint == "", \
+        "azure-cu took its endpoint from the environment; it must be an option"
 finally:
     os.environ.pop("AZURE_CU_ENDPOINT") if saved is None else os.environ.__setitem__(
         "AZURE_CU_ENDPOINT", saved)

@@ -68,7 +68,7 @@ def system(provider: str, options: Mapping[str, Any] | None = None) -> adapter.A
     options = dict(options or {})
     if "/" in provider:
         if options.get("model", provider) != provider:
-            raise ValueError(f"{provider}: `model` is the provider name, not an option; run the one you "
-                             f"want: --system {options['model']}")
+            raise ValueError(f"{provider}: its `model` is its name, not {options['model']!r}; to run "
+                             f"{options['model']}, write its config: oeb init {options['model']}")
         return adapter.configure(LLM, {**options, "model": provider})
     return adapter.configure(adapter_class(provider), options)

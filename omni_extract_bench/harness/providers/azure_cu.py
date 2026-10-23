@@ -1,7 +1,8 @@
 """Azure AI Content Understanding: a JSON Schema becomes an analyzer, created once per schema, and each
 document is analysed against it. Auth: AZURE_CU_KEY. `endpoint` is a required option:
 
-    oeb run --system azure-cu --options '{"endpoint": "https://<resource>.cognitiveservices.azure.com"}'"""
+    oeb init azure-cu > azure-cu.yaml
+    oeb run --config azure-cu.yaml --set system.azure-cu.endpoint=https://<resource>.cognitiveservices.azure.com"""
 from __future__ import annotations
 
 import dataclasses
@@ -170,11 +171,8 @@ class AzureCU(contract.Extractor):
     poll_interval: float = 3.0
 
     def __post_init__(self):
-        """Refuses an empty endpoint, and drops its trailing slash, so the options hold what the URLs use."""
-        if not self.endpoint.strip():
-            raise ValueError("azure-cu has no endpoint, the Azure resource to analyse against; give it in "
-                             "its options: --options '{\"azure-cu\": {\"endpoint\": "
-                             "\"https://<resource>.cognitiveservices.azure.com\"}}'")
+        """Drops the endpoint's trailing slash, so the options hold what the URLs use. An empty one is refused at the
+        first call, not here, so `oeb init azure-cu` writes a config to fill in."""
         object.__setattr__(self, "endpoint", self.endpoint.rstrip("/"))
 
     def prepare_schema(self, schema: dict) -> dict:
@@ -183,6 +181,9 @@ class AzureCU(contract.Extractor):
     def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
         """Creates (or reuses) the analyzer for this field schema, then analyses the document."""
         endpoint = self.endpoint
+        if not endpoint.strip():
+            raise ValueError("azure-cu has no endpoint, the Azure resource to analyse against; give it: --set "
+                             "system.azure-cu.endpoint=https://<resource>.cognitiveservices.azure.com")
         key = os.environ["AZURE_CU_KEY"]
         deadline = adapter.Budget(timeout)
 

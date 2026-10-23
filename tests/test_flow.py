@@ -194,7 +194,7 @@ def test_the_schema_is_sent_without_benchmark_keys(tmp_path):
 def test_a_model_id_is_the_llm_adapter_and_names_its_folder():
     a = harness.system("openai/gpt-5.6-sol", {"attempts": 2})
     assert a.model == "openai/gpt-5.6-sol" and a.label == "openai__gpt-5.6-sol"
-    with pytest.raises(ValueError, match="provider name"):
+    with pytest.raises(ValueError, match="its `model` is its name"):
         harness.system("openai/gpt-5.6-sol", {"model": "other/one"})
     with pytest.raises(ValueError, match="unknown system"):
         harness.system("nope")
@@ -424,7 +424,7 @@ def test_a_model_ids_config_runs_again_from_its_folder(tmp_path, capsys):
     assert "model: openai/gpt-5.6-sol" in Path(c).read_text()
     assert harness.system("openai/gpt-5.6-sol", {"model": "openai/gpt-5.6-sol"}) == harness.system("openai/gpt-5.6-sol")
     err = raised(ValueError, capsys, "run", "--config", c, "--set", "system.openai/gpt-5.6-sol.model=x/y", "-y")
-    assert "`model` is the provider name" in err, err
+    assert "its `model` is its name" in err, err
 
 
 def test_oeb_predict_raises_a_bug_as_it_is(tmp_path, capsys, monkeypatch):
