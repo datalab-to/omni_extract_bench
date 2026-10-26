@@ -232,7 +232,7 @@ def test_oeb_run_grade_and_score(tmp_path, capsys, monkeypatch):
                          "--schema", str(tmp_path / "s.json"))
     assert code == 0 and json.loads(out)["accuracy"] == 1.0 and json.loads(out)["gold_rows"] == 0
 
-    assert raised(ValueError, capsys, "init", "nope", "--dataset", str(ds)).startswith("unknown system")
+    assert raised(ValueError, capsys, "init", "nope").startswith("unknown system")
 
 
 def test_oeb_grade_refuses_an_unfinished_folder_unless_partial(tmp_path, capsys):

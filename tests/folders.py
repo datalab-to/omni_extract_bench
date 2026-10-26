@@ -48,9 +48,11 @@ def oeb(capsys, *argv: str) -> tuple[int, str, str]:
 
 def configured(capsys, ds: Path, system: str) -> str:
     """A config for `system` on dataset `ds`, as `oeb init` writes it, beside the dataset: its path."""
-    assert cli.main(["init", system, "--dataset", str(ds)]) == 0
+    import yaml
+
+    assert cli.main(["init", system]) == 0
     path = ds.parent / f"{system.replace('/', '_')}.yaml"
-    path.write_text(capsys.readouterr().out)
+    path.write_text(yaml.safe_dump({**yaml.safe_load(capsys.readouterr().out), "dataset": str(ds)}, sort_keys=False))
     return str(path)
 
 

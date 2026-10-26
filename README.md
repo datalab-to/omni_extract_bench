@@ -123,8 +123,8 @@ and the variables it needs.
 
 ### Choosing the documents
 
-`dataset` is a folder on disk, or a Hugging Face dataset (ours, as `oeb init` writes it; `oeb init --dataset`
-writes another). Ours is about 856 MB. It is downloaded whole the first time, even for one document, because
+`dataset` is a folder on disk, or a Hugging Face dataset (ours, as `oeb init` writes it; `--set dataset=<folder>`
+runs on another). Ours is about 856 MB. It is downloaded whole the first time, even for one document, because
 grading needs all of it; later runs read the copy in the Hugging Face cache. Set `HF_TOKEN` (or run
 `hf auth login`) to download faster and avoid the Hub's rate limits.
 

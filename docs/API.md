@@ -130,8 +130,8 @@ A run is one config, omni-bench-core's (its `config` module): `dataset`, `manife
 (`sample` N evenly spaced, `limit` the first N, 0 for every document, or `only` these ids), `timeout`, `workers`,
 and `system`, one system and every option it has. Nothing has a default and nothing comes from another file, so
 the file says the whole run; a missing key, an unknown one or a value of the wrong kind is refused at its key.
-`oeb init <system>` writes one with every option at its default (`--dataset` and `--manifest` for another
-dataset). `--set path=value` changes one value the file has, read as YAML (`rows.sample=20`,
+`oeb init <system>` writes one with every option at its default, on our dataset; `--set dataset=<folder>` runs it
+on another. `--set path=value` changes one value the file has, read as YAML (`rows.sample=20`,
 `system.datalab.mode=accurate`); a path the file hasn't is refused, with the nearest one it has.
 
 To compare systems, write one config per system, with the same `rows`, so they answer the same documents:
@@ -367,8 +367,8 @@ Then check it, run on it, and grade it:
 
 ```bash
 oeb check --dataset my-dataset/                                      # no call; names the first problem
-oeb init datalab --dataset my-dataset/ > datalab.yaml                 # a config on it
-oeb run --config datalab.yaml --out runs/                            # predict, then grade
+oeb init datalab > datalab.yaml                                      # a config
+oeb run --config datalab.yaml --set dataset=my-dataset/ --out runs/  # predict on it, then grade
 oeb grade runs/datalab-20261021-160012-3f9a                                      # grade again; the run knows its dataset
 oeb grade mine/ --dataset my-dataset/                                # your own predictions/<doc_id>.json
 ```

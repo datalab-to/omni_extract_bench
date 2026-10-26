@@ -147,7 +147,7 @@ def cmd_init(args) -> int:
 
     from . import harness
 
-    c = config.template(harness.system, args.system, dataset=args.dataset, manifest=args.manifest,
+    c = config.template(harness.system, args.system, dataset=data.DEFAULT_DATASET, manifest=data.MANIFEST,
                         scorers={"field_matching": {}}, timeout=1800)
     sys.stdout.write(yaml.safe_dump(c, sort_keys=False, width=1000, allow_unicode=True))
     return 0
@@ -265,10 +265,6 @@ def parser() -> argparse.ArgumentParser:
 
     n = sub.add_parser("init", help="a config for one system, as YAML on stdout", allow_abbrev=False)
     n.add_argument("system", help="a vendor (`oeb systems`) or an OpenRouter model id")
-    n.add_argument("--dataset", default=data.DEFAULT_DATASET,
-                   help="a dataset folder, or hf://datasets/<org>/<name>[@<revision>] (default: %(default)s, the "
-                        "public one)")
-    n.add_argument("--manifest", default=data.MANIFEST, help="a manifest inside the dataset (default: %(default)s)")
     n.set_defaults(fn=cmd_init)
 
     r = sub.add_parser("run", help="predict with one config's system, then grade", allow_abbrev=False)
