@@ -126,19 +126,6 @@ oeb resume runs/<run> --retry-failed --set timeout=3600       # increase timeout
 ```
 
 
-### In Python
-
-```python
-from omni_extract_bench import benchmark
-from omni_extract_bench.harness.providers.datalab import Datalab
-
-if __name__ == "__main__":
-    bench = benchmark.default()
-    results = bench.run(Datalab(mode="accurate"), out="runs", sample=20)   
-```
-
-Code that runs or grades a benchmark goes under `if __name__ == "__main__":`. Grading scores documents in a pool of processes, and on macOS and Windows each process imports your script again.
-
 ## Grade
 
 `oeb run` grades its run when it finishes. To grade a run again, or a folder of your own predictions:
