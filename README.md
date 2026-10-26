@@ -99,21 +99,6 @@ oeb run --config datalab.yaml --set system.datalab.mode=accurate --set rows.limi
 
 `oeb run` shows the plan and asks before calling any system.
 
-### Keys
-
-Calling a system costs money, and each system reads its key from the environment:
-
-| system | environment variable |
-| --- | --- |
-| `datalab` | `DATALAB_API_KEY` |
-| `reducto` | `REDUCTO_API_KEY` |
-| `extend` | `EXTEND_API_KEY`, and `EXTEND_WORKSPACE_ID` when the key reaches several workspaces |
-| `llamaextract` | `LLAMA_CLOUD_API_KEY` (or its older name, `LLAMAPARSE_API_KEY`) |
-| `mistral` | `MISTRAL_API_KEY` |
-| `azure-cu` | `AZURE_CU_KEY`, and the `endpoint` option |
-| an OpenRouter model id, such as `openai/gpt-5.6-sol` | `OPENROUTER_API_KEY` (or `OPENAI_API_KEY`) |
-
-
 ### Run folder shape
 
 ```bash
