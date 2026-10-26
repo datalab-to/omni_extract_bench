@@ -89,6 +89,8 @@ system:
     ...
 ```
 
+`oeb systems` lists every system you can run; `oeb systems <name>` shows its options and the key it needs.
+
 `--set path=value` changes one value the file has, read as YAML, and refuses a path it hasn't. This runs Datalab
 in accurate mode on one document:
 
