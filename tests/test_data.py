@@ -1,4 +1,7 @@
-"""`data`: what a manifest may hold, and how documents are chosen.
+"""`data`: what an extraction manifest may hold.
+
+omni-bench-core checks what every dataset shares (ids, paths, gold file names); these check that its checks
+reach an oeb dataset, and oeb's own: that each schema is a JSON object, and that a suite is a string.
 
     pytest tests/test_data.py
 """
@@ -9,65 +12,50 @@ import pyarrow.parquet as pq
 import pytest
 
 from omni_extract_bench import data
-from omni_extract_bench.errors import UsageError
-from tests.folders import dataset, oeb
+from tests.folders import dataset
 
 
 @pytest.mark.parametrize("schema", ["null", "[]", "{}"])
 def test_a_schema_that_cant_be_sent_is_refused(tmp_path, schema):
-    with pytest.raises(data.ManifestError, match="d0") as got:
+    with pytest.raises(ValueError, match="d0") as got:
         data.read_manifest(dataset(tmp_path / "ds", schema=schema))
     assert repr(schema) in str(got.value)
+
+
+@pytest.mark.parametrize(("suite", "got"), [("invoices", "invoices"), ("", data.NO_SUITE), (None, data.NO_SUITE)])
+def test_a_suite_is_the_manifest_s_or_other(tmp_path, suite, got):
+    _, docs = data.read_manifest(dataset(tmp_path / "ds", suite=suite))
+    assert {d.suite for d in docs} == {got} and "suite" not in docs[0].extra
+
+
+def test_a_suite_that_isnt_a_str_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="suite 3"):
+        data.read_manifest(dataset(tmp_path / "ds", suite=3))
+
+
+def test_a_schema_that_isnt_json_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="not a JSON string"):
+        data.read_manifest(dataset(tmp_path / "ds", schema="{nope"))
 
 
 def test_a_doc_id_that_isnt_a_str_is_refused(tmp_path):
     ds = dataset(tmp_path / "ds")
     rows = pq.read_table(ds / "manifest.parquet").to_pylist()
     pq.write_table(pa.Table.from_pylist([{**r, "doc_id": i} for i, r in enumerate(rows)]), ds / "manifest.parquet")
-    with pytest.raises(data.ManifestError, match="doc_id 0"):
+    with pytest.raises(ValueError, match="doc_id 0"):
         data.read_manifest(ds)
 
 
 def test_an_empty_manifest_is_refused(tmp_path):
-    with pytest.raises(data.ManifestError, match="names no documents"):
+    with pytest.raises(ValueError, match="names no rows"):
         data.read_manifest(dataset(tmp_path / "ds", n=0))
 
 
 def test_a_manifest_is_a_relative_path_inside_the_dataset(tmp_path):
     ds = dataset(tmp_path / "ds")
     for manifest in (str(ds / "manifest.parquet"), "../ds/manifest.parquet"):
-        with pytest.raises(data.ManifestError, match="inside the dataset"):
+        with pytest.raises(ValueError, match="inside the dataset"):
             data.read_manifest(ds, manifest)
-    with pytest.raises(data.ManifestError, match="ds/manifest.parquet"):
-        data.read_manifest(ds, "ds/manifest.parquet")
-
-
-def test_a_one_slash_hf_address_is_named():
-    with pytest.raises(UsageError, match="with two slashes"):
-        data.read_manifest("hf:/datasets/datalab-to/omni_extract_bench")
-
-
-def test_select_reads_its_names_once_and_refuses_a_bare_str(tmp_path):
-    docs = data.read_manifest(dataset(tmp_path / "ds"))[1]
-    with pytest.raises(TypeError, match="'s'"):
-        data.select(docs, "s")
-    assert len(data.select(docs, (x for x in ["s"]))) == 2, "a generator is read once"
-    assert [d.doc_id for d in data.select(docs, only=["d1"])] == ["d1"]
-    with pytest.raises(UsageError, match=r"\['t'\]"):
-        data.select(docs, ["t"])
-
-
-@pytest.mark.parametrize("kw, said", [({"limit": -1}, "--limit is -1"), ({"sample": -2}, "--sample is -2")])
-def test_select_refuses_a_negative_count(tmp_path, kw, said):
-    with pytest.raises(UsageError, match=said):
-        data.select(data.read_manifest(dataset(tmp_path / "ds"))[1], **kw)
-
-
-def test_check_names_the_row_of_a_missing_file(tmp_path, capsys):
-    ds = dataset(tmp_path / "ds")
-    (ds / "gold" / "d1.json").unlink()
-    code, _, err = oeb(capsys, "check", "--dataset", str(ds))
-    assert code == 1 and "d1 gt_path" in err
 
 
 def test_ids_differing_only_in_case_show_both_spellings(tmp_path):
@@ -76,34 +64,13 @@ def test_ids_differing_only_in_case_show_both_spellings(tmp_path):
     rows = pq.read_table(ds / "manifest.parquet").to_pylist()
     pq.write_table(pa.Table.from_pylist([rows[0], rows[0] | {"doc_id": "D0", "gt_path": "gold/D0.json"}]),
                    ds / "manifest.parquet")
-    with pytest.raises(data.ManifestError) as e:
+    with pytest.raises(ValueError) as e:
         data.read_manifest(ds)
     assert "d0" in str(e.value) and "D0" in str(e.value)
 
 
-def test_a_dataset_offline_and_uncached_is_refused_at_once(monkeypatch):
-    import huggingface_hub
-    from huggingface_hub import errors as hf_errors
-
-    tries = []
-
-    def offline(*a, **k):
-        tries.append(1)
-        raise hf_errors.LocalEntryNotFoundError("x")
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", offline)
-    with pytest.raises(UsageError, match="cache"):
-        data.download_dataset("hf://datasets/someone/nowhere@nope")
-    assert len(tries) == 1
-
-
-def test_a_manifest_given_whole_is_split_into_its_dataset_and_its_path():
-    """Before 1.0, --manifest was hf://datasets/<org>/<name>/<path>; it still works."""
-    hub = "hf://datasets/someone/theirs"
-    assert data.located(None, f"{hub}/manifests/s.parquet") == (hub, "manifests/s.parquet")
-    assert data.located(data.DEFAULT_DATASET, f"{hub}@v2/m.parquet") == (f"{hub}@v2", "m.parquet")
-    assert data.located(f"{hub}@v1", f"{hub}/m.parquet") == (f"{hub}@v1", "m.parquet"), "--dataset's revision"
-    assert data.located("ds", "manifest.parquet") == ("ds", "manifest.parquet"), "a path inside it stands"
-    with pytest.raises(data.ManifestError, match="someone/theirs"):
-        data.located("hf://datasets/other/one", f"{hub}/m.parquet")
-    with pytest.raises(data.ManifestError):
-        data.located(None, hub)
+def test_a_doc_is_its_row_with_full_paths_and_its_schema_read(tmp_path):
+    ds = dataset(tmp_path / "ds", lang="en")
+    [d0, d1] = data.read_manifest(ds)[1]
+    assert d0.id == "d0" and d0.doc_path == ds / "pdfs" / "d0.pdf" and d0.gt_path == ds / "gold" / "d0.json"
+    assert d0.schema["type"] == "object" and d1.extra == {"lang": "en"}

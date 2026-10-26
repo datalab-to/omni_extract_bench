@@ -1,13 +1,8 @@
-"""Making sense of what a vendor sent back.
+"""Reading what a vendor sent back:
 
-Three different ways a reply arrives wrong, each of which cost documents:
-
-  * a model wrapped its JSON in a markdown fence, and `json.loads` failed on a backtick --
-    12 of 24 documents discarded from the most accurate provider in the field
-  * a vendor answered with a LIST, one entry per extraction pass, and the adapter threw the
-    answer away for not being a dict -- every completed Reducto job read as "no extraction"
-  * a cost was reported in CENTS under a name that looked like dollars, overstating by 100x
-"""
+- `parse_model_json`: JSON, with or without a markdown fence;
+- `cost_from_response`: a cost under any of several names and units; and
+- `as_object`: an answer given as a list."""
 from __future__ import annotations
 
 import json
@@ -17,13 +12,7 @@ _FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.S)
 
 
 def parse_model_json(text):
-    """Parse a model's JSON answer, tolerating a markdown code fence.
-
-    Some models return bare JSON and some wrap it in ```json. A parser that accepts only the
-    first silently scores the second at zero: one benchmark run discarded 12 of 24 documents
-    from a provider that was otherwise the most accurate in the field, because ``json.loads``
-    failed on a backtick. Returns ``None`` when the text is genuinely not JSON.
-    """
+    """A model's JSON answer, with or without a ```json fence; None when the text isn't JSON."""
     if not text:
         return None
     match = _FENCE.match(text)
@@ -35,13 +24,9 @@ def parse_model_json(text):
 
 
 def cost_from_response(body, paths=None):
-    """Pull a cost figure out of a vendor response, converting to USD.
-
-    Vendors report cost under different names and units, and an adapter that returns only the
-    extraction throws it away -- after which the absence gets read as "this vendor does not
-    report cost". Units matter: a field named in **cents** reported as dollars overstates by
-    100x. Returns ``(usd, "field=value")`` or ``(None, None)``.
-    """
+    """The cost in a vendor's response, in dollars, and the field it came from: `(usd, "field=value")`, or
+    `(None, None)`. Each known field carries its own unit, since cents read as dollars would overstate
+    the cost 100 times."""
     if paths is None:
         paths = (
             (("cost_breakdown", "final_cost_cents"), 0.01),
@@ -64,16 +49,8 @@ def cost_from_response(body, paths=None):
 
 
 def as_object(value) -> dict | None:
-    """Normalise an adapter's parsed answer to the schema-shaped object, or None.
-
-    One vendor returns a LIST -- one entry per extraction pass. A single-entry list is just the
-    extraction; multi-entry lists are merged shallowly, first writer wins, so array fields from
-    separate passes survive instead of the last pass overwriting them.
-
-    This existed in the old runner and was lost in the rewrite, which turned every completed
-    Reducto job into "completed with no extraction": the work was done and paid for, and the
-    adapter threw the answer away for being a list.
-    """
+    """An answer as one JSON object, or None. A list of one object is that object; a longer list (one entry
+    per extraction pass, as Reducto sends) is merged shallowly, keeping each field's first value."""
     if isinstance(value, dict):
         return value or None
     if isinstance(value, list):

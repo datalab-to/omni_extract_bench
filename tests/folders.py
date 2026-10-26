@@ -1,6 +1,6 @@
 """Small datasets and folders for the pytest-style tests.
 
-    from tests.folders import SCHEMA, dataset, oeb, predictions
+    from tests.folders import SCHEMA, configured, dataset, oeb, predictions, raised
 """
 from __future__ import annotations
 
@@ -44,3 +44,24 @@ def oeb(capsys, *argv: str) -> tuple[int, str, str]:
     code = cli.main(list(argv))
     got = capsys.readouterr()
     return code, got.out, got.err
+
+
+def configured(capsys, ds: Path, system: str) -> str:
+    """A config for `system` on dataset `ds`, as `oeb init` writes it, beside the dataset: its path."""
+    import yaml
+
+    assert cli.main(["init", system]) == 0
+    path = ds.parent / f"{system.replace('/', '_')}.yaml"
+    path.write_text(yaml.safe_dump({**yaml.safe_load(capsys.readouterr().out), "dataset": str(ds)}, sort_keys=False))
+    return str(path)
+
+
+def raised(kind: type[BaseException], capsys, *argv: str) -> str:
+    """`oeb argv...` raising `kind`, as it is: its message, then the notes added to it, one per line. Nothing is
+    printed on stdout."""
+    try:
+        cli.main(list(argv))
+    except kind as exc:
+        assert capsys.readouterr().out == ""
+        return "\n".join([str(exc), *getattr(exc, "__notes__", [])])
+    raise AssertionError(f"oeb {' '.join(argv)} didn't raise {kind.__name__}")

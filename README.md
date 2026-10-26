@@ -1,68 +1,151 @@
 # Omni Extract Bench
 
-This repository contains a way to run our benchmark using our dataset on [HuggingFace](https://huggingface.co/datasets/datalab-to/omni_extract_bench) or *your own dataset*. It also
-provides lower-level primitives (`score` and `predict`) to run in your own pipelines however you like. The README is split up into the following table of contents.
+[![test](https://github.com/datalab-to/omni_extract_bench/actions/workflows/test.yml/badge.svg)](https://github.com/datalab-to/omni_extract_bench/actions/workflows/test.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/datalab-to/omni_extract_bench/blob/main/pyproject.toml)
+[![Code: Apache 2.0](https://img.shields.io/badge/code-Apache%202.0-blue)](https://github.com/datalab-to/omni_extract_bench/blob/main/LICENSE)
+[![Data: CC BY 4.0](https://img.shields.io/badge/data-CC%20BY%204.0-lightgrey)](https://huggingface.co/datasets/datalab-to/omni_extract_bench)
+[![Dataset on Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20dataset-omni__extract__bench-yellow)](https://huggingface.co/datasets/datalab-to/omni_extract_bench)
 
-1. **[Install](#install)** — the scorer on its own, or with the vendor adapters.
-2. **[Run our benchmark with one line](#run-our-benchmark-with-one-line)** — rerun vendors on the benchmark dataset.
-3. **[Score](#score)** — score predictions against ground-truth in your code or from the cli.
-    - [What the metric does](#what-the-metric-does) — explains how the scoring works.
-4. **[Predict](#predict)** — predict on one document and its schema in your code or from the cli.
-5. **[Licence](#licence)** — Apache 2.0
+This repository contains a way to benchmark extraction systems using our deterministic field-matching scorer and dataset as well as your own. Concretely, this repository holds:
 
-And take a look at [`docs/API.md`](./docs/API.md) for more in-depth documentation of public functionality.
+- the scorer, which works on its own: a prediction its ground truth and its schema as input, the scoring as output;
+- the benchmark: run over our dataset on [Hugging Face](https://huggingface.co/datasets/datalab-to/omni_extract_bench), or
+  your own; and
+- the systems: different registered systems that you can easily evaluate. 
+
+Contents:
+
+1. [How scoring works](#how-scoring-works): what field matching compares, and how;
+2. [Install](#install): the scorer alone, or with the adapters and the dataset;
+3. [Run the benchmark](#run-the-benchmark): one system on the dataset, from a config;
+4. [Grade](#grade): a run again, or predictions of your own;
+5. [Score on your own](#score-on-your-own): the scorer on its own, in code or from the command line;
+6. [Predict one document](#predict-one-document): one document and its schema through one system;
+7. [Results](#results): every system we ran on our dataset;
+8. [Tests](#tests); and
+9. [License](#license).
+
+[`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md) documents every public
+function and command in more depth.
+
+
+## How scoring works
+
+![scoring.gif](https://github.com/datalab-to/omni_extract_bench/blob/main/assets/scoring.gif?raw=true)
+
+Field matching is deterministic. It works in four stages:
+
+- Normalize the document;
+- Flatten the prediction and the ground truth to addresses (the path to a value, such as
+  `line_items[0].qty`), each mapped to its scalar value;
+- Normalize each scalar value, so `"1,240.00"` and `1240.0` are the same number; and
+- Pair the addresses of the two documents:
+  - If unambiguous, pair exactly; and
+  - If ambiguous (the items of an array), Hungarian match on the items' content, recursively for nested arrays.
+
+A predicted address with no matching ground-truth address is a false positive and a ground-truth address with no matching predicted address is a false
+negative. Accuracy is the matched addresses over the addresses either document used. The full specification is
+[`docs/METRIC_SPEC.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/METRIC_SPEC.md).
 
 ## Install
 
-
 ```bash
-uv pip install omni-extract-bench                 # the scorer: score(), scipy and nothing else
-uv pip install 'omni-extract-bench[harness]'      # + vendor adapters, to produce predictions
-uv pip install 'omni-extract-bench[benchmark]'    # + packages to orchestrate and run benchmark
+uv pip install omni-extract-bench                 # the scorer, and grading a dataset folder on disk
+uv pip install 'omni-extract-bench[harness]'      # + the adapters, to get predictions
+uv pip install 'omni-extract-bench[benchmark]'    # + huggingface_hub, to download our dataset
 ```
 
-![oeb-usage](./assets/oeb_usage.gif)
+## Run the benchmark
 
+A run is one system on one dataset. It works in three stages:
 
-## Run our benchmark with one line
+1. Plan: check the config, the system's keys and the dataset's files before any call;
+2. Predict: send each document to the system and save each answer in the run's folder; and
+3. Grade: score the saved answers. Grading calls no system, so it can be done again for free.
 
-We provide orchestration to run our benchmark around our core primitives: `predict` and `score`. Run the benchmark (limit to 1 document here). It's **resumable** so you can stop and reinvoke to resume at any point.
+### A config
 
-**!!NOTE!!**: this will cost money and you will need your API keys set.
-
-```bash
-oeb benchmark --out runs/ --limit 1 \
-    --providers datalab reducto extend llamaextract
-```
-
-You can also specify settings per provider. For example:
+A run is one config: a YAML file with every key written out. `oeb init` writes one for a registered system, every option at
+its default, and on our dataset:
 
 ```bash
-oeb benchmark \
-  --providers datalab reducto \
-  --limit 1 \
-  --options '{"datalab":  [{"mode": "balanced"}, {"mode": "accurate"}],
-              "reducto": [{"agentic_table_mode": "max"},
-                          {"agentic_table_mode": "default"}]}' \
-  --out runs/
+oeb init datalab > datalab.yaml
 ```
 
-This will execute 4 different runs -- one for each pair (provider, settings).
+```yaml
+dataset: hf://datasets/datalab-to/omni_extract_bench   # a folder, or a Hugging Face dataset
+manifest: manifest.parquet                             # which of its documents, with which files
+scorers:
+  field_matching: {}
+rows:                    
+  sample: 0
+  limit: 0
+  only: null
+timeout: 1800.0          # seconds
+workers: 0               # documents in flight at once; 0 for the system's default
+system:
+  datalab:
+    mode: balanced
+    ...
+```
 
-It shows the plan and asks before calling any vendor; with no terminal to ask (a pipe, a notebook, CI) it goes ahead without asking, so a script runs as written.
+`oeb systems` lists every system you can run; `oeb systems <name>` shows its options and the key it needs.
 
-`--dataset` picks the dataset (a folder on disk, or a HuggingFace dataset; ours by default), and `--manifest` picks which of its documents to run. For example, a 40-document subset of ours:
+`--set path=value` changes one value the file has, read as YAML, and refuses a path it hasn't. This runs Datalab
+in accurate mode on one document:
 
 ```bash
-oeb benchmark --providers datalab --out runs/ \
-  --manifest manifests/sample40-predictive-across-vendors-2026-09-22.parquet
+export DATALAB_API_KEY=...
+oeb run --config datalab.yaml --set system.datalab.mode=accurate --set rows.limit=1 --out runs/
 ```
 
-See [`docs/API.md`](./docs/API.md) for more details on what `oeb benchmark` writes and **how you can run on your own benchmark dataset**.
+`oeb run` shows the plan and asks before calling any system.
 
-## Score
+### Run folder shape
 
-Use in your own code.
+```bash
+runs/datalab-20261026-185908-1517/     
+  config.yaml                         # resolved config; point to this to rerun
+  settings.json                       # + launch information (run's record), resume uses this
+  records/<id>.json                   # response from system in full (cost, raw response)
+  predictions/<id>.json               # prediction portion of resopnse
+  field_matching/summary.json         # summary of scores 
+  field_matching/scores.jsonl         # scores (line-per-document)
+  field_matching/details/<id>.jsonl   # detailed info (verdicts) per document
+```
+
+
+[`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#what-a-run-writes) has more information, including [how to run on your own dataset](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-dataset).
+
+### Resume
+
+You can resume a run by giving a path to its folder.
+
+```bash
+oeb resume runs/<run>                                         # continue where it stopped
+oeb resume runs/<run> --retry-failed                          # also ask again for timeouts, etc.
+oeb resume runs/<run> --retry-failed --set timeout=3600       # increase timeout
+```
+
+
+## Grade
+
+`oeb run` grades its run when it finishes. To grade a run again, or a folder of your own predictions:
+
+```bash
+oeb grade runs/datalab-20261021-160012-3f9a        # a run knows its own dataset
+oeb grade mine/ --dataset my-dataset/              # your predictions on your own dataset
+```
+
+Grading is fast on most documents, but field matching on a very large one takes long. On our dataset, `long__real_ofac_ssi_full` alone takes about 2 minutes, and all 620 documents take about 7 to 8 minutes of CPU, spread over up to 8 processes. Each document's score is kept in the run folder, so grading again only scores the documents whose prediction or gold changed.
+
+## Score on your own
+
+The scorer works on its own, with no dataset and no network.
+
+```bash
+git clone https://github.com/datalab-to/omni_extract_bench && cd omni_extract_bench
+```
 
 ```python
 from omni_extract_bench import score
@@ -131,11 +214,10 @@ result["precision"]   # 0.5625
 result["recall"]      # 0.8182
 ```
 
-or from the command line.
-
+The same from the command line:
 
 ```bash
-oeb score --pred pred.json --gold gold.json --schema schema.json
+oeb score --pred data/pred.json --gold data/gold.json --schema data/schema.json
 ```
 
 ```json
@@ -154,7 +236,7 @@ oeb score --pred pred.json --gold gold.json --schema schema.json
   "asserted": 16,
   "addresses_found": 0.5882352941176471,
   "addresses_read_right": 0.9,
-  "gt_rows": 2,
+  "gold_rows": 2,
   "pred_rows": 3,
   "matched_rows": 2,
   "matching_exact": true,
@@ -163,91 +245,94 @@ oeb score --pred pred.json --gold gold.json --schema schema.json
 }
 ```
 
-Return with verdicts to dive deeper into exact places where the model failed.
+To see where a prediction went wrong, ask for the verdicts: one per address, with its raw and normalized values on both sides and its result.
 
 ```python
-
 result = score(prediction, ground_truth, schema, verdicts=True)
-print(result["verdicts"][0]) # print the first verdict
+print(result["verdicts"][0])
 # Verdict(address=(('k', 'currency'),), gold_raw=None, pred_raw='USD', gold_canon=None,
 #         pred_canon='usd', result='invented_field')
 ```
 
-From the cli.
+From the command line, `--details` adds them:
 
 ```bash
-oeb score --pred pred.json --gold gold.json --schema schema.json --verdicts
+oeb score --pred data/pred.json --gold data/gold.json --schema data/schema.json --details
 ```
-
-On the example above, printing one line each:
 
 ```
 {
   "accuracy": 0.5294117647058824,
-  "precision": 0.5625,
-  "recall": 0.8181818181818182,
-  "f1": 0.6666666666666666,
   ...
   "verdicts": [
     {
-      "address": [
-        [
-          "k",
-          "currency"
-        ]
-      ],
+      "address": [["k", "currency"]],
       "gold_raw": null,
       "pred_raw": "USD",
       "gold_canon": null,
       "pred_canon": "usd",
       "result": "invented_field"
     },
-    ...truncated for display
+    ...
 ```
 
+## Predict one document
 
-### What the metric does
-
-![scoring.gif](./assets/scoring.gif)
-
-- Normalize document;
-- Flatten prediction and gold JSON dictionary to addresses mapped to their scalar values;
-- Normalize scalar values of the flattened addresses; and
-- For each array that appears, Hungarian match (recursively for nested arrays) based on array element content to align ambiguous predicted and gold addresses (there may unmatched predicted addresses — false positives, and unmatched gold addresses — false negatives).
-
-Full specification: [`METRIC_SPEC.md`](./docs/METRIC_SPEC.md).
-
-## Predict
-
-Predict using our provider harnesses.
-
-```bash
-uv pip install 'omni-extract-bench[harness]'
-```
+With `[harness]` installed, each vendor is an adapter class. `harness.system` makes one from a system name and its options and `harness.predict` sends one document under the same rules a run uses (one time budget, retries, failures recorded) and returns its record:
 
 ```python
-from omni_extract_bench.harness import predict
+from pathlib import Path
 
-record = predict("datalab", "invoice.pdf", schema)
-record["result"]
-record["raw"]
-record["cost"]
+from omni_extract_bench import harness, score
+from omni_extract_bench.harness import contract
+
+datalab = harness.system("datalab", {"mode": "accurate"})
+record = harness.predict(datalab, contract.Question(Path("invoice.pdf"), schema))
+record["output"]    # the extracted object
+record["raw"]       # the answer as the system gave it
+record["cost"]      # what it cost, its wall time and attempts
+
+score(record["output"], ground_truth, schema)
 ```
 
-Score directly from the predictions.
-
-```python
-from omni_extract_bench import score
-score(record["result"], gold, schema)
-```
-
-You can also use the cli:
+This sends the schema as you give it. A run first applies the benchmark's conventions to the schema (`task.Extract().input`), so use `oeb predict` to send exactly what a run sends. 
 
 ```bash
-oeb predict --provider datalab --doc invoice.pdf --schema schema.json
+oeb predict --system datalab --doc invoice.pdf --schema schema.json --options '{"mode": "accurate"}'
+oeb predict --system datalab --doc invoice.pdf --schema schema.json --options '{"datalab": {"mode": "accurate"}}'
 ```
 
+## Results
 
-## Licence
+Every system on our dataset, 620 documents. Accuracy is the matched addresses over the addresses either document
+used. The other columns are the share of addresses that fell short in each way, so a row sums to 100.
 
-Apache 2.0 — see [`LICENSE`](./LICENSE). All code here is Datalab's own.
+| system | setting | accuracy | misread | unfound | fabricated | invented item | invented field |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Datalab | accurate | 93.85 | 3.10 | 1.64 | 0.73 | 0.69 | 0.00 |
+| Datalab | balanced | 93.48 | 2.93 | 2.05 | 0.77 | 0.75 | 0.02 |
+| Reducto | deep_extract v2 | 93.47 | 3.23 | 1.59 | 0.99 | 0.71 | 0.00 |
+| Claude | Opus 5 | 90.96 | 2.33 | 4.91 | 1.22 | 0.58 | 0.00 |
+| Extend | extraction_performance | 90.17 | 3.23 | 1.69 | 0.88 | 4.01 | 0.00 |
+| LlamaExtract | agentic_plus | 87.94 | 3.85 | 2.53 | 5.14 | 0.54 | 0.00 |
+| Gemini | 3.7 Flash | 86.79 | 2.89 | 8.10 | 1.71 | 0.51 | 0.00 |
+| GPT | 5.6 Sol | 83.85 | 2.98 | 11.88 | 0.63 | 0.66 | 0.00 |
+| Mistral | OCR 4.1 | 76.78 | 6.11 | 12.73 | 1.87 | 0.88 | 1.63 |
+| Azure Content Understanding | gpt-4.1-mini | 61.08 | 6.15 | 27.80 | 1.06 | 3.28 | 0.63 |
+
+- misread: the address matches, but the value doesn't;
+- unfound: a ground-truth address the system didn't produce;
+- fabricated: the schema asks for it and the ground truth omits it, but the system produced it;
+- invented item: an address under an array item that has no partner in the ground truth; and
+- invented field: an address the schema never offered.
+
+## Tests
+
+```bash
+uv run --group test --extra benchmark pytest -n auto
+```
+
+## License
+
+Apache 2.0, see [`LICENSE`](https://github.com/datalab-to/omni_extract_bench/blob/main/LICENSE). All code here is
+Datalab's own.

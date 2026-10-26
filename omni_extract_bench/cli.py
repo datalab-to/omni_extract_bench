@@ -1,29 +1,75 @@
-"""The `oeb` command: a thin wrapper over `score`, `predict` and `benchmark`.
+"""The `oeb` command: a thin wrapper over `benchmark`, `harness` and the scorer.
 
-    oeb score      --pred p.json --gold g.json --schema s.json [--verdicts]
-    oeb benchmark  --providers datalab reducto --out runs/
-    oeb grade      mine/ [--dataset ...] [--manifest ...]
-    oeb check      [--dataset ...] [--manifest ...]       # is the dataset one oeb can run?
-    oeb predict    --provider datalab --doc x.pdf --schema s.json
-    oeb providers [datalab]
+    oeb init       datalab > datalab.yaml                          a config: one run, every key written out
+    oeb run        --config datalab.yaml [--set rows.sample=20]    predict, then grade
+    oeb grade      mine/ [--partial] [--dataset ...]               grade a folder of predictions/<doc_id>.json
+    oeb score      --pred p.json --gold g.json --schema s.json     score one prediction against one gold
+    oeb predict    --system datalab --doc x.pdf --schema s.json    one document through one system
+    oeb check      [--dataset ...] [--manifest ...]                whether a dataset is one oeb can run
+    oeb systems    [datalab]                                       the systems, or one system's options
 
-Results go to stdout as JSON; progress and messages go to stderr. `benchmark` shows its plan and waits
-for a yes unless given `-y`. A `UsageError` (what was asked is wrong) or a `Stop` (an account, a key or a
-dependency) is printed as `oeb <command>: <what was wrong>` and exits 1, after a `benchmark` stopped by a
-`Stop` prints the summaries it wrote; an interrupt exits 130; anything else, a scorer that raises among
-them, is a bug of ours, and is raised as it is, with no scores or summary written.
+A run is one config: the dataset, its manifest, the scorers, which rows, and one system with every option
+(omni-bench-core's `config`). `--set path=value` changes one value the file has. To compare systems, write one
+config per system, with the same `rows`:
+
+    oeb init datalab > datalab.yaml && oeb init reducto > reducto.yaml
+    oeb run --config datalab.yaml --set system.datalab.mode=accurate --set rows.sample=20 -y
+    oeb run --config reducto.yaml --set rows.sample=20 -y
+
+Each run folder keeps its config, resolved, as `config.yaml`, so `oeb run --config <run>/config.yaml` asks it
+again. Results go to stdout as JSON; the plan and progress go to stderr. Some commands and flags from before 1.0
+still work, each printing what replaced it (`deprecated` lists them); `oeb run`'s old flags are gone. `__version__` is the installed package's version.
 """
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import logging
 import pathlib
 import sys
+from typing import Any
 
-from . import errors
+from omni_bench_core import config, errors
+
+from . import data
 
 EXAMPLE_MODELS = ("openai/gpt-5.6-sol", "anthropic/claude-opus-5", "google/gemini-3.7-flash")
+__version__ = importlib.metadata.version("omni-extract-bench")
+
+
+def deprecated(old: str, new: str) -> None:
+    """Says on stderr that `old` is deprecated, and what to use instead.
+
+    The commands and flags from before 1.0 that still work:
+
+        oeb providers      is `oeb systems`
+        --provider         on `oeb predict`: is `--system`
+        --no-verdicts      on `oeb grade`: is `--no-details`
+        --verdicts         on `oeb score`: is `--details`
+        --score-workers    on `oeb grade`: is ignored; the scorer sets how many processes it uses
+        --gt               on `oeb score`: is `--gold`
+    """
+    print(f"oeb: {old} is deprecated and will be removed in a later release; use {new}", file=sys.stderr)
+
+
+# Note: each pre-1.0 flag that was renamed, as (its dest, the new flag's dest, the old flag, the new flag).
+RENAMED = (
+    ("provider", "system", "--provider", "--system"),
+    ("no_verdicts", "no_details", "--no-verdicts", "--no-details"),
+    ("verdicts", "details", "--verdicts", "--details"),
+    ("gt", "gold", "--gt", "--gold"),
+)
+
+
+def renamed(args: argparse.Namespace) -> None:
+    """Moves each renamed pre-1.0 flag given onto its new name, saying so (`deprecated`)."""
+    for old, new, old_flag, new_flag in RENAMED:
+        if getattr(args, old, None) in (None, False): continue
+        deprecated(old_flag, new_flag)
+        if getattr(args, new, None) not in (None, False):
+            raise ValueError(f"{old_flag} is the old name of {new_flag}; give {new_flag} only")
+        setattr(args, new, getattr(args, old))
 
 
 def read_object(path: str, flag: str) -> dict:
@@ -31,430 +77,308 @@ def read_object(path: str, flag: str) -> dict:
     try:
         got = json.loads(pathlib.Path(path).read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
-        raise errors.UsageError(f"{flag} {path}: no such file") from None
+        raise ValueError(f"{flag} {path}: no such file") from None
     except IsADirectoryError:
-        raise errors.UsageError(f"{flag} {path} is a folder; pass a JSON file") from None
+        raise ValueError(f"{flag} {path} is a folder; pass a JSON file") from None
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise errors.UsageError(f"{flag} {path} isn't JSON: {exc}") from None
+        raise ValueError(f"{flag} {path} isn't JSON: {exc}") from None
     if not isinstance(got, dict):
-        raise errors.UsageError(f"{flag} {path} holds a JSON "
-                                f"{'null' if got is None else type(got).__name__}; it must be a JSON object")
+        raise ValueError(f"{flag} {path} holds a JSON "
+                         f"{'null' if got is None else type(got).__name__}; it must be a JSON object")
     return got
 
 
-def read_options(value: str | None, *, per_provider: bool = True) -> dict:
-    """`--options` as JSON, given literally or as a path to a file.
-
-    Keyed by provider for `benchmark`, which runs several; flat for `predict`, which runs one.
-
-    JSON rather than an inline `provider:key=value` syntax, because OpenRouter model ids
-    already use the colon -- `mistralai/mistral-medium-3-5:batch`, `:free`, `:nitro` -- so any
-    colon-separated form is ambiguous exactly where model ids appear. JSON also keeps types:
-    `8000` stays an integer instead of arriving as a string the adapter has to guess about.
-    """
-    if not value:
-        return {}
+def read_object_or_json(value: str, flag: str) -> dict:
+    """A JSON object given inline, or the path of a file holding one."""
+    if not value.lstrip().startswith("{"):
+        return read_object(value, flag)
     try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
-        if not (path := pathlib.Path(value)).is_file():
-            raise errors.UsageError(f"--options {value!r} is neither inline JSON nor a file that exists; "
-                                    "pass a JSON object, or the path of a file holding one") from None
-        try:
-            parsed = json.loads(path.read_text(encoding="utf-8-sig"))
-        except json.JSONDecodeError as exc:
-            raise errors.UsageError(f"--options: {path} isn't JSON: {exc}") from None
-    if not isinstance(parsed, dict):
-        raise errors.UsageError(f"--options must be a JSON object, not {value!r:.80}")
-    def ok(value):
-        return (isinstance(value, dict)
-                or (isinstance(value, list) and value
-                    and all(isinstance(x, dict) for x in value)))
-
-    if per_provider and not all(ok(v) for v in parsed.values()):
-        raise errors.UsageError('--options maps a provider to its options, or to a LIST of them to '
-                                'run it once for each:\n'
-                                '    \'{"datalab": {"mode": "accurate"}}\'\n'
-                                '    \'{"datalab": [{"mode": "balanced"}, {"mode": "accurate"}]}\'')
-    return parsed
+        got = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{flag} isn't JSON: {exc}") from None
+    if not isinstance(got, dict):
+        raise ValueError(f"{flag} must be a JSON object, not {value!r:.80}")
+    return got
 
 
-def read_workers(value: str | None) -> int | dict[str, int]:
-    """`--workers` as one number for every adapter, or a JSON object of a number per adapter.
+def system_options(value: str | None, system: str) -> dict[str, Any]:
+    """`--options` of `oeb predict`: the system's options as a bare object (`{"mode": "accurate"}`),
+    or keyed by the system (`{"datalab": {"mode": "accurate"}}`). An object keyed by other systems is refused."""
+    from . import harness
 
-        --workers 25                              -> 25
-        --workers '{"reducto": 25, "datalab": 40}' -> {"reducto": 25, "datalab": 40}
-
-    Per adapter rather than one global number, because the right value is a fact about the vendor
-    account: these are documents in flight at it, and a run naming several vendors has no one number
-    that fits them all."""
-    if not value:
-        return 0
-    try:
-        return int(value)
-    except ValueError:
-        pass
-    try:
-        out = json.loads(value)
-    except json.JSONDecodeError:
-        raise errors.UsageError(f"--workers is a number, or a JSON object like '{{\"datalab\": 20}}', "
-                                f"not {value!r}") from None
-    if isinstance(out, dict):
-        return out
-    raise errors.UsageError(f"--workers must be a number or a JSON object, not {value!r}")
+    if not value: return {}
+    got = read_object_or_json(value, "--options")
+    if list(got) != [system]:
+        if others := [k for k, v in got.items() if isinstance(v, dict) and (k in harness.PROVIDERS or "/" in k)]:
+            raise ValueError(f"--options gives options for {', '.join(others)}, but this command runs {system}; "
+                             f"give {system}'s options bare, e.g. '{{\"mode\": \"accurate\"}}'")
+        return got
+    if not isinstance(got[system], dict):
+        raise ValueError(f"--options gives {system!r} {got[system]!r:.80}; one command runs one set of "
+                         f"options, so give one object, e.g. '{{\"{system}\": {{...}}}}'")
+    return got[system]
 
 
-def read_ids(path: pathlib.Path, flag: str) -> frozenset[str]:
-    """A file of ids, one per line; blank lines and `#` comments are skipped."""
-    if not path.is_file():
-        raise errors.UsageError(f"{flag} {path}: no such file; it holds ids, one per line")
-    lines = path.read_text(encoding="utf-8-sig").splitlines()
-    return frozenset(x for line in lines if (x := line.split("#", 1)[0].strip()))
-
-
-def confirm_plan(plan) -> bool:
-    """Show what the benchmark is about to do, and ask; `-y` / `--yes` skips this entirely. The plan and the
-    question go to stderr, leaving stdout for the summaries.
-
-    Note: with no terminal to ask (a pipe, a notebook, CI), it goes ahead: a command that was scripted was
-    meant to run, as 0.x did. `-y` says so explicitly."""
-    from rich import console
-
-    console.Console(stderr=True, highlight=False).print(plan)
+def confirm(text: str) -> bool:
+    """Shows the plan on stderr and asks. With no terminal to ask (a pipe, CI), it goes ahead. Ctrl-D is a no."""
+    print(text, file=sys.stderr)
     if not sys.stdin.isatty(): return True
     sys.stderr.write("  proceed? [y/N] ")
     sys.stderr.flush()
     try:
         return input().strip().lower() in ("y", "yes")
     except EOFError:
+        # Note: Ctrl-D ends no line, so the next message would follow the prompt on the same one.
+        sys.stderr.write("\n")
         return False
 
 
-def _say(m: str) -> None:
-    """A grading's closing line, or advice: to stderr, beside the progress."""
-    print(m, file=sys.stderr)
+def scorers() -> dict[str, type]:
+    """The scorers a config may name, by name."""
+    from .scorers import field_matching
+
+    return {field_matching.FieldMatching.name: field_matching.FieldMatching}
 
 
-def _written(p) -> dict[str, dict]:
-    """Each run's summary.json, by run name, as grading wrote it."""
-    return {r.out.name: json.loads((r.out / "summary.json").read_text())
-            for r in p.runs if (r.out / "summary.json").is_file()}
+def cmd_init(args) -> int:
+    """A config for one system on the public dataset, graded by field matching, as YAML on stdout: every row, and
+    every option of the system at its default, so the file says the whole run."""
+    import yaml
+
+    from . import harness
+
+    c = config.template(harness.system, args.system, dataset=data.DEFAULT_DATASET, manifest=data.MANIFEST,
+                        scorers={"field_matching": {}}, timeout=1800)
+    sys.stdout.write(yaml.safe_dump(c, sort_keys=False, width=1000, allow_unicode=True))
+    return 0
 
 
-def _retryable(p) -> int:
-    """The documents whose failure may not recur, which `--retry-failed` would predict again."""
+def cmd_run(args) -> int:
+    """Plans, asks, predicts, then grades the run a config asks, and prints the grading: always a new run. A run
+    that stops part way is continued with `oeb resume <its folder>`."""
+    return launched(args, config.load(args.config, args.set), args.out)
+
+
+def cmd_resume(args) -> int:
+    """Continues the run in a folder where it stopped, asking the question it answers: its own config.yaml, with
+    `--set` for what a resume may change (`timeout`, `workers`). Only documents with no record are asked, or, with
+    `--retry-failed`, also those whose failure may not recur."""
+    folder = pathlib.Path(args.folder)
+    if not (folder / config.FILE).is_file():
+        raise ValueError(f"{folder} has no {config.FILE}; give a run folder that `oeb run` made")
+    return launched(args, config.load(folder / config.FILE, args.set), folder.parent, folder.name)
+
+
+def launched(args, c: config.Config, out: pathlib.Path, resume: str | None = None) -> int:
+    """Plans the run `c` asks under `out` (resuming `resume`), asks, predicts, then grades it and prints the
+    grading."""
+    from . import harness, task
+
+    b = config.benchmark(c, task.Extract(), scorers())
+    s = config.system(c, harness.system)
+    p = config.plan(c, b, s, out, resume=resume, retry_failed=getattr(args, "retry_failed", False))
+    if not (args.yes or confirm(b.describe(p))):
+        print(f"oeb {args.command}: not run", file=sys.stderr)
+        return 1
+    config.write(c, b, s, p.run.folder)
+    b.predict(p)
+    _print(b.grade(p.run, details=not args.no_details))
+    return 0
+
+
+def cmd_grade(args) -> int:
+    from omni_bench_core import run
+
     from . import benchmark
 
-    return sum(benchmark.needs(r, d, True) and not benchmark.needs(r, d) for r in p.runs for d in p.docs)
+    folder = run.Run.at(args.folder)
+    said = folder.settings()
+    dataset = args.dataset or said.get("dataset") or data.DEFAULT_DATASET
+    if args.dataset is None and said.get("dataset_commit"): dataset = f"{dataset}@{said['dataset_commit']}"
+    manifest = args.manifest or said.get("manifest") or data.MANIFEST
+    _print(benchmark.default(dataset, manifest).grade(folder, partial=args.partial, details=not args.no_details))
+    return 0
 
 
 def cmd_score(args) -> int:
     from .scorers import field_matching
 
-    if args.gt is not None:
-        raise errors.UsageError("--gt is now --gold (since 1.0.0): pass --gold " + args.gt)
-    if args.gold is None:
-        raise errors.UsageError("--gold is required: the ground truth, JSON")
     pred, gold, schema = (read_object(path, flag) for flag, path in (
         ("--pred", args.pred), ("--gold", args.gold), ("--schema", args.schema)))
     # Note: a bare --order-matters is every array, as the library's `order_matters=True`.
     order = True if args.order_matters == [] else tuple(args.order_matters or ())
-    result = field_matching.score(pred, gold, schema, order_matters=order, verdicts=args.verdicts)
-    if args.verdicts:
+    result = field_matching.score(pred, gold, schema, order_matters=order, verdicts=args.details)
+    if args.details:
         result["verdicts"] = [v._asdict() for v in result["verdicts"]]
-    json.dump(result, sys.stdout, indent=2, default=str)
-    sys.stdout.write("\n")
+    _print(result)
     return 0
 
 
 def cmd_predict(args) -> int:
-    """One document through one vendor. The mirror of `oeb score`: files in, JSON out."""
-    from . import harness
+    """One document through one system, by a run's rules: the record on stdout, and exit 1 when it is a
+    failure. Anything the adapter raises is raised as it is, with a note naming the adapter."""
+    from omni_bench_core import adapter
 
-    record = harness.predict(args.provider, args.doc, read_object(args.schema, "--schema"),
-                             timeout=args.timeout, **read_options(args.options, per_provider=False))
-    json.dump(record, sys.stdout, indent=2, default=str)
-    sys.stdout.write("\n")
-    return 1 if record.get("error") else 0
+    from . import harness, task
 
-
-def cmd_benchmark(args) -> int:
-    from . import benchmark, data, progress
-
-    p = benchmark.plan(args.providers, out=args.out,
-                       dataset=args.dataset or data.DEFAULT_DATASET,
-                       manifest=args.manifest, suites=args.suites,
-                       limit=args.limit, sample=args.sample,
-                       only=read_ids(args.docs, "--docs") if args.docs else None,
-                       timeout=args.timeout,
-                       workers=read_workers(args.workers),
-                       score_workers=args.score_workers,
-                       verdicts=args.verdicts,
-                       score_only=args.score_only, retry_failed=args.retry_failed,
-                       options=read_options(args.options))
-    # Note: nothing to ask before grading alone, which spends nothing.
-    if args.yes or args.score_only:
-        print(benchmark.describe(p), file=sys.stderr)
-    elif not confirm_plan(progress.plan_view(p)):
-        print("oeb benchmark: nothing run", file=sys.stderr)
-        return 1
+    system = harness.system(args.system, system_options(args.options, args.system))
+    doc = pathlib.Path(args.doc)
+    if not doc.is_file():
+        raise ValueError(f"--doc {doc}: no such file")
+    # Note: predicting reads no gold, so the row's gold path is never opened.
+    row = data.Doc(doc.stem, data.NO_SUITE, doc, doc, read_object(args.schema, "--schema"))
     try:
-        summaries = benchmark.execute(p, _say)
-    except errors.Stop:
-        # Note: `execute` grades what was predicted before it raises, so every run has its summary.
-        json.dump(_written(p), sys.stdout, indent=2, default=str)
-        sys.stdout.write("\n")
+        rec = adapter.predict(system, task.Extract().input(row), timeout=args.timeout)
+    except Exception as exc:
+        # Note: the core's `predict` already noted a refused connection; anything else is the adapter's bug.
+        if not errors.refused(exc): errors.noted(exc, type(system), f"predicting {doc}")
         raise
-    json.dump(summaries, sys.stdout, indent=2, default=str)
-    sys.stdout.write("\n")
-    if n := _retryable(p):
-        _say(f"{errors.counted(n, 'document')} failed in a way that may not recur: --retry-failed predicts "
-             f"{'it' if n == 1 else 'them'} again")
-    return 0
-
-
-def cmd_grade(args) -> int:
-    """Grade a folder of predictions/<doc_id>.json, whatever made them, against its whole manifest, and
-    print its summary. The folder's settings.json says its dataset and manifest; a folder of your own
-    gets them there once its first grading succeeds."""
-    from . import benchmark, data
-
-    out = pathlib.Path(args.run)
-    benchmark.gradable(out)   # Note: first, so a mistyped folder is named before a dataset is read.
-    args.dataset, args.manifest = data.located(args.dataset, args.manifest)
-    said = benchmark.settled(out, args.dataset, args.manifest)
-    dataset = args.dataset or said.get("dataset") or data.DEFAULT_DATASET
-    manifest = args.manifest or said.get("manifest") or data.MANIFEST
-    _, docs = data.read_manifest(dataset, manifest)
-    run = benchmark.Run(said.get("provider") or out.name, {}, out)
-    summary = benchmark.grade(run, docs, _say, settings=said, verdicts=args.verdicts,
-                              score_workers=args.score_workers)
-    if not benchmark.is_run(said):
-        # Note: only once grading succeeded, so a failed one leaves the folder as it was.
-        benchmark.declare(out, dataset, manifest, said)
-    json.dump(summary, sys.stdout, indent=2, default=str)
-    sys.stdout.write("\n")
-    return 0
+    _print(rec)
+    return 1 if rec["error"] else 0
 
 
 def cmd_check(args) -> int:
-    """`oeb check`: whether a dataset is one oeb can run, stopping at the first problem: its manifest
-    (`data.read_manifest`), every file the manifest names on disk, and every gold (`field_matching.check`).
-    It opens no input and runs no scorer; docs/API.md lists every rule."""
-    from . import data
-    from .scorers import field_matching
+    """Whether a dataset is one oeb can run: its manifest, every input file, and every gold."""
+    from . import benchmark
 
-    dataset, manifest = data.located(args.dataset, args.manifest)
-    _, docs = data.read_manifest(dataset or data.DEFAULT_DATASET, manifest)
-    missing = [f"{d.doc_id} {col} {f}" for d in docs for col, f in (("doc_path", d.doc_path), ("gt_path", d.gt_path))
-               if not f.is_file()]
-    if missing:
-        raise errors.UsageError(f"files the manifest names that don't exist: "
-                                f"{errors.counted(len(missing), 'file')}, e.g. "
-                                + "; ".join(missing[:3]))
-    field_matching.check(docs)
-    print(json.dumps({"ok": True, "manifest": args.manifest, "documents": len(docs),
-                      "suites": len({d.suite for d in docs}), "inputs": len({d.doc_path for d in docs})}))
+    _print({"dataset": args.dataset, "manifest": args.manifest, **benchmark.default(args.dataset, args.manifest).check()})
     return 0
 
 
-def cmd_providers(args) -> int:
-    """The names `--providers` accepts, or one provider's options in detail.
-
-        oeb providers            every name
-        oeb providers datalab    what `--options` takes for it, and what each is by default
-
-    ONE VERB, NOT TWO. The list is the question usually being asked and the options are a
-    follow-up about one entry -- printing every provider's defaults in the list drowned the
-    names. PIPED, IT IS STILL ONE COLUMN OF NAMES: the table is for a reader, and
-    `oeb providers | ...` gets the list it has always got.
-
-    The options come from the adapter's own `Config` -- its fields are the options and their
-    defaults -- so this cannot drift from what the adapter accepts.
-    """
+def cmd_systems(args) -> int:
+    """The names `--system` accepts, or one system's options, their defaults and the environment variables
+    it needs, all read off the adapter class."""
     import dataclasses
-
-    from rich import box, console, table
 
     from . import harness
 
-    out = console.Console()
-
-    if not args.provider:
-        if not out.is_terminal:
-            for provider in (*harness.PROVIDERS, *EXAMPLE_MODELS):
-                print(provider)
-            return 0
-        sheet = table.Table(box=box.SIMPLE_HEAD, pad_edge=False, show_edge=False)
-        sheet.add_column("provider")
-        for provider in harness.PROVIDERS:
-            sheet.add_row(provider)
-        sheet.add_section()
-        for model in EXAMPLE_MODELS:
-            sheet.add_row(model)
-        out.print(sheet)
-        print("\nthe three model ids are examples: any OpenRouter org/model id works.")
+    if not args.system:
+        for name in (*harness.PROVIDERS, *EXAMPLE_MODELS): print(name)
+        print("\nthe model ids are examples: any OpenRouter org/model id works.", file=sys.stderr)
         return 0
-
-    config = harness.registry.config_for(args.provider)
-    fields = dataclasses.fields(config)
+    cls = harness.adapter_class(args.system)
+    fields = [f for f in dataclasses.fields(cls) if not ("/" in args.system and f.name == "model")]
     if not fields:
-        out.print(f"{args.provider}: no options -- it takes the document and the schema "
-                  f"and nothing else")
-        return 0
-
-    sheet = table.Table(box=box.SIMPLE_HEAD, pad_edge=False, show_edge=False,
-                        title=args.provider, title_justify="left")
-    sheet.add_column("option")
-    sheet.add_column("default", overflow="fold")
-    for field in fields:
-        value = getattr(config, field.name)
-        sheet.add_row(field.name, "''" if value == "" else str(value))
-    out.print(sheet)
-    # Note: a model id's `model` is its name, which --options refuses, so the example is another field.
-    if example := next((f.name for f in fields if f.name != "model"), None):
-        print(f"\noeb benchmark --providers {args.provider} "
-              f"--options '{{\"{args.provider}\": {{\"{example}\": ...}}}}'")
+        print(f"{args.system}: no options; it takes the document and the schema and nothing else")
+    for f in fields:
+        default = f.default if f.default is not dataclasses.MISSING else "(required)"
+        print(f"{f.name:<20} {default!r:<30} {f.metadata.get('help', '')}")
+    print(f"\nneeds {', '.join(cls.keys)} in the environment: {' and '.join(f'export {k}=...' for k in cls.keys)}"
+          if cls.keys else "\nneeds no key")
     return 0
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="oeb", description="Benchmark document extraction: score one "
-                                 "prediction, grade a folder of them, check a dataset, or predict and "
-                                 "grade with each vendor.")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+def _print(x: Any) -> None:
+    json.dump(x, sys.stdout, indent=2, default=str, ensure_ascii=False)
+    sys.stdout.write("\n")
 
-    s = sub.add_parser("score", help="score one prediction against one ground truth")
-    s.add_argument("--pred", required=True, help="the prediction, JSON")
-    s.add_argument("--gold", help="the ground truth, JSON (required)")
-    s.add_argument("--gt", help=argparse.SUPPRESS)   # Note: before 1.0.0's name, to say what it is now.
-    s.add_argument("--schema", required=True,
-                   help="the JSON Schema the prediction was generated against")
-    s.add_argument("--verdicts", action="store_true",
-                   help="include one verdict per address: what happened there, and what each "
-                        "side was compared as")
-    s.add_argument("--order-matters", nargs="*", metavar="ARRAY",
-                   help="arrays whose order is part of the answer, e.g. steps, "
-                        "'books[*].chapters'; given bare, every array. Default: none -- the order "
-                        "rows appear in a document is usually an accident of layout")
-    s.set_defaults(fn=cmd_score)
 
-    b = sub.add_parser("benchmark",
-                       help="fetch the corpus, run it through each vendor, score it")
-    b.add_argument("--providers", nargs="+", required=True, metavar="NAME",
-                   help="vendors and/or model ids, e.g. datalab reducto "
-                        "openai/gpt-5.6-sol. `oeb providers` lists them")
-    b.add_argument("--out", type=pathlib.Path, default=pathlib.Path("runs"),
-                   help="where predictions, scores and the summary go. Default: runs/")
-    # Note: a str, not a Path, because a Path folds the '//' out of an hf:// address.
-    b.add_argument("--dataset", default=None,
-                   help="the dataset: a folder on disk, or hf://datasets/<org>/<name>[@<revision>], "
-                        "which is fetched into the HuggingFace cache. Default: ours, "
-                        "hf://datasets/datalab-to/omni_extract_bench")
-    b.add_argument("--manifest", default="manifest.parquet",
-                   help="which documents of the dataset to run: a parquet inside it, e.g. "
-                        "manifests/sample40-predictive-across-vendors-2026-09-22.parquet. Columns: "
-                        "doc_id, suite, doc_path, gt_path, and a schema column holding JSON; "
-                        "paths resolve against the dataset's folder. Default: manifest.parquet")
-    b.add_argument("--suites", nargs="+", help="limit to these suites")
-    b.add_argument("--limit", type=int, default=0, help="first N documents; for a smoke test")
-    b.add_argument("--sample", type=int, default=0, metavar="N",
-                   help="N documents spread over every suite, the same ones each time; a smoke test "
-                        "that sees every kind of document")
-    b.add_argument("--docs", type=pathlib.Path, metavar="FILE",
-                   help="a file of doc ids, one per line (blank lines and # comments skipped): run "
-                        "only these documents")
-    b.add_argument("--timeout", type=float, default=1800,
-                   help="seconds one document may take, the same for every vendor")
-    b.add_argument("--workers", metavar="N|JSON",
-                   help="documents in flight per adapter, shared by its runs: N for every adapter, or "
-                        'a number per adapter, e.g. \'{"datalab": 40, "llm_single_shot": 3}\' '
-                        "(llm_single_shot: every OpenRouter model id; default: a table per vendor)")
-    b.add_argument("--score-workers", type=int, default=0, metavar="N",
-                   help="processes used to grade. Scoring is the CPU-bound half and is "
-                        "independent per document. Default: one per core, capped at 8; "
-                        "1 grades in this process")
-    b.add_argument("--no-verdicts", dest="verdicts", action="store_false",
-                   help="skip the per-address verdicts. They are why a number can be argued "
-                        "with rather than only quoted, so they are written by default -- but "
-                        "they are the bulk of what a run writes, around five times the gold "
-                        "they grade")
-    b.add_argument("--options", metavar="JSON",
-                   help='per-provider options, as JSON or a path to a JSON file: '
-                        '\'{"datalab": {"mode": "accurate"}}\'. A LIST runs that provider '
-                        'once per entry, so \'{"datalab": [{"mode": "balanced"}, '
-                        '{"mode": "accurate"}]}\' compares its tiers in one run. Each is '
-                        "recorded in the run's settings.json and on every document, and "
-                        "digested into the directory name so two of them cannot mix")
-    b.add_argument("--retry-failed", action="store_true",
-                   help="predict again documents whose recorded failure may not recur: a timeout, an "
-                        "outage, a 429 or 5xx. A 400 or a refusal is an answer, and is not retried")
-    b.add_argument("--score-only", action="store_true",
-                   help="score the predictions already on disk; call no vendor")
-    b.add_argument("-y", "--yes", action="store_true",
-                   help="do not show the plan and wait for approval before spending. A run "
-                        "with no terminal to ask -- a pipe, a cron job -- never waits anyway")
-    b.set_defaults(fn=cmd_benchmark)
+def parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="oeb", description=__doc__.split("\n\n")[0], allow_abbrev=False)
+    ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    sub = ap.add_subparsers(dest="command", required=True)
 
-    g = sub.add_parser("grade", help="grade a folder of predictions/<doc_id>.json: yours, or a run's")
-    g.add_argument("run", help="the folder holding predictions/")
-    g.add_argument("--dataset", default=None,
-                   help="the dataset: a folder on disk, or hf://datasets/<org>/<name>[@<revision>]. "
-                        "Default: the one the folder's settings.json names, else ours")
-    g.add_argument("--manifest", default=None,
-                   help="which documents of the dataset: a parquet inside it. Default: the one the "
-                        "folder's settings.json names, else manifest.parquet")
-    g.add_argument("--score-workers", type=int, default=0, metavar="N",
-                   help="processes used to grade. Default: one per core, capped at 8; 1 grades in this "
-                        "process")
-    g.add_argument("--no-verdicts", dest="verdicts", action="store_false",
-                   help="skip the per-address verdicts")
+    n = sub.add_parser("init", help="a config for one system, as YAML on stdout", allow_abbrev=False)
+    n.add_argument("system", help="a vendor (`oeb systems`) or an OpenRouter model id")
+    n.set_defaults(fn=cmd_init)
+
+    r = sub.add_parser("run", help="predict with one config's system, then grade", allow_abbrev=False)
+    r.add_argument("--config", required=True, metavar="YAML", help="the run: a config, as `oeb init` writes one")
+    r.add_argument("--set", action="append", default=[], metavar="PATH=VALUE",
+                   help="change one value the config has, read as YAML, e.g. rows.sample=20; repeatable")
+    r.add_argument("--out", type=pathlib.Path, default=pathlib.Path("runs"),
+                   help="the parent of the run folders (default: runs/)")
+    r.add_argument("--no-details", action="store_true", help="don't write each document's per-address breakdown")
+    r.add_argument("-y", "--yes", action="store_true", help="don't ask before predicting")
+    r.set_defaults(fn=cmd_run)
+
+    u = sub.add_parser("resume", help="continue a run where it stopped, then grade", allow_abbrev=False)
+    u.add_argument("folder", help="the run's folder, as oeb run made it")
+    u.add_argument("--set", action="append", default=[], metavar="PATH=VALUE",
+                   help="change a value a resume may change, timeout or workers, e.g. timeout=3600; repeatable")
+    u.add_argument("--retry-failed", action="store_true",
+                   help="predict again the documents whose recorded failure may not recur (a timeout, an outage, a "
+                        "rate limit, a server error)")
+    u.add_argument("--no-details", action="store_true", help="don't write each document's per-address breakdown")
+    u.add_argument("-y", "--yes", action="store_true", help="don't ask before predicting")
+    u.set_defaults(fn=cmd_resume)
+
+    g = sub.add_parser("grade", help="grade a folder of predictions/<doc_id>.json: yours, or a run's",
+                       allow_abbrev=False)
+    g.add_argument("folder", help="the folder holding predictions/")
+    g.add_argument("--partial", action="store_true",
+                   help="grade a run that isn't finished: its unfinished documents count as 0, and the summary "
+                        "counts them under \"partial\"; scores.jsonl names each")
+    g.add_argument("--dataset", default=None, help="a dataset folder, or hf://datasets/<org>/<name>[@<revision>] "
+                                                    "(default: the run's own, else the public dataset, "
+                                                    f"{data.DEFAULT_DATASET})")
+    g.add_argument("--manifest", default=None, help="a manifest inside the dataset (default: the run's own, else "
+                                                     "manifest.parquet)")
+    g.add_argument("--no-details", action="store_true", help="don't write each document's per-address breakdown")
+    g.add_argument("--no-verdicts", action="store_true", help=argparse.SUPPRESS)
+    g.add_argument("--score-workers", type=int, help=argparse.SUPPRESS)
     g.set_defaults(fn=cmd_grade)
 
-    c = sub.add_parser("check", help="whether a dataset is one oeb can run: its manifest, files and gold")
-    c.add_argument("--dataset", default=None,
-                   help="the dataset: a folder on disk, or hf://datasets/<org>/<name>[@<revision>]. "
-                        "Default: ours")
-    c.add_argument("--manifest", default="manifest.parquet",
-                   help="which documents of the dataset: a parquet inside it. Default: manifest.parquet")
-    c.set_defaults(fn=cmd_check)
+    s = sub.add_parser("score", help="score one prediction against one ground truth", allow_abbrev=False)
+    s.add_argument("--pred", required=True, help="the prediction, JSON")
+    sg = s.add_mutually_exclusive_group(required=True)
+    sg.add_argument("--gold", help="the ground truth, JSON")
+    sg.add_argument("--gt", help=argparse.SUPPRESS)
+    s.add_argument("--schema", required=True, help="the JSON Schema the prediction was generated against")
+    s.add_argument("--details", action="store_true", help="include the breakdown: one verdict per address")
+    s.add_argument("--verdicts", action="store_true", help=argparse.SUPPRESS)
+    s.add_argument("--order-matters", nargs="*", metavar="ARRAY",
+                   help="arrays whose order is part of the answer; given bare, every array")
+    s.set_defaults(fn=cmd_score)
 
-    d = sub.add_parser("predict", help="run one document through one vendor")
-    d.add_argument("--provider", required=True,
-                   help="a vendor or a model id; `oeb providers` lists them")
+    d = sub.add_parser("predict", help="run one document through one system", allow_abbrev=False)
+    ds = d.add_mutually_exclusive_group(required=True)
+    ds.add_argument("--system", help="a vendor (`oeb systems`) or an OpenRouter model id")
+    ds.add_argument("--provider", help=argparse.SUPPRESS)
     d.add_argument("--doc", required=True, help="the document, PDF")
     d.add_argument("--schema", required=True, help="the JSON Schema to extract against")
-    d.add_argument("--timeout", type=float, default=1800,
-                   help="seconds this document may take, end to end")
-    d.add_argument("--options", metavar="JSON",
-                   help='options for this provider, as JSON or a path: \'{"mode": "accurate"}\'')
+    d.add_argument("--options", metavar="JSON", help="the system's options, inline JSON or a file: an object, "
+                                                      "e.g. '{\"mode\": \"accurate\"}'")
+    d.add_argument("--timeout", type=float, default=1800, help="seconds the document may take (default: %(default)g)")
     d.set_defaults(fn=cmd_predict)
 
-    pl = sub.add_parser("providers",
-                        help="list the vendors benchmark can run, or detail one of them")
-    pl.add_argument("provider", nargs="?",
-                    help="name one to see what --options takes for it, and the defaults")
-    pl.set_defaults(fn=cmd_providers)
+    c = sub.add_parser("check", help="whether a dataset is one oeb can run: its manifest, files and gold",
+                       allow_abbrev=False)
+    c.add_argument("--dataset", default=data.DEFAULT_DATASET,
+                   help="a dataset folder, or hf://datasets/<org>/<name>[@<revision>] (default: %(default)s)")
+    c.add_argument("--manifest", default=data.MANIFEST, help="a manifest inside the dataset (default: %(default)s)")
+    c.set_defaults(fn=cmd_check)
 
-    args = ap.parse_args(argv)
+    pl = sub.add_parser("systems", aliases=["providers"], help="the systems, or one system's options and keys",
+                        allow_abbrev=False)
+    pl.add_argument("system", nargs="?", help="a system, for its options and the environment variables it needs")
+    pl.set_defaults(fn=cmd_systems)
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Runs one `oeb` command and returns its exit code. `run` shows its plan and waits for a yes, unless
+    given `-y` or run with no terminal. An interrupt exits 130; anything else is raised as it is, with
+    its traceback."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser().parse_args(argv)
+    if args.command == "providers":
+        deprecated("`oeb providers`", "`oeb systems`")
+        args.command = "systems"
+    if getattr(args, "score_workers", None) is not None:
+        print("oeb: --score-workers is ignored and will be removed; the scorer sets how many processes it uses",
+              file=sys.stderr)
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter("%(message)s"))
     logging.getLogger().handlers[:] = [handler]
     logging.getLogger().setLevel(logging.WARNING)
-    logging.getLogger(__package__).setLevel(logging.INFO)
-
-    resume = args.cmd == "benchmark"
+    for name in (__package__, "omni_bench_core"): logging.getLogger(name).setLevel(logging.INFO)
     try:
+        renamed(args)
         return args.fn(args)
-    except errors.UsageError as exc:
-        print(f"oeb {args.cmd}: {exc}", file=sys.stderr)
-        return 1
-    except errors.Stop as exc:
-        print(f"oeb {args.cmd}: {type(exc).__name__}: {exc}"
-              + ("; fix it and rerun to resume" if resume else ""), file=sys.stderr)
-        return 1
     except KeyboardInterrupt:
-        print(f"oeb {args.cmd}: interrupted" + ("; rerun to resume" if resume else ""), file=sys.stderr)
+        print(f"oeb {args.command}: interrupted" + ("; continue it with oeb resume <its folder>" if args.command in ("run", "resume")
+                                                    else ""), file=sys.stderr)
         return 130
 
 

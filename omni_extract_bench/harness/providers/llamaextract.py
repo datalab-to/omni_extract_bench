@@ -1,22 +1,12 @@
 #!/usr/bin/env python3
-"""Run LlamaExtract (LlamaCloud) structured extraction against a PDF + JSON Schema.
+"""LlamaExtract (LlamaCloud): uploads the PDF's bytes (never a URL, so no source domain reaches the
+vendor), submits a v2 extraction job at its highest tier, `agentic_plus`, and polls it. Auth:
+LLAMA_CLOUD_API_KEY.
 
-Uploads the PDF file BYTES (never a URL — no source domain leaks to the vendor),
-submits a stateless v2 extraction job, polls to completion, and writes the same
-`{result, _meta}` envelope as the other providers.
+    oeb init llamaextract > config.yaml
+    oeb run --config config.yaml
 
-Mode: tier="agentic_plus" — the highest extraction tier the v2 API offers. It was once
-recorded as unavailable on a standard key (a 422 saying "Input should be 'cost_effective'
-or 'agentic'"), and the default sat at `agentic` on that basis; re-probing the live endpoint
-shows it now validates. Entitlements change — check a tier against the API, not a comment.
-
-Auth: LLAMA_CLOUD_API_KEY (llx-...).
-
-Usage:
-    oeb predict --provider llamaextract --doc doc.pdf --schema schema.json
-
-Adapted from longextract_bench (MIT, (c) 2026 Micro1) -- see providers/LICENSE-micro1.
-"""
+Adapted from longextract_bench (MIT, (c) 2026 Micro1); see providers/LICENSE-micro1."""
 
 from __future__ import annotations
 
@@ -28,37 +18,25 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from typing import Any, ClassVar
+
+from omni_bench_core import adapter, errors
 
 from ...scorers import field_matching
+from .. import contract
 from .. import schema as SCHEMA
-from .. import budget, contract, errors
 
 BASE = "https://api.cloud.llamaindex.ai"
 TIER = "agentic_plus"
 _TERMINAL = {"SUCCESS", "COMPLETED", "FAILED", "ERROR", "CANCELLED"}
 
 
-@dataclasses.dataclass(frozen=True)
-class Config:
-    """What llamaextract can be asked, and what it is asked at its maximum tier."""
-
-    tier: str = dataclasses.field(
-        default=TIER,
-        metadata={"choices": ["cost_effective", "agentic", "agentic_plus"],
-                  "help": "extraction tier; entitlements change, so check one against the API"})
-    poll_interval: int = 5
-
-
 JSON_TYPE_NAMES = {str: "string", bool: "boolean", int: "integer", float: "number"}
 
 
 def enum_type(members: list):
-    """The `type` an enum needs: the type of each member, `"null"` included.
-
-    A list when the members are of more than one type, which is what keeps a nullable enum
-    nullable -- `["MILD", "MODERATE", null]` is `["string", "null"]`, not `"string"` with the
-    null quietly dropped.
-    """
+    """The `type` an enum needs: each member's type, `"null"` included, so a nullable enum stays nullable
+    (`["MILD", null]` is `["string", "null"]`)."""
     names = sorted({JSON_TYPE_NAMES[type(m)] for m in members
                     if m is not None and type(m) in JSON_TYPE_NAMES})
     if not names:
@@ -69,16 +47,10 @@ def enum_type(members: list):
 
 
 def to_typed_enum_dialect(node):
-    """Reshape for a vendor that requires every enum to declare a matching type.
-
-    ``{"enum": ["MILD", "MODERATE", null]}`` is valid JSON Schema and rejected here for having
-    no ``type``. The type is inferred from the enum's own values, the null among them, so the
-    field stays as nullable as it was declared: a benchmark that quietly forbids null asks this
-    vendor a different question than the schema asks, and then scores the answer as if it had
-    not. Unions are recursed into rather than collapsed, for the same reason. Also reduces
-    ``additionalProperties`` from a schema to a boolean, which some validators require; the map
-    stays open, only the per-value constraint is lost.
-    """
+    """The schema reshaped for a vendor that requires every enum to declare a type: the type is inferred
+    from the members, `null` included, so the field stays as nullable as declared. Unions are recursed
+    into, and an `additionalProperties` schema becomes `true` (the map stays open; only the per-value
+    constraint is lost)."""
     if isinstance(node, list):
         return [to_typed_enum_dialect(x) for x in node]
     if not isinstance(node, dict):
@@ -103,34 +75,12 @@ def to_typed_enum_dialect(node):
 
 
 def drop_schema_metadata(node):
-    """Remove `$`-prefixed annotations -- `$schema`, `$id`, `$comment`.
-
-    `resolve_refs` consumes `$ref` and `$defs`; these are what is left, and they describe the
-    document rather than the data. Several validators reject them as unknown keys.
-    """
+    """The schema without `$`-prefixed annotations (`$schema`, `$id`, `$comment`), which validators reject."""
     if isinstance(node, list):
         return [drop_schema_metadata(x) for x in node]
     if not isinstance(node, dict):
         return node
     return {k: drop_schema_metadata(v) for k, v in node.items() if not k.startswith("$")}
-
-
-def prepare_schema(schema: dict) -> dict:
-    """Inline $refs, drop $-prefixed metadata, and reduce to the subset the v2 API accepts.
-
-    Two constraints, each learned from a rejection, and both are what `to_typed_enum_dialect`
-    encodes:
-
-      * a typeless enum is rejected ("Invalid type for field"), so the type is inferred from
-        the enum's own members -- `null` included, rather than stripped.
-      * `additionalProperties` as a SCHEMA is rejected ("Input should be a valid boolean").
-
-    What the schema declares as nullable is sent as nullable. Collapsing a union to its
-    non-null branch, and dropping a `null` enum member, told this vendor the field was required
-    when the corpus says it is not.
-    """
-    return to_typed_enum_dialect(
-        drop_schema_metadata(field_matching.resolve_refs(schema, max_depth=SCHEMA.MAX_REF_DEPTH)))
 
 
 def _req(
@@ -144,21 +94,25 @@ def _req(
     req = urllib.request.Request(url, data=data, method=method, headers=h)
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
+            with adapter.reading(f"the answer to {method} {url.split('?')[0]}"):
+                return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
         try:
-            body = e.read().decode("utf-8", "replace")[:600]
+            body = exc.read().decode("utf-8", "replace")
         except Exception:  # noqa: BLE001
             body = "<body unavailable>"
-        raise errors.VendorError(f"HTTP {e.code} {method} {url.split('?')[0]}: {body}",
-                                 status=e.code, body=body) from None
+        raise errors.SystemFailed(f"HTTP {exc.code} {method} {url.split('?')[0]}: {body}",
+                                  status=exc.code, body=body) from exc
+    except OSError as exc:   # a URLError, or a timeout reading the answer
+        raise contract.unreachable(f"{method} {url.split('?')[0]}", exc) from exc
 
 
 def _project_id(key: str) -> str:
     projs = _req("GET", f"{BASE}/api/v1/projects", key)
-    if isinstance(projs, list) and projs:
-        return projs[0]["id"]
-    return (projs.get("projects") or [{}])[0].get("id")
+    with adapter.reading("the project's id"):
+        if isinstance(projs, list) and projs:
+            return projs[0]["id"]
+        return (projs.get("projects") or [{}])[0].get("id")
 
 
 def _upload(pdf: Path, key: str) -> str:
@@ -177,7 +131,8 @@ def _upload(pdf: Path, key: str) -> str:
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         data=body,
     )
-    return up["id"]
+    with adapter.reading("the uploaded file's id"):
+        return up["id"]
 
 
 def _dt(v: object) -> datetime | None:
@@ -188,71 +143,76 @@ def _dt(v: object) -> datetime | None:
     return None
 
 
-def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
-            config: Config = Config()) -> contract.Extraction:
-    """Upload, submit a v2 extract job at `tier`, poll it to a terminal state.
+@dataclasses.dataclass(frozen=True)
+class LlamaExtract(contract.Extractor):
+    """LlamaExtract's v2 stateless extraction, at its highest tier (`tier`)."""
 
-    `tier` is an argument rather than an environment variable because it is a PARITY decision:
-    the harness runs every vendor at its maximum, and a setting that reads itself out of the
-    environment is one a run cannot state in its own record.
+    name: ClassVar[str] = "llamaextract"
+    keys: ClassVar[tuple[str, ...]] = ("LLAMA_CLOUD_API_KEY",)
+    workers: ClassVar[int] = 3
+    tier: str = dataclasses.field(
+        default=TIER,
+        metadata={"choices": ["cost_effective", "agentic", "agentic_plus"],
+                  "help": "extraction tier; entitlements change, so check one against the API"})
+    poll_interval: int = 5
 
-    The job id comes back with the result, so a job that outlived its budget is named in the
-    record rather than being anonymous.
-    """
-    deadline = budget.Budget(timeout)
-    key = (os.environ.get("LLAMA_CLOUD_API_KEY")
-           or os.environ.get("LLAMAPARSE_API_KEY"))
-    if not key:
-        raise errors.MissingCredential("LLAMA_CLOUD_API_KEY (or LLAMAPARSE_API_KEY) is not set")
+    def missing_keys(self) -> list[str]:
+        """LLAMAPARSE_API_KEY, the key's older name, stands in for LLAMA_CLOUD_API_KEY."""
+        return [] if os.environ.get("LLAMAPARSE_API_KEY") else super().missing_keys()
 
-    project_id = _project_id(key)
-    file_id = _upload(pdf, key)
-    job = _req("POST", f"{BASE}/api/v2/extract?project_id={project_id}", key,
-               headers={"Content-Type": "application/json"},
-               data=json.dumps({
-                   "file_input": file_id,
-                   "configuration": {"tier": config.tier, "extraction_target": "per_doc",
-                                     "data_schema": schema},
-               }).encode())
-    job_id = job.get("id") or job.get("job_id")
+    def prepare_schema(self, schema: dict) -> dict:
+        """The schema the v2 API accepts: `$ref`s inlined, `$` metadata dropped, enums typed and
+        `additionalProperties` a boolean (`to_typed_enum_dialect`). What the schema declares nullable is
+        sent nullable."""
+        return to_typed_enum_dialect(
+            drop_schema_metadata(field_matching.resolve_refs(schema, max_depth=SCHEMA.MAX_REF_DEPTH)))
 
-    polls = 0
-    retry = budget.PollRetry(deadline)
-    while True:
-        deadline.check(f"job {job_id} was still running server-side after {polls} polls")
-        try:
-            body = _req("GET", f"{BASE}/api/v2/extract/{job_id}"
-                               f"?project_id={project_id}&expand=metadata", key)
-        except errors.VendorError as exc:
-            if retry.again(exc.status):
-                continue
-            raise
-        except (urllib.error.URLError, OSError, ValueError) as exc:
-            if retry.again():
-                continue
-            raise errors.VendorError(f"job {job_id}: polling failed repeatedly: {exc}"[:300],
-                                     status=None) from None
-        retry.ok()
-        polls += 1
-        status = body.get("status")
-        if status in _TERMINAL:
-            break
-        time.sleep(config.poll_interval)
+    def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
+        """Uploads, submits a v2 extract job at `tier`, and polls it."""
+        deadline = adapter.Budget(timeout)
+        key = os.environ.get("LLAMA_CLOUD_API_KEY") or os.environ["LLAMAPARSE_API_KEY"]
 
-    if status in ("FAILED", "ERROR", "CANCELLED"):
-        raise errors.VendorError(f"LlamaExtract {status}: {body.get('error_message')}", status=200)
+        project_id = _project_id(key)
+        file_id = _upload(pdf, key)
+        job = _req("POST", f"{BASE}/api/v2/extract?project_id={project_id}", key,
+                   headers={"Content-Type": "application/json"},
+                   data=json.dumps({
+                       "file_input": file_id,
+                       "configuration": {"tier": self.tier, "extraction_target": "per_doc",
+                                         "data_schema": schema},
+                   }).encode())
+        with adapter.reading("the job's id"):
+            job_id = job.get("id") or job.get("job_id")
 
-    result = body.get("extract_result") or body.get("data") or body.get("result")
-    if not isinstance(result, dict) or not result:
-        raise errors.VendorError(f"{status} with no extraction: {json.dumps(body)[:300]}", status=200)
+        polls = 0
+        retry = adapter.PollRetry(deadline)
+        while True:
+            deadline.check(f"job {job_id} was still running server-side after {polls} polls")
+            try:
+                body = _req("GET", f"{BASE}/api/v2/extract/{job_id}?project_id={project_id}&expand=metadata", key)
+            except errors.SystemFailed as exc:
+                if retry.again(exc.status):
+                    continue
+                raise
+            retry.reset()
+            polls += 1
+            with adapter.reading("the job's status"):
+                status = body.get("status")
+            if status in _TERMINAL:
+                break
+            time.sleep(self.poll_interval)
 
-    start, end = _dt(body.get("created_at")), _dt(body.get("updated_at"))
-    return contract.Extraction(
-        result=result,
-        raw={**{k: v for k, v in body.items()
-                if k not in ("extract_result", "data", "result")},
-             "tier": config.tier,
-             "server_latency_s": round((end - start).total_seconds(), 2) if start and end else None},
-        cost=contract.Cost(),
-        job_id=job_id)
+        with adapter.reading("the job's outcome and timing"):
+            message = body.get("error_message")
+            start, end = _dt(body.get("created_at")), _dt(body.get("updated_at"))
+        if status in ("FAILED", "ERROR", "CANCELLED"):
+            raise errors.SystemFailed(f"LlamaExtract {status}: {message}", status=200)
+        return adapter.Call(
+            raw={**body, "tier": self.tier,
+                 "server_latency_s": round((end - start).total_seconds(), 2) if start and end else None},
+            job_id=job_id)
 
+    def read(self, raw: Any, q: contract.Question) -> dict:
+        """The extraction in `extract_result`, `data` or `result`, whichever the job came back with."""
+        r = raw if isinstance(raw, dict) else {}
+        return contract.extraction(r.get("extract_result") or r.get("data") or r.get("result"))

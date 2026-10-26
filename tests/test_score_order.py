@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Edge cases for order-dependent array scoring (`score(..., order_matters=...)`).
 
-Declaring an array ordered says its index is an ADDRESS rather than a position, which touches
+Declaring an array ordered says its index is an address rather than a position, which touches
 three things at once: `align` stops solving that node, `_prepare` folds its leaves in with the
 named ones, and the pairing weight therefore compares it positionally too. That last one is
 where the first attempt went wrong -- rows distinguished only by an ordered inner array all
@@ -17,11 +17,11 @@ import sys as _sys
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from tests.approximate import approximate                  # noqa: E402
-from omni_extract_bench.scorers.field_matching import (                             # noqa: E402
-    INDEX, KEY, flatten, show, score, node_key,
-    format_node, _find_arrays)
+from omni_extract_bench.scorers.field_matching.documents import INDEX  # noqa: E402
+from omni_extract_bench.scorers.field_matching.compare import score  # noqa: E402
+from omni_extract_bench.scorers.field_matching.documents import KEY, flatten, show, node_key, format_node, _find_arrays  # noqa: E402
 
-from omni_extract_bench.scorers.field_matching import score as _score_impl          # noqa: E402
+from omni_extract_bench.scorers.field_matching.compare import score as _score_impl  # noqa: E402
 
 
 def _schema_from(doc):
@@ -78,7 +78,7 @@ def parts(pred, gold, ordered=(), schema=None):
     return r["matched"], r["total"]
 
 
-print("\nLENGTH MISMATCH IN AN ORDERED ARRAY")
+print("\nLength mismatch in an ordered array")
 G = {"steps": ["mix", "bake", "cool"]}
 STEPS = ["steps"]
 short = parts({"steps": ["mix", "bake"]}, G, STEPS)
@@ -94,12 +94,12 @@ report("an empty prediction charges every gold element",
 report("an empty gold charges every predicted element",
        parts(G, {"steps": []}, STEPS) == (0, 3))
 
-print("\nDUPLICATES AND OBJECTS INSIDE AN ORDERED ARRAY")
+print("\nDuplicates and objects inside an ordered array")
 DUP = {"xs": ["x", "x", "y"]}
 XS = ["xs"]
 dup = parts({"xs": ["x", "y", "x"]}, DUP, XS)
 report("duplicate values compare position by position", dup == (1, 3), f"got {dup}")
-report("an ordered array of OBJECTS is positional too",
+report("an ordered array of objects is positional too",
        parts({"rows": [{"a": 2}, {"a": 1}]}, {"rows": [{"a": 1}, {"a": 2}]},
              ["rows"]) == (0, 2))
 report("...and identity still holds for one",
@@ -109,7 +109,7 @@ nulls = parts({"xs": ["a", None, "c"]}, {"xs": ["a", None, "c"]}, XS)
 report("a null inside an ordered array occupies no address", nulls == (2, 2), f"got {nulls}")
 note("index 1 yields no path on either side, so index 2 keeps its own address")
 
-print("\nARRAYS OF ARRAYS, ONE LEVEL ORDERED AT A TIME")
+print("\nArrays of arrays, one level ordered at a time")
 GRID = {"grid": [[1, 2], [3, 4]]}
 SWAP_OUTER = {"grid": [[3, 4], [1, 2]]}
 SWAP_INNER = {"grid": [[2, 1], [4, 3]]}
@@ -125,25 +125,25 @@ report("both ordered: a matrix, fully positional",
        abs(acc(GRID, GRID, ["grid", "grid[*]"]) - 1) < 1e-9
        and acc(SWAP_OUTER, GRID, ["grid", "grid[*]"]) < 1e-9)
 
-print("\nTHE PAIRING WEIGHT MUST AGREE WITH THE SCORE")
+print("\nThe pairing weight must agree with the score")
 NEST_G = {"books": [{"chapters": ["a", "b"]}, {"chapters": ["b", "a"]}]}
 NEST_P = {"books": [{"chapters": ["b", "a"]}, {"chapters": ["a", "b"]}]}
 nest = acc(NEST_P, NEST_G, ["books[*].chapters"])
-report("rows distinguished ONLY by an ordered inner array still pair correctly",
+report("rows distinguished only by an ordered inner array still pair correctly",
        abs(nest - 1) < 1e-9, f"got {nest:.2f}, want 1 (was 0.00)")
 DEEP_G = {"a": [{"b": [{"c": ["x", "y"]}]}, {"b": [{"c": ["y", "x"]}]}]}
 DEEP_P = {"a": [{"b": [{"c": ["y", "x"]}]}, {"b": [{"c": ["x", "y"]}]}]}
 deep = acc(DEEP_P, DEEP_G, ["a[*].b[*].c"])
 report("the same holds three levels down", abs(deep - 1) < 1e-9, f"got {deep:.2f}")
-report("declaring an array ordered never LOWERS a correct answer's score",
+report("declaring an array ordered never lowers a correct answer's score",
        all(abs(acc(d, d, [format_node(n) for n in _find_arrays(list(flatten(d)))]) - 1) < 1e-9
            for d in (NEST_G, DEEP_G, GRID, G, DUP)))
 
-print("\nPATTERNS NAME SCHEMA LOCATIONS, AND ARE UNAMBIGUOUS")
+print("\nPatterns name schema locations, and are unambiguous")
 report("one pattern covers every instance of a nested array",
        format_node(((KEY, "b"), (INDEX, 0), (KEY, "c")))
        == format_node(((KEY, "b"), (INDEX, 99), (KEY, "c"))) == "b[*].c")
-report("a nested path and a dotted key are DIFFERENT names, structurally",
+report("a nested path and a dotted key are different names, structurally",
        node_key(((KEY, "a"), (KEY, "b"))) == ((KEY, "a"), (KEY, "b"))
        and node_key(((KEY, "a.b"),)) == ((KEY, "a.b"),)
        and node_key(((KEY, "a"), (KEY, "b"))) != node_key(((KEY, "a.b"),)))
@@ -154,7 +154,7 @@ report("a key named \"*\" is not an index step",
 note("a formatted string collided on both of these; a tuple cannot")
 DOTTED_G, DOTTED_P = {"a.b": ["x", "y"]}, {"a.b": ["y", "x"]}
 NESTED_G, NESTED_P = {"a": {"b": ["x", "y"]}}, {"a": {"b": ["y", "x"]}}
-report("the dotted key and the nested path get DIFFERENT names, each charged on its own",
+report("the dotted key and the nested path get different names, each charged on its own",
        acc(DOTTED_P, DOTTED_G, ["['a.b']"]) < 1e-9
        and acc(NESTED_P, NESTED_G, ["a.b"]) < 1e-9)
 note("the quoting is what keeps these apart: \"['a.b']\" is the key, \"a.b\" is the path")
@@ -166,17 +166,25 @@ report("format_node remains available for display, and quotes the dotted key",
        format_node(((KEY, "a"), (KEY, "b"))) == "a.b"
        and format_node(((KEY, "a.b"),)) == "['a.b']")
 
-print("\nNODE KEYS SURVIVE A SECOND COPY OF THE MODULE")
+print("\nNode keys survive a second copy of the module")
 import importlib.util as _ilu                                              # noqa: E402
 
-_spec = _ilu.spec_from_file_location(
-    "omni_extract_bench._score_second_copy",
-    _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
-                  "omni_extract_bench", "scorers", "field_matching", "__init__.py"))
-_copy = _ilu.module_from_spec(_spec)
-_copy.__package__ = "omni_extract_bench.scorers.field_matching"
-_sys.modules[_spec.name] = _copy
-_spec.loader.exec_module(_copy)
+def _second_copy(module):
+    """A second copy of one of the scorer's modules, loaded from its file."""
+    spec = _ilu.spec_from_file_location(
+        f"omni_extract_bench._second_copy_of_{module}",
+        _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                      "omni_extract_bench", "scorers", "field_matching", f"{module}.py"))
+    m = _ilu.module_from_spec(spec)
+    m.__package__ = "omni_extract_bench.scorers.field_matching"
+    _sys.modules[spec.name] = m
+    spec.loader.exec_module(m)
+    return m
+
+
+class _copy:   # Note: node keys come from documents.py, and score from compare.py; a copy of each.
+    node_key = staticmethod(_second_copy("documents").node_key)
+    score = staticmethod(_second_copy("compare").score)
 
 BOOKS = ((KEY, "books"), (INDEX, 0), (KEY, "chapters"))
 report("a node key holds nothing but strings and None",
@@ -199,7 +207,7 @@ report("a blanked index equals no key a document can contain",
 report("...including a key literally named \"*\"",
        node_key(((KEY, "*"),)) != node_key(((INDEX, 0),)))
 
-print("\nA NAME THAT FITS NO ARRAY IS AN ERROR, NOT A NO-OP")
+print("\nA name that fits no array is an error, not a no-op")
 SG, SP = {"steps": ["a", "b"]}, {"steps": ["b", "a"]}
 for why, name in (("a misspelt key", "stepz"),
                   ("the right key in the wrong case", "Steps"),
@@ -210,7 +218,7 @@ for why, name in (("a misspelt key", "stepz"),
 try:
     acc(SP, SG, ["stepz"])
 except ValueError as exc:
-    report("...and the error lists the arrays that DO exist", "'steps'" in str(exc), str(exc))
+    report("...and the error lists the arrays that do exist", "'steps'" in str(exc), str(exc))
 
 report("a correct name still charges the reordering", acc(SP, SG, ["steps"]) < 1e-9)
 report("an empty configuration equals no configuration", acc(SP, SG, []) == acc(SP, SG))
@@ -229,7 +237,7 @@ try:
 except TypeError as exc:
     report("...naming the list the caller meant", "['steps']" in str(exc), str(exc))
 
-print("\nPATTERNS ARE ABSOLUTE, SO DEPTH IS NOT INVARIANT (by design)")
+print("\nPatterns are absolute, so depth is not invariant (by design)")
 FLAT_G, FLAT_P = {"steps": ["a", "b"]}, {"steps": ["b", "a"]}
 report("wrapping a document makes the old name an error rather than a quiet no-op",
        acc(FLAT_P, FLAT_G, ["steps"]) < 1e-9
@@ -238,9 +246,9 @@ report("the wrapped name restores the behaviour",
        acc({"w": FLAT_P}, {"w": FLAT_G}, ["w.steps"]) < 1e-9)
 note("a name locates an array; move the array and the name must move with it -- but now")
 note("the stale name says so, instead of scoring the document order-free")
-note("nesting invariance still holds with NO configuration, which is the tested property")
+note("nesting invariance still holds with no configuration, which is the tested property")
 
-print("\nPROPERTIES THAT MUST SURVIVE A CONFIGURATION")
+print("\nProperties that must survive a configuration")
 def rand_doc(rnd, depth=0):
     d = {}
     for i in range(rnd.randint(2, 4)):
@@ -300,7 +308,7 @@ for s_ in range(200):
         break
 report("correcting a leaf never lowers the score of an ordered array", ok_mono)
 
-print("\nINTERACTION WITH EVERYTHING ELSE")
+print("\nInteraction with everything else")
 OM_SCH = {"type": "object", "properties": {
     "bag": {"type": "object", "additionalProperties": {"type": "array",
                                                        "items": {"type": "string"}}}}}
@@ -325,7 +333,7 @@ report("greedy_blocks reports distinct sizes, not one entry per weight evaluatio
        len(big["approximated"]) == 1 and big["matching_exact"] is False,
        f"got {big['approximated']}")
 
-print("\nDEGENERATE SHAPES, WITH A CONFIGURATION")
+print("\nDegenerate shapes, with a configuration")
 DEGEN = [({}, {}), ({"a": []}, {"a": []}), ({"a": [[]]}, {"a": [[]]}),
          ({"a": [{}]}, {"a": [{}]}), ({"a": []}, {"a": ["x"]}), ({"a": ["x"]}, {"a": []}),
          ({"a": [None, None]}, {"a": [None, None]}), ({}, {"a": ["x"]}), ({"a": ["x"]}, {})]
@@ -343,7 +351,7 @@ for pred, gold in DEGEN:
         break
 report("empty and degenerate arrays survive being declared ordered", ok, detail)
 
-print("\nTRUE ORDERS EVERY ARRAY, FALSE NONE")
+print("\nTrue orders every array, false none")
 ALL_S = {"properties": {"rows": {"type": "array", "items": {"properties": {
     "x": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}}}}}
 ALL_G = {"rows": [{"x": "a", "tags": ["p", "q"]}, {"x": "b", "tags": []}], "extra": [1, 2]}
@@ -357,7 +365,7 @@ report("False scores like naming none",
 report("True on a document with no arrays is not an error",
        _score_impl({"x": 1}, {"x": 1}, {"properties": {"x": {}}}, order_matters=True)["accuracy"] == 1.0)
 
-print(f"\n{'ORDER EDGE CASES HOLD' if not FAILS else 'FAILURES:'}")
+print(f"\n{'Order edge cases hold' if not FAILS else 'Failures:'}")
 for f in FAILS:
     print(f"   {f}")
 _sys.exit(1 if FAILS else 0)

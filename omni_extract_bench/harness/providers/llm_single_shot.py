@@ -1,30 +1,10 @@
-"""Single-shot LLM extraction: the PDF and the schema go to the model in one call.
+"""A raw model: the PDF and the schema in one completion, through any OpenAI-compatible endpoint
+(OpenRouter by default, the one that reports real billing in `usage.cost`; another with the `base_url`
+option). Auth: OPENROUTER_API_KEY, or OPENAI_API_KEY. The model is the system's name on the command
+line:
 
-Used for the raw-model legs (Claude, GPT, Gemini) through any OpenAI-compatible endpoint;
-the published runs used OpenRouter, which is also the only endpoint that returns real billing
-(`usage.cost`) rather than a token count we would have to price ourselves.
-
-Three behaviours here exist because getting them wrong decides a vendor's score:
-
-  * `finish_reason == "length"` is NOT retried. The answer did not fit in `max_tokens`, and a
-    retry at the same cap cannot fit a shorter one. Retrying truncation three times cost $7.35
-    on a single document in an early run and produced nothing.
-  * `choices` can be None when the UPSTREAM provider errored, with the real message in a
-    top-level `error` field. Indexing `choices[0]` then raises an opaque TypeError that stands
-    in for the vendor's own error, which is what makes a failure attributable.
-  * a JSON parse failure is retried at a slightly higher temperature, but the model's text is
-    returned to the caller either way, so a fenced or otherwise unparseable answer can be
-    salvaged from the record rather than re-paid for.
-
-Auth: OPENROUTER_API_KEY, or OPENAI_API_KEY. Another OpenAI-compatible endpoint is selected
-with `base_url=` (`--base-url`), which is an argument and not an environment variable, so the
-record can say which endpoint answered.
-
-    oeb predict --provider anthropic/claude-opus-5 --doc doc.pdf --schema schema.json
-
-    The model IS the provider name -- `--options {"model": ...}` is refused, so a run
-    cannot be stored under a model it did not use.
-"""
+    oeb init anthropic/claude-opus-5 > config.yaml
+    oeb run --config config.yaml"""
 from __future__ import annotations
 
 import base64
@@ -34,10 +14,12 @@ import os
 import random
 import time
 from pathlib import Path
+from typing import ClassVar
 
 import openai
+from omni_bench_core import adapter, errors
 
-from .. import budget, contract, errors, responses
+from .. import contract, responses
 
 SYSTEM_PROMPT = """\
 You are a document data extraction system. You will be given a PDF document \
@@ -71,123 +53,131 @@ MODEL_MAX_OUTPUT = {
 }
 
 
-@dataclasses.dataclass(frozen=True)
-class Config:
-    """What a raw-model leg can be asked. `model` has no default: it IS the provider name."""
+def max_output_for(model: str) -> int:
+    return MODEL_MAX_OUTPUT.get(model, DEFAULT_MAX_OUTPUT_TOKENS)
 
-    model: str = dataclasses.field(
-        metadata={"help": "an OpenRouter org/model id"})
+
+@dataclasses.dataclass(frozen=True)
+class LLMSingleShot(contract.Extractor):
+    """A raw model, sent the PDF and the schema in one completion. Options:
+
+    - `model`: an OpenRouter org/model id, which also names the run folder (`label`);
+    - `max_output_tokens`: by default the model's published ceiling, resolved when made, so the record
+      states it;
+    - `base_url`; and
+    - `attempts`: how many completions to try for a usable answer."""
+
+    name: ClassVar[str] = "llm_single_shot"
+    keys: ClassVar[tuple[str, ...]] = ("OPENROUTER_API_KEY",)
+    workers: ClassVar[int] = 5
+    model: str = dataclasses.field(metadata={"help": "an OpenRouter org/model id"})
     max_output_tokens: int | None = dataclasses.field(
         default=None, metadata={"help": "default: the model's published ceiling"})
     base_url: str = DEFAULT_BASE_URL
     attempts: int = 3
 
     def __post_init__(self):
-        """Resolve `None` to the model's published ceiling HERE, not in `extract`.
-
-        `extract` used to do it, so the record wrote down `max_output_tokens: null` while the
-        model was handed 128000 -- a setting stated by neither the Config nor the manifest,
-        which is the whole thing `settings` exists to rule out. The parity rule is per-model
-        ("as much as each will give"), so what that came to has to be on the document."""
         if self.max_output_tokens is None:
             object.__setattr__(self, "max_output_tokens", max_output_for(self.model))
 
+    def missing_keys(self) -> list[str]:
+        """OPENAI_API_KEY stands in for OPENROUTER_API_KEY, for a `base_url` that is OpenAI's own."""
+        return [] if os.environ.get("OPENAI_API_KEY") else super().missing_keys()
 
-def max_output_for(model: str) -> int:
-    return MODEL_MAX_OUTPUT.get(model, DEFAULT_MAX_OUTPUT_TOKENS)
+    @property
+    def label(self) -> str:
+        return self.model.replace("/", "__")
 
+    def extract(self, pdf: Path, schema: dict, *, timeout: float) -> adapter.Call:
+        """One completion with the schema as `response_format`, asked again, at a slightly higher
+        temperature, only after an unusable answer (no choices, not JSON, not an object). Transport
+        failures are raised with their status for omni-bench-core to retry, so the two loops never
+        multiply. On purpose:
 
-def prepare_schema(schema: dict) -> dict:
-    """This vendor takes a JSON Schema as written; nothing to reshape."""
-    return schema
+        - `finish_reason == "length"` isn't asked again, since the same limit can't fit the answer;
+        - no `choices` raises the provider's own message from the top-level `error`; and
+        - an answer that isn't JSON keeps its text in the record, so it can be read again without paying
+          again."""
+        key = os.environ.get("OPENROUTER_API_KEY") or os.environ["OPENAI_API_KEY"]
 
+        deadline = adapter.Budget(timeout)
+        model = self.model
+        max_output_tokens = self.max_output_tokens
+        client = openai.OpenAI(base_url=self.base_url, api_key=key)
+        b64 = base64.b64encode(pdf.read_bytes()).decode("ascii")
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": [
+                {"type": "file", "file": {"filename": pdf.name,
+                                          "file_data": f"data:application/pdf;base64,{b64}"}},
+                {"type": "text", "text": ("Extract the data from this document according to the "
+                                          "following JSON schema:\n\n"
+                                          f"```json\n{json.dumps(schema, indent=2)}\n```")},
+            ]},
+        ]
 
-def extract(pdf: Path, schema: dict, *, timeout: float = 1800.0,
-            config: Config) -> contract.Extraction:
-    """One completion with the schema as `response_format`, retried only for a bad ANSWER.
+        temperature, last, calls, costs = 0.0, None, [], []
+        for attempt in range(self.attempts):
+            if attempt:
+                time.sleep(min((2 ** attempt) + random.uniform(0, 1), deadline.remaining()))
+            deadline.check(f"after {attempt} attempt(s) that produced no usable answer")
+            try:
+                resp = client.chat.completions.create(
+                    model=model, messages=messages,
+                    response_format={"type": "json_schema",
+                                     "json_schema": {"name": "extraction", "schema": schema,
+                                                     "strict": False}},
+                    max_tokens=max_output_tokens, temperature=temperature,
+                    timeout=deadline.remaining(),
+                    extra_body={"usage": {"include": True}},
+                )
+            except openai.APIStatusError as exc:
+                raise errors.SystemFailed(f"{type(exc).__name__}: {exc}",
+                                          status=getattr(exc, "status_code", None)) from exc
+            except openai.APITimeoutError as exc:
+                raise errors.SystemTimeout(f"{type(exc).__name__}: {exc}") from exc
+            except openai.APIConnectionError as exc:
+                raise errors.SystemUnreachable(f"{type(exc).__name__}: {exc}") from exc
+            except openai.APIError as exc:
+                raise errors.SystemFailed(f"{type(exc).__name__}: {exc}") from exc
 
-    The loop here raises the temperature after a reply that would not parse, was empty of
-    choices, or was not an object -- it is trying to get a usable answer out of a model that
-    gave a malformed one. Transport failures are NOT retried here: a rate limit or a 5xx
-    becomes a `VendorError` carrying its status, and the harness's own retry decides, so the
-    two loops cannot multiply into 12 attempts on one document.
-    """
-    key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if not key:
-        raise errors.MissingCredential("OPENROUTER_API_KEY (or OPENAI_API_KEY) must be set")
+            with adapter.reading("the completion's usage"):
+                usage = resp.usage.model_dump() if getattr(resp, "usage", None) else {}
+                calls.append({"usage": usage, "model": getattr(resp, "model", None)})
+                # Note: every completion is billed, a malformed one too, so the cost is every completion's.
+                costs.append(adapter.Cost.reported(usage.get("cost"), "usage.cost",
+                                                   tokens_in=usage.get("prompt_tokens"),
+                                                   tokens_out=usage.get("completion_tokens")))
+            choices = getattr(resp, "choices", None)
+            if not choices:
+                err = getattr(resp, "error", None) or {}
+                last = str((err.get("message") if isinstance(err, dict) else err)
+                           or "provider returned no choices")
+                temperature = min(temperature + 0.1, 1.0)
+                continue
 
-    deadline = budget.Budget(timeout)
-    model = config.model
-    max_output_tokens = config.max_output_tokens
-    client = openai.OpenAI(base_url=config.base_url, api_key=key)
-    b64 = base64.b64encode(pdf.read_bytes()).decode("ascii")
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": [
-            {"type": "file", "file": {"filename": pdf.name,
-                                      "file_data": f"data:application/pdf;base64,{b64}"}},
-            {"type": "text", "text": ("Extract the data from this document according to the "
-                                      "following JSON schema:\n\n"
-                                      f"```json\n{json.dumps(schema, indent=2)}\n```")},
-        ]},
-    ]
+            with adapter.reading("the completion's text"):
+                choice = choices[0]
+                text = getattr(getattr(choice, "message", None), "content", None)
+                finish = getattr(choice, "finish_reason", None)
+            if finish == "length":
+                raise errors.SystemFailed(f"truncated at max_tokens={max_output_tokens} "
+                                          f"({model}'s published ceiling)", status=200, cost=adapter.Cost.total(costs))
+            if not text:
+                raise errors.SystemFailed("empty completion", status=200, cost=adapter.Cost.total(costs))
+            parsed = responses.parse_model_json(text)
+            if parsed is None:
+                last = f"not JSON, even allowing a code fence: {text!r}"
+                calls[-1]["text"] = text
+                temperature = min(temperature + 0.1, 1.0)
+                continue
+            if isinstance(parsed, dict) and parsed:
+                return adapter.Call(
+                    raw={"extraction": parsed, "calls": calls, "finish_reason": finish,
+                         "max_output_tokens": max_output_tokens, "model": model},
+                    cost=adapter.Cost.total(costs))
+            last = f"model returned {type(parsed).__name__}, not an object"
 
-    temperature, last, calls = 0.0, None, []
-    for attempt in range(config.attempts):
-        if attempt:
-            time.sleep(min((2 ** attempt) + random.uniform(0, 1), deadline.remaining()))
-        deadline.check(f"after {attempt} attempt(s) that produced no usable answer")
-        try:
-            resp = client.chat.completions.create(
-                model=model, messages=messages,
-                response_format={"type": "json_schema",
-                                 "json_schema": {"name": "extraction", "schema": schema,
-                                                 "strict": False}},
-                max_tokens=max_output_tokens, temperature=temperature,
-                timeout=deadline.remaining(),
-                extra_body={"usage": {"include": True}},
-            )
-        except openai.APIStatusError as exc:
-            raise errors.VendorError(f"{type(exc).__name__}: {exc}"[:300],
-                                     status=getattr(exc, "status_code", None)) from None
-        except openai.APIConnectionError as exc:
-            raise errors.VendorUnreachable(f"{type(exc).__name__}: {exc}"[:300]) from None
-        except openai.APIError as exc:
-            raise errors.VendorError(f"{type(exc).__name__}: {exc}"[:300]) from None
-
-        usage = resp.usage.model_dump() if getattr(resp, "usage", None) else {}
-        calls.append({"usage": usage, "model": getattr(resp, "model", None)})
-        choices = getattr(resp, "choices", None)
-        if not choices:
-            err = getattr(resp, "error", None) or {}
-            last = str((err.get("message") if isinstance(err, dict) else err)
-                       or "provider returned no choices")[:300]
-            temperature = min(temperature + 0.1, 1.0)
-            continue
-
-        choice = choices[0]
-        text = getattr(getattr(choice, "message", None), "content", None)
-        if choice.finish_reason == "length":
-            raise errors.VendorError(f"truncated at max_tokens={max_output_tokens} "
-                                     f"({model}'s published ceiling)", status=200)
-        if not text:
-            raise errors.VendorError("empty completion", status=200)
-        parsed = responses.parse_model_json(text)
-        if parsed is None:
-            last = f"not JSON, even allowing a code fence: {text[:120]!r}"
-            calls[-1]["text"] = text
-            temperature = min(temperature + 0.1, 1.0)
-            continue
-        if isinstance(parsed, dict) and parsed:
-            return contract.Extraction(
-                result=parsed,
-                raw={"calls": calls, "finish_reason": choice.finish_reason,
-                     "max_output_tokens": max_output_tokens, "model": model},
-                cost=contract.Cost.reported(usage.get("cost"), "usage.cost",
-                                            tokens_in=usage.get("prompt_tokens"),
-                                            tokens_out=usage.get("completion_tokens")))
-        last = f"model returned {type(parsed).__name__}, not an object"
-
-    raise errors.VendorError(f"all {config.attempts} attempts returned an unusable answer: {last}",
-                             status=200, body=json.dumps({"calls": calls, "model": model})[:4000])
-
+        raise errors.SystemFailed(f"all {self.attempts} attempts returned an unusable answer: {last}",
+                                  status=200, body=json.dumps({"calls": calls, "model": model}),
+                                  cost=adapter.Cost.total(costs))
