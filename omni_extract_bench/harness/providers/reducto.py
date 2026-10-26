@@ -3,7 +3,8 @@
 (deep extraction on, its v2 model, citations off, and an empty system prompt by default, so the schema's
 descriptions guide it). Auth: REDUCTO_API_KEY.
 
-    oeb run --system reducto
+    oeb init reducto > config.yaml
+    oeb run --config config.yaml
 
 Adapted from longextract_bench (MIT, (c) 2026 Micro1); see providers/LICENSE-micro1."""
 

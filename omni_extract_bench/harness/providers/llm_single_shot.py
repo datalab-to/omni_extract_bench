@@ -3,7 +3,8 @@
 option). Auth: OPENROUTER_API_KEY, or OPENAI_API_KEY. The model is the system's name on the command
 line:
 
-    oeb run --system anthropic/claude-opus-5"""
+    oeb init anthropic/claude-opus-5 > config.yaml
+    oeb run --config config.yaml"""
 from __future__ import annotations
 
 import base64

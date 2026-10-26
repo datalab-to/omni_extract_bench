@@ -2,7 +2,8 @@
 `document_annotation_format`; the extraction comes back as `document_annotation`, a JSON string. Auth:
 MISTRAL_API_KEY.
 
-    oeb run --system mistral"""
+    oeb init mistral > config.yaml
+    oeb run --config config.yaml"""
 from __future__ import annotations
 
 import base64

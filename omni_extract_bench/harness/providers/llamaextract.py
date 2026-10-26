@@ -3,7 +3,8 @@
 vendor), submits a v2 extraction job at its highest tier, `agentic_plus`, and polls it. Auth:
 LLAMA_CLOUD_API_KEY.
 
-    oeb run --system llamaextract
+    oeb init llamaextract > config.yaml
+    oeb run --config config.yaml
 
 Adapted from longextract_bench (MIT, (c) 2026 Micro1); see providers/LICENSE-micro1."""
 

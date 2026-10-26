@@ -3,7 +3,8 @@
 back in cents (`cost_breakdown.final_cost_cents`) and is converted to dollars once, in `cost_of`. Auth:
 DATALAB_API_KEY.
 
-    oeb run --system datalab --options '{"mode": "balanced"}'"""
+    oeb init datalab > config.yaml
+    oeb run --config config.yaml --set system.datalab.mode=balanced"""
 from __future__ import annotations
 
 import dataclasses
