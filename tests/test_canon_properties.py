@@ -101,7 +101,7 @@ MUST_DIFFER = [
     ('zero-padded postal', '02000', '2000'),
     ('zero-padded state', '06', '6'),
     ('zip, all zeros', '0', '00000'),
-    ('email local part', 'wenqifan03@gmail.com', 'wenqifan3@gmail.com'),
+    ('email local part', 'jdoe03@example.com', 'jdoe3@example.com'),
     ('part number', 'A-01', 'A1'),
     ('swim time', '1:00.50', '1:50'),
     ('swim time, precision', '1:03.28', '1:3.28'),

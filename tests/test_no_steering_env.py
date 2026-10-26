@@ -1,10 +1,9 @@
 """The adapters read the environment for credentials only.
 
 Everything that steers a vendor -- mode, tier, array strategy, api version, base url,
-completion model -- is a field on the adapter's `Config`, so it arrives through `--options` and
-is recorded in `run_manifest.settings`. An environment variable steers a run without appearing
-in its record: `LLAMAEXTRACT_TIER=cost_effective` once produced a run indistinguishable from
-the maxed-out one the benchmark claims to publish.
+completion model -- is a field of the adapter, so it is an option, in the run's config and its
+settings.json. An environment variable would steer a run without appearing in its record: a run
+at another tier than the one its record names.
 
 Credentials are the exception on purpose. A key changes whether a call is allowed, not what it
 asks, and it must not be on a command line or in a record -- so it stays in the environment.

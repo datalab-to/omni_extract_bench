@@ -212,8 +212,7 @@ _DIALECTS = {
 }
 KNOWN_BROKEN = {
     "azure-cu": "asked for 45% of the corpus's fields; `_field` dispatches on `type` and the "
-                "schemas use `anyOf` unions, so arrays collapse to string. Fix and numbers in "
-                "~/TODO.md.",
+                "schemas use `anyOf` unions, so arrays collapse to string.",
 }
 
 

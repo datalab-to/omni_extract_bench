@@ -106,7 +106,7 @@ def unwrap_schema(node):
 def resolve_refs(schema, root=None, depth=0, max_depth=12):
     """The schema with local `$ref`s inlined, since some vendors reject a bare `$ref`. Recursive
     definitions stop at `max_depth`."""
-    # TODO(paul): `depth` counts nesting levels (each dict and list), not $ref expansions, so a
+    # TODO: `depth` counts nesting levels (each dict and list), not $ref expansions, so a
     # non-recursive $ref nested 7 or more object levels deep survives inlining, and `score` reports it
     # as recursive; a dangling $ref (`#/defs/nope`) gets the same "recursive" message. Count only
     # expansions toward `max_depth`, and name an unresolvable ref.
