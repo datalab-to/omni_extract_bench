@@ -1,5 +1,11 @@
 # Omni Extract Bench
 
+[![test](https://github.com/datalab-to/omni_extract_bench/actions/workflows/test.yml/badge.svg)](https://github.com/datalab-to/omni_extract_bench/actions/workflows/test.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/datalab-to/omni_extract_bench/blob/main/pyproject.toml)
+[![Code: Apache 2.0](https://img.shields.io/badge/code-Apache%202.0-blue)](https://github.com/datalab-to/omni_extract_bench/blob/main/LICENSE)
+[![Data: CC BY 4.0](https://img.shields.io/badge/data-CC%20BY%204.0-lightgrey)](https://huggingface.co/datasets/datalab-to/omni_extract_bench)
+[![Dataset on Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20dataset-omni__extract__bench-yellow)](https://huggingface.co/datasets/datalab-to/omni_extract_bench)
+
 This repository contains a way to benchmark extraction systems using our deterministic field-matching scorer and dataset as well as your own. Concretely, this repository holds:
 
 - the scorer, which works on its own: a prediction its ground truth and its schema as input, the scoring as output;
