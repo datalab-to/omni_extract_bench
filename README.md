@@ -21,8 +21,8 @@ Contents:
 4. [Grade](#grade): a run again, or predictions of your own;
 5. [Score on your own](#score-on-your-own): the scorer on its own, in code or from the command line;
 6. [Predict one document](#predict-one-document): one document and its schema through one system;
-7. [Tests](#tests);
-8. [Results](#results): every system we ran on our dataset; and
+7. [Results](#results): every system we ran on our dataset;
+8. [Tests](#tests); and
 9. [License](#license).
 
 [`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md) documents every public
@@ -328,12 +328,6 @@ oeb predict --system datalab --doc invoice.pdf --schema schema.json --options '{
 oeb predict --system datalab --doc invoice.pdf --schema schema.json --options '{"datalab": {"mode": "accurate"}}'
 ```
 
-## Tests
-
-```bash
-uv run --group test --extra benchmark pytest -n auto
-```
-
 ## Results
 
 Every system on our dataset, 620 documents. Accuracy is the matched addresses over the addresses either document
@@ -357,6 +351,12 @@ used. The other columns are the share of addresses that fell short in each way, 
 - fabricated: the schema asks for it and the ground truth omits it, but the system produced it;
 - invented item: an address under an array item that has no partner in the ground truth; and
 - invented field: an address the schema never offered.
+
+## Tests
+
+```bash
+uv run --group test --extra benchmark pytest -n auto
+```
 
 ## License
 
