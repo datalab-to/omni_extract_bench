@@ -179,20 +179,20 @@ documents in a pool of processes, and on macOS and Windows each process imports 
 3. grade: grades the run, when it is finished.
 
 A run folder answers one exact question: the system and its options, the dataset, the manifest and which
-documents (`rows`). Every launch is a new run in a new folder, named after the
-question and a run id. `--resume <its folder name>` (`resume=` in Python) continues a run and calls nothing
-already answered, and refuses a run of another question. A `limit` or `sample` that covers every
+documents (`rows`). Every launch is a new run in a new folder, named after its
+system and a run id. `oeb resume <its folder>` (`resume=<its name>` in Python) continues a run and calls
+nothing already answered, and refuses a run of another question. A `limit` or `sample` that covers every
 document is the same question as neither.
 
 The timeout isn't part of the question. Resuming a run with a longer `timeout` and
-`--retry-failed` gives the documents that timed out more time, in the same folder. Each record keeps the
+`--retry-failed` (`oeb resume <its folder> --retry-failed --set timeout=3600`) gives the documents that timed out more time, in the same folder. Each record keeps the
 `timeout_s` it was run with, and settings.json holds the latest.
 
 A run is graded over its own documents, and only when it is finished: every document has an answer or a
 recorded failure. A document with no usable answer counts as 0. A run that stops part way (a key the system
 refuses, an account out of credits, a server of yours that isn't running, a bug in an adapter, an interrupt)
 is not graded: `oeb run` raises the exception that stopped it, with its traceback, and resuming the run
-(`--resume`) finishes it.
+(`oeb resume`) finishes it.
 `oeb grade --partial` (`partial=True` in Python) grades an unfinished run anyway, counting its unfinished
 documents as 0; its summary counts them under `partial`, and names a few.
 

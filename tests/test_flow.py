@@ -409,8 +409,13 @@ def test_oeb_run_is_its_config_and_its_folder_keeps_it(tmp_path, capsys, monkeyp
     assert code == 0 and g["scorers"]["field_matching"]["headline"] == 0.5, err
     kept = str(tmp_path / "runs" / g["run"] / "config.yaml")
     assert "workers: 2" in Path(kept).read_text() and "- d1" in Path(kept).read_text()
-    code, out, _ = oeb(capsys, "run", "--config", kept, "--out", str(tmp_path / "runs"), "-y", "--resume", g["run"])
-    assert code == 0 and json.loads(out)["run"] == g["run"]
+    code, out, err = oeb(capsys, "resume", str(tmp_path / "runs" / g["run"]), "-y", "--set", "timeout=60")
+    assert code == 0 and json.loads(out)["run"] == g["run"] and "nothing to predict" in err, err
+    code, out, err = oeb(capsys, "resume", str(tmp_path / "runs" / g["run"]), "-y", "--retry-failed")
+    assert code == 0 and "nothing to predict" in err, "a refusal isn't asked again"
+    err = raised(ValueError, capsys, "resume", str(tmp_path / "runs" / g["run"]), "-y", "--set", "rows.limit=1")
+    assert "differs in rows" in err, err
+    assert "has no config.yaml" in raised(ValueError, capsys, "resume", str(tmp_path), "-y")
     err = raised(ValueError, capsys, "run", "--config", c, "--set", "system.gold-echo.refuze=[d1]", "-y")
     assert "did you mean system.gold-echo.refuse?" in err, err
     err = raised(ValueError, capsys, "run", "--config", c, "--set", "workers=two", "-y")

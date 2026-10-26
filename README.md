@@ -164,11 +164,7 @@ A run folder answers one exact question. So:
 
 - every `oeb run` is a new run in a new folder, so a system redeployed since an earlier run is never mixed into it;
   and
-- `--resume <a run's folder name>` continues that run, and pays for nothing already answered. It refuses a run of
-  another question.
-
-The timeout isn't part of the question. To give documents that timed out more time, resume the run with a longer
-`timeout` (`--set timeout=3600`) and `--retry-failed`. Each document's record keeps the timeout it was run with.
+- `oeb resume <its folder>` continues that run ([Resuming a run](#resuming-a-run)).
 
 [`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#what-a-run-writes) says
 what each file holds, and [how to run on your own dataset](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md#your-own-dataset).
@@ -184,8 +180,34 @@ One rule decides what counts as 0:
   scorer, or a problem with the setup (a refused key, an account out of credits), not a failure of the system.
 
 Every case (a refusal, a timeout, a wrong key, an interrupt, a bug) follows from that rule. After a run stops, fix
-the cause and `--resume` it: the answers already paid for are kept. An answer that `read` crashed on is kept,
-unread, and resuming the run after the fix reads it with no call.
+the cause and resume it: the answers already paid for are kept.
+
+### Resuming a run
+
+A run that stopped part way is continued with `oeb resume <its folder>`. A run stops when you press Ctrl-C, when
+its key is refused or its account runs out, or when an adapter has a bug. Resuming asks only for the documents
+with no record yet, so nothing already answered is paid for twice:
+
+```bash
+oeb resume runs/datalab-20261021-160012-3f9a
+```
+
+It reads the run's own `config.yaml`, so it asks the same question. `--set` may change what isn't part of the
+question, `timeout` and `workers`. A change to anything else (the system, its options, the dataset, the manifest,
+`rows`) is refused, naming the keys that differ: a different question is a new run.
+
+A failed document has a record, so a resume doesn't ask for it again, unless you add `--retry-failed`. That asks
+again for the documents whose failure may not happen a second time: a timeout, a system that couldn't be reached,
+a rate limit (429) or a server error (5xx). A refusal (such as a 400) or an answer that couldn't be read stays
+failed, since asking again would give the same answer. To give documents that timed out more time:
+
+```bash
+oeb resume runs/datalab-20261021-160012-3f9a --retry-failed --set timeout=3600
+```
+
+Each document's record keeps the timeout it was asked with.
+
+An answer that `read` crashed on is kept, unread. Resuming the run after the fix reads it again, with no call.
 
 ### In Python
 
@@ -199,7 +221,9 @@ if __name__ == "__main__":
 ```
 
 To compare systems, call `run` once per system with the same `sample` (or `limit`, `only`).
-`harness.system("datalab", {"mode": "accurate"})` makes the same adapter from a system name.
+`harness.system("datalab", {"mode": "accurate"})` makes the same adapter from a system name. To resume a run, give
+its name as `resume` (`b.run(Datalab(mode="accurate"), out="runs", resume="datalab-20261021-160012-3f9a")`), and
+`retry_failed=True` to ask again for its failures that may not recur.
 
 Code that runs or grades a benchmark goes under `if __name__ == "__main__":`. Grading scores documents in a pool
 of processes, and on macOS and Windows each process imports your script again.

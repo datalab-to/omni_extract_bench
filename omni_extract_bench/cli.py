@@ -154,16 +154,31 @@ def cmd_init(args) -> int:
 
 
 def cmd_run(args) -> int:
-    """Plans, asks, predicts, then grades the run a config asks, and prints the grading: a new run, or the one
-    `--resume` names. A run that stops part way is continued with `--resume <its folder name>`."""
+    """Plans, asks, predicts, then grades the run a config asks, and prints the grading: always a new run. A run
+    that stops part way is continued with `oeb resume <its folder>`."""
+    return launched(args, config.load(args.config, args.set), args.out)
+
+
+def cmd_resume(args) -> int:
+    """Continues the run in a folder where it stopped, asking the question it answers: its own config.yaml, with
+    `--set` for what a resume may change (`timeout`, `workers`). Only documents with no record are asked, or, with
+    `--retry-failed`, also those whose failure may not recur."""
+    folder = pathlib.Path(args.folder)
+    if not (folder / config.FILE).is_file():
+        raise ValueError(f"{folder} has no {config.FILE}; give a run folder that `oeb run` made")
+    return launched(args, config.load(folder / config.FILE, args.set), folder.parent, folder.name)
+
+
+def launched(args, c: config.Config, out: pathlib.Path, resume: str | None = None) -> int:
+    """Plans the run `c` asks under `out` (resuming `resume`), asks, predicts, then grades it and prints the
+    grading."""
     from . import harness, task
 
-    c = config.load(args.config, args.set)
     b = config.benchmark(c, task.Extract(), scorers())
     s = config.system(c, harness.system)
-    p = config.plan(c, b, s, args.out, resume=args.resume, retry_failed=args.retry_failed)
+    p = config.plan(c, b, s, out, resume=resume, retry_failed=getattr(args, "retry_failed", False))
     if not (args.yes or confirm(b.describe(p))):
-        print("oeb run: not run", file=sys.stderr)
+        print(f"oeb {args.command}: not run", file=sys.stderr)
         return 1
     config.write(c, b, s, p.run.folder)
     b.predict(p)
@@ -273,15 +288,20 @@ def parser() -> argparse.ArgumentParser:
                    help="change one value the config has, read as YAML, e.g. rows.sample=20; repeatable")
     r.add_argument("--out", type=pathlib.Path, default=pathlib.Path("runs"),
                    help="the parent of the run folders (default: runs/)")
-    r.add_argument("--resume", metavar="RUN",
-                   help="continue the run of this folder name under --out, asking the same question; it pays only "
-                        "for documents with no answer yet (default: a new run)")
-    r.add_argument("--retry-failed", action="store_true",
-                   help="with --resume, predict again the documents whose recorded failure may not recur (a "
-                        "timeout, an outage)")
     r.add_argument("--no-details", action="store_true", help="don't write each document's per-address breakdown")
     r.add_argument("-y", "--yes", action="store_true", help="don't ask before predicting")
     r.set_defaults(fn=cmd_run)
+
+    u = sub.add_parser("resume", help="continue a run where it stopped, then grade", allow_abbrev=False)
+    u.add_argument("folder", help="the run's folder, as oeb run made it")
+    u.add_argument("--set", action="append", default=[], metavar="PATH=VALUE",
+                   help="change a value a resume may change, timeout or workers, e.g. timeout=3600; repeatable")
+    u.add_argument("--retry-failed", action="store_true",
+                   help="predict again the documents whose recorded failure may not recur (a timeout, an outage, a "
+                        "rate limit, a server error)")
+    u.add_argument("--no-details", action="store_true", help="don't write each document's per-address breakdown")
+    u.add_argument("-y", "--yes", action="store_true", help="don't ask before predicting")
+    u.set_defaults(fn=cmd_resume)
 
     g = sub.add_parser("grade", help="grade a folder of predictions/<doc_id>.json: yours, or a run's",
                        allow_abbrev=False)
@@ -357,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         renamed(args)
         return args.fn(args)
     except KeyboardInterrupt:
-        print(f"oeb {args.command}: interrupted" + ("; continue it with --resume <its folder name>" if args.command == "run"
+        print(f"oeb {args.command}: interrupted" + ("; continue it with oeb resume <its folder>" if args.command in ("run", "resume")
                                                     else ""), file=sys.stderr)
         return 130
 
