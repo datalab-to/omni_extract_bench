@@ -21,8 +21,9 @@ Contents:
 4. [Grade](#grade): a run again, or predictions of your own;
 5. [Score on your own](#score-on-your-own): the scorer on its own, in code or from the command line;
 6. [Predict one document](#predict-one-document): one document and its schema through one system;
-7. [Tests](#tests); and
-8. [License](#license).
+7. [Tests](#tests);
+8. [Results](#results): every system we ran on our dataset; and
+9. [License](#license).
 
 [`docs/API.md`](https://github.com/datalab-to/omni_extract_bench/blob/main/docs/API.md) documents every public
 function and command in more depth.
@@ -332,6 +333,30 @@ oeb predict --system datalab --doc invoice.pdf --schema schema.json --options '{
 ```bash
 uv run --group test --extra benchmark pytest -n auto
 ```
+
+## Results
+
+Every system on our dataset, 620 documents. Accuracy is the matched addresses over the addresses either document
+used. The other columns are the share of addresses that fell short in each way, so a row sums to 100.
+
+| system | setting | accuracy | misread | unfound | fabricated | invented item | invented field |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Datalab | accurate | 93.85 | 3.10 | 1.64 | 0.73 | 0.69 | 0.00 |
+| Datalab | balanced | 93.48 | 2.93 | 2.05 | 0.77 | 0.75 | 0.02 |
+| Reducto | deep_extract v2 | 93.47 | 3.23 | 1.59 | 0.99 | 0.71 | 0.00 |
+| Claude | Opus 5 | 90.96 | 2.33 | 4.91 | 1.22 | 0.58 | 0.00 |
+| Extend | extraction_performance | 90.17 | 3.23 | 1.69 | 0.88 | 4.01 | 0.00 |
+| LlamaExtract | agentic_plus | 87.94 | 3.85 | 2.53 | 5.14 | 0.54 | 0.00 |
+| Gemini | 3.7 Flash | 86.79 | 2.89 | 8.10 | 1.71 | 0.51 | 0.00 |
+| GPT | 5.6 Sol | 83.85 | 2.98 | 11.88 | 0.63 | 0.66 | 0.00 |
+| Mistral | OCR 4.1 | 76.78 | 6.11 | 12.73 | 1.87 | 0.88 | 1.63 |
+| Azure Content Understanding | gpt-4.1-mini | 61.08 | 6.15 | 27.80 | 1.06 | 3.28 | 0.63 |
+
+- misread: the address matches, but the value doesn't;
+- unfound: a ground-truth address the system didn't produce;
+- fabricated: the schema asks for it and the ground truth omits it, but the system produced it;
+- invented item: an address under an array item that has no partner in the ground truth; and
+- invented field: an address the schema never offered.
 
 ## License
 
