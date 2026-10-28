@@ -33,9 +33,9 @@ class Gold(NamedTuple):
 class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
     """Field matching as an omni-bench-core scorer.
 
-    A document's result is `compare.score`'s numbers, and its details one verdict per address. The
-    summary is `metrics` over the scored documents, overall and per suite, with accuracy as the
-    headline. Scoring large arrays is slow (one public document takes about two minutes), so documents
+    A document's result is `compare.score`'s numbers, and its details one verdict per address, each with
+    its document's `doc_id` and `suite`. The summary is `metrics` over the scored documents, overall and
+    per suite, with accuracy as the headline. Scoring large arrays is slow (one public document takes about two minutes), so documents
     are scored in a pool of processes and each score is cached."""
 
     name: ClassVar[str] = "field_matching"
@@ -58,6 +58,10 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
 
     def row_fields(self, row: data.Doc) -> dict[str, Any]:
         return {"suite": row.suite}
+
+    def detail_fields(self, row: data.Doc) -> dict[str, Any]:
+        """Each verdict's document, so a run's verdicts can be sliced together, by suite or by address."""
+        return {"doc_id": row.doc_id, "suite": row.suite}
 
     def summarize(self, lines: Sequence[scorer.Line]) -> scorer.Summary:
         """`metrics` of the scored documents, overall and per suite, with `rows`, how many were scored; the
