@@ -112,7 +112,8 @@ def test_gold_echo_scores_one_and_a_resumed_run_calls_nothing(tmp_path):
     assert s["headline"] == 1.0 and s["rows"] == 2 and s["failed"] == 0, s
     assert s["scored"]["headline_is"] == "accuracy" and "partial" not in s and "documents" not in s, s
     folder = tmp_path / "runs" / name
-    assert (folder / "field_matching" / "details" / "d0.jsonl").exists()
+    verdicts = [json.loads(x) for x in (folder / "field_matching" / "details" / "d0.jsonl").read_text().splitlines()]
+    assert verdicts and all(v["doc_id"] == "d0" and v["suite"] == "s" for v in verdicts), verdicts
     rec = json.loads((folder / "records" / "d0.json").read_text())
     assert rec["sent"] == SCHEMA and rec["output"] == {"a": "x"}
     CALLS.clear()

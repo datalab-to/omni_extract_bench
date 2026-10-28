@@ -336,7 +336,7 @@ runs/datalab-20261021-160012-3f9a/       <system>-<YYYYMMDD-HHMMSS>-<4 hex>
   field_matching/
     summary.json                         the grade
     scores.jsonl                         one line per document
-    details/<doc_id>.jsonl               one verdict per address
+    details/<doc_id>.jsonl               one verdict per address, each with its doc_id and suite
     cache/<doc_id>.json                  each document's kept score
 ```
 
