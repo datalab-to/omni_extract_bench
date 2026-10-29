@@ -34,9 +34,10 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
     """Field matching as an omni-bench-core scorer.
 
     A document's result is `compare.score`'s numbers, and its details one verdict per address, each with
-    its document's `doc_id` and `suite`. A failed document scores 0 with every gold field unfound. The summary
-    is `metrics` over every document, overall and per suite, with accuracy as the headline. Scoring large arrays is slow (one public document takes about two minutes), so documents
-    are scored in a pool of processes and each score is cached."""
+    its document's `doc_id` and `suite`. A failed document scores as an empty extraction: 0, every gold field
+    unfound. The summary is `metrics` over every document, overall and per suite, with accuracy as the
+    headline. Scoring large arrays is slow (one public document takes about two minutes), so documents are
+    scored in a pool of processes and each score is cached."""
 
     name: ClassVar[str] = "field_matching"
     workers: ClassVar[int] = min(8, os.cpu_count() or 1)
@@ -57,10 +58,9 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
         return scorer.Score(got, [v._asdict() for v in got.pop("verdicts")])
 
     def score_failure(self, gold: Gold) -> scorer.Score:
-        """An empty extraction's verdicts, every gold field unfound, with accuracy, precision, recall and f1 at
-        0: an empty extraction of an empty gold would score 1."""
-        got = self.score({}, gold)
-        return scorer.Score({**got.result, "accuracy": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0}, got.details)
+        """An empty extraction's score: every gold field unfound, and accuracy, precision, recall and f1 0, an
+        empty gold's too."""
+        return self.score({}, gold)
 
     def row_fields(self, row: data.Doc) -> dict[str, Any]:
         return {"suite": row.suite}
@@ -105,8 +105,8 @@ ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
 
 
 def summarize(lines: Iterable[dict]) -> dict:
-    """A whole scores.jsonl (one line per document, a failed one with its `score_failure`, each with its suite under `row`)
-    as one summary, as grading makes it: `FieldMatching.summarize`."""
+    """A whole scores.jsonl (one line per document, a failed one scored by `score_failure`, each with its suite
+    under `row`) as one summary, as grading makes it: `FieldMatching.summarize`."""
     lines = list(lines)
     if not lines:
         raise ValueError("summarize takes at least one score line; there is nothing to summarize")
