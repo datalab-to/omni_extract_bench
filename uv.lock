@@ -538,7 +538,7 @@ wheels = [
 
 [[package]]
 name = "omni-bench-core"
-version = "0.10.1"
+version = "0.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyarrow" },
@@ -546,9 +546,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/99/c8/b55c12c341c8ce1374197fe41aa166d3ac95f7c972f4cc645125778d0c1b/omni_bench_core-0.10.1.tar.gz", hash = "sha256:32c021cc6e528e938145fed11a4fd8aa75960bb816f1672bb7b0d864415c3dfb", size = 68377, upload-time = "2026-10-28T14:00:37.617Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7f/3b/674f7b2a861f4299bdb02920fc8f773e0c30715069b81aee754434f696cb/omni_bench_core-0.11.0.tar.gz", hash = "sha256:8ffa5e25520db3d497f8ef4af6f44c8dcc6ff1bac41fd0aee1f9f803361c223f", size = 68635, upload-time = "2026-10-29T15:55:33.532Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7f/f1/4bdbadf69d0f0c77c77082b7d09b67c5e2afccee0643a0e875d536cece95/omni_bench_core-0.10.1-py3-none-any.whl", hash = "sha256:391837aa8af01ac63165e4ac565da84b51367702c13c899ae5f11354ce6658fb", size = 51411, upload-time = "2026-10-28T14:00:36.392Z" },
+    { url = "https://files.pythonhosted.org/packages/84/6d/d6fa4113cb48a64b73a1dc4d2dd7074c302b08de762df8a043a7e3d94dd7/omni_bench_core-0.11.0-py3-none-any.whl", hash = "sha256:dea258e5664cb05f94b153f2478eed6a49b1ffb24dcbcb662e802f8adf6e0b4c", size = 51542, upload-time = "2026-10-29T15:55:32.316Z" },
 ]
 
 [package.optional-dependencies]
@@ -587,8 +587,8 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", marker = "extra == 'harness'", specifier = ">=0.27" },
-    { name = "omni-bench-core", specifier = ">=0.10.1,<0.11" },
-    { name = "omni-bench-core", extras = ["hub"], marker = "extra == 'benchmark'", specifier = ">=0.10.1,<0.11" },
+    { name = "omni-bench-core", specifier = ">=0.11,<0.12" },
+    { name = "omni-bench-core", extras = ["hub"], marker = "extra == 'benchmark'", specifier = ">=0.11,<0.12" },
     { name = "omni-extract-bench", extras = ["harness"], marker = "extra == 'benchmark'" },
     { name = "openai", marker = "extra == 'harness'", specifier = ">=1.0" },
     { name = "requests", marker = "extra == 'harness'", specifier = ">=2.31" },
