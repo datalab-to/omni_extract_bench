@@ -283,7 +283,7 @@ A scorer is a frozen dataclass with four methods:
 
 - `gold(row)`: reads the row's gold;
 - `score(pred, gold)`: returns a `scorer.Score`;
-- `zero(row, gold)`: a failed document's `scorer.Score`, the worst it can get; and
+- `zero(gold)`: a failed document's `scorer.Score`, the worst it can get; and
 - `summarize(lines)`: every document's line into a summary with `headline` (0 to 1) and `headline_is`.
 
 To grade with one beside field matching, build the benchmark directly:
@@ -308,7 +308,7 @@ class KeysFound(scorer.Scorer):
     def score(self, pred, gold):
         return scorer.Score({"keys_found": sum(k in pred for k in gold) / len(gold) if gold else 1.0})
 
-    def zero(self, row, gold):
+    def zero(self, gold):
         return scorer.Score({"keys_found": 0.0})
 
     def summarize(self, lines):

@@ -56,7 +56,7 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
         got = compare.score(pred, gold.extraction, gold.schema, verdicts=True)
         return scorer.Score(got, [v._asdict() for v in got.pop("verdicts")])
 
-    def zero(self, row: data.Doc, gold: Gold) -> scorer.Score:
+    def zero(self, gold: Gold) -> scorer.Score:
         """An empty extraction's verdicts, every gold field unfound, with accuracy, precision, recall and f1 at
         0: an empty extraction of an empty gold would score 1."""
         got = self.score({}, gold)
