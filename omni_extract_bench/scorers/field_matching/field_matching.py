@@ -56,7 +56,7 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
         got = compare.score(pred, gold.extraction, gold.schema, verdicts=True)
         return scorer.Score(got, [v._asdict() for v in got.pop("verdicts")])
 
-    def zero(self, gold: Gold) -> scorer.Score:
+    def score_failure(self, gold: Gold) -> scorer.Score:
         """An empty extraction's verdicts, every gold field unfound, with accuracy, precision, recall and f1 at
         0: an empty extraction of an empty gold would score 1."""
         got = self.score({}, gold)
@@ -105,7 +105,7 @@ ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
 
 
 def summarize(lines: Iterable[dict]) -> dict:
-    """A whole scores.jsonl (one line per document, a failed one with its zero, each with its suite under `row`)
+    """A whole scores.jsonl (one line per document, a failed one with its `score_failure`, each with its suite under `row`)
     as one summary, as grading makes it: `FieldMatching.summarize`."""
     lines = list(lines)
     if not lines:

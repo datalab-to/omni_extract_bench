@@ -283,7 +283,7 @@ A scorer is a frozen dataclass with four methods:
 
 - `gold(row)`: reads the row's gold;
 - `score(pred, gold)`: returns a `scorer.Score`;
-- `zero(gold)`: a failed document's `scorer.Score`, the worst it can get; and
+- `score_failure(gold)`: a failed document's `scorer.Score`, the worst it can get; and
 - `summarize(lines)`: every document's line into a summary with `headline` (0 to 1) and `headline_is`.
 
 To grade with one beside field matching, build the benchmark directly:
@@ -308,7 +308,7 @@ class KeysFound(scorer.Scorer):
     def score(self, pred, gold):
         return scorer.Score({"keys_found": sum(k in pred for k in gold) / len(gold) if gold else 1.0})
 
-    def zero(self, gold):
+    def score_failure(self, gold):
         return scorer.Score({"keys_found": 0.0})
 
     def summarize(self, lines):
@@ -322,7 +322,7 @@ if __name__ == "__main__":
 ```
 
 A scorer may also write `prediction(output)`, which reads what it needs of a prediction. Raise
-`errors.SystemFailed` there for a prediction it can't use: that document fails, and `zero` scores it. Field matching does this for a
+`errors.SystemFailed` there for a prediction it can't use: that document fails, and `score_failure` scores it. Field matching does this for a
 prediction that isn't a JSON object.
 
 Scorers aren't part of a run's question, so `grade` adds a `keys_found/` folder beside `field_matching/` in the
