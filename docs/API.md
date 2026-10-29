@@ -279,12 +279,12 @@ oeb run --config datalab.yaml --set dataset=my-dataset/ --out runs/
 
 ## Your own scorer
 
-A scorer is a frozen dataclass with four methods:
+A scorer is a frozen dataclass with `headline`, the key of its summary runs are compared by, and four methods:
 
 - `gold(row)`: reads the row's gold;
 - `score(pred, gold)`: returns a `scorer.Score`;
 - `score_failure(gold)`: a failed document's `scorer.Score`, the worst it can get; and
-- `summarize(lines)`: every document's line into a summary with `headline` (0 to 1) and `headline_is`.
+- `summarize(lines)`: every document's line into a summary, its `headline` key a number from 0 to 1.
 
 To grade with one beside field matching, build the benchmark directly:
 
@@ -302,6 +302,8 @@ from omni_extract_bench.scorers import field_matching
 class KeysFound(scorer.Scorer):
     """The share of the gold's top-level keys that the prediction has."""
 
+    headline = "keys_found"
+
     def gold(self, row):
         return json.loads(row.gt_path.read_text())
 
@@ -312,7 +314,7 @@ class KeysFound(scorer.Scorer):
         return scorer.Score({"keys_found": 0.0})
 
     def summarize(self, lines):
-        return {"headline": sum(x["keys_found"] for x in lines) / len(lines), "headline_is": "keys_found"}
+        return {"keys_found": sum(x["keys_found"] for x in lines) / len(lines)}
 
 
 if __name__ == "__main__":
@@ -371,6 +373,6 @@ A record, `records/<doc_id>.json`, holds:
 
 A summary holds what omni-bench-core gives every summary (`scorer`, `options`, `run`, `rows`, `failed` by cause,
 `coverage`, the share of documents scored, and `partial` when graded with `--partial`), then field matching's
-numbers over every document: `headline` (their accuracy), `accuracy`, `precision`, `recall`, one `<error>_rate`
+numbers over every document: `accuracy` (the headline), `precision`, `recall`, one `<error>_rate`
 per kind of error, and `per_suite`. A failed document counts with accuracy, precision and recall 0 and every gold
 field unfound, so each of these numbers counts it.

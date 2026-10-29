@@ -40,6 +40,7 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
     scored in a pool of processes and each score is cached."""
 
     name: ClassVar[str] = "field_matching"
+    headline: ClassVar[str] = "accuracy"
     workers: ClassVar[int] = min(8, os.cpu_count() or 1)
     cache: ClassVar[bool] = True
 
@@ -70,13 +71,12 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
         return {"doc_id": row.doc_id, "suite": row.suite}
 
     def summarize(self, lines: Sequence[scorer.Line]) -> scorer.Summary:
-        """`metrics` of every document, overall and per suite; the headline is their mean accuracy."""
+        """`metrics` of every document, overall and per suite."""
         by_suite: dict[str, list[dict]] = collections.defaultdict(list)
         for x in lines:
             by_suite[x["row"]["suite"]].append(x)
         m = metrics(lines)
-        return {"headline": m["accuracy"], "headline_is": "accuracy", **m,
-                "per_suite": {s: {"rows": len(v), **metrics(v)} for s, v in sorted(by_suite.items())}}
+        return {**m, "per_suite": {s: {"rows": len(v), **metrics(v)} for s, v in sorted(by_suite.items())}}
 
 
 def gold(doc: Any) -> dict:
