@@ -91,7 +91,7 @@ In Python, `b.run(system, out="runs", resume="<run>", retry_failed=True)`.
 ```bash
 oeb grade runs/<run>                                # the dataset and manifest its settings.json names
 oeb grade mine/ --dataset my-dataset/               # your own predictions/<doc_id>.json
-oeb grade runs/<run> --partial                      # an unfinished run: what's missing counts as 0
+oeb grade runs/<run> --partial                      # an unfinished run: what's missing counts as failed
 oeb check --dataset my-dataset/                     # is it a dataset oeb can run? no call
 ```
 
@@ -211,7 +211,7 @@ group `omni_extract_bench.adapters` so a config's `system: {mine: {...}}` finds 
 `extract` runs on several threads at once (`workers`, 5 by default), so anything it shares between calls must be
 thread-safe.
 
-A document counts 0 only when code raises `errors.SystemFailed` on purpose. Any other exception stops the run,
+A document fails only when code raises `errors.SystemFailed` on purpose. Any other exception stops the run,
 and resuming after the fix costs nothing for the documents already answered. So:
 
 - in `extract`, raise `errors.SystemFailed(message, status=...)` for a vendor failure. A 429 or 5xx is retried
@@ -279,11 +279,12 @@ oeb run --config datalab.yaml --set dataset=my-dataset/ --out runs/
 
 ## Your own scorer
 
-A scorer is a frozen dataclass with three methods:
+A scorer is a frozen dataclass with four methods:
 
 - `gold(row)`: reads the row's gold;
-- `score(pred, gold)`: returns a `scorer.Score`; and
-- `summarize(lines)`: the scored documents' lines into a summary with `headline` (0 to 1) and `headline_is`.
+- `score(pred, gold)`: returns a `scorer.Score`;
+- `zero(row, gold)`: a failed document's `scorer.Score`, the worst it can get; and
+- `summarize(lines)`: every document's line into a summary with `headline` (0 to 1) and `headline_is`.
 
 To grade with one beside field matching, build the benchmark directly:
 
@@ -307,6 +308,9 @@ class KeysFound(scorer.Scorer):
     def score(self, pred, gold):
         return scorer.Score({"keys_found": sum(k in pred for k in gold) / len(gold) if gold else 1.0})
 
+    def zero(self, row, gold):
+        return scorer.Score({"keys_found": 0.0})
+
     def summarize(self, lines):
         return {"headline": sum(x["keys_found"] for x in lines) / len(lines), "headline_is": "keys_found"}
 
@@ -318,7 +322,7 @@ if __name__ == "__main__":
 ```
 
 A scorer may also write `prediction(output)`, which reads what it needs of a prediction. Raise
-`errors.SystemFailed` there for a prediction it can't use: that document counts 0. Field matching does this for a
+`errors.SystemFailed` there for a prediction it can't use: that document fails, and `zero` scores it. Field matching does this for a
 prediction that isn't a JSON object.
 
 Scorers aren't part of a run's question, so `grade` adds a `keys_found/` folder beside `field_matching/` in the
@@ -365,8 +369,8 @@ A record, `records/<doc_id>.json`, holds:
 - `unread`: true when `read` raised a bug on this answer. The document isn't finished, and resuming reads it
   with no call.
 
-A summary holds what omni-bench-core gives every summary (`scorer`, `options`, `run`, `headline`, `headline_is`,
-`rows`, `failed`, `coverage`, and `partial` when graded with `--partial`). Under `scored`, field matching's numbers
-over the scored documents: `headline` (their accuracy), `rows`, `accuracy`, `precision`, `recall`, one
-`<error>_rate` per kind of error, and `per_suite`. The top `headline` is `scored.headline` times coverage, so a
-failed document counts as 0.
+A summary holds what omni-bench-core gives every summary (`scorer`, `options`, `run`, `rows`, `failed` by cause,
+`coverage`, the share of documents scored, and `partial` when graded with `--partial`), then field matching's
+numbers over every document: `headline` (their accuracy), `accuracy`, `precision`, `recall`, one `<error>_rate`
+per kind of error, and `per_suite`. A failed document counts with accuracy, precision and recall 0 and every gold
+field unfound, so each of these numbers counts it.

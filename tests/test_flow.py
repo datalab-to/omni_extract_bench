@@ -109,8 +109,8 @@ def test_gold_echo_scores_one_and_a_resumed_run_calls_nothing(tmp_path):
     b = benchmark.default(dataset(tmp_path / "ds"))
     g = b.run(GoldEcho(), tmp_path / "runs")
     name, s = g["run"], g["scorers"]["field_matching"]
-    assert s["headline"] == 1.0 and s["rows"] == 2 and s["failed"] == 0, s
-    assert s["scored"]["headline_is"] == "accuracy" and "partial" not in s and "documents" not in s, s
+    assert s["headline"] == 1.0 and s["rows"] == 2 and s["failed"] == {"system": 0, "unusable": 0, "no_answer": 0, "not_scored": 0}, s
+    assert s["headline_is"] == "accuracy" and "partial" not in s and "documents" not in s, s
     folder = tmp_path / "runs" / name
     verdicts = [json.loads(x) for x in (folder / "field_matching" / "details" / "d0.jsonl").read_text().splitlines()]
     assert verdicts and all(v["doc_id"] == "d0" and v["suite"] == "s" for v in verdicts), verdicts
@@ -124,9 +124,13 @@ def test_gold_echo_scores_one_and_a_resumed_run_calls_nothing(tmp_path):
 def test_a_refused_document_counts_as_zero(tmp_path):
     g = benchmark.default(dataset(tmp_path / "ds")).run(GoldEcho(refuse=("d1",)), tmp_path / "runs")
     s = g["scorers"]["field_matching"]
-    assert s["failed"] == 1 and s["headline"] == 0.5 and s["scored"]["accuracy"] == 1.0, s
-    # the breakdown is over the scored documents only; the failed one is counted at the top
-    assert s["scored"]["per_suite"]["s"]["accuracy"] == 1.0 and s["scored"]["per_suite"]["s"]["rows"] == 1, s
+    assert s["failed"] == {"system": 1, "unusable": 0, "no_answer": 0, "not_scored": 0} and s["headline"] == 0.5 and s["accuracy"] == 0.5, s
+    # every number counts the failed document, its fields unfound, per suite too
+    assert s["recall"] == 0.5 and s["unfound_rate"] == 0.5, s
+    assert s["per_suite"]["s"]["accuracy"] == 0.5 and s["per_suite"]["s"]["rows"] == 2, s
+    folder = tmp_path / "runs" / g["run"] / "field_matching"
+    assert [json.loads(x)["result"] for x in (folder / "details" / "d1.jsonl").read_text().splitlines()] == ["unfound"]
+    assert field_matching.summarize(map(json.loads, (folder / "scores.jsonl").read_text().splitlines()))["accuracy"] == 0.5
 
 
 def test_a_bug_in_read_stops_the_run_and_resuming_reads_the_kept_answer_with_no_call(tmp_path):
@@ -157,7 +161,7 @@ def test_an_unusable_prediction_counts_zero_with_its_traceback(tmp_path):
     ds = dataset(tmp_path / "ds")
     mine = predictions(tmp_path / "mine", {"d0.json": {"a": "x"}, "d1.json": ["not", "an", "object"]})
     s = benchmark.default(ds).grade(mine)["scorers"]["field_matching"]
-    assert s["failed"] == 1 and s["headline"] == 0.5, s
+    assert s["failed"] == {"system": 0, "unusable": 1, "no_answer": 0, "not_scored": 0} and s["headline"] == 0.5, s
     lines = {x["id"]: x for x in map(json.loads, (mine / "field_matching" / "scores.jsonl").read_text().splitlines())}
     assert "isn't a JSON object" in json.dumps(lines["d1"]), lines["d1"]
     assert "SystemFailed" in lines["d1"]["traceback"] and "prediction" in lines["d1"]["traceback"], lines["d1"]
@@ -244,7 +248,7 @@ def test_oeb_grade_refuses_an_unfinished_folder_unless_partial(tmp_path, capsys)
     assert not (mine / "settings.json").exists()
     code, out, err = oeb(capsys, "grade", str(mine), "--dataset", str(ds), "--partial")
     s = json.loads(out)["scorers"]["field_matching"]
-    assert code == 0 and s["failed"] == 1 and s["headline"] == 0.5, err
+    assert code == 0 and s["failed"] == {"system": 0, "unusable": 0, "no_answer": 1, "not_scored": 0} and s["headline"] == 0.5, err
     assert s["partial"] == {"no_answer": 1, "not_scored": 0, "e.g.": ["d1"]}, s
 
 

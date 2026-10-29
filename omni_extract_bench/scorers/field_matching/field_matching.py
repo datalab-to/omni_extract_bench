@@ -2,7 +2,7 @@
 
 - `FieldMatching`: the scorer a run is graded with, scoring each document with `compare.score`;
 - `gold` and `check`: each document's gold, read and checked; and
-- `summarize` and `metrics`: a whole scores.jsonl, or a set of scored lines, as one summary.
+- `summarize` and `metrics`: a whole scores.jsonl, or a set of lines, as one summary.
 
 It is the one module of the package that imports omni-bench-core; the rest is the comparison, on its
 own."""
@@ -34,8 +34,8 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
     """Field matching as an omni-bench-core scorer.
 
     A document's result is `compare.score`'s numbers, and its details one verdict per address, each with
-    its document's `doc_id` and `suite`. The summary is `metrics` over the scored documents, overall and
-    per suite, with accuracy as the headline. Scoring large arrays is slow (one public document takes about two minutes), so documents
+    its document's `doc_id` and `suite`. A failed document scores 0 with every gold field unfound. The summary
+    is `metrics` over every document, overall and per suite, with accuracy as the headline. Scoring large arrays is slow (one public document takes about two minutes), so documents
     are scored in a pool of processes and each score is cached."""
 
     name: ClassVar[str] = "field_matching"
@@ -56,6 +56,12 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
         got = compare.score(pred, gold.extraction, gold.schema, verdicts=True)
         return scorer.Score(got, [v._asdict() for v in got.pop("verdicts")])
 
+    def zero(self, row: data.Doc, gold: Gold) -> scorer.Score:
+        """An empty extraction's verdicts, every gold field unfound, with accuracy, precision, recall and f1 at
+        0: an empty extraction of an empty gold would score 1."""
+        got = self.score({}, gold)
+        return scorer.Score({**got.result, "accuracy": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0}, got.details)
+
     def row_fields(self, row: data.Doc) -> dict[str, Any]:
         return {"suite": row.suite}
 
@@ -64,13 +70,12 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
         return {"doc_id": row.doc_id, "suite": row.suite}
 
     def summarize(self, lines: Sequence[scorer.Line]) -> scorer.Summary:
-        """`metrics` of the scored documents, overall and per suite, with `rows`, how many were scored; the
-        headline is their accuracy."""
+        """`metrics` of every document, overall and per suite; the headline is their mean accuracy."""
         by_suite: dict[str, list[dict]] = collections.defaultdict(list)
         for x in lines:
             by_suite[x["row"]["suite"]].append(x)
         m = metrics(lines)
-        return {"headline": m["accuracy"], "headline_is": "accuracy", "rows": len(lines), **m,
+        return {"headline": m["accuracy"], "headline_is": "accuracy", **m,
                 "per_suite": {s: {"rows": len(v), **metrics(v)} for s, v in sorted(by_suite.items())}}
 
 
@@ -100,45 +105,24 @@ ERRORS = ("misread", "unfound", "fabricated", "invented_item", "invented_field")
 
 
 def summarize(lines: Iterable[dict]) -> dict:
-    """A whole scores.jsonl (one line per document, failed ones included, each with its suite under `row`)
-    as one summary: `_over` of every line, and of each suite's lines."""
+    """A whole scores.jsonl (one line per document, a failed one with its zero, each with its suite under `row`)
+    as one summary, as grading makes it: `FieldMatching.summarize`."""
     lines = list(lines)
     if not lines:
         raise ValueError("summarize takes at least one score line; there is nothing to summarize")
     if bad := next((x for x in lines if not isinstance(x, dict) or "suite" not in x.get("row", {})
-                    or "status" not in x), None):
-        raise ValueError(f"summarize takes score lines, each with its status and its document's suite under row, "
-                         f"as scores.jsonl holds; got {bad!r:.120}. score()'s result "
-                         "is one line's numbers, without them")
-    by_suite: dict[str, list[dict]] = collections.defaultdict(list)
-    for x in lines:
-        by_suite[x["row"]["suite"]].append(x)
-    return {**_over(lines), "per_suite": {s: _over(v) for s, v in sorted(by_suite.items())}}
+                    or "accuracy" not in x), None):
+        raise ValueError(f"summarize takes score lines, each with its numbers and its document's suite under row, "
+                         f"as scores.jsonl holds; got {bad!r:.120}. score()'s result is one line's numbers, "
+                         "without its suite")
+    return FieldMatching().summarize(lines)
 
 
-def _over(lines: list[dict]) -> dict:
-    """How a non-empty set of documents went: the headline, the counts, coverage, the metrics over the
-    scored documents, and where the errors were. `headline` is `accuracy * coverage`, so a failed
-    document counts as 0. The metrics are None when no document was scored, since 0.0 would read as
-    everything wrong."""
-    scored = [x for x in lines if x["status"] == "scored"]
-    m = metrics(scored) if scored else {k: None for k in ("accuracy", "precision", "recall",
-                                                           *(f"{e}_rate" for e in ERRORS))}
-    return {
-        "headline": sum(x["accuracy"] for x in scored) / len(lines),
-        "rows": len(lines),
-        "scored": len(scored),
-        "failed": len(lines) - len(scored),
-        "coverage": len(scored) / len(lines),
-        **m,
-    }
-
-
-def metrics(scored: Sequence[dict]) -> dict:
-    """The mean accuracy, precision and recall of a non-empty set of scored lines, and the mean rate of
-    each kind of error (`ERRORS`)."""
+def metrics(lines: Sequence[dict]) -> dict:
+    """The mean accuracy, precision and recall of a non-empty set of lines, and the mean rate of each kind of
+    error (`ERRORS`)."""
     def mean(of) -> float:
-        return sum(of(x) for x in scored) / len(scored)
+        return sum(of(x) for x in lines) / len(lines)
 
     return {
         "accuracy": mean(lambda x: x["accuracy"]),
