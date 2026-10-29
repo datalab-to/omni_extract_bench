@@ -397,7 +397,7 @@ try:
     _crashed = None
 except KeyError as _exc:
     _crashed = _exc
-check("any other exception from prepare_schema is a bug, raised rather than counted 0", _crashed is not None)
+check("any other exception from prepare_schema is a bug, raised rather than a failed document", _crashed is not None)
 check("and the vendor was never called", "schema" not in _SEEN)
 
 

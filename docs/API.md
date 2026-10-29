@@ -372,7 +372,8 @@ A record, `records/<doc_id>.json`, holds:
   with no call.
 
 A summary holds what omni-bench-core gives every summary (`scorer`, `options`, `run`, `rows`, `failed` by cause,
-`coverage`, the share of documents scored, and `partial` when graded with `--partial`), then field matching's
+`coverage`, the share of documents scored, `headline` and `headline_is`, and `partial` when a `--partial` grading
+left documents unfinished), then field matching's
 numbers over every document: `accuracy` (the headline), `precision`, `recall`, one `<error>_rate`
 per kind of error, and `per_suite`. A failed document counts with accuracy, precision and recall 0 and every gold
 field unfound, so each of these numbers counts it.

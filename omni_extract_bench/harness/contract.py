@@ -25,7 +25,7 @@ class Question(NamedTuple):
 
 class DialectError(errors.SystemFailed):
     """The schema can't be written in what this vendor accepts, so no call was made: `prepare_schema`
-    raises it. It is the document's answer, counted 0, and never transient, since the same schema
+    raises it. It is the document's answer, a failure, and never transient, since the same schema
     reshapes the same way."""
 
     @property
