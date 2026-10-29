@@ -307,8 +307,8 @@ def parser() -> argparse.ArgumentParser:
                        allow_abbrev=False)
     g.add_argument("folder", help="the folder holding predictions/")
     g.add_argument("--partial", action="store_true",
-                   help="grade a run that isn't finished: its unfinished documents count as 0, and the summary "
-                        "counts them under \"partial\"; scores.jsonl names each")
+                   help="grade a run that isn't finished: its unfinished documents fail, scored as an empty "
+                        "extraction, and the summary counts them under \"partial\"; scores.jsonl names each")
     g.add_argument("--dataset", default=None, help="a dataset folder, or hf://datasets/<org>/<name>[@<revision>] "
                                                     "(default: the run's own, else the public dataset, "
                                                     f"{data.DEFAULT_DATASET})")
