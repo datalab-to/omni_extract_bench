@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Describe each document of a dataset in its manifest: `data.DOCUMENT_STATS`, one column each.
+"""Describe each document of a manifest: `data.DOCUMENT_STATS`, one column each.
 
-    uv run --extra benchmark --with pymupdf python scripts/document_stats.py --out build/manifests
-    uv run --extra benchmark --with pymupdf python scripts/document_stats.py --dataset my-dataset/ --out out/
+    uv run --extra benchmark --with pymupdf python scripts/document_stats.py --out build/manifest.parquet
+    uv run --extra benchmark --with pymupdf python scripts/document_stats.py --dataset my-dataset/ \
+        --manifest manifests/sample.parquet --out build/sample.parquet
 
-Every column is computed, with no model: two are read off the PDF, the rest counted from the gold. The
-script reads every manifest of the dataset (manifest.parquet and manifests/*.parquet) and writes
-each again under `--out`, at the same relative path, with the columns added (or replaced). The dataset itself
-is never written to; uploading the new manifests is a separate step.
+Every column is computed, with no model: two are read off the PDF, the rest counted from the gold. The script
+reads one manifest of the dataset (`--manifest`, by default manifest.parquet) and writes it to `--out`, one
+parquet file, with the columns added (or replaced). A dataset with several manifests is described one manifest
+at a time. The dataset itself is never written to; replacing or uploading the manifest is a separate step.
 
 The columns:
 
@@ -86,30 +87,29 @@ def stats(doc: data.Doc) -> dict[str, Any]:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--dataset", default=data.DEFAULT_DATASET)
-    p.add_argument("--out", type=Path, required=True, help="a folder to write the new manifests into")
+    p.add_argument("--manifest", default=data.MANIFEST, help="a manifest inside the dataset (default: %(default)s)")
+    p.add_argument("--out", type=Path, required=True, help="the parquet file to write the described manifest to")
     args = p.parse_args()
 
-    root, docs = data.read_manifest(args.dataset)
-    if args.out.resolve() == Path(root).resolve():
-        raise SystemExit(f"--out is the dataset folder {root}; write the new manifests somewhere else and upload them")
-    by_id = {}
+    root, docs = data.read_manifest(args.dataset, args.manifest)
+    src = Path(root) / args.manifest
+    if args.out.resolve() == src.resolve():
+        raise SystemExit(f"--out is the manifest itself, {src}; write the new manifest somewhere else, then replace "
+                         "the old one by hand")
+    t = pq.read_table(src)
+    assert t.column("doc_id").to_pylist() == [d.doc_id for d in docs]
+    got = []
     for i, d in enumerate(docs):
-        by_id[d.doc_id] = stats(d)
+        got.append(stats(d))
         if i % 50 == 0: print(f"{i}/{len(docs)} {d.doc_id}", flush=True)
-
-    for f in [Path(root) / data.MANIFEST, *sorted((Path(root) / "manifests").glob("*.parquet"))]:
-        t = pq.read_table(f)
-        ids = t.column("doc_id").to_pylist()
-        if missing := [i for i in ids if i not in by_id]:
-            raise SystemExit(f"{f} names documents the main manifest doesn't: {missing[:5]}; describe those too")
-        t = t.drop_columns([c for c in data.DOCUMENT_STATS if c in t.column_names])
-        for c in data.DOCUMENT_STATS:
-            xs = [by_id[i][c] for i in ids]
-            # Note: typed, since a manifest whose tables are all empty would otherwise infer list<null>.
-            t = t.append_column(c, pa.array(xs, type=pa.list_(pa.int64())) if c == "table_rows" else pa.array(xs))
-        (dest := args.out / f.relative_to(root)).parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(t, dest)
-        print(f"wrote {dest}: {t.num_rows} rows, {t.num_columns} columns")
+    t = t.drop_columns([c for c in data.DOCUMENT_STATS if c in t.column_names])
+    for c in data.DOCUMENT_STATS:
+        xs = [x[c] for x in got]
+        # Note: typed, since a manifest whose tables are all empty would otherwise infer list<null>.
+        t = t.append_column(c, pa.array(xs, type=pa.list_(pa.int64())) if c == "table_rows" else pa.array(xs))
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(t, args.out)
+    print(f"wrote {args.out}: {t.num_rows} rows, {t.num_columns} columns")
 
 
 if __name__ == "__main__":
