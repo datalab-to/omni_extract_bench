@@ -248,6 +248,7 @@ my-dataset/
 | `doc_path` | the PDF's path, relative to the dataset folder. Several rows may share one PDF |
 | `gt_path` | the gold file's path, relative to the dataset folder, named `<doc_id>.json` |
 | `schema` | the JSON Schema, as a JSON string (`json.dumps(schema)`), a non-empty object |
+| `pages`, `scanned`, `gold_chars`, `table_rows`, `num_values`, `num_null`, `max_depth` | optional: what describes the document, computed without a model by `scripts/document_stats.py`, which defines each one. `table_rows` lists the rows of each array of objects in the gold, largest first (`[540, 12]`). Each line of field matching's `scores.jsonl` carries them under `row`, so scores can be sliced by them |
 
 Any other column is kept, unread, in each row's `extra`, for scorers of your own. A gold file is one JSON object,
 the extraction a perfect system would return:
@@ -341,7 +342,7 @@ runs/datalab-20261021-160012-3f9a/       <system>-<YYYYMMDD-HHMMSS>-<4 hex>
   predictions/<doc_id>.json              each document's extraction alone; all grading reads
   field_matching/
     summary.json                         the grade
-    scores.jsonl                         one line per document
+    scores.jsonl                         one line per document, with its suite and stats under "row"
     details/<doc_id>.jsonl               one verdict per address, each with its doc_id and suite
     cache/<doc_id>.json                  each document's kept score
 ```

@@ -33,6 +33,14 @@ def test_a_suite_that_isnt_a_str_is_refused(tmp_path):
         data.read_manifest(dataset(tmp_path / "ds", suite=3))
 
 
+def test_stats_are_the_manifest_s_document_columns_and_only_those(tmp_path):
+    ds = dataset(tmp_path / "ds", pages=3, scanned=False, table_rows=[540, 2], owner="x")
+    _, docs = data.read_manifest(ds)
+    assert docs[0].stats == {"pages": 3, "scanned": False, "table_rows": [540, 2]} and docs[0].extra["owner"] == "x"
+    _, docs = data.read_manifest(dataset(tmp_path / "plain"))
+    assert docs[0].stats == {}
+
+
 def test_a_schema_that_isnt_json_is_refused(tmp_path):
     with pytest.raises(ValueError, match="not a JSON string"):
         data.read_manifest(dataset(tmp_path / "ds", schema="{nope"))

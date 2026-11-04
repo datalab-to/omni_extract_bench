@@ -21,6 +21,9 @@ DEFAULT_DATASET = f"{data.HF_PREFIX}{REPO}"
 MANIFEST = data.MANIFEST
 NO_SUITE = "other"
 COLUMNS = ("doc_id", "suite", "doc_path", "gt_path", "schema")
+# Optional columns describing each document, written by scripts/document_stats.py: two read off the PDF, the
+# rest counted from the gold. Each line of a scorer's scores.jsonl carries them, to slice by.
+DOCUMENT_STATS = ("pages", "scanned", "gold_chars", "table_rows", "num_values", "num_null", "max_depth")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -29,7 +32,8 @@ class Doc:
 
     - `suite`: the kind of document, from the manifest's optional `suite` column (`NO_SUITE` when
       missing, empty or null); field matching's summary is broken down by it; and
-    - `extra`: the manifest's other columns, unread, for scorers of a dataset's own."""
+    - `extra`: the manifest's other columns, unread, for scorers of a dataset's own; `stats` is those of them
+      that describe the document (`DOCUMENT_STATS`)."""
 
     doc_id: str
     suite: str
@@ -42,6 +46,11 @@ class Doc:
     def id(self) -> str:
         """The document's id, by the name every benchmark's rows share."""
         return self.doc_id
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        """The manifest's `DOCUMENT_STATS` columns this row has."""
+        return {k: self.extra[k] for k in DOCUMENT_STATS if k in self.extra}
 
 
 def read_manifest(dataset: str | Path = DEFAULT_DATASET, manifest: str = MANIFEST) -> tuple[Path, tuple[Doc, ...]]:

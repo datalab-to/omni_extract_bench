@@ -121,6 +121,12 @@ def test_gold_echo_scores_one_and_a_resumed_run_calls_nothing(tmp_path):
     assert CALLS == []
 
 
+def test_each_score_line_carries_the_document_s_stats(tmp_path):
+    g = benchmark.default(dataset(tmp_path / "ds", pages=2, gold_chars=9)).run(GoldEcho(), tmp_path / "runs")
+    lines = [json.loads(x) for x in (tmp_path / "runs" / g["run"] / "field_matching" / "scores.jsonl").read_text().splitlines()]
+    assert [x["row"] for x in lines] == [{"suite": "s", "pages": 2, "gold_chars": 9}] * 2, lines
+
+
 def test_a_refused_document_counts_as_zero(tmp_path):
     g = benchmark.default(dataset(tmp_path / "ds")).run(GoldEcho(refuse=("d1",)), tmp_path / "runs")
     s = g["scorers"]["field_matching"]
