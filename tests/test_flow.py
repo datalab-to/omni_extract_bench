@@ -121,6 +121,12 @@ def test_gold_echo_scores_one_and_a_resumed_run_calls_nothing(tmp_path):
     assert CALLS == []
 
 
+def test_each_score_line_carries_the_document_s_stats(tmp_path):
+    g = benchmark.default(dataset(tmp_path / "ds", pages=2, gold_chars=9)).run(GoldEcho(), tmp_path / "runs")
+    lines = [json.loads(x) for x in (tmp_path / "runs" / g["run"] / "field_matching" / "scores.jsonl").read_text().splitlines()]
+    assert [x["row"] for x in lines] == [{"suite": "s", "pages": 2, "gold_chars": 9}] * 2, lines
+
+
 def test_a_refused_document_counts_as_zero(tmp_path):
     g = benchmark.default(dataset(tmp_path / "ds")).run(GoldEcho(refuse=("d1",)), tmp_path / "runs")
     s = g["scorers"]["field_matching"]
@@ -325,6 +331,28 @@ def test_oeb_check_counts_a_good_dataset_and_names_a_missing_file(tmp_path, caps
     assert code == 0 and got["rows"] == 2 and "suites" not in got, err
     (ds / "pdfs" / "d1.pdf").unlink()
     assert "d1" in raised(ValueError, capsys, "check", "--dataset", str(ds))
+
+
+def test_oeb_stats_describes_a_manifest_into_a_new_file_and_never_over_it(tmp_path, capsys):
+    import pyarrow.parquet as pq
+    import pypdf
+
+    from omni_extract_bench import data
+
+    ds = dataset(tmp_path / "ds")
+    assert "d0: its PDF" in raised(ValueError, capsys, "stats", "--dataset", str(ds), "--out", str(tmp_path / "m.parquet"))
+    for i in range(2):
+        w = pypdf.PdfWriter()
+        for _ in range(2): w.add_blank_page(width=612, height=792)
+        w.write(ds / "pdfs" / f"d{i}.pdf")
+    code, out, err = oeb(capsys, "stats", "--dataset", str(ds), "--out", str(tmp_path / "m.parquet"))
+    assert code == 0 and json.loads(out)["rows"] == 2 and json.loads(out)["scanned"] == 2, err
+    (tmp_path / "m.parquet").replace(ds / "manifest.parquet")
+    _, docs = data.read_manifest(ds)
+    assert docs[0].stats == {"pages": 2, "scanned": True, "gold_chars": 9, "table_rows": [], "num_values": 1,
+                             "num_null": 0, "max_depth": 1}, docs[0].stats
+    assert "manifest itself" in raised(ValueError, capsys, "stats", "--dataset", str(ds), "--out",
+                                       str(ds / "manifest.parquet"))
 
 
 def test_oeb_run_only_predicts_and_grades_only_those(tmp_path, capsys, monkeypatch):

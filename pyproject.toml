@@ -32,10 +32,12 @@ harness = [
 # Running the published benchmark end to end: the vendor adapters, and `huggingface_hub` to
 # download the dataset from the Hub. `huggingface_hub` rather than `datasets` because the
 # corpus is files -- PDFs and gold JSON -- not a table to load. pyarrow, which reads the
-# manifest, comes with omni-bench-core.
+# manifest, comes with omni-bench-core. `pypdf` reads each PDF's page count and text layer for
+# `oeb stats`; pypdf rather than PyMuPDF because PyMuPDF is AGPL and this package is Apache-2.0.
 benchmark = [
     "omni_extract_bench[harness]",
     "omni-bench-core[hub]>=0.14,<0.15",
+    "pypdf>=5.0",
 ]
 
 # Running the tests: `uv run --group test --extra benchmark pytest -n auto`. The extra brings the

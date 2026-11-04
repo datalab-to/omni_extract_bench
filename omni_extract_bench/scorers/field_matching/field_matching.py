@@ -64,7 +64,8 @@ class FieldMatching(scorer.Scorer[data.Doc, Gold, dict[str, Any]]):
         return self.score({}, gold)
 
     def row_fields(self, row: data.Doc) -> dict[str, Any]:
-        return {"suite": row.suite}
+        """The suite, which the summary groups by, and the document's stats, to slice scores.jsonl by."""
+        return {"suite": row.suite, **row.stats}
 
     def detail_fields(self, row: data.Doc) -> dict[str, Any]:
         """Each verdict's document, so a run's verdicts can be sliced together, by suite or by address."""

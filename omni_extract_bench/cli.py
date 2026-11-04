@@ -6,6 +6,7 @@
     oeb score      --pred p.json --gold g.json --schema s.json     score one prediction against one gold
     oeb predict    --system datalab --doc x.pdf --schema s.json    one document through one system
     oeb check      [--dataset ...] [--manifest ...]                whether a dataset is one oeb can run
+    oeb stats      [--dataset ...] [--manifest ...] --out m.parquet  the manifest with each document described
     oeb systems    [datalab]                                       the systems, or one system's options
 
 A run is one config: the dataset, its manifest, the scorers, which rows, and one system with every option
@@ -245,6 +246,23 @@ def cmd_check(args) -> int:
     return 0
 
 
+def cmd_stats(args) -> int:
+    """One manifest with `data.DOCUMENT_STATS` added, written to `--out`; never over the manifest itself."""
+    import pyarrow.parquet as pq
+
+    from . import stats
+
+    src, t = stats.describe(args.dataset, args.manifest)
+    if pathlib.Path(args.out).resolve() == src.resolve():
+        raise ValueError(f"--out is the manifest itself, {src}; write the described manifest to another file, then "
+                         "replace the old one yourself")
+    pathlib.Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(t, args.out)
+    _print({"dataset": args.dataset, "manifest": args.manifest, "out": str(args.out), "rows": t.num_rows,
+            "scanned": sum(t.column("scanned").to_pylist())})
+    return 0
+
+
 def cmd_systems(args) -> int:
     """The names `--system` accepts, or one system's options, their defaults and the environment variables
     it needs, all read off the adapter class."""
@@ -348,6 +366,14 @@ def parser() -> argparse.ArgumentParser:
                    help="a dataset folder, or hf://datasets/<org>/<name>[@<revision>] (default: %(default)s)")
     c.add_argument("--manifest", default=data.MANIFEST, help="a manifest inside the dataset (default: %(default)s)")
     c.set_defaults(fn=cmd_check)
+
+    st = sub.add_parser("stats", help="a manifest with each document described (pages, scanned, gold_chars, "
+                                      "table_rows, ...), written to a new parquet file", allow_abbrev=False)
+    st.add_argument("--dataset", default=data.DEFAULT_DATASET,
+                    help="a dataset folder, or hf://datasets/<org>/<name>[@<revision>] (default: %(default)s)")
+    st.add_argument("--manifest", default=data.MANIFEST, help="a manifest inside the dataset (default: %(default)s)")
+    st.add_argument("--out", required=True, help="the parquet file to write the described manifest to")
+    st.set_defaults(fn=cmd_stats)
 
     pl = sub.add_parser("systems", aliases=["providers"], help="the systems, or one system's options and keys",
                         allow_abbrev=False)
