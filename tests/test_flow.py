@@ -333,6 +333,28 @@ def test_oeb_check_counts_a_good_dataset_and_names_a_missing_file(tmp_path, caps
     assert "d1" in raised(ValueError, capsys, "check", "--dataset", str(ds))
 
 
+def test_oeb_stats_describes_a_manifest_into_a_new_file_and_never_over_it(tmp_path, capsys):
+    import pyarrow.parquet as pq
+    import pypdf
+
+    from omni_extract_bench import data
+
+    ds = dataset(tmp_path / "ds")
+    assert "d0: its PDF" in raised(ValueError, capsys, "stats", "--dataset", str(ds), "--out", str(tmp_path / "m.parquet"))
+    for i in range(2):
+        w = pypdf.PdfWriter()
+        for _ in range(2): w.add_blank_page(width=612, height=792)
+        w.write(ds / "pdfs" / f"d{i}.pdf")
+    code, out, err = oeb(capsys, "stats", "--dataset", str(ds), "--out", str(tmp_path / "m.parquet"))
+    assert code == 0 and json.loads(out)["rows"] == 2 and json.loads(out)["scanned"] == 2, err
+    (tmp_path / "m.parquet").replace(ds / "manifest.parquet")
+    _, docs = data.read_manifest(ds)
+    assert docs[0].stats == {"pages": 2, "scanned": True, "gold_chars": 9, "table_rows": [], "num_values": 1,
+                             "num_null": 0, "max_depth": 1}, docs[0].stats
+    assert "manifest itself" in raised(ValueError, capsys, "stats", "--dataset", str(ds), "--out",
+                                       str(ds / "manifest.parquet"))
+
+
 def test_oeb_run_only_predicts_and_grades_only_those(tmp_path, capsys, monkeypatch):
     ds = dataset(tmp_path / "ds")
     monkeypatch.setitem(harness.ADAPTERS, "gold-echo", GoldEcho)
